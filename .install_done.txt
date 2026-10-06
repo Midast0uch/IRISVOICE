@@ -1,0 +1,4 @@
+INSTALL_DONE 
+version: 0.2.0-dev (build 10743, commit adfffbe41)
+built with MSVC 19.44.35225.0 for Windows AMD64
+verified: every file size matches the build, and the installed --version equals the built one. 

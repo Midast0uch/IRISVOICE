@@ -1,0 +1,66 @@
+{
+  "config": {
+    "backend_id": "gliner25-decide-onnx-int8",
+    "backend_identity_source": "declared ONNX variant",
+    "candidate_cap": 6,
+    "calibrated_cap": 6
+  },
+  "bar": {
+    "min_rows": 100,
+    "min_precision": 0.9,
+    "max_ece": 0.05
+  },
+  "skipped": {
+    "unreadable": 0,
+    "no_confidence": 0,
+    "no_label": 123
+  },
+  "n_consumers": 3,
+  "flipped": [],
+  "consumers": {
+    "escalate_incomplete": {
+      "rows": 1,
+      "rows_above_threshold": 1,
+      "precision": 0.0,
+      "ece": 0.5106,
+      "brier": 0.2607,
+      "threshold": 0.4,
+      "shadow_rows": 1,
+      "engines": [
+        "gliner25-decide-onnx-int8"
+      ],
+      "status": "shadow",
+      "gap": "rows 1 < 100"
+    },
+    "probe": {
+      "rows": 1,
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.5,
+      "brier": 0.25,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [
+        "probe"
+      ],
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "tool_choice": {
+      "rows": 458,
+      "rows_above_threshold": 333,
+      "precision": 0.4054,
+      "ece": 0.4661,
+      "brier": 0.426,
+      "threshold": 0.4,
+      "shadow_rows": 0,
+      "engines": [
+        "LFM2-350M-Extract",
+        "LFM2-350M-Extract.Q4_K_M",
+        "gliner25-decide-onnx-int8"
+      ],
+      "status": "shadow",
+      "gap": "precision 0.405 < 0.90"
+    }
+  }
+}

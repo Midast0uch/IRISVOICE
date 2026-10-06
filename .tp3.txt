@@ -1,0 +1,27 @@
+2026-09-27 21:39:58,670 [INFO] Connecting to ws://127.0.0.1:8090/ws/p1?session_id=p1
+2026-09-27 21:39:58,732 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 21:39:58,738 [INFO] Local model server is accepting connections on 127.0.0.1:8082
+2026-09-27 21:39:58,739 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 21:39:58,739 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 21:40:10,122 [INFO] [1/6] Received: chat_message
+2026-09-27 21:40:10,122 [INFO] Waiting 2s before next message...
+2026-09-27 21:40:12,130 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 21:40:27,985 [INFO] [2/6] Received: chat_message
+2026-09-27 21:40:27,985 [INFO] Waiting 2s before next message...
+2026-09-27 21:40:29,994 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 21:40:40,642 [INFO] [3/6] Received: chat_message
+2026-09-27 21:40:40,642 [INFO] Waiting 2s before next message...
+2026-09-27 21:40:42,650 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 21:40:55,449 [INFO] [4/6] Received: chat_message
+2026-09-27 21:40:55,449 [INFO] Waiting 2s before next message...
+2026-09-27 21:40:57,460 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 21:43:39,540 [INFO] [5/6] Received: chat_message
+2026-09-27 21:43:39,540 [INFO] Waiting 2s before next message...
+2026-09-27 21:43:41,545 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 21:47:53,740 [INFO] [6/6] Received: chat_message
+2026-09-27 21:47:53,740 [INFO] Done. Sent 6 messages.
+2026-09-27 21:47:56,868 [INFO] Connecting to ws://127.0.0.1:8090/ws/p2?session_id=p2
+2026-09-27 21:47:58,239 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 21:47:58,709 [INFO] Local model server is accepting connections on 127.0.0.1:8082
+2026-09-27 21:47:58,709 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 21:47:58,709 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.

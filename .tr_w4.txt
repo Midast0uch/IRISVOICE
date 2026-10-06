@@ -1,0 +1,50 @@
+2026-09-27 09:25:58,344 [INFO] Connecting to ws://127.0.0.1:8090/ws/rw4?session_id=rw4
+2026-09-27 09:25:58,417 [INFO] Connected. Sending 20 messages with 2s delay
+2026-09-27 09:25:58,417 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 09:25:58,417 [INFO] [1/20] Sending: What's the weather in Seattle?
+2026-09-27 09:26:32,580 [INFO] [1/20] Received: chat_message
+2026-09-27 09:26:32,580 [INFO] Waiting 2s before next message...
+2026-09-27 09:26:34,595 [INFO] [2/20] Sending: Search for the latest news about AI
+2026-09-27 09:28:54,628 [WARNING] [2/20] Timeout waiting for response
+2026-09-27 09:28:54,628 [INFO] Waiting 2s before next message...
+2026-09-27 09:28:56,636 [INFO] [3/20] Sending: Find information about climate change
+2026-09-27 09:30:56,652 [WARNING] [3/20] Timeout waiting for response
+2026-09-27 09:30:56,652 [INFO] Waiting 2s before next message...
+2026-09-27 09:30:58,661 [INFO] [4/20] Sending: Look up the stock price of Apple
+2026-09-27 09:32:58,674 [WARNING] [4/20] Timeout waiting for response
+2026-09-27 09:32:58,674 [INFO] Waiting 2s before next message...
+2026-09-27 09:33:00,682 [INFO] [5/20] Sending: Search for best restaurants in Tokyo
+2026-09-27 09:35:00,686 [WARNING] [5/20] Timeout waiting for response
+2026-09-27 09:35:00,686 [INFO] Waiting 2s before next message...
+2026-09-27 09:35:02,695 [INFO] [6/20] Sending: What's the capital of France?
+2026-09-27 09:37:02,709 [WARNING] [6/20] Timeout waiting for response
+2026-09-27 09:37:02,709 [INFO] Waiting 2s before next message...
+2026-09-27 09:37:04,721 [INFO] [7/20] Sending: Find the latest sports scores
+2026-09-27 09:39:04,734 [WARNING] [7/20] Timeout waiting for response
+2026-09-27 09:39:04,734 [INFO] Waiting 2s before next message...
+2026-09-27 09:39:06,746 [INFO] [8/20] Sending: Search for information about space exploration
+2026-09-27 09:41:06,747 [WARNING] [8/20] Timeout waiting for response
+2026-09-27 09:41:06,747 [INFO] Waiting 2s before next message...
+2026-09-27 09:41:08,751 [INFO] [9/20] Sending: What's the population of New York City?
+2026-09-27 09:43:08,765 [WARNING] [9/20] Timeout waiting for response
+2026-09-27 09:43:08,766 [INFO] Waiting 2s before next message...
+2026-09-27 09:43:10,779 [INFO] [10/20] Sending: Find recipes for pasta
+2026-09-27 09:45:10,790 [WARNING] [10/20] Timeout waiting for response
+2026-09-27 09:45:10,790 [INFO] Waiting 2s before next message...
+2026-09-27 09:45:12,799 [INFO] [11/20] Sending: Search for the best laptops of 2026
+2026-09-27 09:47:12,812 [WARNING] [11/20] Timeout waiting for response
+2026-09-27 09:47:12,812 [INFO] Waiting 2s before next message...
+2026-09-27 09:47:14,825 [INFO] [12/20] Sending: What's the time in London?
+2026-09-27 09:49:14,839 [WARNING] [12/20] Timeout waiting for response
+2026-09-27 09:49:14,840 [INFO] Waiting 2s before next message...
+2026-09-27 09:49:16,855 [INFO] [13/20] Sending: Find information about electric cars
+2026-09-27 09:51:16,865 [WARNING] [13/20] Timeout waiting for response
+2026-09-27 09:51:16,866 [INFO] Waiting 2s before next message...
+2026-09-27 09:51:18,873 [INFO] [14/20] Sending: Search for the latest movie reviews
+2026-09-27 09:53:18,880 [WARNING] [14/20] Timeout waiting for response
+2026-09-27 09:53:18,880 [INFO] Waiting 2s before next message...
+2026-09-27 09:53:20,886 [INFO] [15/20] Sending: What's the distance from Earth to Mars?
+2026-09-27 09:55:20,890 [WARNING] [15/20] Timeout waiting for response
+2026-09-27 09:55:20,890 [INFO] Waiting 2s before next message...
+2026-09-27 09:55:22,903 [INFO] [16/20] Sending: Find the best hiking trails in Colorado
+2026-09-27 09:55:29,175 [ERROR] Failed: sent 1011 (internal error) keepalive ping timeout; no close frame received

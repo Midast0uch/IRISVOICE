@@ -1,0 +1,4 @@
+exists: True
+load attempt 1 sent (profile=performance)
+  starting: 
+  loading: Reading metadata: LFM2.5-2.6B-QAD-Q4_0.gguf

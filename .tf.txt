@@ -1,0 +1,56 @@
+2026-09-27 13:19:11,648 [INFO] Connecting to ws://127.0.0.1:8090/ws/f1?session_id=f1
+2026-09-27 13:19:11,706 [INFO] Connected. Sending 6 messages with 3s delay
+2026-09-27 13:19:11,707 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 13:19:11,707 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 13:22:06,815 [WARNING] [1/6] Timeout waiting for response
+2026-09-27 13:22:06,815 [INFO] Waiting 3s before next message...
+2026-09-27 13:22:09,824 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 13:24:09,837 [WARNING] [2/6] Timeout waiting for response
+2026-09-27 13:24:09,838 [INFO] Waiting 3s before next message...
+2026-09-27 13:24:12,852 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 13:26:12,861 [WARNING] [3/6] Timeout waiting for response
+2026-09-27 13:26:12,862 [INFO] Waiting 3s before next message...
+2026-09-27 13:26:15,876 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 13:28:15,880 [WARNING] [4/6] Timeout waiting for response
+2026-09-27 13:28:15,880 [INFO] Waiting 3s before next message...
+2026-09-27 13:28:18,893 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 13:30:18,903 [WARNING] [5/6] Timeout waiting for response
+2026-09-27 13:30:18,903 [INFO] Waiting 3s before next message...
+2026-09-27 13:30:21,915 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 13:32:21,928 [WARNING] [6/6] Timeout waiting for response
+2026-09-27 13:32:21,928 [INFO] Done. Sent 6 messages.
+2026-09-27 13:32:22,178 [INFO] Connecting to ws://127.0.0.1:8090/ws/f2?session_id=f2
+2026-09-27 13:32:22,238 [INFO] Connected. Sending 6 messages with 3s delay
+2026-09-27 13:32:22,238 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 13:32:22,238 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 13:35:17,358 [WARNING] [1/6] Timeout waiting for response
+2026-09-27 13:35:17,359 [INFO] Waiting 3s before next message...
+2026-09-27 13:35:20,373 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 13:37:20,378 [WARNING] [2/6] Timeout waiting for response
+2026-09-27 13:37:20,379 [INFO] Waiting 3s before next message...
+2026-09-27 13:37:23,394 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 13:37:52,718 [WARNING] [3/6] Error: no close frame received or sent
+2026-09-27 13:37:52,718 [INFO] Waiting 3s before next message...
+2026-09-27 13:37:55,729 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 13:37:55,730 [ERROR] Failed: no close frame received or sent
+2026-09-27 13:37:55,948 [INFO] Connecting to ws://127.0.0.1:8090/ws/f3?session_id=f3
+2026-09-27 13:37:58,045 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:37:58,274 [INFO] Connecting to ws://127.0.0.1:8090/ws/f4?session_id=f4
+2026-09-27 13:38:00,364 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:38:00,593 [INFO] Connecting to ws://127.0.0.1:8090/ws/f5?session_id=f5
+2026-09-27 13:38:02,707 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:38:02,927 [INFO] Connecting to ws://127.0.0.1:8090/ws/f6?session_id=f6
+2026-09-27 13:38:05,014 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:38:05,280 [INFO] Connecting to ws://127.0.0.1:8090/ws/f7?session_id=f7
+2026-09-27 13:38:10,753 [INFO] Connected. Sending 6 messages with 3s delay
+2026-09-27 13:38:10,754 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 13:38:10,754 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 13:38:55,668 [INFO] [1/6] Received: chat_message
+2026-09-27 13:38:55,669 [INFO] Waiting 3s before next message...
+2026-09-27 13:38:58,676 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 13:39:03,975 [INFO] [2/6] Received: chat_message
+2026-09-27 13:39:03,975 [INFO] Waiting 3s before next message...
+2026-09-27 13:39:06,986 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 13:41:06,994 [WARNING] [3/6] Timeout waiting for response
+2026-09-27 13:41:06,994 [INFO] Waiting 3s before next message...
+2026-09-27 13:41:10,004 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.

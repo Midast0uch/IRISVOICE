@@ -84,6 +84,13 @@ pydantic-settings>=2.0.0 # required by llama_cpp.server
 starlette-context>=0.3.6 # required by llama_cpp.server
 huggingface-hub>=0.20.0  # Model download from HuggingFace Hub
 
+# Decision Engine - GLiNER2.5-Decide ONNX backend (REQ-21, torch-free)
+#   backend/agent/decision_backend_onnx.py scores labels via one schema Task;
+#   model weights at backend/models/gliner2.5-decide-onnx/ (gitignored).
+#   Both were installed but undeclared until REQ-21 AC21.5.
+onnxruntime>=1.26.0      # CPUExecutionProvider - the decision backend runtime
+tokenizers>=0.22.2       # tokenizer.json loading for the ONNX backend
+
 # Network & QR Code (Tailscale Mobile Integration)
 qrcode[pil]>=7.4.0       # QR code generation for phone pairing
 

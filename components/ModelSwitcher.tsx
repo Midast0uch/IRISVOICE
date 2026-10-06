@@ -200,9 +200,20 @@ export default function ModelSwitcher({
   const handleChange = useCallback(
     (role: string, value: string) => {
       setBindError(null)
-      sendRoleBinding(role, value)
+      const prov = providers.find((p) => p.id === value)
+      const modelOverride = prov?.model || undefined
+      const roleLabel = ROLE_LABELS[role] || role
+      const modelLabel = modelOverride || prov?.label || value
+
+      // Alert the user before applying the model change
+      const confirmed = window.confirm(
+        `Switch ${roleLabel} model to "${modelLabel}"?`
+      )
+      if (!confirmed) return
+
+      sendRoleBinding(role, value, modelOverride)
     },
-    [sendRoleBinding]
+    [sendRoleBinding, providers]
   )
 
   const triggerTitle = loading

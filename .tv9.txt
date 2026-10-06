@@ -1,0 +1,5 @@
+2026-09-27 23:50:28,594 [INFO] Connecting to ws://127.0.0.1:8090/ws/v9?session_id=v9
+2026-09-27 23:50:28,659 [INFO] Connected. Sending 4 messages with 2s delay
+2026-09-27 23:50:28,679 [INFO] Local model server is accepting connections on 127.0.0.1:8082
+2026-09-27 23:50:28,700 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 23:50:28,700 [INFO] [1/4] Sending: List the files in the current directory and tell me how many there are.

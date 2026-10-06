@@ -1,0 +1,95 @@
+model exists: True
+asked the app to load the PTQ1_0 model
+[local_model_loading] {"status": "starting", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced", "pct": 0}
+[local_model_loading] {"status": "loading", "phase": "metadata", "pct": 5, "msg": "Reading metadata: Ternary-Bonsai-2-27B-PTQ1_0.gguf", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-
+[local_model_loading] {"status": "loading", "phase": "derived", "pct": 10, "msg": "Derived config: 4096 ctx, 6.3GB VRAM", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.ggu
+[local_model_loading] {"status": "loading", "phase": "preflight", "pct": 18, "msg": "VRAM check passed \u2014 spawning server\u2026", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27
+[local_model_loading] {"status": "loading", "phase": "init", "pct": 5, "msg": "CUDA device detected", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "bala
+[local_model_loading] {"status": "loading", "phase": "init", "pct": 12, "msg": "System ready", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced"}
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 15, "msg": "Opening model file", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 20, "msg": "Loading layer 1/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 21, "msg": "Loading layer 2/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 22, "msg": "Loading layer 3/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 23, "msg": "Loading layer 4/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 24, "msg": "Loading layer 5/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 25, "msg": "Loading layer 6/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 26, "msg": "Loading layer 8/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 27, "msg": "Loading layer 9/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "ba
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 28, "msg": "Loading layer 10/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 29, "msg": "Loading layer 11/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 30, "msg": "Loading layer 12/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 31, "msg": "Loading layer 13/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 32, "msg": "Loading layer 15/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 33, "msg": "Loading layer 16/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 34, "msg": "Loading layer 17/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 35, "msg": "Loading layer 18/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 36, "msg": "Loading layer 19/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 37, "msg": "Loading layer 21/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 38, "msg": "Loading layer 22/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 39, "msg": "Loading layer 23/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 40, "msg": "Loading layer 24/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 41, "msg": "Loading layer 25/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 42, "msg": "Loading layer 26/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 43, "msg": "Loading layer 28/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 44, "msg": "Loading layer 29/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 45, "msg": "Loading layer 30/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 46, "msg": "Loading layer 31/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 47, "msg": "Loading layer 32/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 48, "msg": "Loading layer 34/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 49, "msg": "Loading layer 35/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 50, "msg": "Loading layer 36/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 51, "msg": "Loading layer 37/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 52, "msg": "Loading layer 38/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 53, "msg": "Loading layer 39/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 54, "msg": "Loading layer 41/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 55, "msg": "Loading layer 42/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 56, "msg": "Loading layer 43/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 57, "msg": "Loading layer 44/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 58, "msg": "Loading layer 45/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 59, "msg": "Loading layer 47/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 60, "msg": "Loading layer 48/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 61, "msg": "Loading layer 49/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 62, "msg": "Loading layer 50/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 63, "msg": "Loading layer 51/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 64, "msg": "Loading layer 52/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 65, "msg": "Loading layer 54/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 66, "msg": "Loading layer 55/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 67, "msg": "Loading layer 56/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 68, "msg": "Loading layer 57/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 69, "msg": "Loading layer 58/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 70, "msg": "Loading layer 60/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 71, "msg": "Loading layer 61/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 72, "msg": "Loading layer 62/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 73, "msg": "Loading layer 63/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 74, "msg": "Loading layer 64/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "loading", "pct": 75, "msg": "Loading layer 65/65", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "b
+[local_model_loading] {"status": "loading", "phase": "context", "pct": 85, "msg": "Building KV cache", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "bal
+[local_model_loading] {"status": "loading", "phase": "context", "pct": 88, "msg": "Enabling prompt cache", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": 
+[local_model_loading] {"status": "loading", "phase": "ready", "pct": 98, "msg": "Server online", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced"
+[local_model_loading] {"status": "loading", "phase": "ready", "pct": 100, "msg": "Model ready", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced"}
+[local_model_loading] {"status": "ready", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced"}
+[local_model_status] {"loaded": true, "status": "loaded", "model_path": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced"}
+[available_models] {"models": [{"id": "local-model", "name": "Currently Loaded Model", "source": "lmstudio"}, {"id": "deepseek-r1-distill-qwen-7b", "name": "DeepSeek R1 Distill Qwen 7B", "source": "lmstudio"}, {"id": "deepseek-r1-distill-l
+[model_load_event] {"action": "loaded", "model": "C:\\Users\\midas\\.lmstudio\\models\\prism-ml\\Ternary-Bonsai-2-27B-gguf\\Ternary-Bonsai-2-27B-PTQ1_0.gguf", "profile": "balanced", "timestamp": 1790491410.5443182}
+TimeoutError: timed out while closing connection
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\dev\IRISVOICE\.prismload.py", line 56, in <module>
+  File "C:\Python314\Lib\asyncio\runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Python314\Lib\asyncio\base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "C:\dev\IRISVOICE\.prismload.py", line 37, in main
+  File "C:\Python314\Lib\asyncio\tasks.py", line 488, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "C:\Users\midas\AppData\Roaming\Python\Python314\site-packages\websockets\asyncio\connection.py", line 324, in recv
+    raise self.protocol.close_exc from self.recv_exc
+websockets.exceptions.ConnectionClosedError: sent 1011 (internal error) keepalive ping timeout; no close frame received

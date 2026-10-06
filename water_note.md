@@ -1,0 +1,3 @@
+- Drink at least 8 cups (about 2 liters) of water daily.
+- Carry a reusable water bottle to remind yourself to sip regularly.
+- Increase intake during hot weather or intense physical activity.

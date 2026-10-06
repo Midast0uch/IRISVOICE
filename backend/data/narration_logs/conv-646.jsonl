@@ -1,0 +1,6 @@
+{"ts": 1790968120.919802, "conversation_id": "conv-646", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790968128.6316774, "conversation_id": "conv-646", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1791047144.48602, "conversation_id": "conv-646", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.127961042029971, "xi": 3.8377723698693456, "text": "", "tts_played": false}
+{"ts": 1791047213.6504867, "conversation_id": "conv-646", "step_id": "s2_s0", "decision": "brief", "signal": "crystallized", "u": 0.09649083567414879, "xi": 4.781694662849427, "text": "One part of that is done — still working on: search for Mount Kilimanjaro.", "tts_played": true}
+{"ts": 1791047237.1142952, "conversation_id": "conv-646", "step_id": "amend-6", "decision": "silence", "signal": null, "u": 0.12072841035801471, "xi": 5.34058172802533, "text": "", "tts_played": false}
+{"ts": 1791047237.3225462, "conversation_id": "conv-646", "step_id": "amend-4_s0", "decision": "brief", "signal": "crystallized", "u": 0.4039102328524613, "xi": 6.052125787084304, "text": "One part of that is done.", "tts_played": true}

@@ -1,0 +1,46 @@
+2026-09-27 13:04:55,359 [INFO] Connecting to ws://127.0.0.1:8090/ws/n1?session_id=n1
+2026-09-27 13:04:55,418 [INFO] Connected. Sending 10 messages with 2s delay
+2026-09-27 13:04:55,419 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 13:04:55,419 [INFO] [1/10] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 13:07:50,539 [WARNING] [1/10] Timeout waiting for response
+2026-09-27 13:07:50,539 [INFO] Waiting 2s before next message...
+2026-09-27 13:07:52,556 [INFO] [2/10] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 13:09:52,563 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 13:09:52,564 [INFO] Waiting 2s before next message...
+2026-09-27 13:09:54,579 [INFO] [3/10] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 13:11:54,590 [WARNING] [3/10] Timeout waiting for response
+2026-09-27 13:11:54,591 [INFO] Waiting 2s before next message...
+2026-09-27 13:11:56,592 [INFO] [4/10] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 13:13:56,601 [WARNING] [4/10] Timeout waiting for response
+2026-09-27 13:13:56,601 [INFO] Waiting 2s before next message...
+2026-09-27 13:13:58,610 [INFO] [5/10] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 13:15:58,616 [WARNING] [5/10] Timeout waiting for response
+2026-09-27 13:15:58,617 [INFO] Waiting 2s before next message...
+2026-09-27 13:16:00,621 [INFO] [6/10] Sending: Research the top three Python async libraries, then find one working example of the best one and summarise it.
+2026-09-27 13:18:00,630 [WARNING] [6/10] Timeout waiting for response
+2026-09-27 13:18:00,630 [INFO] Waiting 2s before next message...
+2026-09-27 13:18:02,635 [INFO] [7/10] Sending: Look up the distance from Earth to Mars and to Venus, compare them, and tell me which is closer on average.
+2026-09-27 13:20:02,647 [WARNING] [7/10] Timeout waiting for response
+2026-09-27 13:20:02,647 [INFO] Waiting 2s before next message...
+2026-09-27 13:20:04,648 [INFO] [8/10] Sending: Find two recent articles about renewable energy, compare their main claims, and tell me where they disagree.
+2026-09-27 13:22:04,653 [WARNING] [8/10] Timeout waiting for response
+2026-09-27 13:22:04,653 [INFO] Waiting 2s before next message...
+2026-09-27 13:22:06,658 [INFO] [9/10] Sending: Search for the best hiking trails in Colorado, pick three, and compare their difficulty and length.
+2026-09-27 13:24:06,666 [WARNING] [9/10] Timeout waiting for response
+2026-09-27 13:24:06,666 [INFO] Waiting 2s before next message...
+2026-09-27 13:24:08,669 [INFO] [10/10] Sending: Research the current state of AI regulation in the EU and in the US, then compare the two approaches in a short summary.
+2026-09-27 13:26:08,680 [WARNING] [10/10] Timeout waiting for response
+2026-09-27 13:26:08,680 [INFO] Done. Sent 10 messages.
+2026-09-27 13:26:08,891 [INFO] Connecting to ws://127.0.0.1:8090/ws/n2?session_id=n2
+2026-09-27 13:26:08,947 [INFO] Connected. Sending 10 messages with 2s delay
+2026-09-27 13:26:08,948 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 13:26:08,948 [INFO] [1/10] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 13:29:04,063 [WARNING] [1/10] Timeout waiting for response
+2026-09-27 13:29:04,063 [INFO] Waiting 2s before next message...
+2026-09-27 13:29:06,076 [INFO] [2/10] Sending: Read the README file and summarise what the project is for.
+2026-09-27 13:31:06,088 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 13:31:06,088 [INFO] Waiting 2s before next message...
+2026-09-27 13:31:08,092 [INFO] [3/10] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 13:33:08,107 [WARNING] [3/10] Timeout waiting for response
+2026-09-27 13:33:08,107 [INFO] Waiting 2s before next message...
+2026-09-27 13:33:10,123 [INFO] [4/10] Sending: List the files in the scripts folder and pick the one with the longest name.

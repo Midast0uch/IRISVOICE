@@ -1,0 +1,8 @@
+2026-09-27 13:50:18,328 [INFO] Connecting to ws://127.0.0.1:8090/ws/h1?session_id=h1
+2026-09-27 13:50:18,393 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 13:50:18,393 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 13:50:18,394 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 13:57:39,127 [WARNING] [1/6] Error: no close frame received or sent
+2026-09-27 13:57:39,127 [INFO] Waiting 1s before next message...
+2026-09-27 13:57:40,138 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 13:57:40,139 [ERROR] Failed: no close frame received or sent

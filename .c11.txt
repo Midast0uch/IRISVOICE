@@ -1,0 +1,4 @@
+🔍 Scanning staged changes for secrets...
+✅ No secrets detected
+[feat/agent-multi-step-tool-execution 57ffb362] fix(oracle): pass the engine to the web_intent check, or the consumer can never score
+ 2 files changed, 30 insertions(+), 4 deletions(-)

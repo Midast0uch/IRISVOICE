@@ -1,0 +1,33 @@
+2026-09-27 09:27:02,785 [INFO] Connecting to ws://127.0.0.1:8090/ws/mw8?session_id=mw8
+2026-09-27 09:27:02,851 [INFO] Connected. Sending 10 messages with 3s delay
+2026-09-27 09:27:02,851 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 09:27:02,852 [INFO] [1/10] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 09:29:57,946 [WARNING] [1/10] Timeout waiting for response
+2026-09-27 09:29:57,947 [INFO] Waiting 3s before next message...
+2026-09-27 09:30:00,948 [INFO] [2/10] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 09:32:01,033 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 09:32:01,033 [INFO] Waiting 3s before next message...
+2026-09-27 09:32:04,036 [INFO] [3/10] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 09:34:04,049 [WARNING] [3/10] Timeout waiting for response
+2026-09-27 09:34:04,050 [INFO] Waiting 3s before next message...
+2026-09-27 09:34:07,053 [INFO] [4/10] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 09:36:07,055 [WARNING] [4/10] Timeout waiting for response
+2026-09-27 09:36:07,055 [INFO] Waiting 3s before next message...
+2026-09-27 09:36:10,071 [INFO] [5/10] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 09:38:10,076 [WARNING] [5/10] Timeout waiting for response
+2026-09-27 09:38:10,076 [INFO] Waiting 3s before next message...
+2026-09-27 09:38:13,079 [INFO] [6/10] Sending: Research the top three Python async libraries, then find one working example of the best one and summarise it.
+2026-09-27 09:40:13,089 [WARNING] [6/10] Timeout waiting for response
+2026-09-27 09:40:13,089 [INFO] Waiting 3s before next message...
+2026-09-27 09:40:16,103 [INFO] [7/10] Sending: Look up the distance from Earth to Mars and to Venus, compare them, and tell me which is closer on average.
+2026-09-27 09:42:16,116 [WARNING] [7/10] Timeout waiting for response
+2026-09-27 09:42:16,117 [INFO] Waiting 3s before next message...
+2026-09-27 09:42:19,118 [INFO] [8/10] Sending: Find two recent articles about renewable energy, compare their main claims, and tell me where they disagree.
+2026-09-27 09:44:19,121 [WARNING] [8/10] Timeout waiting for response
+2026-09-27 09:44:19,122 [INFO] Waiting 3s before next message...
+2026-09-27 09:44:22,122 [INFO] [9/10] Sending: Search for the best hiking trails in Colorado, pick three, and compare their difficulty and length.
+2026-09-27 09:46:22,125 [WARNING] [9/10] Timeout waiting for response
+2026-09-27 09:46:22,125 [INFO] Waiting 3s before next message...
+2026-09-27 09:46:25,134 [INFO] [10/10] Sending: Research the current state of AI regulation in the EU and in the US, then compare the two approaches in a short summary.
+2026-09-27 09:48:25,142 [WARNING] [10/10] Timeout waiting for response
+2026-09-27 09:48:25,142 [INFO] Done. Sent 10 messages.

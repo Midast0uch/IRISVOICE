@@ -1,0 +1,5 @@
+sent reasoning -> ollama [gemma4:31b-cloud]
+ack reasoning: role_binding_updated
+sent tool_execution -> local:LFM2.5-2.6B-QAD-Q4_0 [LFM2.5-2.6B-QAD-Q4_0]
+ack tool_execution: role_binding_updated
+BOTH BINDINGS SENT

@@ -1,0 +1,2 @@
+- Keep your attention on one task at a time to improve quality and speed.
+- Schedule regular short breaks to reset your mind and maintain high focus.

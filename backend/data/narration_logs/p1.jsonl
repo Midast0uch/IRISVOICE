@@ -1,0 +1,5 @@
+{"ts": 1790559607.1231902, "conversation_id": "p1", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790559621.9038286, "conversation_id": "p1", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790559638.5044742, "conversation_id": "p1", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.3474537301521545, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1790559682.0752192, "conversation_id": "p1", "step_id": "s1_s0", "decision": "brief", "signal": "avoided", "u": -0.0025339003128151405, "xi": 4.199999999999999, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1790559692.8221612, "conversation_id": "p1", "step_id": "explorer_2", "decision": "silence", "signal": null, "u": -0.1741251877820602, "xi": 5.249999999999999, "text": "", "tts_played": false}

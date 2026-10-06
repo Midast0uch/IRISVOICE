@@ -4,3 +4,21 @@
 {"ts": 1790222049.6133907, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
 {"ts": 1790222049.6293566, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.04640187104209409, "xi": 2.0999999999999996, "text": "", "tts_played": false}
 {"ts": 1790222049.6464164, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": -0.25572140728501175, "xi": 3.1499999999999995, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}
+{"ts": 1790291979.8316233, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790291980.499079, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.04640187104209409, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790291980.7523448, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": -0.25572140728501175, "xi": 3.1499999999999995, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}
+{"ts": 1790613929.7805424, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790613929.8928957, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790613929.9094918, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": 0.0, "xi": 0.0, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}
+{"ts": 1790653202.4035912, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790653202.415819, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790653202.4360452, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": 0.0, "xi": 0.0, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}
+{"ts": 1790655325.0855436, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790655325.1032236, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790655325.388972, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": 0.0, "xi": 0.0, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}
+{"ts": 1790710362.3146508, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790710362.3269076, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790710362.4982274, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": 0.0, "xi": 0.0, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}
+{"ts": 1790710391.2367826, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790710391.255045, "conversation_id": "conv", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1790710391.2711143, "conversation_id": "conv", "step_id": "s1", "decision": "brief", "signal": "retried", "u": 0.0, "xi": 0.0, "text": "Now moving into a sub-task — splitting into 1 parts.", "tts_played": true}

@@ -1,0 +1,5 @@
+{"ts": 1791213719.6042223, "conversation_id": "conv-833", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1791213730.697323, "conversation_id": "conv-833", "step_id": "explorer_2", "decision": "silence", "signal": null, "u": -0.3035981289579059, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1791213739.920495, "conversation_id": "conv-833", "step_id": "explorer_3_s0", "decision": "brief", "signal": "crystallized", "u": -0.6057214072850117, "xi": 3.1499999999999995, "text": "One part of that is done — still working on: cover the open required fact: raises ValueError if there is not enough. count(name) ret....", "tts_played": true}
+{"ts": 1791213740.7483928, "conversation_id": "conv-833", "step_id": "amend-4", "decision": "silence", "signal": null, "u": -0.6027788707065098, "xi": 4.199999999999999, "text": "", "tts_played": false}
+{"ts": 1791213749.8987722, "conversation_id": "conv-833", "step_id": "steer-6", "decision": "silence", "signal": null, "u": -0.29772735036175413, "xi": 5.249999999999999, "text": "", "tts_played": false}

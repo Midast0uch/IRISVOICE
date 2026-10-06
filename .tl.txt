@@ -1,0 +1,4 @@
+2026-09-27 19:39:23,482 [INFO] Connecting to ws://127.0.0.1:8090/ws/l1?session_id=l1
+2026-09-27 19:39:23,696 [INFO] Connected. Sending 4 messages with 5s delay
+2026-09-27 19:39:23,696 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 19:39:23,696 [INFO] [1/4] Sending: List the files in the current directory and tell me how many there are.

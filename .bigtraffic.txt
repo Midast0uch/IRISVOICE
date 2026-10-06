@@ -1,0 +1,78 @@
+2026-09-27 12:30:46,408 [INFO] Connecting to ws://127.0.0.1:8090/ws/r1?session_id=r1
+2026-09-27 12:30:46,463 [INFO] Connected. Sending 10 messages with 3s delay
+2026-09-27 12:30:46,463 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:30:46,463 [INFO] [1/10] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:30:58,907 [INFO] [1/10] Received: chat_message
+2026-09-27 12:30:58,907 [INFO] Waiting 3s before next message...
+2026-09-27 12:31:01,911 [INFO] [2/10] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 12:33:42,027 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 12:33:42,027 [INFO] Waiting 3s before next message...
+2026-09-27 12:33:45,039 [INFO] [3/10] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 12:35:45,053 [WARNING] [3/10] Timeout waiting for response
+2026-09-27 12:35:45,053 [INFO] Waiting 3s before next message...
+2026-09-27 12:35:48,063 [INFO] [4/10] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 12:37:16,678 [WARNING] [4/10] Error: no close frame received or sent
+2026-09-27 12:37:16,678 [INFO] Waiting 3s before next message...
+2026-09-27 12:37:19,689 [INFO] [5/10] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 12:37:19,692 [ERROR] Failed: no close frame received or sent
+2026-09-27 12:37:21,688 [INFO] Connecting to ws://127.0.0.1:8090/ws/r2?session_id=r2
+2026-09-27 12:37:23,795 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 12:37:24,010 [INFO] Connecting to ws://127.0.0.1:8090/ws/r3?session_id=r3
+2026-09-27 12:37:26,105 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 12:37:26,357 [INFO] Connecting to ws://127.0.0.1:8090/ws/r4?session_id=r4
+2026-09-27 12:37:28,469 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 12:37:28,693 [INFO] Connecting to ws://127.0.0.1:8090/ws/r5?session_id=r5
+2026-09-27 12:37:34,048 [INFO] Connected. Sending 10 messages with 3s delay
+2026-09-27 12:37:34,048 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:37:34,048 [INFO] [1/10] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:38:27,631 [INFO] [1/10] Received: chat_message
+2026-09-27 12:38:27,631 [INFO] Waiting 3s before next message...
+2026-09-27 12:38:30,644 [INFO] [2/10] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 12:40:33,750 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 12:40:33,750 [INFO] Waiting 3s before next message...
+2026-09-27 12:40:36,751 [INFO] [3/10] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 12:42:36,756 [WARNING] [3/10] Timeout waiting for response
+2026-09-27 12:42:36,756 [INFO] Waiting 3s before next message...
+2026-09-27 12:42:39,768 [INFO] [4/10] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 12:44:39,781 [WARNING] [4/10] Timeout waiting for response
+2026-09-27 12:44:39,781 [INFO] Waiting 3s before next message...
+2026-09-27 12:44:42,790 [INFO] [5/10] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 12:46:42,797 [WARNING] [5/10] Timeout waiting for response
+2026-09-27 12:46:42,797 [INFO] Waiting 3s before next message...
+2026-09-27 12:46:45,803 [INFO] [6/10] Sending: Research the top three Python async libraries, then find one working example of the best one and summarise it.
+2026-09-27 12:48:45,805 [WARNING] [6/10] Timeout waiting for response
+2026-09-27 12:48:45,805 [INFO] Waiting 3s before next message...
+2026-09-27 12:48:48,815 [INFO] [7/10] Sending: Look up the distance from Earth to Mars and to Venus, compare them, and tell me which is closer on average.
+2026-09-27 12:50:48,822 [WARNING] [7/10] Timeout waiting for response
+2026-09-27 12:50:48,822 [INFO] Waiting 3s before next message...
+2026-09-27 12:50:51,829 [INFO] [8/10] Sending: Find two recent articles about renewable energy, compare their main claims, and tell me where they disagree.
+2026-09-27 12:52:51,842 [WARNING] [8/10] Timeout waiting for response
+2026-09-27 12:52:51,842 [INFO] Waiting 3s before next message...
+2026-09-27 12:52:54,845 [INFO] [9/10] Sending: Search for the best hiking trails in Colorado, pick three, and compare their difficulty and length.
+2026-09-27 12:54:54,858 [WARNING] [9/10] Timeout waiting for response
+2026-09-27 12:54:54,858 [INFO] Waiting 3s before next message...
+2026-09-27 12:54:57,862 [INFO] [10/10] Sending: Research the current state of AI regulation in the EU and in the US, then compare the two approaches in a short summary.
+2026-09-27 12:56:57,866 [WARNING] [10/10] Timeout waiting for response
+2026-09-27 12:56:57,866 [INFO] Done. Sent 10 messages.
+2026-09-27 12:56:58,100 [INFO] Connecting to ws://127.0.0.1:8090/ws/r6?session_id=r6
+2026-09-27 12:56:58,159 [INFO] Connected. Sending 10 messages with 3s delay
+2026-09-27 12:56:58,159 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:56:58,159 [INFO] [1/10] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:59:53,258 [WARNING] [1/10] Timeout waiting for response
+2026-09-27 12:59:53,259 [INFO] Waiting 3s before next message...
+2026-09-27 12:59:56,261 [INFO] [2/10] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 13:01:56,270 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 13:01:56,271 [INFO] Waiting 3s before next message...
+2026-09-27 13:01:59,275 [INFO] [3/10] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 13:03:18,255 [WARNING] [3/10] Error: no close frame received or sent
+2026-09-27 13:03:18,255 [INFO] Waiting 3s before next message...
+2026-09-27 13:03:21,257 [INFO] [4/10] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 13:03:21,258 [ERROR] Failed: no close frame received or sent
+2026-09-27 13:03:21,477 [INFO] Connecting to ws://127.0.0.1:8090/ws/r7?session_id=r7
+2026-09-27 13:03:23,580 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:03:23,788 [INFO] Connecting to ws://127.0.0.1:8090/ws/r8?session_id=r8
+2026-09-27 13:03:25,895 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:03:26,143 [INFO] Connecting to ws://127.0.0.1:8090/ws/r9?session_id=r9
+2026-09-27 13:03:28,225 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 13:03:28,437 [INFO] Connecting to ws://127.0.0.1:8090/ws/r10?session_id=r10
+2026-09-27 13:03:30,542 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection

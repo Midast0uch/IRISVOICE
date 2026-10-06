@@ -1,0 +1,12 @@
+{"ts": 1791212399.3350127, "conversation_id": "conv-817", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1791212400.798085, "conversation_id": "conv-817", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1791212405.068533, "conversation_id": "conv-817", "step_id": "s3", "decision": "silence", "signal": null, "u": 0.22202658843499867, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1791212410.7190595, "conversation_id": "conv-817", "step_id": "steer-6", "decision": "silence", "signal": null, "u": -0.127961042029971, "xi": 3.8377723698693456, "text": "", "tts_played": false}
+{"ts": 1791212410.8919828, "conversation_id": "conv-817", "step_id": "steer-8", "decision": "silence", "signal": null, "u": 0.09649083567414879, "xi": 4.781694662849427, "text": "", "tts_played": false}
+{"ts": 1791212411.7181997, "conversation_id": "conv-817", "step_id": "steer-5", "decision": "silence", "signal": null, "u": 0.12072841035801471, "xi": 5.34058172802533, "text": "", "tts_played": false}
+{"ts": 1791212414.1336, "conversation_id": "conv-817", "step_id": "steer-4", "decision": "silence", "signal": null, "u": 0.3264176308065442, "xi": 6.052125787084304, "text": "", "tts_played": false}
+{"ts": 1791212416.2915359, "conversation_id": "conv-817", "step_id": "steer-7", "decision": "silence", "signal": null, "u": 0.4065707858787337, "xi": 0.6619695024759205, "text": "", "tts_played": false}
+{"ts": 1791212428.3034382, "conversation_id": "conv-817", "step_id": "steer-9", "decision": "silence", "signal": null, "u": 0.682644893612737, "xi": 1.273651275758132, "text": "", "tts_played": false}
+{"ts": 1791212429.0932183, "conversation_id": "conv-817", "step_id": "steer-11", "decision": "silence", "signal": null, "u": 0.34798319220263474, "xi": 2.0073157231097722, "text": "", "tts_played": false}
+{"ts": 1791212429.5740342, "conversation_id": "conv-817", "step_id": "steer-12", "decision": "silence", "signal": null, "u": 0.030803144979883956, "xi": 2.562884975495468, "text": "", "tts_played": false}
+{"ts": 1791212429.5951338, "conversation_id": "conv-817", "step_id": "steer-10", "decision": "silence", "signal": null, "u": -0.26220641611964285, "xi": 3.011842281870208, "text": "", "tts_played": false}

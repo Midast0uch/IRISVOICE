@@ -1,0 +1,9 @@
+2026-09-27 00:20:39,017 [INFO] Connecting to ws://localhost:8090/ws/row-accumulator?session_id=row-accumulator
+2026-09-27 00:20:41,108 [INFO] Connected. Sending 2 messages with 3s delay
+2026-09-27 00:20:41,109 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 00:20:41,109 [INFO] [1/2] Sending: What's the weather in Seattle?
+2026-09-27 00:20:48,130 [INFO] [1/2] Received: chat_message
+2026-09-27 00:20:48,130 [INFO] Waiting 3s before next message...
+2026-09-27 00:20:51,133 [INFO] [2/2] Sending: Search for the latest news about AI
+2026-09-27 00:23:40,163 [WARNING] [2/2] Timeout waiting for response
+2026-09-27 00:23:40,163 [INFO] Done. Sent 2 messages.

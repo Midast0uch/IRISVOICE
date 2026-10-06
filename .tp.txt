@@ -1,0 +1,155 @@
+2026-09-27 20:21:27,492 [INFO] Connecting to ws://127.0.0.1:8090/ws/p1?session_id=p1
+2026-09-27 20:21:27,556 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 20:21:27,557 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 20:21:27,557 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 20:21:38,879 [INFO] [1/6] Received: chat_message
+2026-09-27 20:21:38,879 [INFO] Waiting 2s before next message...
+2026-09-27 20:21:40,894 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 20:24:47,061 [INFO] [2/6] Received: chat_message
+2026-09-27 20:24:47,061 [INFO] Waiting 2s before next message...
+2026-09-27 20:24:49,070 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 20:31:48,843 [INFO] [3/6] Received: chat_message
+2026-09-27 20:31:48,843 [INFO] Waiting 2s before next message...
+2026-09-27 20:31:50,850 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 20:32:28,676 [INFO] [4/6] Received: chat_message
+2026-09-27 20:32:28,676 [INFO] Waiting 2s before next message...
+2026-09-27 20:32:30,680 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 20:33:08,583 [INFO] [5/6] Received: chat_message
+2026-09-27 20:33:08,583 [INFO] Waiting 2s before next message...
+2026-09-27 20:33:10,590 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 20:33:49,217 [INFO] [6/6] Received: chat_message
+2026-09-27 20:33:49,217 [INFO] Done. Sent 6 messages.
+2026-09-27 20:33:49,473 [INFO] Connecting to ws://127.0.0.1:8090/ws/p2?session_id=p2
+2026-09-27 20:33:49,555 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 20:33:49,556 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 20:33:49,556 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 20:34:23,197 [INFO] [1/6] Received: chat_message
+2026-09-27 20:34:23,197 [INFO] Waiting 2s before next message...
+2026-09-27 20:34:25,207 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 20:35:02,930 [INFO] [2/6] Received: chat_message
+2026-09-27 20:35:02,930 [INFO] Waiting 2s before next message...
+2026-09-27 20:35:04,941 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 20:35:37,804 [INFO] [3/6] Received: chat_message
+2026-09-27 20:35:37,804 [INFO] Waiting 2s before next message...
+2026-09-27 20:35:39,819 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 20:36:13,539 [INFO] [4/6] Received: chat_message
+2026-09-27 20:36:13,539 [INFO] Waiting 2s before next message...
+2026-09-27 20:36:15,551 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 20:36:49,236 [INFO] [5/6] Received: chat_message
+2026-09-27 20:36:49,236 [INFO] Waiting 2s before next message...
+2026-09-27 20:36:51,249 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 20:37:24,884 [INFO] [6/6] Received: chat_message
+2026-09-27 20:37:24,884 [INFO] Done. Sent 6 messages.
+2026-09-27 20:37:25,196 [INFO] Connecting to ws://127.0.0.1:8090/ws/p3?session_id=p3
+2026-09-27 20:37:25,256 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 20:37:25,256 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 20:37:25,256 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 20:37:58,540 [INFO] [1/6] Received: chat_message
+2026-09-27 20:37:58,540 [INFO] Waiting 2s before next message...
+2026-09-27 20:38:00,546 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 20:38:33,515 [INFO] [2/6] Received: chat_message
+2026-09-27 20:38:33,516 [INFO] Waiting 2s before next message...
+2026-09-27 20:38:35,524 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 20:39:08,735 [INFO] [3/6] Received: chat_message
+2026-09-27 20:39:08,735 [INFO] Waiting 2s before next message...
+2026-09-27 20:39:10,747 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 20:39:44,525 [INFO] [4/6] Received: chat_message
+2026-09-27 20:39:44,525 [INFO] Waiting 2s before next message...
+2026-09-27 20:39:46,538 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 20:40:19,330 [INFO] [5/6] Received: chat_message
+2026-09-27 20:40:19,330 [INFO] Waiting 2s before next message...
+2026-09-27 20:40:21,333 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 20:40:23,569 [WARNING] [6/6] Error: no close frame received or sent
+2026-09-27 20:40:23,569 [INFO] Done. Sent 6 messages.
+2026-09-27 20:40:23,818 [INFO] Connecting to ws://127.0.0.1:8090/ws/p4?session_id=p4
+2026-09-27 20:40:25,931 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 20:40:26,178 [INFO] Connecting to ws://127.0.0.1:8090/ws/p5?session_id=p5
+2026-09-27 20:40:28,282 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 20:40:28,535 [INFO] Connecting to ws://127.0.0.1:8090/ws/p6?session_id=p6
+2026-09-27 20:40:30,636 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 20:40:30,883 [INFO] Connecting to ws://127.0.0.1:8090/ws/p7?session_id=p7
+2026-09-27 20:40:32,980 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 20:40:35,999 [INFO] Connecting to ws://127.0.0.1:8090/ws/p8?session_id=p8
+2026-09-27 20:40:38,200 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 20:40:38,457 [INFO] Connecting to ws://127.0.0.1:8090/ws/p9?session_id=p9
+2026-09-27 20:40:45,290 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 20:40:45,291 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 20:40:45,291 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 20:41:42,538 [INFO] [1/6] Received: chat_message
+2026-09-27 20:41:42,539 [INFO] Waiting 2s before next message...
+2026-09-27 20:41:44,551 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 20:42:41,581 [INFO] [2/6] Received: chat_message
+2026-09-27 20:42:41,581 [INFO] Waiting 2s before next message...
+2026-09-27 20:42:43,596 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 20:43:35,984 [INFO] [3/6] Received: chat_message
+2026-09-27 20:43:35,984 [INFO] Waiting 2s before next message...
+2026-09-27 20:43:37,999 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 20:44:30,544 [INFO] [4/6] Received: chat_message
+2026-09-27 20:44:30,544 [INFO] Waiting 2s before next message...
+2026-09-27 20:44:32,545 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 20:45:25,068 [INFO] [5/6] Received: chat_message
+2026-09-27 20:45:25,068 [INFO] Waiting 2s before next message...
+2026-09-27 20:45:27,081 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 20:46:20,053 [INFO] [6/6] Received: chat_message
+2026-09-27 20:46:20,053 [INFO] Done. Sent 6 messages.
+2026-09-27 20:46:20,424 [INFO] Connecting to ws://127.0.0.1:8090/ws/p10?session_id=p10
+2026-09-27 20:46:20,488 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 20:46:20,488 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 20:46:20,488 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 20:47:12,082 [INFO] [1/6] Received: chat_message
+2026-09-27 20:47:12,083 [INFO] Waiting 2s before next message...
+2026-09-27 20:47:14,086 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 20:48:05,388 [INFO] [2/6] Received: chat_message
+2026-09-27 20:48:05,388 [INFO] Waiting 2s before next message...
+2026-09-27 20:48:07,397 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 20:48:58,939 [INFO] [3/6] Received: chat_message
+2026-09-27 20:48:58,939 [INFO] Waiting 2s before next message...
+2026-09-27 20:49:00,950 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 20:49:54,446 [INFO] [4/6] Received: chat_message
+2026-09-27 20:49:54,446 [INFO] Waiting 2s before next message...
+2026-09-27 20:49:56,459 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 20:50:47,906 [INFO] [5/6] Received: chat_message
+2026-09-27 20:50:47,906 [INFO] Waiting 2s before next message...
+2026-09-27 20:50:49,915 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 20:51:41,629 [INFO] [6/6] Received: chat_message
+2026-09-27 20:51:41,629 [INFO] Done. Sent 6 messages.
+2026-09-27 20:51:41,911 [INFO] Connecting to ws://127.0.0.1:8090/ws/p11?session_id=p11
+2026-09-27 20:51:41,982 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 20:51:41,982 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 20:51:41,982 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 20:56:21,212 [INFO] [1/6] Received: chat_message
+2026-09-27 20:56:21,212 [INFO] Waiting 2s before next message...
+2026-09-27 20:56:23,227 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 21:00:45,134 [INFO] Connecting to ws://127.0.0.1:8090/ws/p12?session_id=p12
+2026-09-27 21:00:45,201 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 21:00:45,201 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 21:00:45,202 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 21:03:53,242 [INFO] [1/6] Received: chat_message
+2026-09-27 21:03:53,242 [INFO] Waiting 2s before next message...
+2026-09-27 21:03:55,244 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 21:04:28,297 [INFO] [2/6] Received: chat_message
+2026-09-27 21:04:28,298 [INFO] Waiting 2s before next message...
+2026-09-27 21:04:30,306 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 21:04:59,188 [INFO] [3/6] Received: chat_message
+2026-09-27 21:04:59,189 [INFO] Waiting 2s before next message...
+2026-09-27 21:05:01,202 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 21:21:51,802 [WARNING] [4/6] Error: no close frame received or sent
+2026-09-27 21:21:51,802 [INFO] Waiting 2s before next message...
+2026-09-27 21:21:53,810 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 21:21:53,812 [ERROR] Failed: no close frame received or sent
+2026-09-27 21:21:54,061 [INFO] Connecting to ws://127.0.0.1:8090/ws/p13?session_id=p13
+2026-09-27 21:21:56,167 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:21:56,404 [INFO] Connecting to ws://127.0.0.1:8090/ws/p14?session_id=p14
+2026-09-27 21:21:58,517 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:21:58,752 [INFO] Connecting to ws://127.0.0.1:8090/ws/p15?session_id=p15
+2026-09-27 21:22:00,832 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:22:01,056 [INFO] Connecting to ws://127.0.0.1:8090/ws/p16?session_id=p16
+2026-09-27 21:22:03,153 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:22:03,397 [INFO] Connecting to ws://127.0.0.1:8090/ws/p17?session_id=p17
+2026-09-27 21:22:05,494 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:22:05,767 [INFO] Connecting to ws://127.0.0.1:8090/ws/p18?session_id=p18
+2026-09-27 21:22:07,879 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:22:08,110 [INFO] Connecting to ws://127.0.0.1:8090/ws/p19?session_id=p19
+2026-09-27 21:22:10,211 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 21:22:10,443 [INFO] Connecting to ws://127.0.0.1:8090/ws/p20?session_id=p20
+2026-09-27 21:22:12,526 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection

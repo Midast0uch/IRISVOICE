@@ -1,0 +1,12 @@
+{"ts": 1790561786.059526, "conversation_id": "r4", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790561805.0491946, "conversation_id": "r4", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790561819.595307, "conversation_id": "r4", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.3474537301521545, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1790561833.6543539, "conversation_id": "r4", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.0025339003128151405, "xi": 4.199999999999999, "text": "", "tts_played": false}
+{"ts": 1790561856.812967, "conversation_id": "r4", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.1741251877820602, "xi": 5.249999999999999, "text": "", "tts_played": false}
+{"ts": 1790561869.6654127, "conversation_id": "r4", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.005104729252583762, "xi": 0.016814692820412702, "text": "", "tts_played": false}
+{"ts": 1790561877.1207263, "conversation_id": "r4", "step_id": "explorer_3", "decision": "silence", "signal": null, "u": 0.35505525198677906, "xi": 1.0668146928204125, "text": "", "tts_played": false}
+{"ts": 1790561900.9942966, "conversation_id": "r4", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.5240758315663575, "xi": 2.1168146928204123, "text": "", "tts_played": false}
+{"ts": 1790561906.1030266, "conversation_id": "r4", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.342324802625518, "xi": 3.166814692820412, "text": "", "tts_played": false}
+{"ts": 1790561924.1469834, "conversation_id": "r4", "step_id": "s3", "decision": "silence", "signal": null, "u": -0.007563876805046721, "xi": 4.216814692820412, "text": "", "tts_played": false}
+{"ts": 1790561955.9580295, "conversation_id": "r4", "step_id": "explorer_4", "decision": "silence", "signal": null, "u": -0.17400180160364456, "xi": 5.266814692820412, "text": "", "tts_played": false}
+{"ts": 1790562080.126929, "conversation_id": "r4", "step_id": "explorer_5", "decision": "silence", "signal": null, "u": 0.010257492524994527, "xi": 0.033629385640825404, "text": "", "tts_played": false}

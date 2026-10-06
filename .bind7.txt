@@ -1,0 +1,1 @@
+RESULT: {"reasoning_model": "gemma4:31b-cloud", "tool_execution_model": "gemma4:31b-cloud", "model_provider": "ollama", "success": true}

@@ -1,0 +1,2 @@
+{"ts": 1790646129.9240773, "conversation_id": "s365fin", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790646443.3505704, "conversation_id": "s365fin", "step_id": "s3_s0", "decision": "brief", "signal": "crystallized", "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}

@@ -1,0 +1,7 @@
+
+> irisvoice@1.0.0 iris:start:backend
+> python scripts/iris_process_manager.py start --detach backend -- python start-backend.py
+
+[backend] already running (pid 17824). Stop it first.
+[backend] detached, pid 17824 — poll for readiness, then:
+[backend]   python iris_process_manager.py stop-named backend

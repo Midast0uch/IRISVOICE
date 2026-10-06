@@ -1,0 +1,21 @@
+2026-09-27 12:06:01,487 [INFO] Connecting to ws://127.0.0.1:8090/ws/derexp?session_id=derexp
+2026-09-27 12:06:01,545 [INFO] Connected. Sending 6 messages with 4s delay
+2026-09-27 12:06:01,546 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:06:01,546 [INFO] [1/6] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:08:56,625 [WARNING] [1/6] Timeout waiting for response
+2026-09-27 12:08:56,625 [INFO] Waiting 4s before next message...
+2026-09-27 12:09:00,626 [INFO] [2/6] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 12:11:00,630 [WARNING] [2/6] Timeout waiting for response
+2026-09-27 12:11:00,630 [INFO] Waiting 4s before next message...
+2026-09-27 12:11:04,645 [INFO] [3/6] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 12:13:04,658 [WARNING] [3/6] Timeout waiting for response
+2026-09-27 12:13:04,659 [INFO] Waiting 4s before next message...
+2026-09-27 12:13:08,667 [INFO] [4/6] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 12:15:08,679 [WARNING] [4/6] Timeout waiting for response
+2026-09-27 12:15:08,679 [INFO] Waiting 4s before next message...
+2026-09-27 12:15:12,694 [INFO] [5/6] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 12:17:12,699 [WARNING] [5/6] Timeout waiting for response
+2026-09-27 12:17:12,699 [INFO] Waiting 4s before next message...
+2026-09-27 12:17:16,709 [INFO] [6/6] Sending: Research the top three Python async libraries, then find one working example of the best one and summarise it.
+2026-09-27 12:18:34,364 [WARNING] [6/6] Error: no close frame received or sent
+2026-09-27 12:18:34,364 [INFO] Done. Sent 6 messages.

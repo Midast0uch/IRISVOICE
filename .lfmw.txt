@@ -1,0 +1,26 @@
+2026-09-27 12:03:21,093 [INFO] Connecting to ws://127.0.0.1:8090/ws/lfmw?session_id=lfmw
+2026-09-27 12:03:21,156 [INFO] Connected. Sending 10 messages with 3s delay
+2026-09-27 12:03:21,156 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:03:21,156 [INFO] [1/10] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:06:16,293 [WARNING] [1/10] Timeout waiting for response
+2026-09-27 12:06:16,293 [INFO] Waiting 3s before next message...
+2026-09-27 12:06:19,300 [INFO] [2/10] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 12:08:19,313 [WARNING] [2/10] Timeout waiting for response
+2026-09-27 12:08:19,314 [INFO] Waiting 3s before next message...
+2026-09-27 12:08:22,320 [INFO] [3/10] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 12:10:22,324 [WARNING] [3/10] Timeout waiting for response
+2026-09-27 12:10:22,325 [INFO] Waiting 3s before next message...
+2026-09-27 12:10:25,331 [INFO] [4/10] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 12:12:25,347 [WARNING] [4/10] Timeout waiting for response
+2026-09-27 12:12:25,347 [INFO] Waiting 3s before next message...
+2026-09-27 12:12:28,353 [INFO] [5/10] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 12:14:28,358 [WARNING] [5/10] Timeout waiting for response
+2026-09-27 12:14:28,359 [INFO] Waiting 3s before next message...
+2026-09-27 12:14:31,369 [INFO] [6/10] Sending: Research the top three Python async libraries, then find one working example of the best one and summarise it.
+2026-09-27 12:16:31,380 [WARNING] [6/10] Timeout waiting for response
+2026-09-27 12:16:31,381 [INFO] Waiting 3s before next message...
+2026-09-27 12:16:34,385 [INFO] [7/10] Sending: Look up the distance from Earth to Mars and to Venus, compare them, and tell me which is closer on average.
+2026-09-27 12:18:34,364 [WARNING] [7/10] Error: no close frame received or sent
+2026-09-27 12:18:34,364 [INFO] Waiting 3s before next message...
+2026-09-27 12:18:37,374 [INFO] [8/10] Sending: Find two recent articles about renewable energy, compare their main claims, and tell me where they disagree.
+2026-09-27 12:18:37,376 [ERROR] Failed: no close frame received or sent

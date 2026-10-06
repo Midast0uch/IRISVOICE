@@ -36,7 +36,29 @@ class VisionMCPServer(BuiltinServer):
 
     def __init__(self):
         self._provider = None
+        # REQ-5 (T5, tool-decision-engine-improvements): the LAST captured
+        # frame + its capture time. Every handler sets both after a capture,
+        # so the bridge can REUSE the frame the vision tool just analyzed
+        # instead of executing a second synchronous screen capture
+        # (+100-250ms of synchronous thread time saved per vision action).
+        self._last_image = None
+        self._last_image_at = 0.0
         super().__init__("vision")
+
+    def recent_image(self, max_age_s: float = 5.0):
+        """The frame the most recent vision tool call analyzed, when fresh.
+
+        Returns None when no frame was captured recently (older than
+        max_age_s) — the caller then captures fresh. Never raises.
+        """
+        try:
+            if self._last_image is not None and (
+                __import__("time").monotonic() - self._last_image_at
+            ) <= max_age_s:
+                return self._last_image
+        except Exception:
+            pass
+        return None
 
     def _get_provider(self):
         """Lazy-load LFMVLProvider — avoids import cost if vision is unused.
@@ -129,11 +151,21 @@ class VisionMCPServer(BuiltinServer):
         return {"content": [{"type": "text", "text": text}]}
 
     async def _capture_screenshot(self, region=None) -> Optional[bytes]:
-        """Capture screenshot in executor to avoid blocking."""
+        """Capture screenshot in executor to avoid blocking.
+
+        REQ-5 (T5): every successful capture also records the frame as the
+        server's last image, so the bridge reuses the frame the vision tool
+        just analyzed instead of a second synchronous capture.
+        """
         try:
             loop = asyncio.get_event_loop()
             from backend.tools.vision_provider import screenshot_to_bytes
             img_bytes = await loop.run_in_executor(None, screenshot_to_bytes, region)
+            if img_bytes is not None:
+                import time as _time
+
+                self._last_image = img_bytes
+                self._last_image_at = _time.monotonic()
             return img_bytes
         except Exception as e:
             logger.warning(f"[VisionMCPServer] Screenshot failed: {e}")

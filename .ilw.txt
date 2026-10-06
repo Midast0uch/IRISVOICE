@@ -1,0 +1,14 @@
+2026-09-27 12:14:10,534 [INFO] Connecting to ws://127.0.0.1:8090/ws/ilw?session_id=ilw
+2026-09-27 12:14:10,595 [INFO] Connected. Sending 6 messages with 4s delay
+2026-09-27 12:14:10,596 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:14:10,596 [INFO] [1/6] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:15:02,334 [INFO] [1/6] Received: chat_message
+2026-09-27 12:15:02,334 [INFO] Waiting 4s before next message...
+2026-09-27 12:15:06,341 [INFO] [2/6] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 12:17:10,434 [WARNING] [2/6] Timeout waiting for response
+2026-09-27 12:17:10,435 [INFO] Waiting 4s before next message...
+2026-09-27 12:17:14,444 [INFO] [3/6] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 12:18:34,364 [WARNING] [3/6] Error: no close frame received or sent
+2026-09-27 12:18:34,364 [INFO] Waiting 4s before next message...
+2026-09-27 12:18:38,373 [INFO] [4/6] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 12:18:38,374 [ERROR] Failed: no close frame received or sent

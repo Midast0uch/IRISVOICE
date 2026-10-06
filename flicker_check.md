@@ -1,0 +1,2 @@
+- Focus is essential for effective learning.
+- Maintaining focus reduces errors and improves productivity.

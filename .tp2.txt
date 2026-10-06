@@ -1,0 +1,9 @@
+2026-09-27 21:07:02,855 [INFO] Connecting to ws://127.0.0.1:8090/ws/v1?session_id=v1
+2026-09-27 21:07:02,930 [INFO] Connected. Sending 6 messages with 2s delay
+2026-09-27 21:07:04,321 [INFO] Local model server is accepting connections on 127.0.0.1:8082
+2026-09-27 21:07:04,321 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 21:07:04,322 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 21:21:51,802 [WARNING] [1/6] Error: no close frame received or sent
+2026-09-27 21:21:51,802 [INFO] Waiting 2s before next message...
+2026-09-27 21:21:53,810 [INFO] [2/6] Sending: List the files in the backend/agent folder and tell me how many Python files there are.
+2026-09-27 21:21:53,813 [ERROR] Failed: no close frame received or sent

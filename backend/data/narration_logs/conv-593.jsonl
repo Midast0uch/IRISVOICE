@@ -1,0 +1,2 @@
+{"ts": 1790940305.3032107, "conversation_id": "conv-593", "step_id": "amend-4", "decision": "silence", "signal": null, "u": 0.0, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790940306.4066668, "conversation_id": "conv-593", "step_id": "s1_s0", "decision": "brief", "signal": "avoided", "u": -0.3035981289579059, "xi": 2.0999999999999996, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}

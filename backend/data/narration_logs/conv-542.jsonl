@@ -1,0 +1,4 @@
+{"ts": 1790902955.248868, "conversation_id": "conv-542", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790902957.325529, "conversation_id": "conv-542", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790902963.3494241, "conversation_id": "conv-542", "step_id": "s3", "decision": "silence", "signal": null, "u": 0.22202658843499867, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1790902966.9094899, "conversation_id": "conv-542", "step_id": "s4", "decision": "silence", "signal": null, "u": 0.22496912501350053, "xi": 3.8377723698693456, "text": "", "tts_played": false}

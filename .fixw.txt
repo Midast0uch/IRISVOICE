@@ -1,0 +1,20 @@
+2026-09-27 12:09:59,363 [INFO] Connecting to ws://127.0.0.1:8090/ws/fixw?session_id=fixw
+2026-09-27 12:09:59,420 [INFO] Connected. Sending 6 messages with 4s delay
+2026-09-27 12:09:59,421 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 12:09:59,421 [INFO] [1/6] Sending: Research the three most popular electric cars of 2026, compare their prices and ranges, then write a short comparison table.
+2026-09-27 12:10:50,919 [INFO] [1/6] Received: chat_message
+2026-09-27 12:10:50,919 [INFO] Waiting 4s before next message...
+2026-09-27 12:10:54,927 [INFO] [2/6] Sending: Find the latest news about quantum computing, then look up one of the companies mentioned and summarise both findings.
+2026-09-27 12:12:54,934 [WARNING] [2/6] Timeout waiting for response
+2026-09-27 12:12:54,934 [INFO] Waiting 4s before next message...
+2026-09-27 12:12:58,948 [INFO] [3/6] Sending: Look up the population of Tokyo and of Osaka, compare them, and explain which is larger and by how much.
+2026-09-27 12:14:58,950 [WARNING] [3/6] Timeout waiting for response
+2026-09-27 12:14:58,950 [INFO] Waiting 4s before next message...
+2026-09-27 12:15:02,958 [INFO] [4/6] Sending: Search for the best pasta recipes, pick the one with the fewest ingredients, and list exactly what I need to buy.
+2026-09-27 12:17:02,969 [WARNING] [4/6] Timeout waiting for response
+2026-09-27 12:17:02,969 [INFO] Waiting 4s before next message...
+2026-09-27 12:17:06,973 [INFO] [5/6] Sending: Find the current price of Bitcoin and of Ethereum, compare the two, and explain what drives the difference.
+2026-09-27 12:18:34,364 [WARNING] [5/6] Error: no close frame received or sent
+2026-09-27 12:18:34,364 [INFO] Waiting 4s before next message...
+2026-09-27 12:18:38,373 [INFO] [6/6] Sending: Research the top three Python async libraries, then find one working example of the best one and summarise it.
+2026-09-27 12:18:38,374 [ERROR] Failed: no close frame received or sent

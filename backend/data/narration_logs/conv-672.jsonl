@@ -1,0 +1,5 @@
+{"ts": 1791148481.3038106, "conversation_id": "conv-672", "step_id": "s1_s0", "decision": "brief", "signal": "crystallized", "u": 0.0, "xi": 1.0499999999999998, "text": "One part of that is done — still working on: list directory contents to map the project structure.", "tts_played": true}
+{"ts": 1791148508.2851348, "conversation_id": "conv-672", "step_id": "amend-5", "decision": "silence", "signal": null, "u": -0.3035981289579059, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1791148533.6566727, "conversation_id": "conv-672", "step_id": "s2", "decision": "silence", "signal": null, "u": -0.6057214072850117, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1791148540.971426, "conversation_id": "conv-672", "step_id": "s3", "decision": "silence", "signal": null, "u": -0.6027788707065098, "xi": 4.199999999999999, "text": "", "tts_played": false}
+{"ts": 1791148542.4524708, "conversation_id": "conv-672", "step_id": "s4", "decision": "silence", "signal": null, "u": -0.29772735036175413, "xi": 5.249999999999999, "text": "", "tts_played": false}

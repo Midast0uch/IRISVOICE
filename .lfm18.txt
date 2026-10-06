@@ -1,0 +1,47 @@
+exists: True
+load attempt 1 sent (profile=performance)
+  starting: 
+  loading: Reading metadata: LFM2.5-2.6B-QAD-Q4_0.gguf
+  loading: Derived config: 16384 ctx, 2.5GB VRAM
+  loading: VRAM check passed — spawning server…
+  loading: CUDA device detected
+  loading: System ready
+  loading: Opening model file
+  loading: Loading layer 1/31
+  loading: Loading layer 2/31
+  loading: Loading layer 3/31
+  loading: Loading layer 4/31
+  loading: Loading layer 5/31
+  loading: Loading layer 6/31
+  loading: Loading layer 7/31
+  loading: Loading layer 8/31
+  loading: Loading layer 9/31
+  loading: Loading layer 10/31
+  loading: Loading layer 11/31
+  loading: Loading layer 12/31
+  loading: Loading layer 13/31
+  loading: Loading layer 14/31
+  loading: Loading layer 15/31
+  loading: Loading layer 16/31
+  loading: Loading layer 17/31
+  loading: Loading layer 18/31
+  loading: Loading layer 19/31
+  loading: Loading layer 20/31
+  loading: Loading layer 21/31
+  loading: Loading layer 22/31
+  loading: Loading layer 23/31
+  loading: Loading layer 24/31
+  loading: Loading layer 25/31
+  loading: Loading layer 26/31
+  loading: Loading layer 27/31
+  loading: Loading layer 28/31
+  loading: Loading layer 29/31
+  loading: Loading layer 30/31
+  loading: Loading layer 31/31
+  loading: Building KV cache
+  loading: Enabling prompt cache
+  loading: Server online
+  loading: Model ready
+  ready: 
+status: True
+BOUND ok

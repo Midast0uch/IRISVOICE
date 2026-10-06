@@ -1,0 +1,74 @@
+....................................................................F... [ 75%]
+...............F.....F.                                                  [100%]
+================================== FAILURES ===================================
+_______________ TestDecideMode.test_long_message_tends_to_full ________________
+
+self = <contract.test_director_queue_contract.TestDecideMode object at 0x000001714C640D50>
+
+    def test_long_message_tends_to_full(self):
+        mode = DirectorQueue._decide_mode(
+            task_class="complex",
+            message_text="Research the architecture, write a report, create a diagram, "
+                         "send it to the team, and schedule a review meeting. " * 5,
+            confidence=0.5,
+        )
+>       assert mode == ExecutionMode.FULL
+E       AssertionError: assert <ExecutionMod...IC: 'agentic'> == <ExecutionMode.FULL: 'full'>
+E         
+E         - full
+E         + agentic
+
+backend\tests\contract\test_director_queue_contract.py:197: AssertionError
+__________ TestExplorerBehavior.test_explorer_returns_none_when_done __________
+
+self = <behavioral.test_director_mode_behavior.TestExplorerBehavior object at 0x000001714C6A5310>
+
+    def test_explorer_returns_none_when_done(self):
+        """When LLM says objective is met, explorer returns None."""
+        mock_self = MagicMock()
+        mock_self._logger = MagicMock()
+        mock_response = MagicMock()
+        mock_response.raw_text = json.dumps({"done": True})
+        mock_self.infer = MagicMock(return_value=mock_response)
+    
+        completed = [
+            QueueItem(step_id="s1", step_number=1, description="Found answer", tool="search"),
+        ]
+    
+        result = self._call_explorer(mock_self, "Simple question", completed, ExecutionMode.QUICK)
+    
+>       assert result is None
+E       assert {'description': "Cover the open required fact: <MagicMock name='mock._goal_contract_open_facts().__getitem__()' id='1586144842080'>"} is None
+
+backend\tests\behavioral\test_director_mode_behavior.py:175: AssertionError
+------------------------------ Captured log call ------------------------------
+WARNING  backend.agent.agent_kernel:agent_kernel.py:18910 [monitor] done shadow consult failed (row NOT recorded): ValueError('too many values to unpack (expected 2, got 3)')
+________ TestSlashOverridesWin.test_inference_is_shadowed_not_replaced ________
+
+self = <behavioral.test_mode_routing.TestSlashOverridesWin object at 0x000001714C6A5E50>
+
+    def test_inference_is_shadowed_not_replaced(self):
+        """AC15.1: on the keyword branch the engine's own pick is RECORDED but
+        the keyword mode still decides."""
+        engine = _ModeEngine(chosen="research")
+        d = _detector(engine)
+    
+        result = d.detect("please write the code for the upload handler")
+    
+        # the keyword branch decides IMPLEMENT ("write", "code")
+        assert result.mode == AgentMode.IMPLEMENT, (
+            "the engine's pick replaced the keyword mode — T19 is shadow"
+        )
+        assert result.trigger == "inference"
+        # and the disagreement is recorded for parity
+        assert d.last_mode_shadow is not None
+>       assert d.last_mode_shadow["engine_mode"] == "research"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'engine_mode'
+
+backend\tests\behavioral\test_mode_routing.py:86: KeyError
+=========================== short test summary info ===========================
+FAILED backend/tests/contract/test_director_queue_contract.py::TestDecideMode::test_long_message_tends_to_full
+FAILED backend/tests/behavioral/test_director_mode_behavior.py::TestExplorerBehavior::test_explorer_returns_none_when_done
+FAILED backend/tests/behavioral/test_mode_routing.py::TestSlashOverridesWin::test_inference_is_shadowed_not_replaced
+3 failed, 92 passed in 91.31s (0:01:31)

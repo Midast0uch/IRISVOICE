@@ -1,0 +1,14 @@
+{"ts": 1791210414.6802907, "conversation_id": "conv-785", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1791210437.7794359, "conversation_id": "conv-785", "step_id": "steer-4", "decision": "silence", "signal": null, "u": 0.04640187104209409, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1791210439.3315806, "conversation_id": "conv-785", "step_id": "steer-2", "decision": "silence", "signal": null, "u": -0.1302942655678559, "xi": 2.5763682482022054, "text": "", "tts_played": false}
+{"ts": 1791210440.4223945, "conversation_id": "conv-785", "step_id": "steer-3", "decision": "silence", "signal": null, "u": -0.42585821570555216, "xi": 3.2641406180715515, "text": "", "tts_played": false}
+{"ts": 1791210442.8848274, "conversation_id": "conv-785", "step_id": "steer-5", "decision": "silence", "signal": null, "u": -0.7732333525609965, "xi": 4.208062911051633, "text": "", "tts_played": false}
+{"ts": 1791210459.50971, "conversation_id": "conv-785", "step_id": "steer-6", "decision": "silence", "signal": null, "u": -0.466808237646206, "xi": 5.258062911051633, "text": "", "tts_played": false}
+{"ts": 1791210459.9085681, "conversation_id": "conv-785", "step_id": "steer-7", "decision": "silence", "signal": null, "u": -0.16763603607826288, "xi": 5.969606970110607, "text": "", "tts_played": false}
+{"ts": 1791210460.1314244, "conversation_id": "conv-785", "step_id": "steer-8", "decision": "silence", "signal": null, "u": -0.05967347975875985, "xi": 0.18857801136538388, "text": "", "tts_played": false}
+{"ts": 1791210460.3808062, "conversation_id": "conv-785", "step_id": "steer-9", "decision": "silence", "signal": null, "u": -0.12528528673430922, "xi": 0.5762217893082, "text": "", "tts_played": false}
+{"ts": 1791210464.0427685, "conversation_id": "conv-785", "step_id": "explorer_10", "decision": "silence", "signal": null, "u": -0.31598618197977535, "xi": 0.9361294032973417, "text": "", "tts_played": false}
+{"ts": 1791210467.6490934, "conversation_id": "conv-785", "step_id": "explorer_11", "decision": "silence", "signal": null, "u": -0.5978304108362843, "xi": 1.2750706479896048, "text": "", "tts_played": false}
+{"ts": 1791210488.7487092, "conversation_id": "conv-785", "step_id": "explorer_12", "decision": "brief", "signal": null, "u": -0.932637228167913, "xi": 1.5975601291907753, "text": "Settling into the answer now.", "tts_played": true}
+{"ts": 1791210494.1401513, "conversation_id": "conv-785", "step_id": "explorer_13", "decision": "silence", "signal": null, "u": -1.0, "xi": 1.906775135092664, "text": "", "tts_played": false}
+{"ts": 1791210516.6879578, "conversation_id": "conv-785", "step_id": "explorer_14", "decision": "silence", "signal": null, "u": -1.0, "xi": 2.2050432066080874, "text": "", "tts_played": false}

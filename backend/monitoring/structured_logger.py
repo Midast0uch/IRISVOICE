@@ -14,6 +14,55 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 
 
+class ShareableRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler that survives a Windows sharing violation.
+
+    WHY (measured 2026-09-27). On Windows, doRollover()'s rename fails with
+    ``PermissionError [WinError 32]`` while ANY other handle holds the file open.
+    Two handlers in THIS process point at the same log file by design:
+      * this module's file handler — ``configure_logging(log_file=...)``, and
+      * the root logger's file handler in backend/core/logging_config.py:105,
+    which exists so module-level ``logging.getLogger(__name__)`` records land in
+    the same file as the structured output.
+    So the first handler to reach the size limit closes its own stream, tries to
+    rename, and loses — forever.
+
+    The failure was NOT cosmetic. Measured: 18,097 PermissionErrors in about an
+    hour, each one written INTO the file it was trying to rotate. The log reached
+    489 MB, became impossible to grep — and this log is the project's primary
+    behavioural instrument for "what did IRIS actually say" — while the backend
+    burned ~5,600 CPU-seconds retrying.
+
+    Rotation is best-effort; LOGGING IS NOT. So: skip the rollover, reopen the
+    stream, keep writing to the current file, and report it ONCE on stderr.
+    Reporting through ``self.handle()`` would write into the very file this
+    handler cannot rename and re-enter this method — the amplification loop this
+    class exists to stop.
+    """
+
+    _warned = False
+
+    def doRollover(self) -> None:  # noqa: D102 — see the class docstring
+        try:
+            super().doRollover()
+        except PermissionError as exc:
+            # super() closed the stream before attempting the rename, so it must
+            # be reopened or every later record is lost.
+            if self.stream is None:
+                try:
+                    self.stream = self._open()
+                except Exception:  # noqa: BLE001 — logging must never raise
+                    pass
+            if not ShareableRotatingFileHandler._warned:
+                ShareableRotatingFileHandler._warned = True
+                print(
+                    f"[warn] log rotation skipped: {exc.__class__.__name__} "
+                    f"({exc}); another handle holds {self.baseFilename}. "
+                    "Writing continues to the current file.",
+                    file=sys.stderr,
+                )
+
+
 @dataclass
 class LogContext:
     """Context information to be injected into log messages."""
@@ -120,7 +169,7 @@ class StructuredLogger:
         # File handler if specified
         if log_file:
             log_file.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = logging.handlers.RotatingFileHandler(
+            file_handler = ShareableRotatingFileHandler(
                 log_file, maxBytes=max_bytes, backupCount=backup_count,
                 encoding="utf-8",
             )

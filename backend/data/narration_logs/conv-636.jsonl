@@ -1,0 +1,7 @@
+{"ts": 1790966037.510566, "conversation_id": "conv-636", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790966039.0325134, "conversation_id": "conv-636", "step_id": "s2", "decision": "silence", "signal": null, "u": -0.3035981289579059, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790966041.108439, "conversation_id": "conv-636", "step_id": "s3", "decision": "silence", "signal": null, "u": -0.6057214072850117, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1790966108.2230842, "conversation_id": "conv-636", "step_id": "steer-4", "decision": "brief", "signal": null, "u": -0.9557090377499813, "xi": 4.199999999999999, "text": "Settling into the answer now.", "tts_played": true}
+{"ts": 1790966110.1595457, "conversation_id": "conv-636", "step_id": "steer-5", "decision": "silence", "signal": null, "u": -1.0, "xi": 4.5624860280117465, "text": "", "tts_played": false}
+{"ts": 1790966122.444389, "conversation_id": "conv-636", "step_id": "explorer_6", "decision": "silence", "signal": null, "u": -1.0, "xi": 4.935262588764785, "text": "", "tts_played": false}
+{"ts": 1790966129.6744096, "conversation_id": "conv-636", "step_id": "explorer_7", "decision": "brief", "signal": null, "u": -0.6586567899512049, "xi": 5.334316368341802, "text": "Re-opening the search.", "tts_played": true}

@@ -1,0 +1,6 @@
+{"ts": 1791214670.2079673, "conversation_id": "conv-845", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1791214670.711177, "conversation_id": "conv-845", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1791214683.250817, "conversation_id": "conv-845", "step_id": "s3_s0", "decision": "brief", "signal": "crystallized", "u": 0.22202658843499867, "xi": 3.1499999999999995, "text": "One part of that is done — still working on: inspect shapes module files to locate the error.", "tts_played": true}
+{"ts": 1791214684.0913196, "conversation_id": "conv-845", "step_id": "amend-6", "decision": "silence", "signal": null, "u": 0.22496912501350053, "xi": 3.8377723698693456, "text": "", "tts_played": false}
+{"ts": 1791214695.9530652, "conversation_id": "conv-845", "step_id": "s4", "decision": "silence", "signal": null, "u": 0.4494210027176203, "xi": 4.258277990936193, "text": "", "tts_played": false}
+{"ts": 1791214697.4688473, "conversation_id": "conv-845", "step_id": "s5", "decision": "silence", "signal": null, "u": 0.7639489786460034, "xi": 4.631054551689232, "text": "", "tts_played": false}

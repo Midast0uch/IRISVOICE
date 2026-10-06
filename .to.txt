@@ -1,0 +1,185 @@
+2026-09-27 14:09:13,277 [INFO] Connecting to ws://127.0.0.1:8090/ws/o1?session_id=o1
+2026-09-27 14:09:13,339 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 14:09:13,340 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 14:09:13,340 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 14:13:57,281 [WARNING] [1/6] Error: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 14:13:58,273 [INFO] Waiting 1s before next message...
+2026-09-27 14:13:59,801 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 14:14:02,936 [ERROR] Failed: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 14:16:24,433 [INFO] Connecting to ws://127.0.0.1:8090/ws/o2?session_id=o2
+2026-09-27 14:16:55,463 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 14:16:55,874 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 14:16:55,875 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 14:22:28,789 [INFO] [1/6] Received: chat_message
+2026-09-27 14:22:28,789 [INFO] Waiting 1s before next message...
+2026-09-27 14:22:29,798 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 14:23:21,181 [INFO] [2/6] Received: chat_message
+2026-09-27 14:23:21,181 [INFO] Waiting 1s before next message...
+2026-09-27 14:23:22,196 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 14:28:06,137 [INFO] [3/6] Received: chat_message
+2026-09-27 14:28:06,137 [INFO] Waiting 1s before next message...
+2026-09-27 14:28:07,139 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 14:31:57,227 [WARNING] [4/6] Error: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 14:31:59,956 [INFO] Waiting 1s before next message...
+2026-09-27 14:32:01,531 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 14:32:04,655 [ERROR] Failed: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 14:34:41,871 [INFO] Connecting to ws://127.0.0.1:8090/ws/o3?session_id=o3
+2026-09-27 14:35:02,556 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 14:35:02,568 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 14:35:02,568 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 14:40:31,995 [INFO] [1/6] Received: chat_message
+2026-09-27 14:40:31,995 [INFO] Waiting 1s before next message...
+2026-09-27 14:40:33,000 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 14:41:29,719 [INFO] [2/6] Received: chat_message
+2026-09-27 14:41:29,719 [INFO] Waiting 1s before next message...
+2026-09-27 14:41:30,721 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 14:46:12,641 [INFO] [3/6] Received: chat_message
+2026-09-27 14:46:12,641 [INFO] Waiting 1s before next message...
+2026-09-27 14:46:13,642 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 14:51:30,822 [INFO] [4/6] Received: chat_message
+2026-09-27 14:51:31,079 [INFO] Waiting 1s before next message...
+2026-09-27 14:51:32,083 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 14:57:40,574 [INFO] [5/6] Received: chat_message
+2026-09-27 14:57:40,575 [INFO] Waiting 1s before next message...
+2026-09-27 14:57:41,588 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 15:03:09,034 [INFO] [6/6] Received: chat_message
+2026-09-27 15:03:09,034 [INFO] Done. Sent 6 messages.
+2026-09-27 15:03:10,746 [INFO] Connecting to ws://127.0.0.1:8090/ws/o4?session_id=o4
+2026-09-27 15:03:15,352 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 15:03:15,353 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 15:03:15,353 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 15:08:28,878 [WARNING] [1/6] Error: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 15:08:29,725 [INFO] Waiting 1s before next message...
+2026-09-27 15:08:30,770 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 15:08:32,800 [ERROR] Failed: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 15:10:22,232 [INFO] Connecting to ws://127.0.0.1:8090/ws/o5?session_id=o5
+2026-09-27 15:10:30,685 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 15:10:30,686 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 15:10:30,686 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 15:16:04,410 [INFO] [1/6] Received: chat_message
+2026-09-27 15:16:04,410 [INFO] Waiting 1s before next message...
+2026-09-27 15:16:05,421 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 15:16:49,651 [INFO] [2/6] Received: chat_message
+2026-09-27 15:16:49,651 [INFO] Waiting 1s before next message...
+2026-09-27 15:16:50,661 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 15:23:34,190 [INFO] [3/6] Received: chat_message
+2026-09-27 15:23:34,234 [INFO] Waiting 1s before next message...
+2026-09-27 15:23:35,241 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 15:30:25,479 [INFO] [4/6] Received: chat_message
+2026-09-27 15:30:25,507 [INFO] Waiting 1s before next message...
+2026-09-27 15:30:26,516 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 15:35:29,107 [INFO] [5/6] Received: chat_message
+2026-09-27 15:35:29,107 [INFO] Waiting 1s before next message...
+2026-09-27 15:35:30,116 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 15:40:12,910 [INFO] [6/6] Received: chat_message
+2026-09-27 15:40:12,910 [INFO] Done. Sent 6 messages.
+2026-09-27 15:40:24,242 [INFO] Connecting to ws://127.0.0.1:8090/ws/o6?session_id=o6
+2026-09-27 15:40:26,988 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 15:40:26,988 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 15:40:26,988 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 15:45:42,756 [INFO] [1/6] Received: chat_message
+2026-09-27 15:45:42,757 [INFO] Waiting 1s before next message...
+2026-09-27 15:45:43,766 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 15:46:26,513 [INFO] [2/6] Received: chat_message
+2026-09-27 15:46:26,513 [INFO] Waiting 1s before next message...
+2026-09-27 15:46:27,518 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 15:49:08,249 [WARNING] [3/6] Error: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 15:49:08,918 [INFO] Waiting 1s before next message...
+2026-09-27 15:49:11,065 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 15:49:15,063 [ERROR] Failed: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 15:51:35,304 [INFO] Connecting to ws://127.0.0.1:8090/ws/o7?session_id=o7
+2026-09-27 15:51:49,091 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 15:51:49,091 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 15:51:49,091 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 15:57:07,173 [INFO] [1/6] Received: chat_message
+2026-09-27 15:57:07,173 [INFO] Waiting 1s before next message...
+2026-09-27 15:57:08,183 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 15:57:46,235 [INFO] [2/6] Received: chat_message
+2026-09-27 15:57:46,235 [INFO] Waiting 1s before next message...
+2026-09-27 15:57:47,236 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 16:02:41,095 [INFO] [3/6] Received: chat_message
+2026-09-27 16:02:41,154 [INFO] Waiting 1s before next message...
+2026-09-27 16:02:42,168 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 16:10:38,838 [INFO] [4/6] Received: chat_message
+2026-09-27 16:10:39,008 [INFO] Waiting 1s before next message...
+2026-09-27 16:10:40,014 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 16:15:51,752 [INFO] [5/6] Received: chat_message
+2026-09-27 16:15:51,752 [INFO] Waiting 1s before next message...
+2026-09-27 16:15:52,754 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 16:23:44,654 [INFO] [6/6] Received: chat_message
+2026-09-27 16:23:44,782 [INFO] Done. Sent 6 messages.
+2026-09-27 16:24:03,524 [INFO] Connecting to ws://127.0.0.1:8090/ws/o8?session_id=o8
+2026-09-27 16:24:08,620 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 16:24:08,621 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 16:24:08,621 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 16:29:27,491 [INFO] [1/6] Received: chat_message
+2026-09-27 16:29:27,491 [INFO] Waiting 1s before next message...
+2026-09-27 16:29:28,501 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 16:30:08,642 [INFO] [2/6] Received: chat_message
+2026-09-27 16:30:08,642 [INFO] Waiting 1s before next message...
+2026-09-27 16:30:09,653 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 16:36:45,026 [INFO] [3/6] Received: chat_message
+2026-09-27 16:36:45,038 [INFO] Waiting 1s before next message...
+2026-09-27 16:36:46,050 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 16:42:22,269 [INFO] [4/6] Received: chat_message
+2026-09-27 16:42:22,281 [INFO] Waiting 1s before next message...
+2026-09-27 16:42:23,288 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 16:47:44,697 [INFO] [5/6] Received: chat_message
+2026-09-27 16:47:44,741 [INFO] Waiting 1s before next message...
+2026-09-27 16:47:45,749 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 16:52:49,605 [INFO] [6/6] Received: chat_message
+2026-09-27 16:52:49,605 [INFO] Done. Sent 6 messages.
+2026-09-27 16:52:52,753 [INFO] Connecting to ws://127.0.0.1:8090/ws/o9?session_id=o9
+2026-09-27 16:52:55,019 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 16:52:55,020 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 16:52:55,021 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 16:57:38,099 [INFO] [1/6] Received: chat_message
+2026-09-27 16:57:38,099 [INFO] Waiting 1s before next message...
+2026-09-27 16:57:39,115 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 16:58:28,048 [INFO] [2/6] Received: chat_message
+2026-09-27 16:58:28,048 [INFO] Waiting 1s before next message...
+2026-09-27 16:58:29,056 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 17:04:55,999 [WARNING] [3/6] Error: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 17:04:56,054 [INFO] Waiting 1s before next message...
+2026-09-27 17:04:57,297 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 17:05:01,542 [ERROR] Failed: sent 1011 (internal error) keepalive ping timeout; no close frame received
+2026-09-27 17:06:49,520 [INFO] Connecting to ws://127.0.0.1:8090/ws/o10?session_id=o10
+2026-09-27 17:07:07,830 [INFO] Connected. Sending 6 messages with 1s delay
+2026-09-27 17:07:07,830 [INFO] Web mode: ON (web tools granted app-wide)
+2026-09-27 17:07:07,830 [INFO] [1/6] Sending: List the files in the current directory and tell me how many there are.
+2026-09-27 17:12:46,323 [INFO] [1/6] Received: chat_message
+2026-09-27 17:12:46,323 [INFO] Waiting 1s before next message...
+2026-09-27 17:12:47,333 [INFO] [2/6] Sending: Read the README file and summarise what the project is for.
+2026-09-27 17:13:25,798 [INFO] [2/6] Received: chat_message
+2026-09-27 17:13:25,798 [INFO] Waiting 1s before next message...
+2026-09-27 17:13:26,807 [INFO] [3/6] Sending: Get the system info and tell me how much memory this machine has.
+2026-09-27 17:18:08,649 [INFO] [3/6] Received: chat_message
+2026-09-27 17:18:08,650 [INFO] Waiting 1s before next message...
+2026-09-27 17:18:09,660 [INFO] [4/6] Sending: List the files in the scripts folder and pick the one with the longest name.
+2026-09-27 17:23:03,855 [INFO] [4/6] Received: chat_message
+2026-09-27 17:23:03,855 [INFO] Waiting 1s before next message...
+2026-09-27 17:23:04,861 [INFO] [5/6] Sending: Remember that my project is called IRIS, then recall what my project is called.
+2026-09-27 17:23:42,307 [WARNING] [5/6] Error: no close frame received or sent
+2026-09-27 17:23:42,307 [INFO] Waiting 1s before next message...
+2026-09-27 17:23:43,318 [INFO] [6/6] Sending: Get the system info, then list the files in the current directory, and compare the two results in one summary.
+2026-09-27 17:23:43,340 [ERROR] Failed: no close frame received or sent
+2026-09-27 17:23:57,716 [INFO] Connecting to ws://127.0.0.1:8090/ws/o11?session_id=o11
+2026-09-27 17:24:04,058 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:04,344 [INFO] Connecting to ws://127.0.0.1:8090/ws/o12?session_id=o12
+2026-09-27 17:24:06,568 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:06,774 [INFO] Connecting to ws://127.0.0.1:8090/ws/o13?session_id=o13
+2026-09-27 17:24:08,908 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:09,110 [INFO] Connecting to ws://127.0.0.1:8090/ws/o14?session_id=o14
+2026-09-27 17:24:11,187 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:11,394 [INFO] Connecting to ws://127.0.0.1:8090/ws/o15?session_id=o15
+2026-09-27 17:24:13,485 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:13,693 [INFO] Connecting to ws://127.0.0.1:8090/ws/o16?session_id=o16
+2026-09-27 17:24:15,781 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:15,983 [INFO] Connecting to ws://127.0.0.1:8090/ws/o17?session_id=o17
+2026-09-27 17:24:18,067 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:18,292 [INFO] Connecting to ws://127.0.0.1:8090/ws/o18?session_id=o18
+2026-09-27 17:24:20,388 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:20,580 [INFO] Connecting to ws://127.0.0.1:8090/ws/o19?session_id=o19
+2026-09-27 17:24:22,659 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection
+2026-09-27 17:24:22,874 [INFO] Connecting to ws://127.0.0.1:8090/ws/o20?session_id=o20
+2026-09-27 17:24:24,963 [ERROR] Failed: [WinError 1225] The remote computer refused the network connection

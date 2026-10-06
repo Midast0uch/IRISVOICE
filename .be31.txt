@@ -1,0 +1,11 @@
+
+> irisvoice@1.0.0 iris:start:backend
+> python scripts/iris_process_manager.py start --detach backend -- python start-backend.py
+
+[backend] warning: could not create Job Object. Tree may not be killed on manager exit.
+[preflight] cleared stale backend.pid (pid 17824 gone)
+[backend] starting: python start-backend.py
+[backend] logging to: C:\dev\IRISVOICE\.iris-logs\backend-20260927-220131.log
+[backend] pid: 14176
+[backend] detached, pid 14176 — poll for readiness, then:
+[backend]   python iris_process_manager.py stop-named backend

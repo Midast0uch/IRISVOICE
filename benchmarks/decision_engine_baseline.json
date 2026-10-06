@@ -1,0 +1,24 @@
+{
+  "accuracy": 1.0,
+  "backend": "gliner25-decide-onnx-int8",
+  "p50_ms": 166,
+  "p95_ms": 198,
+  "session_options": {
+    "clamped": false,
+    "execution_mode": "ORT_SEQUENTIAL",
+    "graph_optimization_level": "ORT_ENABLE_ALL",
+    "host_cpu_count": 8,
+    "inter_op_num_threads": 1,
+    "intra_op_num_threads": 4,
+    "providers": [
+      "CPUExecutionProvider"
+    ]
+  },
+  "stage_ms": {
+    "encode_ms": 0.028,
+    "post_ms": 0.011,
+    "session_ms": 165.382,
+    "tokenize_ms": 0.002
+  },
+  "warm_up_ms": 7950
+}
