@@ -1,14 +1,23 @@
 """
 test_chunk_callback_fix.py — Verify non-streaming LLM paths invoke chunk_callback.
 
-The bug: when the LLM provider returns a full reply in one shot (stream=False),
-the non-streaming paths in _dispatch_api, _dispatch_openai_compat, and
-_dispatch_inprocess never called chunk_callback. The TTS sentence_queue only
-received the None sentinel, so the producer broke immediately without
-synthesizing any audio.
+SCOPE: the KERNEL dispatch paths only (`_dispatch_api`, `_dispatch_openai_compat`).
+These tests run the real methods with a mocked httpx client and assert the reply
+reaches chunk_callback plus the force-flush sentinel.
 
-This test exercises each non-streaming dispatch method with a real
-chunk_callback and verifies the callback receives the reply text.
+NOT in scope: the voice pipeline itself. A previous version of this file carried
+a `TestFullVoicePipelineNonStreaming` class that re-implemented the gateway's
+sentence queue INSIDE the test and asserted the copy worked - it guarded
+nothing and was removed on 2026-10-07. The voice reply path (turn framing, the
+answer, the spoken line, no legacy courier) is guarded for real in
+`backend/tests/contract/test_voice_turn_protocol_contract.py`, which drives the
+actual `_process_voice_transcription` from a transcript.
+
+The bug this file guards: when the LLM provider returns a full reply in one shot
+(stream=False), the non-streaming paths in _dispatch_api, _dispatch_openai_compat,
+and _dispatch_inprocess never called chunk_callback. The TTS sentence_queue only
+received the None sentinel, so the producer broke immediately without synthesizing
+any audio.
 """
 
 import json
@@ -217,105 +226,19 @@ class TestDispatchOpenAICompatNonStreamingChunkCallback:
         assert collected[-1] == ""  # force-flush
 
 
-class TestFullVoicePipelineNonStreaming:
-    """
-    End-to-end: when process_text_message uses a non-streaming provider,
-    the chunk_callback should be called, populating the sentence_queue
-    so the TTS producer can synthesize audio.
-    """
-
-    def test_non_streaming_provider_populates_sentence_queue(self):
-        """
-        Simulate the full voice pipeline flow:
-        1. iris_gateway creates sentence_queue
-        2. chunk_callback puts sentences into queue
-        3. Non-streaming LLM returns full reply
-        4. Producer should read the reply (not just None)
-        """
-        import queue
-
-        sentence_queue = queue.Queue()
-
-        # Simulate what iris_gateway._process_voice_transcription does
-        sentence_buf = []
-        flush_timer = None
-
-        def chunk_callback(chunk):
-            nonlocal sentence_buf, flush_timer
-            if not chunk:
-                # Force-flush
-                if sentence_buf:
-                    complete = "".join(sentence_buf)
-                    sentence_queue.put(complete)
-                    sentence_buf = []
-                return
-
-            sentence_buf.append(chunk)
-            complete = "".join(sentence_buf)
-            sentence_queue.put(complete)
-            sentence_buf = []
-
-        # Simulate non-streaming LLM returning full reply via chunk_callback
-        # (This is what the fix now does in _dispatch_api/_dispatch_openai_compat)
-        chunk_callback("Hello, this is a test response from the LLM.")
-        chunk_callback("")  # force-flush
-
-        # Add sentinel
-        sentence_queue.put(None)
-
-        # Now simulate the producer reading from the queue
-        collected_items = []
-        while True:
-            item = sentence_queue.get(timeout=1)
-            if item is None:
-                break
-            collected_items.append(item)
-
-        assert len(collected_items) == 1, (
-            f"Producer should have received 1 sentence, got {len(collected_items)}: {collected_items}"
-        )
-        assert collected_items[0] == "Hello, this is a test response from the LLM."
-
-    def test_streaming_provider_still_works(self):
-        """
-        Verify the streaming path (chunk_callback called multiple times)
-        still works correctly after the fix.
-        """
-        import queue
-
-        sentence_queue = queue.Queue()
-        sentence_buf = []
-
-        def chunk_callback(chunk):
-            nonlocal sentence_buf
-            if not chunk:
-                if sentence_buf:
-                    complete = "".join(sentence_buf)
-                    sentence_queue.put(complete)
-                    sentence_buf = []
-                return
-
-            # Simple sentence boundary: split on ". "
-            sentence_buf.append(chunk)
-            text = "".join(sentence_buf)
-            if "." in text:
-                parts = text.split(".", 1)
-                sentence_queue.put(parts[0] + ".")
-                sentence_buf = [parts[1]] if len(parts) > 1 and parts[1] else []
-
-        # Simulate streaming LLM calling chunk_callback multiple times
-        for chunk in ["Hello", ".", " ", "How", " ", "are", " ", "you", "?"]:
-            chunk_callback(chunk)
-        chunk_callback("")  # force-flush
-
-        sentence_queue.put(None)
-
-        collected = []
-        while True:
-            item = sentence_queue.get(timeout=1)
-            if item is None:
-                break
-            collected.append(item)
-
-        assert len(collected) >= 1
-        assert "Hello" in collected[0]
+# ─────────────────────────────────────────────────────────────────────────────
+# REMOVED 2026-10-07: class TestFullVoicePipelineNonStreaming.
+#
+# It claimed to test "the full voice pipeline", but both of its tests built a
+# local queue.Queue and a local COPY of the chunk_callback logic, then asserted
+# that the copy behaved as the copy. No backend code was involved, so it could
+# not fail when the gateway broke - it guarded nothing. (The project rule: a
+# stand-in that re-implements the logic it claims to guard silently skips the
+# guarded read.)
+#
+# The voice reply path is now guarded for real, with no wake word needed, in
+# backend/tests/contract/test_voice_turn_protocol_contract.py: it drives the
+# REAL _process_voice_transcription from a transcript and asserts what reaches
+# the wire - one turn.start / dense turn.part / one turn.end, the answer with
+# its spoken line, and none of the retired reply frames.
+#
