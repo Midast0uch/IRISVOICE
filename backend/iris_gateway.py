@@ -3771,35 +3771,41 @@ class IRISGateway:
                 #   [FLOW_LATENCY] vad->stt=380ms stt->llm=10ms llm_first_token=620ms
                 #                   tts_synth=340ms total=2380ms
                 _flow_parts = []
+
+                def _elapsed_ms(start_label: str, end_label: str | None = None) -> float | None:
+                    """Elapsed ms between two timing labels, or None when either
+                    never fired. `_voice_timing` is PRE-SEEDED with None values
+                    (see its init above), so `label in _voice_timing` is always
+                    True and a label that never fired must be tested by VALUE.
+                    Key-presence checks here raised `None - float` and killed the
+                    summary on any turn whose LLM failed before its first chunk,
+                    whose reply was a JSON envelope (no chunk), or whose TTS
+                    never played audio (the stuck-SPK hang) - i.e. exactly the
+                    turns whose timings are worth reading (live 2026-10-07)."""
+                    _start = self._voice_timing.get(start_label)
+                    _end = self._voice_timing.get(end_label) if end_label else t0
+                    if _start is None or _end is None:
+                        return None
+                    return (_start - _end) * 1000.0
+
+                def _add(label: str, value: float | None) -> None:
+                    if value is not None:
+                        _flow_parts.append(f"{label}={value:.0f}ms")
+
                 # STT: time from VAD end until Parakeet/Whisper returns text.
                 # Approximated as vad_end -> llm_start (the agent starts only
                 # after the STT result lands via _on_voice_result).
-                if "llm_start" in self._voice_timing:
-                    _vad_to_llm = (self._voice_timing["llm_start"] - t0) * 1000.0
-                    _flow_parts.append(f"vad_to_llm={_vad_to_llm:.0f}ms")
+                _add("vad_to_llm", _elapsed_ms("llm_start"))
                 # LLM: llm_start -> first_chunk (time to first token)
-                if "first_chunk" in self._voice_timing and "llm_start" in self._voice_timing:
-                    _llm_ttft = (self._voice_timing["first_chunk"] - self._voice_timing["llm_start"]) * 1000.0
-                    _flow_parts.append(f"llm_ttft={_llm_ttft:.0f}ms")
+                _add("llm_ttft", _elapsed_ms("first_chunk", "llm_start"))
                 # LLM: llm_start -> llm_end (full response generation)
-                if "llm_end" in self._voice_timing and "llm_start" in self._voice_timing:
-                    _llm_total = (self._voice_timing["llm_end"] - self._voice_timing["llm_start"]) * 1000.0
-                    _flow_parts.append(f"llm_total={_llm_total:.0f}ms")
+                _add("llm_total", _elapsed_ms("llm_end", "llm_start"))
                 # TTS synth: first_tts_synth_start -> first_audio_pushed
-                if "first_tts_synth_start" in self._voice_timing and "first_audio_pushed" in self._voice_timing:
-                    _tts_synth = (
-                        self._voice_timing["first_audio_pushed"]
-                        - self._voice_timing["first_tts_synth_start"]
-                    ) * 1000.0
-                    _flow_parts.append(f"tts_synth={_tts_synth:.0f}ms")
+                _add("tts_synth", _elapsed_ms("first_audio_pushed", "first_tts_synth_start"))
                 # VAD -> first audio: total time to first audible response
-                if "first_audio_pushed" in self._voice_timing:
-                    _vad_to_audio = (self._voice_timing["first_audio_pushed"] - t0) * 1000.0
-                    _flow_parts.append(f"vad_to_audio={_vad_to_audio:.0f}ms")
+                _add("vad_to_audio", _elapsed_ms("first_audio_pushed"))
                 # Full conversational flow: VAD end -> text_response_sent
-                if "text_response_sent" in self._voice_timing:
-                    _flow_total = (self._voice_timing["text_response_sent"] - t0) * 1000.0
-                    _flow_parts.append(f"flow_total={_flow_total:.0f}ms")
+                _add("flow_total", _elapsed_ms("text_response_sent"))
                 _flow_parts.append(f"wall={total * 1000.0:.0f}ms")
                 self._logger.info("[FLOW_LATENCY] " + " ".join(_flow_parts))
 
