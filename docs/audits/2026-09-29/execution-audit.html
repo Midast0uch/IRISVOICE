@@ -310,6 +310,16 @@ flowchart LR
 <h2>The reply surface</h2>
 <div class="analogy">
   <h3>The picture</h3>
+  <p><b>Status 2026-10-07: fixed on the reply paths.</b> The three couriers
+  (<code>chat_chunk</code>, <code>chat_message</code>, <code>text_response</code>)
+  are retired there; a reply now rides one <code>turn.start</code> /
+  <code>turn.part</code> / <code>turn.end</code> envelope, and the frontend
+  replays each part as the message its views read
+  (<code>lib/turns/legacyBridge.ts</code>). Frames with <em>no turn open</em>
+  (voice user echo, web research summary, <code>/run</code> quick replies,
+  <code>dev_cli</code> block, <code>dev_abort</code>, terminal error) still use
+  the legacy frame as a deliberate fallback. The paragraph below is the audit's
+  original diagnosis, kept as written.</p>
   <p>Today one reply is carried by three couriers, in three envelope sizes, with no delivery receipt. The front desk (the chat view) guesses which envelopes belong together. It guesses by matching turn ids as strings. When a guess fails, a card lands in the "orphan" pile, or a reply ends up in the wrong conversation.</p>
 </div>
 

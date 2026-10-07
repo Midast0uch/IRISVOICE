@@ -174,6 +174,15 @@ pre.code{background:var(--panel);border:1px solid var(--line);border-radius:10px
   <dt>BOTH</dt><dd>When you make an artifact, the reply says in 1–3 sentences what you made and what matters about it. It never repeats the artifact's content.</dd>
   <dt>SIGNS</dt><dd>These signs mean an artifact: the user asked for a file, report, page, chart or document; the content stands alone and is longer than about 40 lines; the user will save, share or open it again; or the content is visual. A snippet under about 15 lines stays in the answer.</dd>
 </dl>
+<p><b>Known side effect of this rule (found 2026-10-07, fixed).</b> Teaching the reply as a
+literal <code>ANSWER:</code> label made models sometimes copy the label into the reply itself -
+the streamed delta, the final text and the spoken line all began "ANSWER: ..." (recorded in
+<code>__tests__/fixtures/turns/recorded_personal_ok.json</code>). The rule text is unchanged; the
+reply exit now strips one leading label from the display text and the spoken line
+(<code>artifact_policy.strip_leading_answer_marker</code> -&gt;
+<code>AgentKernel._finalize_response</code>, guarded by
+<code>test_answer_marker_strip_contract.py</code>). A label mid-text is prose and stays. The label
+can still flash in the streamed bubble until <code>turn.end</code> replaces it.</p>
 <p>Oracle's <code>presentation</code> consumer keeps a shadow score for every turn: "should this have been an artifact?". Where it disagrees with the model, the disagreement becomes calibration data. It never overrides the model. The <code>{speak, show}</code> JSON still parses for older prompts, and it converts to the same <code>create_artifact</code> event, so nothing breaks while the prompts change.</p>
 
 <h3>The artifact format</h3>
