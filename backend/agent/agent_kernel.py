@@ -5333,7 +5333,14 @@ class AgentKernel:
         always assigned (empty when absent) so a previous turn's line can never
         leak into this one.
         """
-        self._last_spoken_text = (spoken or "").strip()
+        # The prompt's ANSWER: format label, copied by the model, never reaches
+        # the user: one leading label is dropped from the display text and the
+        # spoken line here — the single exit every reply path goes through
+        # (recorded live 2026-10-06, test_answer_marker_strip_contract).
+        from backend.agent.artifact_policy import strip_leading_answer_marker
+
+        display = strip_leading_answer_marker(display or "")
+        self._last_spoken_text = strip_leading_answer_marker((spoken or "").strip())
         if display or self._last_spoken_text:
             # Taxonomy DELIVERY: the reply reached the user (lengths only, never the text).
             _emit_event(

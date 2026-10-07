@@ -140,6 +140,18 @@ def _emit_card_shown(evt: IRISStreamEvent, payload, data, session_id, conv_id) -
         logger.debug("[WSEventBridge] CARD_SHOWN emit skipped", exc_info=True)
 
 
+# Event names route_bus_event files as turn parts (turn_protocol): only these
+# lose their legacy frame when a turn takes them. `_UNROUTED` counts the ones
+# that found no live turn (a producer outside a turn) - read it to find them.
+from .turn_protocol import _TODO_EVENTS, _INTERACTION_EVENTS, _NOTICE_EVENTS  # noqa: E402
+
+_TURN_PART_EVENTS = frozenset(
+    {"tool:call", "tool:result", "tool:error", "document:render", "agent:error"}
+    | set(_TODO_EVENTS) | set(_INTERACTION_EVENTS) | set(_NOTICE_EVENTS)
+)
+_UNROUTED: dict = {}
+
+
 class WSEventBridge:
     """Subscribes to EventBus events and broadcasts them to the WebSocket.
 
@@ -259,6 +271,29 @@ class WSEventBridge:
                     return
                 if evt in _CARD_SHOWN_EVENTS:
                     _emit_card_shown(evt, payload, data, session_id, conv_id)
+                # The turn is the ONE courier (2026-10-06): an event filed into
+                # its live turn travels only as that turn's part (the frontend
+                # replays the part as the message its views read,
+                # lib/turns/legacyBridge.ts). Runs AFTER the card-free-turn gate
+                # above, so a withheld card stays withheld in the turn too.
+                seq = route_bus_event(
+                    evt.value,
+                    data,
+                    turn_id=getattr(payload, "turn_id", None),
+                    conversation_id=conv_id,
+                )
+                if seq is not None:
+                    return
+                # Not a turn part (system events: context, mode, agent state), or
+                # no turn was open (a producer outside a turn). Only then does the
+                # legacy frame go out; a turn-type event without a turn is
+                # counted, never silent (HIDDEN FAILURES rule 4).
+                if evt.value in _TURN_PART_EVENTS:
+                    _UNROUTED[evt.value] = _UNROUTED.get(evt.value, 0) + 1
+                    logger.info(
+                        "[WSEventBridge] %s had no live turn (conv=%s) - legacy frame "
+                        "fallback (count=%d)", evt.value, conv_id, _UNROUTED[evt.value],
+                    )
                 if (
                     session_id
                     and session_id != "default"
@@ -269,7 +304,7 @@ class WSEventBridge:
                     )
                 else:
                     # pin_42ddd255162d: no session routing info, OR the session
-                    # has no connected client — DER sub-loop/crawl events
+                    # has no connected client - DER sub-loop/crawl events
                     # arrive under the placeholder session "unknown", and
                     # broadcast_to_session() silently DROPS messages for
                     # unknown sessions (get_session -> None). IRIS is
@@ -277,17 +312,6 @@ class WSEventBridge:
                     # the one connected client; the conversation_id carried on
                     # the wire lets the frontend drop stale events.
                     asyncio.run_coroutine_threadsafe(self._ws.broadcast(msg), loop)
-                # Phase 3 (turn protocol): the same event, filed as a numbered
-                # part of its live turn. Runs AFTER the card-free-turn gate
-                # above, so a withheld card stays withheld in the turn too.
-                # The legacy message above stays until the chat view reads
-                # turns only. Never raises.
-                route_bus_event(
-                    evt.value,
-                    data,
-                    turn_id=getattr(payload, "turn_id", None),
-                    conversation_id=conv_id,
-                )
             except Exception as e:  # one bad payload never breaks others
                 logger.warning("[WSEventBridge] %s forward failed: %s", evt.value, e)
 

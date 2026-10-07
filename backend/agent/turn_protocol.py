@@ -171,6 +171,9 @@ class TurnEmitter:
         self._ended = False
         self.status: Optional[str] = None
         self.dropped_after_end = 0  # counted, never silent (HIDDEN FAILURES rule 4)
+        # Reasoning characters this turn carried: the gateway files the kernel's
+        # final thinking only when nothing was streamed (no duplicate).
+        self.reasoning_chars = 0
         # Replay fixtures from REAL turns: IRIS_TURN_RECORD_DIR=<dir> writes each
         # turn's messages to <dir>/<turn_id>.jsonl on an ordered lane (off by default).
         self._record_dir = os.environ.get("IRIS_TURN_RECORD_DIR") or None
@@ -250,7 +253,10 @@ class TurnEmitter:
         return self.part("text", delta=delta)
 
     def reasoning(self, delta: str) -> Optional[int]:
-        return self.part("reasoning", delta=delta)
+        seq = self.part("reasoning", delta=delta)
+        if seq is not None:
+            self.reasoning_chars += len(delta or "")
+        return seq
 
     def error(self, message: str, code: str = "turn_error", recoverable: bool = False) -> Optional[int]:
         return self.part("error", code=code, message=_clip(message, 2_000), recoverable=bool(recoverable))

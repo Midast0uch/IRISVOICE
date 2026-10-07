@@ -213,7 +213,22 @@ in-turn interactions (§10), the header (§11), strands and diffs on the backend
 
 ## 8. Open
 
-- Retire the legacy couriers (after Phase 4 and reply-surface B read parts only).
+- Legacy couriers retired on the chat reply paths (2026-10-07): `chat_chunk`, `chat_reasoning`,
+  the assistant `text_response`, the final `chat_message` and the `role:"error"` `chat_message`
+  are gone from the text and voice paths; the event bridge files a bus event into the live turn
+  first and only sends the legacy frame when no turn is open (counted in `_UNROUTED`, logged);
+  `lib/turns/legacyBridge.ts` replays each turn part and turn end as the message the views read,
+  so cards, matrix, asks, notices, the reply bubble and its TTS highlight all still work
+  (`__tests__/turns/*` 35 tests; `backend/tests/contract/test_turn_protocol_contract.py` 32).
+  STILL LEGACY (allowed fallback — a frame sent with no turn open): web research summary,
+  `/run` quick replies inside a live turn, `dev_cli` capability block, `dev_abort`, terminal
+  error, the voice user echo. `/run`'s quick replies are the one seam: the turn ends `ok` with
+  no text while the reply rode a legacy frame.
+- The reply no longer shows the prompt's `ANSWER:` label (2026-10-07): one leading label is
+  stripped from the display text and the spoken line at the single reply exit
+  (`artifact_policy.strip_leading_answer_marker`, `_finalize_response`;
+  `test_answer_marker_strip_contract.py`). Mid-text occurrences stay. The label can still flash
+  for the length of a streamed reply before `turn.end` replaces the bubble.
 - `interaction` parts now draw in the turn (asks, §10); `card` / `todo` parts are still drawn by
   their old views (task card store, document cards).
 - `TaskListCard.display.test.tsx` pins the footer word "Crystallized" for

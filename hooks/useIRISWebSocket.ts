@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
 import { applyTurnMessage, endsForLostTurns, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
+import { legacyMessageForPart, legacyReplyForEnd } from "@/lib/turns/legacyBridge"
 import { applyDiffUndoResult } from "@/lib/diffs/undoStore"
 import type { TurnMessage } from "@/lib/turns/protocol"
 import type { DiffUndoResult } from "@/lib/diffs/api"
@@ -776,13 +777,37 @@ export function useIRISWebSocket(
     // into the turn store (lib/turns/turnStore.ts), which files them by the
     // turn and conversation the EVENT names. No CustomEvent hop, no guessing.
     if (isTurnMessageType(type)) {
+      const _turnsBefore = getTurnsState()
       applyTurnMessage({ type, payload } as unknown as TurnMessage)
-      // The card store settles a card that still works when its turn ends
-      // (useTaskProgress settleCardsOfEndedTurn).
-      if (type === "turn.end" && typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("iris:turn_end", {
-          detail: { turn_id: payload.turn_id, conversation_id: payload.conversation_id, status: payload.status },
-        }))
+      // A replayed part / end (reconnect buffer) changes nothing in the store,
+      // so it must not reach the views a second time either.
+      const _turnsAfter = getTurnsState()
+      if (_turnsAfter === _turnsBefore || _turnsAfter.dropped !== _turnsBefore.dropped) return
+      // The turn is the ONE courier (2026-10-06): the backend sends no legacy
+      // frame for an event it filed into a turn. A filed part replays here as
+      // the message the views read (task cards in both modes, the matrix, the
+      // orb badge, artifacts, asks, notices) - lib/turns/legacyBridge.ts.
+      if (type === "turn.part") {
+        const legacy = legacyMessageForPart((payload as { part?: Record<string, unknown> }).part)
+        if (legacy) handleMessageRef.current?.(legacy as unknown as Record<string, unknown>)
+      }
+      if (type === "turn.end") {
+        setIsChatTyping(false)
+        // The card store settles a card that still works when its turn ends
+        // (useTaskProgress settleCardsOfEndedTurn).
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("iris:turn_end", {
+            detail: { turn_id: payload.turn_id, conversation_id: payload.conversation_id, status: payload.status },
+          }))
+        }
+        // The reply bubble (and its TTS highlight) from the turn's end - the
+        // retired chat_message / assistant text_response carried the same.
+        const turnId = typeof payload.turn_id === "string" ? payload.turn_id : ""
+        const reply = legacyReplyForEnd(
+          payload as unknown as Parameters<typeof legacyReplyForEnd>[0],
+          getTurnsState().byId[turnId]?.reasoning,
+        )
+        if (reply) handleMessageRef.current?.(reply as unknown as Record<string, unknown>)
       }
       return
     }
@@ -1116,25 +1141,8 @@ export function useIRISWebSocket(
         break
       }
 
-       case "chat_chunk": {
-          // Streaming chunk — dispatch for progressive rendering
-          if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
-            window.dispatchEvent(new CustomEvent('iris:chat_chunk', {
-              detail: { chunk: payload.chunk, turn_id: payload.turn_id }
-            }))
-          }
-          break
-        }
-
-       case "chat_reasoning": {
-         // Reasoning/thinking tokens from chain-of-thought models
-         if (typeof window !== 'undefined') {
-           window.dispatchEvent(new CustomEvent('iris:chat_reasoning', {
-             detail: { chunk: payload.chunk ?? "" }
-           }))
-         }
-         break
-       }
+       // chat_chunk / chat_reasoning: retired couriers (2026-10-06) - the turn's
+       // text / reasoning parts carry them (lib/turns/turnStore).
 
         case "audio_level": {
          // Audio level update during listening (legacy — old IrisOrb.tsx)

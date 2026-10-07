@@ -6,23 +6,19 @@ The progressive-reply contract on the REAL kernel:
    never in the text stream (it renders via DOCUMENT_RENDER).
 2. The DOCUMENT_RENDER payload carries a `partial` discriminator and a stable
    `document_id` (the partial channel the frontend updates in place).
-3. The text-path `chat_chunk` payload carries `turn_id` (frontend drops chunks
-   without one — `chat-view.tsx` handler guard).
+3. Every streamed text delta is a `text` part of its turn, and the part
+   envelope carries `turn_id` (REQ-13 AC6; the retired chat_chunk frame
+   carried it by hand — the turn protocol files it by construction).
 4. Time-to-card is recorded on the turn's TurnMetrics (`card_ms`).
 """
 
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
 
 import backend.agent.agent_kernel as _ak_mod
 from backend.agent.agent_kernel import AgentKernel
 from backend.utils.observability import TurnMetrics
-
-
-REPO = Path(__file__).resolve().parents[3]
 
 
 class _Bus:
@@ -125,18 +121,26 @@ class TestCardRenderPayloadSemantics:
         assert "card_ms=" in m.to_log_line()
 
 
-class TestTextPathChunkCarriesTurnId:
-    def test_every_chat_chunk_payload_carries_turn_id(self):
-        """REQ-13 AC6: the frontend drops a chunk with no turn_id
-        (chat-view.tsx handler guard), so EVERY chat_chunk payload — text path
-        and voice path — must carry one."""
-        src = (REPO / "backend" / "iris_gateway.py").read_text(encoding="utf-8")
-        payloads = re.findall(
-            r'"type": "chat_chunk",\s*"payload":\s*\{([^}]*)\}', src
-        )
-        assert payloads, "no chat_chunk payloads found — pattern drifted"
-        for p in payloads:
-            assert '"turn_id"' in p, (
-                "a chat_chunk payload without turn_id would be dropped by the "
+class TestStreamedTextPartCarriesTurnId:
+    def test_every_streamed_text_part_carries_turn_id(self):
+        """REQ-13 AC6: the frontend attaches a streamed delta to its turn, so
+        EVERY streamed text delta — text path and voice path — must carry the
+        turn's id. The retired chat_chunk frame carried turn_id by hand; a
+        turn part carries it by construction (the emitter files the part under
+        its turn). Both gateway chunk callbacks route their deltas through
+        _turn.text (guarded in test_turn_outcome_persists_contract)."""
+        from backend.agent.turn_protocol import TurnEmitter
+
+        wire = []
+        em = TurnEmitter(wire.append, turn_id="t-stream", conversation_id="conv-s")
+        em.start()
+        em.text("Hel")
+        em.text("lo")
+        em.end("ok", text="Hello", speak="Hello")
+        parts = [m for m in wire if m["type"] == "turn.part"]
+        assert [m["payload"]["part"]["type"] for m in parts] == ["text", "text"]
+        for m in parts:
+            assert m["payload"]["turn_id"] == "t-stream", (
+                "a streamed text part without turn_id would be dropped by the "
                 "frontend"
             )

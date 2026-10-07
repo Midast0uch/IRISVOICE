@@ -22,6 +22,7 @@ the bounded, turn-scoped card gate at the bottom.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections import OrderedDict
 from typing import Any, Iterable, Optional
@@ -159,6 +160,27 @@ def strip_leading_narration(text: str, *, max_lead_chars: int = 320) -> str:
     ):
         return rest
     return t
+
+
+# The [RESPONSE FORMAT] prompt block teaches the reply format with a literal
+# "ANSWER:" label (agent_kernel.py). Models sometimes copy the label into the
+# reply — recorded live 2026-10-06 (recorded_personal_ok.json): the streamed
+# delta, the final text AND the spoken line all started with it.
+_ANSWER_MARKER_RE = re.compile(
+    r"^\s*[*_]{0,3}\s*answer\s*[*_]{0,3}\s*[:：][*_]{0,3}[ \t]*",
+    re.IGNORECASE,
+)
+
+
+def strip_leading_answer_marker(text: str) -> str:
+    """Drop ONE leading "ANSWER:" label the model copied from the prompt.
+
+    Variants a markdown-rendering model produces: leading whitespace (the
+    recorded reply started with a blank line), optional emphasis (*, **, _,
+    __) around the word, any case, ASCII or full-width colon. Only the very
+    start of the text, once; a marker mid-text is prose and stays.
+    """
+    return _ANSWER_MARKER_RE.sub("", text or "", count=1)
 
 
 def card_title_from_content(content: Optional[str]) -> str:

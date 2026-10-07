@@ -3449,20 +3449,11 @@ class IRISGateway:
                     # Turn protocol: the same chunks the UI shows (JSON guard
                     # above already applied). An ended (stopped) turn stays
                     # quiet - same rule as the text path.
+                    # The `text` part is the only display courier (the legacy
+                    # chat_chunk frame is retired, 2026-10-06).
                     _turn.text(chunk)
                     if _turn.ended:
                         return
-                    if loop and loop.is_running():
-                        asyncio.run_coroutine_threadsafe(
-                            self._ws_manager.send_to_client(
-                                client_id,
-                                {
-                                    "type": "chat_chunk",
-                                    "payload": {"chunk": chunk, "turn_id": _turn_id},
-                                },
-                            ),
-                            loop,
-                        )
 
                     # Stream sentences into TTS from RESPONSE text
                     # (chunk_callback receives actual response content from the LLM,
@@ -3504,18 +3495,8 @@ class IRISGateway:
                         _sentence_buf_words = 0
 
                 def reasoning_callback(chunk: str):
+                    # A `reasoning` part (legacy chat_reasoning retired).
                     _turn.reasoning(chunk)
-                    if loop and loop.is_running():
-                        asyncio.run_coroutine_threadsafe(
-                            self._ws_manager.send_to_client(
-                                client_id,
-                                {
-                                    "type": "chat_reasoning",
-                                    "payload": {"chunk": chunk},
-                                },
-                            ),
-                            loop,
-                        )
 
                 try:
                     resp = agent_kernel.process_text_message(
@@ -3706,21 +3687,10 @@ class IRISGateway:
                     "I'm having trouble connecting to my model right now. "
                     "Please try again in a moment."
                 )
-                try:
-                    await self._ws_manager.send_to_client(
-                        client_id,
-                        {
-                            "type": "text_response",
-                            "turn_id": _turn_id,
-                            "payload": {"text": _friendly, "sender": "assistant"},
-                        },
-                    )
-                except Exception as _disp_exc:
-                    self._logger.warning(
-                        f"[Voice] Friendly fallback display failed: {_disp_exc}"
-                    )
+                # The friendly line shows as this turn's error (its end below);
+                # the legacy assistant text_response is retired (2026-10-06).
                 _turn.error(_friendly, code="agent_error")
-                _turn.end("error", text=_friendly, speak=_friendly, error=str(_agent_exc))
+                _turn.end("error", text=_friendly, speak=_friendly, error=_friendly)
                 try:
                     # Shadow-mode speech intent (REQ-9 AC9.3): logs would-lane,
                     # changes nothing. Removable in one task.
@@ -3747,20 +3717,13 @@ class IRISGateway:
                 return
 
             # ── Pillar 1B: assistant bubble in ChatView ─────────────────────
+            # The bubble comes from this turn's end (turn.end text + speak; the
+            # legacy assistant text_response is retired, 2026-10-06). The
+            # kernel's thinking rides as a reasoning part when none streamed.
             thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
+            if thinking and not _turn.reasoning_chars:
+                _turn.reasoning(thinking)
             _log_timing("text_response_sent")
-            await self._ws_manager.send_to_client(
-                client_id,
-                {
-                    "type": "text_response",
-                    "turn_id": _turn_id,
-                    "payload": {
-                        "text": response,
-                        "sender": "assistant",
-                        **({"thinking": thinking} if thinking else {}),
-                    },
-                },
-            )
             _turn.end("ok", text=response or "", speak=spoken or "")
 
         except asyncio.CancelledError:
@@ -6034,84 +5997,16 @@ class IRISGateway:
                         # arrived after "Stopped" and drew an empty IRIS entry
                         # through chat_chunk (live 2026-10-06). The turn already
                         # counts and logs parts after its end.
-                        if _turn.ended:
-                            _turn.text(chunk)  # counted as dropped_after_end
-                            return
+                        # The turn is the ONE courier (2026-10-06): the text
+                        # delta is a `text` part; the legacy chat_chunk frame is
+                        # retired (no view read it since Phase 3). An ended
+                        # (stopped) turn counts the late delta as dropped.
                         _turn.text(chunk)
-                        _loop = self._main_loop
-                        if _loop and _loop.is_running():
-                            try:
-                                _future = asyncio.run_coroutine_threadsafe(
-                                    self._ws_manager.send_to_client(
-                                        client_id,
-                                        {
-                                            "type": "chat_chunk",
-                                            # REQ-13 AC6 (reply-surface-contract
-                                            # T18c): turn_id rides every text-path
-                                            # chunk so the frontend can attach the
-                                            # delta to this turn's message.
-                                            "payload": {"chunk": chunk, "turn_id": turn_id},
-                                        },
-                                    ),
-                                    _loop,
-                                )
-                                # Fire-and-forget: don't block the stream thread.
-                                # Delivery failures are handled by the reconnect buffer.
-                                _future.add_done_callback(
-                                    lambda f: (
-                                        None
-                                        if f.exception() is None
-                                        else self._ws_manager.buffer_message(
-                                            session_id,
-                                            {
-                                                "type": "chat_chunk",
-                                                "payload": {"chunk": chunk, "turn_id": turn_id},
-                                            },
-                                        )
-                                    )
-                                )
-                            except Exception:
-                                self._ws_manager.buffer_message(
-                                    session_id,
-                                    {"type": "chat_chunk", "payload": {"chunk": chunk, "turn_id": turn_id}},
-                                )
 
                     def _reasoning_cb(chunk: str):
+                        # A `reasoning` part; the legacy chat_reasoning frame is
+                        # retired (no listener).
                         _turn.reasoning(chunk)
-                        _loop = self._main_loop
-                        if _loop and _loop.is_running():
-                            try:
-                                _future = asyncio.run_coroutine_threadsafe(
-                                    self._ws_manager.send_to_client(
-                                        client_id,
-                                        {
-                                            "type": "chat_reasoning",
-                                            "payload": {"chunk": chunk},
-                                        },
-                                    ),
-                                    _loop,
-                                )
-                                _future.add_done_callback(
-                                    lambda f: (
-                                        None
-                                        if f.exception() is None
-                                        else self._ws_manager.buffer_message(
-                                            session_id,
-                                            {
-                                                "type": "chat_reasoning",
-                                                "payload": {"chunk": chunk},
-                                            },
-                                        )
-                                    )
-                                )
-                            except Exception:
-                                self._ws_manager.buffer_message(
-                                    session_id,
-                                    {
-                                        "type": "chat_reasoning",
-                                        "payload": {"chunk": chunk},
-                                    },
-                                )
 
                     try:
                         response = agent_kernel.process_text_message(
@@ -6197,26 +6092,14 @@ class IRISGateway:
                     ).strip() or agent_kernel.prepare_spoken_text(response, text)
                 except Exception:  # noqa: BLE001 — never fail the turn for TTS text
                     _spoken_line = ""
-                _final_msg = {
-                    "type": "chat_message",
-                    "payload": {
-                        "role": "assistant",
-                        "content": response,
-                        "spoken": _spoken_line or "",
-                        "thinking": thinking,
-                        "timestamp": datetime.now().isoformat(),
-                        "turn_id": turn_id,
-                    },
-                }
-                _delivered = await self._ws_manager.send_to_client(
-                    client_id, _final_msg
-                )
-                if not _delivered:
-                    # Client disconnected mid-inference — buffer for replay on reconnect
-                    self._ws_manager.buffer_message(session_id, _final_msg)
-                # The final text is authoritative on turn.end (it replaces the
-                # streamed deltas: a JSON envelope streamed nothing, a DER turn
-                # streamed the whole reply at once).
+                # The turn is the ONE courier (2026-10-06): turn.end carries the
+                # final text and the spoken line; the legacy chat_message frame is
+                # retired (the frontend replays turn.end as the reply it read,
+                # lib/turns/legacyBridge.ts). The model's reasoning rides the
+                # turn as a `reasoning` part: a reply that streamed none (a DER
+                # reply arrives whole) files the kernel's thinking once here.
+                if thinking and not _turn.reasoning_chars:
+                    _turn.reasoning(thinking)
                 _turn.end("ok", text=response or "", speak=_spoken_line or "")
 
                 # ── Persist the assistant turn to conversations.db ────────────
@@ -6548,19 +6431,9 @@ class IRISGateway:
                     )
                 else:
                     friendly = f"Agent kernel error: {user_msg}"
-                # Send error as chat_message so it appears in the chat UI
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {
-                        "type": "chat_message",
-                        "payload": {
-                            "role": "error",
-                            "content": friendly,
-                            "timestamp": datetime.now().isoformat(),
-                            "turn_id": turn_id,
-                        },
-                    },
-                )
+                # The error shows in the chat as this turn's `error` part (the
+                # legacy role:error chat_message is retired, 2026-10-06; the
+                # frontend already skipped it for a live turn).
                 await self._send_error(client_id, friendly)
                 _turn.error(friendly, code="agent_error")
                 _turn.end("error", error=friendly)
@@ -11845,27 +11718,41 @@ class IRISGateway:
             await self._ws_manager.send_to_client(client_id, msg)
 
         orchestrator = get_dev_orchestrator()
+        # /run is a turn like any other (2026-10-06): its task and tool events
+        # travel as this turn's parts (the event bridge files them by the
+        # conversation's live turn), so its matrix needs no legacy courier.
+        from backend.agent.turn_protocol import TurnEmitter
+
+        _conv = self._active_conversation_id.get(session_id) or session_id
+        _loop = asyncio.get_running_loop()
+
+        def _turn_send(msg: dict) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.send_to_client(client_id, msg), _loop
+                )
+            except Exception:  # noqa: BLE001 - buffer for the reconnect replay
+                self._ws_manager.buffer_message(session_id, msg)
+
+        _turn = TurnEmitter(
+            _turn_send, turn_id=get_turn_id(), conversation_id=_conv,
+            mode="developer", prompt=str(payload.get("query") or "")[:2000],
+        )
         try:
-            # REQ-0 AC1: dispatch with the session's conversation context —
-            # /run joins the caller's active conversation thread, not a
-            # detached one, so memory follows the work (D7 rationale).
-            await orchestrator.handle_dev_cli(
-                session_id,
-                payload,
-                _ws_send,
-                conversation_id=self._active_conversation_id.get(session_id),
-            )
+            with _turn:
+                # REQ-0 AC1: dispatch with the session's conversation context —
+                # /run joins the caller's active conversation thread, not a
+                # detached one, so memory follows the work (D7 rationale).
+                await orchestrator.handle_dev_cli(
+                    session_id,
+                    payload,
+                    _ws_send,
+                    conversation_id=self._active_conversation_id.get(session_id),
+                )
+                _turn.end("ok")
         except Exception as exc:
+            # The turn's guard already filed the error part and ended it.
             self._logger.error("[DevCLI][%s] error: %s", session_id, exc)
-            await self._ws_manager.send_to_client(
-                client_id,
-                {
-                    "type": "text_response",
-                    "turn_id": get_turn_id(),
-                    "text": f"Developer CLI error: {exc}",
-                    "sender": "assistant",
-                },
-            )
 
     async def _handle_dev_abort(self, session_id: str, client_id: str) -> None:
         """Abort the active CLI subprocess for this session."""
