@@ -3169,33 +3169,14 @@ class IRISGateway:
                 pass
 
     # ------------------------------------------------------------------ #
-    # Helper: build a text_response WS message with a unique turn_id.   #
-    # Every text_response MUST carry a turn_id so the frontend dedup     #
-    # logic can reject duplicates (Issue #2 from the audio pipeline      #
-    # audit).  Use this method everywhere we dispatch text_response.     #
+    # The _text_response helper that built text_response frames with a fresh
+    # turn_id is DELETED (2026-10-07). Its last production callers were the
+    # chat reply frames, which now ride the turn protocol; the few frames it
+    # would still build (voice user echo, web research, dev_cli / dev_abort,
+    # terminal error) construct their dict inline at their own site. Keeping
+    # an uncalled helper with a "use this everywhere" comment only invited
+    # new legacy couriers.                                                          #
     # ------------------------------------------------------------------ #
-    @staticmethod
-    def _text_response(
-        text: str,
-        sender: str = "assistant",
-        *,
-        turn_id: str | None = None,
-        thinking: str | None = None,
-        suggestions: list[dict] | None = None,
-        **kw,
-    ) -> dict:
-        msg: dict = {
-            "type": "text_response",
-            "turn_id": turn_id or get_turn_id(),
-            "text": text,
-            "sender": sender,
-        }
-        if thinking is not None:
-            msg["thinking"] = thinking
-        if suggestions is not None:
-            msg["suggestions"] = suggestions
-        msg.update(kw)
-        return msg
 
     async def _process_voice_transcription(
         self, session_id: str, client_id: str, transcript: str, audio_context: str,

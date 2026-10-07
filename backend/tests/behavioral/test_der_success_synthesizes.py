@@ -126,6 +126,18 @@ def _build_kernel():
     kernel._der_node_record_evidence = (
         agent_kernel.AgentKernel._der_node_record_evidence
     )
+    # Same auto-stub defect, third site: the loop returns the final answer
+    # through `_goal_contract_name_blocked` (agent_kernel.py:11552). A
+    # MagicMock is truthy, so the auto-stub made the loop RETURN a MagicMock
+    # instead of the deterministic summary. Bind the real guard: it reads
+    # `_goal_contract_blocked_texts()` (empty here, so no blocked facts) and
+    # returns the answer unchanged. No assertion below changes - the fallback
+    # test still asserts the summary text itself.
+    kernel._goal_contract_name_blocked = (
+        agent_kernel.AgentKernel._goal_contract_name_blocked.__get__(
+            kernel, agent_kernel.AgentKernel
+        )
+    )
     return kernel
 
 
@@ -193,6 +205,9 @@ def test_success_path_synthesizes_not_raw_concat(caplog):
                 "done-when: quantum pricing found and summarized | "
                 "remaining: search the web for quantum pricing"
             ),
+            # The node record marks this result bounded (REQ-8 AC1 compressed
+            # node record); the key is part of the evidence synthesis reads.
+            "bounded": True,
             "success": True,
         }
     ]

@@ -62,12 +62,18 @@ def turn(monkeypatch):
 
 
 # BT-1 fixture: a substantial CONVERSATIONAL answer (no show payload).
+# The blocks are joined with a trailing space each; the reply path strips the
+# tail (strip_leading_narration .strip()), so the fixture strips once here to
+# match the shape the seam actually returns (the three bt1/bt5/bt9 guards
+# compare the reply with == down to the tail).
 LONG_ANSWER = (
-    "Your system has 32 GB of RAM installed and Windows 11 Pro build 26100. "
-    "The dev server runs next dev on port 3000 with Turbopack enabled. "
-    "The backend listens on 8000 and serves the websocket bridge. "
-    "Porcupine wake-word detection is active with two keywords loaded. "
-) * 8  # ~1500+ chars
+    (
+        "Your system has 32 GB of RAM installed and Windows 11 Pro build 26100. "
+        "The dev server runs next dev on port 3000 with Turbopack enabled. "
+        "The backend listens on 8000 and serves the websocket bridge. "
+        "Porcupine wake-word detection is active with two keywords loaded. "
+    ) * 8
+).strip()  # ~1500+ chars
 
 SHOW_PAYLOAD = json.dumps({
     "speak": "I wrote the report — it's on the card.",
@@ -117,7 +123,7 @@ def test_bt5_web_synthesis_without_show_still_renders_no_card(turn):
     synthesis = (
         "## Findings\n\nThe crawl found three relevant pages. "
         "(Based on captured web evidence.) " * 6
-    )
+    ).strip()  # the reply path strips the tail (see LONG_ANSWER above)
     out, k, bus = turn(synthesis, zone="reference")
     assert out == synthesis
     assert bus.renders == [], "web synthesis without show must not fabricate"
