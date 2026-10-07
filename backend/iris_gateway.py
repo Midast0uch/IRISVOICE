@@ -1383,12 +1383,31 @@ class IRISGateway:
                             onnx_model.path if onnx_model else None
                         )
 
-                    sensitivity = values.get("wake_word_sensitivity")
-                    if sensitivity is not None:
-                        # UI slider is 1-10; detector threshold needs 0.0-1.0
-                        config_updates["detection_sensitivity"] = (
-                            float(sensitivity) / 10.0
-                        )
+                    # Sensitivity: the settings card field is
+                    # `detection_sensitivity`, a 0-100 slider (core_models.py).
+                    # The gateway used to read a DIFFERENT key
+                    # (`wake_word_sensitivity`, 1-10) and divide by 10, so the
+                    # value the user actually saved was DISCARDED and the stored
+                    # sensitivity never moved (live 2026-10-07: the card sent
+                    # detection_sensitivity=70 and the bar did not change). Read
+                    # the real field, scale by 100, and keep the old 1-10 key as
+                    # a fallback for older clients. The detector maps this 0-1
+                    # onto its threshold band (higher = MORE sensitive).
+                    _sens_raw = values.get("detection_sensitivity")
+                    _sens_scale = 100.0
+                    if _sens_raw is None:
+                        _sens_raw = values.get("wake_word_sensitivity")
+                        _sens_scale = 10.0
+                    if _sens_raw is not None:
+                        try:
+                            config_updates["detection_sensitivity"] = max(
+                                0.0, min(1.0, float(_sens_raw) / _sens_scale)
+                            )
+                        except (TypeError, ValueError):
+                            self._logger.warning(
+                                "[%s] ignoring non-numeric wake_word_sensitivity=%r",
+                                session_id, _sens_raw,
+                            )
 
                     wake_enabled = values.get("wake_word_enabled")
                     if wake_enabled is not None:
@@ -3706,6 +3725,44 @@ class IRISGateway:
                 _turn.reasoning(thinking)
             _log_timing("text_response_sent")
             _turn.end("ok", text=response or "", speak=spoken or "")
+
+            # ── Persist the assistant turn to conversations.db ────────────
+            # The voice path delivered the reply and spoke it, but NEVER wrote
+            # it to the store, so a voice turn vanished on reload while its
+            # TASK CARD survived (the card store has its own persistence) —
+            # an orphan DONE card with no reply beside it. Found live
+            # 2026-10-07: conversations.db held 0 messages for the voice turn
+            # a5ff2fab whose card was still on screen. Mirrors the text path
+            # above (iris_gateway.py `ws_text_message`), same resolution order:
+            # the turn's OWN conversation wins over the session mapping.
+            try:
+                from backend.conversation_store import add_message as _v_store_add
+
+                _conv_for_voice = (
+                    conversation_id
+                    or self._active_conversation_id.get(session_id)
+                    or session_id
+                )
+                if _conv_for_voice and response:
+                    _v_store_add(
+                        _conv_for_voice,
+                        "assistant",
+                        response,
+                        thinking=thinking or None,
+                        turn_id=_turn_id,
+                        source="ws_voice_transcription",
+                    )
+                    self._logger.info(
+                        "[Voice] persisted assistant turn to conv=%s (len=%d)",
+                        _conv_for_voice, len(response),
+                    )
+            except Exception as _v_persist_exc:  # noqa: BLE001
+                # A persistence failure must never fail the turn that just
+                # succeeded on screen and in the speakers.
+                self._logger.warning(
+                    "[Voice] assistant-turn persist failed for session %s: %s",
+                    session_id, _v_persist_exc,
+                )
 
         except asyncio.CancelledError:
             if _turn is not None:

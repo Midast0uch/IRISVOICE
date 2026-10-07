@@ -48,7 +48,21 @@ logger = logging.getLogger("parakeet_sherpa_worker")
 _PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(_PROJECT_DIR))
 
-_IDLE_TIMEOUT_S: float = 1200.0
+# Idle release (VRAM reclaim). The owner asked for Parakeet to be READY when
+# the backend is ready (2026-10-07), so the recognizer now stays warm by
+# default and the release is opt-in: set IRIS_PARAKEET_IDLE_TIMEOUT_S to a
+# positive number of seconds to get the old behaviour back (release when idle
+# that long, respawn on the next utterance). 0 = never release.
+#
+# REQ-1 AC1.2 originally forbade a boot load because it held ~4.2 GB while
+# idle; that trade is the owner's to revisit now that TTS also stays resident
+# (IRIS_TTS_IDLE_TIMEOUT_S=0). Measured cost of a COLD build on this machine:
+# ~56 s, which is longer than the 25 s the first utterance waits for it - so a
+# boot build is what keeps Parakeet off the reply path.
+try:
+    _IDLE_TIMEOUT_S: float = float(os.environ.get("IRIS_PARAKEET_IDLE_TIMEOUT_S", "0") or 0)
+except (TypeError, ValueError):
+    _IDLE_TIMEOUT_S = 0.0
 _last_activity: float = time.monotonic()
 
 _recognizer = None
@@ -66,7 +80,16 @@ def _note_activity() -> None:
 
 
 def _idle_watchdog() -> None:
-    """Exit cleanly after 20 min with no requests (daemon thread)."""
+    """Release the recognizer when idle, if the owner asked for that.
+
+    Disabled by default (IRIS_PARAKEET_IDLE_TIMEOUT_S=0 -> stay warm, so the
+    recognizer is ready for the first utterance). With a positive timeout the
+    old behaviour returns: exit cleanly after that long with no requests, and
+    respawn on the next utterance.
+    """
+    if _IDLE_TIMEOUT_S <= 0:
+        logger.info("idle release disabled — recognizer stays warm")
+        return
     while True:
         time.sleep(30)
         try:

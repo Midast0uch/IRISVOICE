@@ -213,6 +213,43 @@ CONTENT_ASK_VERBS = (
     "review", "translate", "discuss", "write",
 )
 
+# Work verbs the shared intent layer was missing (owner, 2026-10-07).
+#
+# These could not simply be appended to ACTION_VERBS: that list is matched by
+# SUBSTRING (`any(verb in t for verb in ACTION_VERBS)`), so "fix" also matches
+# "prefix"/"suffix"/"fixture", "port" matches "report"/"important"/"support",
+# and "patch" matches "dispatch" — the same class of defect the audit already
+# recorded for "spec"/"specific" and "doc"/"docker". They are therefore matched
+# on WORD BOUNDARIES below, which is what a verb actually is.
+#
+# Why they exist: execution audit B8 added a DEVELOPER-MODE override that
+# rewrote every question into an action, because these verbs were absent and
+# "fix the bug in foo.py" was answered conversationally. The override was the
+# wrong layer — it made INTENT differ by mode. With the verbs present in the
+# shared layer, a work request routes to the work loop in BOTH modes and the
+# override can be deleted, so intent is mode-independent (owner: "there should
+# be no difference between personal mode and developer mode besides how things
+# are displayed and the agent being able to edit/read/write its own code").
+WORK_VERBS = (
+    "fix", "implement", "refactor", "migrate", "rename", "optimize",
+    "optimise", "patch", "port", "upgrade", "rewrite", "rework", "harden",
+    "investigate", "diagnose", "troubleshoot", "reproduce",
+)
+_WORK_VERB_RE = re.compile(
+    r"\b(?:" + "|".join(WORK_VERBS) + r")(?:s|es|ed|d|ing)?\b"
+)
+
+
+def has_work_verb(text: str) -> bool:
+    """True when the text asks for WORK to be done (word-boundary matched).
+
+    Mode-independent by construction: this is the shared intent layer, so
+    "fix the bug in foo.py" routes to the work loop in personal AND developer
+    mode. Only DISPLAY (matrix vs compact card) and CAPABILITY (edit / read /
+    write its own code) may differ by mode - never the routing decision.
+    """
+    return bool(_WORK_VERB_RE.search((text or "").lower()))
+
 
 # Web-search trigger phrases (migrated from _is_web_search_request, 4540-4560).
 WEB_SEARCH_TRIGGERS = [
@@ -391,7 +428,7 @@ def tier0_classify(text: str, context=None) -> Tier0Verdict:
     # Layer 2 — cheap keyword/intent match.
     if is_web_search_request(text):
         return Tier0Verdict(intent=Tier0Intent.WEB, is_web_search=True)
-    if any(verb in t for verb in ACTION_VERBS):
+    if any(verb in t for verb in ACTION_VERBS) or has_work_verb(t):
         return Tier0Verdict(intent=Tier0Intent.ACTION)
 
     # Layer 3 — ambiguous middle: follow-up to a prior task -> DER (safe).
@@ -1040,15 +1077,21 @@ class SemanticLogicGate:
         embedding tier (Tier 1) was removed — the gate routes on rules +
         coordinates, matching the app's coordinate-graph memory.
 
-        ``developer`` (execution audit B8): in developer mode every request
-        that is not chitchat goes to the work loop. The verb list matches
-        substrings and lacks "fix", "implement", "refactor", "debug", so
-        "fix the bug in foo.py" was answered on the direct path.
+        ``developer`` is DISPLAY + CAPABILITY, never INTENT (owner, 2026-10-07).
+        It used to rewrite every question into an action, so a knowledge
+        question in developer mode ran the whole work loop (and "fix the bug"
+        only worked there, because the shared verb list had no "fix"). The
+        missing verbs now live in the shared layer as WORK_VERBS, so a work
+        request routes to the loop in BOTH modes and a question does not, in
+        either. Personal mode is the standard and the foundation: the two modes
+        may differ in how a turn is DRAWN (matrix rows vs compact cards) and in
+        what the agent is ALLOWED to do (edit / read / write its own code) —
+        never in what kind of turn it is. ``developer`` is still accepted and
+        recorded so those layers can read it; the routing decision ignores it.
         """
         _t0 = time.perf_counter()
         verdict = tier0_classify(text, context)
-        if developer and verdict.intent in (Tier0Intent.QUESTION, Tier0Intent.FOLLOWUP):
-            verdict = Tier0Verdict(intent=Tier0Intent.ACTION)
+        graph_developer = bool(developer)
 
         # Tier 2 — ontology axes + shared recall (only when memory is wired).
         t2 = Tier2Result()

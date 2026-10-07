@@ -35,28 +35,55 @@ FRAME_LENGTH: int = 320
 # Default wake phrase label returned on detection.
 WAKE_PHRASE: str = "Hey Iris"
 
-# Detection threshold — measured on this model, NOT the SDK's tuned default.
+# Detection threshold — MEASURED on the real microphone path (2026-10-07).
 #
-# The SDK default is 0.80, but 0.80 sits ABOVE the wake phrase's own peak
-# score, so the detector could never fire (session-280 root cause). Measured
-# end-to-end through this adapter using 512-sample engine frames:
+# The old 0.70 was measured with a synthetic TTS probe and is NOT reproducible.
+# Live measurement, same waveform pushed through this same detector at five
+# input levels spanning 25x (0.02 - 0.50 RMS):
 #
-#   "Hey Iris" @16 kHz (TTS probe, 5 injections) ... 0.773 - 0.786
-#   quiet room tone (worst negative) ................ 0.572 - 0.599
-#   loud broadband noise ............................ 0.420
-#   syllabic / speech-like .......................... 0.376
-#   tonal / music ................................... 0.303
+#   "Hey Iris" (TTS) ........... 0.630 / 0.662 / 0.655 / 0.645 / 0.649
+#   -> FLAT across level: the detector is not level-sensitive and there is NO
+#      attenuation in the engine path (the same float32 frame feeds the wake
+#      detector and the VAD). A live human utterance peaked at 0.594 with the
+#      VAD reading RMS 0.2562 - i.e. the same place on the curve.
+#   room / background noise (live, [WAKE-PROBE]) ... 0.227 - 0.544, usual 0.44-0.49
 #
-# 0.70 clears the worst measured negative by 0.10 and the weakest measured
-# positive by 0.07. The "silence scores up to 0.598" figure that originally
-# drove the 0.80 choice was the mel-buffer startup transient (the backbone
-# seeds its mel buffer with np.ones), not steady state — steady-state digital
-# silence settles at 0.401.
+# So the phrase tops out near 0.59-0.65 and the OLD 0.70 bar sat ABOVE it: the
+# wake word could never fire, at any volume, in any room. 0.55 sits between the
+# measured noise peak (0.49) and the phrase peak (0.594) - tight by nature, so
+# the streak gate (must hold above the bar across consecutive chunks, then
+# release) is what filters clicks and transient noise, not the raw peak.
 #
-# NOTE: 0.70 is a FLOOR, not a final value. WakeConfig detection_sensitivity
-# (0.0-1.0, default 0.65) is combined as max(DEFAULT_THRESHOLD, sensitivity),
-# so lowering sensitivity below 0.70 has no effect; raise it to be stricter.
-DEFAULT_THRESHOLD: float = 0.70
+# The whole distribution had shifted down ~0.12 against the old comment while
+# keeping its separation, so the FIX is the floor, not the model.
+DEFAULT_THRESHOLD: float = 0.55
+
+# The sensitivity control maps ONTO this band instead of being ignored below a
+# floor. It was inverted as well as inert: `max(DEFAULT_THRESHOLD, sensitivity)`
+# made a HIGHER "sensitivity" RAISE the bar, the opposite of the label, and
+# anything under the floor did nothing at all (the stored value was 0.378 -> no
+# effect). Now: sensitivity 0.0 = strictest (THRESHOLD_MAX), 1.0 = most
+# sensitive (THRESHOLD_MIN). The 0.65 default lands on 0.555.
+THRESHOLD_MIN: float = 0.45   # most sensitive end of the measured-safe band
+THRESHOLD_MAX: float = 0.75   # strictest end (a little above the noise peak)
+
+
+def threshold_for_sensitivity(sensitivity: float) -> float:
+    """Map a 0.0-1.0 sensitivity onto the measured threshold band.
+
+    Monotonically DECREASING in sensitivity, which is what the label promises:
+    more sensitive = lower bar = fires more readily. Clamped to
+    [THRESHOLD_MIN, THRESHOLD_MAX] so the control can never walk the bar into
+    the room's own noise floor.
+    """
+    try:
+        s = float(sensitivity)
+    except (TypeError, ValueError):
+        s = 0.65
+    if s != s:  # NaN
+        s = 0.65
+    s = max(0.0, min(1.0, s))
+    return THRESHOLD_MIN + (1.0 - s) * (THRESHOLD_MAX - THRESHOLD_MIN)
 
 # ── Anti-retrigger / anti-false-positive guards ───────────────────────────
 # The head's receptive window is ~720 ms, so one spoken "Hey Iris" holds the
@@ -208,10 +235,10 @@ class ViolawakeWakeWordDetector:
         self._sensitivity = sensitivity
         self._providers = providers or ["CPUExecutionProvider"]
 
-        # 0.70 is a measured floor, not the SDK default (0.80 sits above the
-        # wake phrase's own peak — see DEFAULT_THRESHOLD). A higher sensitivity
-        # value raises the threshold above the floor.
-        self._threshold = max(DEFAULT_THRESHOLD, float(sensitivity))
+        # Sensitivity maps ONTO the measured band (threshold_for_sensitivity):
+        # 0.65 (the default) -> 0.555. A higher sensitivity value LOWERS the
+        # bar, which is what the label promises; see THRESHOLD_MIN/MAX.
+        self._threshold = threshold_for_sensitivity(sensitivity)
 
         # Bounded remainder buffer for frames not aligned to 320 samples.
         # Max 319 samples after each call — never accumulates unbounded.
@@ -313,21 +340,25 @@ class ViolawakeWakeWordDetector:
 
             # SDK adaptive threshold (K4): per-frame dynamic bar driven by a
             # rolling noise-floor estimate. Raises only for near-floor frames
-            # (quiet-room sustained mush); never below DEFAULT_THRESHOLD, so
-            # quiet-condition behavior is unchanged. Absent on older SDKs —
-            # the gate degrades to the fixed threshold, never to an error.
+            # (quiet-room sustained mush). The floor is the CONFIGURED bar
+            # (self._threshold, i.e. the sensitivity mapping), NOT the module
+            # default: pinning min_threshold to DEFAULT_THRESHOLD used to
+            # override the slider and hold the bar at 0.70. Absent on older
+            # SDKs — the gate degrades to the fixed threshold, never to an error.
             try:
                 from violawake_sdk import NoiseProfiler
 
                 self._profiler = NoiseProfiler(
                     base_threshold=self._threshold,
-                    min_threshold=DEFAULT_THRESHOLD,
-                    max_threshold=PROFILER_MAX_THRESHOLD,
+                    min_threshold=self._threshold,
+                    max_threshold=max(PROFILER_MAX_THRESHOLD, self._threshold),
                     frames_per_second=50.0,  # 320 samples @16 kHz = 20 ms
                 )
                 logger.info(
                     "[ViolawakeDetector] Adaptive threshold on "
-                    f"(floor={DEFAULT_THRESHOLD}, ceiling={PROFILER_MAX_THRESHOLD})"
+                    f"(floor={self._threshold:.3f}, "
+                    f"ceiling={max(PROFILER_MAX_THRESHOLD, self._threshold):.3f}, "
+                    f"sensitivity={self._sensitivity:.2f})"
                 )
             except Exception as exc:
                 self._profiler = None

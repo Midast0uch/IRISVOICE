@@ -296,42 +296,52 @@ async def lifespan(app: FastAPI):
             logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
             raise
 
-        # REQ-1 AC1.2: NO Parakeet model load at boot (it added ~4.2 GB to the
-        # idle footprint). Parakeet builds LAZILY at the first wake word; the
-        # recognizer idle-releases after 20 min of no requests.
+        # REQ-1 AC1.2 said: NO Parakeet model load at boot (it added ~4.2 GB to the
+        # idle footprint), so the recognizer built lazily at the first wake word
+        # and idle-released after 20 min.
         # History: 2026-09-03..10-04 a background faster-whisper warm-up covered
         # the first utterance (cold `import ctranslate2` ~126 s on this HDD hit
         # the 60 s watchdog); it waited for 90 s + 20 s idle (eval c01 lost
         # 220 s to it once) and pre-read its files in a low-priority child.
-        # 2026-10-05 (owner): Whisper is the FALLBACK only - no warm-up. The
-        # first voice command already starts Parakeet at the wake word and
-        # waits up to 25 s for it; Whisper loads only if Parakeet fails. The
-        # Whisper warm-up once took 22 min under disk load (its child yields
-        # the disk) and the eval gate waited on it. What the first command
-        # needs is Parakeet's files warm: read them at idle in a low-priority
-        # child (no model built, nothing held in IRIS memory).
-        def _delayed_parakeet_prewarm():
+        # 2026-10-05 (owner): Whisper is the FALLBACK only - no warm-up.
+        # 2026-10-07 (owner): Parakeet warms WITH the backend, like TTS. The
+        # 25 s wait could not cover a ~56 s cold build on this disk, so the
+        # fallback fired while Parakeet was 0.14 s from ready. That 90 s + idle
+        # file pre-read is deleted: building the recognizer reads the files too,
+        # and doing it at boot is what keeps Parakeet off the reply path.
+        # WHAT THIS UNDOES: REQ-1 AC1.2's ~4.2 GB idle footprint. It is now the
+        # owner's to accept (TTS already holds 1-2 GB resident by the same
+        # decision); IRIS_PARAKEET_IDLE_TIMEOUT_S puts the release back.
+        # PARAKEEPET WARMS AT BOOT (owner 2026-10-07): the recognizer is built in
+        # a SUBPROCESS during startup, so the first utterance finds it ready.
+        #
+        # Why this reversed REQ-1 AC1.2 (which forbade a boot load for a ~4.2 GB
+        # idle footprint): measured on this machine, a COLD Parakeet build takes
+        # ~56 s, while the first utterance waits only 25 s for it
+        # (voice_command.py `_transcribe_via_parakeet`). So Parakeet was
+        # declared "not ready" and the turn fell back to faster-whisper on CPU —
+        # measured live 2026-10-07: Parakeet became ready 0.14 s AFTER the
+        # fallback fired, and the turn paid 16.7 s of CPU recognition (rtf 3.39x)
+        # plus a 60 s watchdog breach that reported a false error.
+        #
+        # The build runs on a daemon thread in an isolated process: it never
+        # blocks the event loop, and `/health` is NOT gated on it (TTS readiness
+        # still is). Whisper stays the FALLBACK only and is not warmed. The
+        # recognizer now also stays resident (IRIS_PARAKEET_IDLE_TIMEOUT_S=0);
+        # set it to a positive number to restore the old VRAM reclaim.
+        def _parakeet_boot_warm():
             try:
-                import time as _t
-                from backend.audio import parakeet_sherpa as _ps
-                from backend.core.idle_tracker import get_idle_tracker as _git
-
-                _t.sleep(90)
-                while not _git().is_idle(threshold_s=20.0):
-                    _t.sleep(5)
-                _ps.prewarm_files()
+                voice_handler._parakeet_warm_up()
             except Exception as _w_exc:
-                logger.warning(
-                    f"    [x] [VOICE HANDLER] Parakeet file pre-read failed: {_w_exc}"
-                )
+                logger.warning(f"    [x] [PARAKEET] Boot warm failed (non-fatal): {_w_exc}")
 
         import threading as _threading
         _threading.Thread(
-            target=_delayed_parakeet_prewarm, daemon=True, name="iris-parakeet-prewarm"
+            target=_parakeet_boot_warm, daemon=True, name="iris-parakeet-boot-warm"
         ).start()
         logger.info(
-            "    [+] [VOICE HANDLER] Parakeet file pre-read scheduled (+90 s, then 20 s idle); "
-            "faster-whisper loads only if Parakeet fails"
+            "    [+] [PARAKEET] GPU recognizer build started at boot (subprocess, "
+            "non-blocking); faster-whisper remains the fallback only"
         )
 
         # ==========================================================================
