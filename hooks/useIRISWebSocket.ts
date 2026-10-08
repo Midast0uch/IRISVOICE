@@ -1233,10 +1233,24 @@ export function useIRISWebSocket(
         break
       }
 
-      // ── Parakeet ASR voice result ─────────────────────────────────────────
-      // Backend broadcasts the final ASR transcript (from Parakeet service)
-      // to all clients in the session.  chat-view.tsx listens for
-      // iris:voice_final to show the user's spoken text as a message.
+      // ── Phonon-2 ASR interim hypothesis (Wave 1, phonon2-d1-model-swap) ──
+      // Backend broadcasts the CURRENT interim transcript ~2x/s while the
+      // user speaks (Phonon-2 live streaming). chat-view.tsx listens for
+      // iris:voice_interim to show provisional text; iris:voice_final
+      // replaces it with the real user message.
+      case "voice_interim": {
+        if (typeof window !== 'undefined' && typeof payload.text === 'string') {
+          window.dispatchEvent(new CustomEvent('iris:voice_interim', {
+            detail: { text: payload.text }
+          }))
+        }
+        break
+      }
+
+      // ── ASR voice result (final transcript) ─────────────────────────────
+      // Backend broadcasts the final ASR transcript to all clients in the
+      // session.  chat-view.tsx listens for iris:voice_final to show the
+      // user's spoken text as a message.
       case "voice_result": {
         if (typeof window !== 'undefined' && typeof payload.text === 'string') {
           window.dispatchEvent(new CustomEvent('iris:voice_final', {

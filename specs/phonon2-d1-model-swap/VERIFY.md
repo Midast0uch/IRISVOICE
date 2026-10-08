@@ -1,6 +1,92 @@
-# VERIFY.md — Wave 0 gate records (TG-0)
+# VERIFY.md — Wave 0 + Wave 1 gate records (TG-0, TG-1)
 
 Spec: specs/phonon2-d1-model-swap/ — Date: 2026-10-08 — Session 391
+
+## WAVE 1 — Phonon-2 streaming STT swap (TG-1): GREEN
+
+### T1.1-T1.4 — Code changes (commit follows this record)
+- NEW `backend/audio/phonon2_stream.py`: fermion server manager (lazy spawn,
+  health poll, idle exit 20 min, sticky failure) + Phonon2StreamClient
+  (begin_utterance / feed_frame / finish / abort; partials callback; timing).
+  The engine is a SUBPROCESS (torch never loads in the backend process) —
+  the same isolation seam ParakeetTranscriber used.
+- `backend/audio/voice_command.py`: ParakeetTranscriber DELETED (450 lines);
+  PARAKEET_RETIRED=True + `_assert_single_stt_engine()` boot guard (C1/C2);
+  `_phonon2` client wired at the same seam; `_capture_frame` feeds the live
+  stream (second consumer, best-effort); `_finalize_via_phonon2()` replaces
+  `_transcribe_via_parakeet()`; whisper = FINAL-segment fallback only;
+  `set_interim_callback` added; cancel/no-speech paths abort the stream.
+- `backend/main.py`: boot warm → `_phonon2_warm_up`; AUDIO DIAG line updated.
+- `backend/iris_gateway.py`: `set_interim_callback(self._on_voice_interim)`;
+  `_on_voice_interim` broadcasts `{"type":"voice_interim"}` to the session.
+- `backend/tools/media_tools.py`: transcribe_media rewired from the retired
+  :8765 service to the fermion server's POST /v1/audio/transcriptions
+  (Whisper API shape; PCM chunks wrapped in WAV; server ensured lazily) —
+  the :8765 service's one REST consumer is migrated (REQ-3 AC3.2).
+- `start_all.py`: the Parakeet :8765 service block REMOVED from boot (C1).
+- `.env` / `.env.example`: IRIS_PARAKEET_PROVIDER block replaced by the
+  IRIS_PHONON2_* documentation block.
+- Frontend: `useIRISWebSocket.ts` voice_interim case → iris:voice_interim
+  event; `chat-view.tsx` interim state + provisional banner (fixed-position,
+  cleared by iris:voice_final). `npx tsc --noEmit` clean.
+
+### LIVE PROOF (the retirement guard fired on a REAL stale config)
+- First boot attempt FAILED LOUDLY exactly as AC11.3 requires:
+  `RuntimeError: Parakeet is RETIRED (PARAKEET_RETIRED=True...) but the
+  environment still sets ['IRIS_PARAKEET_PROVIDER']` — the guard caught the
+  stale `.env` line on a real boot, proving C1/AC2.3/AC11.3 live.
+- After cleaning `.env`: backend boots, log shows
+  `[PHONON2] STT server spawn started at boot` → `[Phonon2] server ready on
+  :8766 (boot 62.4s)` → `[VoiceCommand] Phonon-2 server warm - first
+  utterance will stream`. Wake word READY, pipeline RUNNING.
+- Fix found live: the first boot's 150s health budget TERMINATED a
+  healthy-but-slow server (cold compile under backend-boot CPU contention).
+  Fixed: timeout no longer kills the process (next ensure() adopts it);
+  budget raised to 300s. The failure was the manager's, not the server's.
+
+### T1.5 — Tests: GREEN (62 + combo)
+- NEW `backend/tests/unit/test_voice_command_phonon2.py` (12 tests): finalize
+  timing fields, phonon-2_failed/_empty backend strings, never-parakeet
+  assertion, retirement guard, stream-client fail-soft, WAV wrapper, URL.
+- NEW `backend/tests/behavioral/test_voice_whisper_to_phonon2_flow.py`:
+  utterance-1 whisper → utterance-2 stream takeover; stream-death fallback.
+- UPDATED (same intent, new seam — inputs changed, called out): 
+  test_latency_metrics.py (+unit copy): parakeet section → _finalize_via_phonon2;
+  test_barge_in.py (+unit copy): `h._parakeet` → `h._phonon2`.
+- DELETED with reason: test_voice_command_parakeet.py (both copies — seam
+  replaced), test_voice_whisper_to_parakeet_flow.py (replaced),
+  test_parakeet_prewarm_child_contract.py (pinned `_delayed_parakeet_prewarm`,
+  which no longer exists in main.py — stale-red BEFORE this wave, verified
+  by baseline).
+- Cross-file pollution found and fixed: my reload-based guard test poisoned
+  sys.modules for the session (16 combo failures); rewritten to call the
+  guard directly. Combo now: 201 passed, 3 failed — all 3 verified
+  PRE-EXISTING on HEAD (pvporcupine requirements pin, VAD silence constants
+  pin, TTS word count; baselined by checkout-and-rerun).
+- Kept for T5.3 (still-valid module tests): test_parakeet_service.py,
+  test_parakeet_integration.py (+integration copies),
+  test_parakeet_provider_contract.py.
+
+### T1.6 — LIVE gate: PASS (with one named limitation)
+- Backend live on 8090; fermion server live on 8766 (spawned BY the backend
+  at boot); no parakeet process anywhere.
+- End-to-end seam drive through the EXACT Phonon2StreamClient class the
+  handler uses, against the live server: exact transcript
+  'Hey Iris Open the browser and search for the tallest mountain in Africa.',
+  11 partials, first partial 0.62 s, finalize 6.47 s for a 5.67 s utterance.
+- stt_backend strings: code path emits 'phonon-2' / 'phonon-2_failed' /
+  'phonon-2_empty' — never 'parakeet*' (asserted by unit test).
+- LIMITATION (named): the physical mic → _capture_frame feed and the
+  voice_interim WS event → frontend banner are the unchanged AudioEngine
+  path and the new broadcast; they need ONE spoken utterance from the
+  owner with the frontend up to close fully (Mode B manual check). Every
+  other link is live-proven.
+
+## TG-1 gate verdict: GREEN
+T1.5 tests green; T1.6 live-measured. The one named limitation (mic-level
+manual check) does not block Wave 2 (vision + role binding) — disjoint code.
+
+---
 
 ## T0.4 — Baseline quality gate: PASS
 - Command: `python -m pytest backend/tests/contract/test_decision_engine_contract.py backend/tests/contract/test_bar_record_enforcement.py backend/tests/contract/test_model_pin.py backend/tests/unit/test_tool_decision_threshold_resolution.py -q`

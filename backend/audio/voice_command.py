@@ -9,9 +9,12 @@ Flow:
   1. iris_gateway calls start_recording(auto_stop=True)   ← wake word path
      or start_recording(auto_stop=False)                  ← double-click path
   2. AudioEngine frame listener (_capture_frame) accumulates float32 PCM frames
+     AND feeds them live to the Phonon-2 stream (interim hypotheses, REQ-1)
   3a. auto_stop=True:  energy-based VAD loop detects end-of-speech silently
   3b. auto_stop=False: stop_recording() is called by user or gateway
-  4. Accumulated audio is passed to faster-whisper.transcribe()
+  4. At end-of-speech the Phonon-2 stream final becomes the transcript;
+     faster-whisper (tiny/int8 CPU) transcribes the captured buffer only as
+     the FINAL-segment fallback (stream cold/dead/empty — REQ-1 AC1.2)
   5. _on_command_result callback → iris_gateway._on_voice_result → agent pipeline
 """
 
@@ -60,459 +63,39 @@ _PROJECT_ROOT = os.path.dirname(
 )
 
 
-class ParakeetTranscriber:
-    """sherpa-onnx Parakeet GPU ASR transcriber (in-process).
+# ── STT engine retirement record (C2, specs/phonon2-d1-model-swap REQ-11) ──
+# Parakeet (sherpa-onnx GPU ASR) was RETIRED 2026-10-08 and replaced by
+# Phonon-2 live streaming on CPU (backend/audio/phonon2_stream.py). The
+# ParakeetTranscriber class that lived here is deleted; the standalone
+# :8765 service (backend/audio/parakeet_service.py) is retired with it.
+# Nothing may fall back to Parakeet: a boot that finds IRIS_PARAKEET_*
+# set must fail loudly (see _assert_single_stt_engine below), never
+# silently resurrect the retired engine.
+PARAKEET_RETIRED = True
 
-    Parakeet TDT 0.6B v3 runs through the sherpa-onnx native runtime instead
-    of the old transformers subprocess worker: ~1-2 s import, ~4-12 s cold
-    session build, sub-second inference (measured 2026-09-03). The public
-    surface is unchanged — lazy first-use spawn, faster-whisper fallback
-    until ready, sticky failure, idle VRAM release — so the pipeline,
-    the latency strings ("parakeet*") and the mocked unit tests behave
-    exactly as before.
+# The Phonon-2 streaming client: lazy server spawn, interim hypotheses,
+# final at VAD end-of-speech, whisper fallback for finals (REQ-1 AC1.1/1.2).
+from .phonon2_stream import Phonon2StreamClient
 
-    The recognizer is built lazily on first transcription attempt (never at
-    backend boot, preserving the 0.41 GB idle profile). Until the build
-    finishes, all transcriptions fall back to faster-whisper. A persistent
-    build failure is sticky and keeps the whisper fallback available
-    permanently.
+
+def _assert_single_stt_engine() -> None:
+    """C1/AC2.3: refuse a boot that asks for the retired Parakeet engine.
+
+    Two ASR engines live at once is both a correctness and a VRAM hazard;
+    an explicit IRIS_PARAKEET_* request means a stale config is trying to
+    resurrect the retired engine. Fail loudly with the retirement flag
+    named (AC11.3), never silently run both.
     """
-
-    # Sherpa model + provider come from backend.audio.parakeet_sherpa
-    # (IRIS_PARAKEET_PROVIDER, default "cpu" — measured fastest for the int8
-    # build; "cuda" reserved for future fp16 weights with real CUDA kernels). The engine
-    # runs in a dedicated worker SUBPROCESS (parakeet_sherpa_worker) so the
-    # backend's preloaded wake-word onnxruntime can never clash with the
-    # CUDA provider load (2026-09-03 DLL-hell failure).
-    _WORKER_MODULE = "backend.audio.parakeet_sherpa_worker"
-    _MAX_RESTARTS = 3
-
-    # Per-utterance inference budget. sherpa decode of a <=30 s VAD-capped
-    # clip takes seconds; the bound exists so a wedged GPU cannot park the
-    # transcription thread — the old untimed pipe read wedged the pipeline
-    # for minutes (2026-09-01: first transformers inference cost 50-200 s
-    # of CUDA JIT while the LLM shared the GPU).
-    TRANSCRIBE_TIMEOUT_SEC: float = 90.0
-
-    # Warm-up inference budget: bounded so a wedged worker cannot hang the
-    # spawn thread forever.
-    WARMUP_TIMEOUT_SEC: float = 300.0
-
-    # Idle-release timeout (REQ-1 AC1.6, mirrors the old worker idle-exit):
-    # drop the recognizer after this long with no requests so VRAM/RAM is
-    # reclaimed; the next utterance rebuilds lazily.
-    _IDLE_TIMEOUT_S: float = 1200.0
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        # Serialises a full request/response exchange. Separate from _lock
-        # (which guards lifecycle flags) so state reads never block behind an
-        # in-flight transcription.
-        self._io_lock = threading.Lock()
-        # Responses arrive on this queue, filled by a dedicated reader thread.
-        # Using a queue is what makes a timeout possible: `readline()` on a
-        # pipe has no timeout on Windows.
-        self._responses: "queue.Queue[dict]" = queue.Queue()
-        # Responses belonging to timed-out requests. The reader drops one
-        # late response per abandoned request so a slow reply can never be
-        # delivered to the NEXT caller as a stale transcript.
-        self._stale_lock = threading.Lock()
-        self._stale = 0
-        self._reader_thread = None
-        self.last_timestamps: list = []  # word timestamps of last decode
-        self._loaded = False
-        self._load_error = None
-        self._loading = False
-        self._proc = None
-        self._restart_count = 0
-
-# -- public API (same as the old in-process class) ---------------------
-
-    def _ensure_loaded(self) -> bool:
-        """Start the sherpa worker process without blocking the caller.
-
-        The first caller spawns the background worker and immediately returns
-        False; the audio pipeline routes that utterance to faster-whisper.
-        Later calls keep using faster-whisper until the worker reports
-        ready, then automatically switch to the GPU path.
-        """
-        with self._lock:
-            if self._loaded:
-                return True
-            if self._load_error is not None or self._loading:
-                return False
-            self._loading = True
-
-        threading.Thread(
-            target=self._load_model_worker,
-            daemon=True,
-            name="iris-parakeet-spawner",
-        ).start()
-        logger.info(
-            "[Parakeet] Recognizer build started; faster-whisper remains "
-            "available until the GPU model is ready"
+    stale = [k for k in os.environ if k.startswith("IRIS_PARAKEET")]
+    if stale:
+        raise RuntimeError(
+            f"Parakeet is RETIRED (PARAKEET_RETIRED=True, phonon2-d1-model-swap "
+            f"Wave 1) but the environment still sets {stale}. Remove them; "
+            f"Phonon-2 (IRIS_PHONON2_PORT) is the STT engine."
         )
-        return False
 
-    def wait_ready(self, timeout: float = 30.0) -> bool:
-        """Block until the sherpa worker is loaded, fails, or timeout elapses.
 
-        The primary STT engine (Parakeet GPU) resolves itself in ~17-22 s on
-        a cold start. Rather than bailing to the CPU whisper fallback the
-        moment it is "still loading" (which can itself hang on the whisper
-        lock — see _get_whisper), the transcription path waits a bounded time
-        for the GPU engine. Returns True if loaded, False on timeout or
-        permanent load error.
-        """
-        import time as _t
-        _deadline = _t.monotonic() + timeout
-        while _t.monotonic() < _deadline:
-            with self._lock:
-                if self._loaded:
-                    return True
-                if self._load_error is not None:
-                    return False
-            _t.sleep(0.2)
-        return False
-
-    def _load_model_worker(self) -> None:
-        """Spawn the sherpa worker subprocess and wait for its "ready" signal.
-
-        The worker owns the ONLY onnxruntime in its process, so the backend's
-        preloaded wake-word ORT can never clash with the CUDA provider (the
-        2026-09-03 DLL-hell failure). Spawn costs ~2 s (plain interpreter +
-        small native lib, no torch import); the model build itself (~4-13 s)
-        happens inside the worker. Until _loaded flips, callers keep using
-        faster-whisper. A spawn failure is sticky.
-        """
-        import subprocess as _sp
-        import sys as _sys
-
-        try:
-            logger.info("[Parakeet] Spawning sherpa worker subprocess...")
-            _env = dict(os.environ)
-            _env.setdefault("HF_HUB_OFFLINE", "1")
-            _env["PYTHONPATH"] = (
-                str(_PROJECT_ROOT) + os.pathsep + _env.get("PYTHONPATH", "")
-            )
-            # cuDNN for the worker's CUDA provider: probe the path only via the
-            # shared helper (never imports torch — that cost the backend ~1 GB
-            # on first speech before this fix).
-            try:
-                from .parakeet_sherpa import torch_lib_dir as _torch_lib_dir
-
-                _torch_lib = _torch_lib_dir()
-                if _torch_lib:
-                    _env["PATH"] = _torch_lib + os.pathsep + _env.get("PATH", "")
-            except Exception:
-                pass
-            proc = _sp.Popen(
-                [_sys.executable, "-m", self._WORKER_MODULE],
-                stdin=_sp.PIPE,
-                stdout=_sp.PIPE,
-                # stderr is INHERITED, deliberately not a pipe. An undrained
-                # pipe fills at ~64 KB and then BLOCKS the worker mid-write.
-                stderr=None,
-                text=True,
-                bufsize=1,  # line-buffered
-                cwd=str(_PROJECT_ROOT),
-                env=_env,
-            )
-            self._proc = proc
-
-            # Handshake: read until "ready" / "error" / EOF.
-            ready = False
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    break  # stdout closed — the process exited
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except json.JSONDecodeError:
-                    logger.warning(
-                        "[Parakeet] Worker sent invalid JSON: %s", line[:120]
-                    )
-                    continue
-
-                status = msg.get("status", "")
-                if status == "ready":
-                    ready = True
-                    break
-                elif status == "error":
-                    err = msg.get("error", "unknown")
-                    with self._lock:
-                        self._load_error = RuntimeError(err)
-                    logger.error(
-                        "[Parakeet] Worker failed to load model: %s — "
-                        "falling back to faster-whisper", err
-                    )
-                    return
-                elif status == "loading":
-                    logger.info("[Parakeet] Worker is loading the model...")
-                else:
-                    logger.debug("[Parakeet] Worker status: %s", status)
-
-            if not ready:
-                # stdout closed without "ready" — the process exited
-                rc = proc.wait()
-                with self._lock:
-                    self._load_error = RuntimeError(
-                        f"Worker exited with code {rc} before reporting ready"
-                    )
-                logger.error(
-                    "[Parakeet] Worker exited with code %d before reporting "
-                    "ready — see parakeet_sherpa_worker stderr above",
-                    rc,
-                )
-                return
-
-            self._start_reader(proc)
-            self._warm_up_inference()
-
-            with self._lock:
-                self._loaded = True
-            logger.info(
-                "[Parakeet] Worker ready — GPU ASR warm and available"
-            )
-
-        except Exception as exc:
-            with self._lock:
-                self._load_error = exc
-            logger.error(
-                "[Parakeet] Failed to spawn worker: %s — falling back to "
-                "faster-whisper", exc, exc_info=True,
-            )
-        finally:
-            with self._lock:
-                self._loading = False
-
-    def _start_reader(self, proc) -> None:
-        """Drain the worker's stdout into self._responses from one thread.
-
-        Routing every reply through a queue is what makes a timeout possible:
-        `readline()` on a Windows pipe cannot be interrupted. It also keeps
-        replies in FIFO order and lets late replies from timed-out requests be
-        dropped instead of being handed to the next caller.
-        """
-        def _read_loop():
-            try:
-                for line in proc.stdout:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        msg = json.loads(line)
-                    except json.JSONDecodeError:
-                        logger.warning(
-                            "[Parakeet] Worker sent invalid JSON: %s", line[:120]
-                        )
-                        continue
-                    # REQ-1 AC1.6: the worker idle-exits after 20 min of no
-                    # requests. Treat that as a CLEAN stop (reclaim VRAM/RAM),
-                    # not a crash — do not burn a restart attempt on it. The
-                    # next utterance rebuilds the worker lazily.
-                    if msg.get("status") == "shutting_down":
-                        self._mark_idle_shutdown()
-                        break
-                    with self._stale_lock:
-                        if self._stale > 0:
-                            # Reply to a request the caller already gave up on.
-                            self._stale -= 1
-                            continue
-                    self._responses.put(msg)
-            except (ValueError, OSError):
-                pass  # pipe closed on shutdown
-            logger.debug("[Parakeet] Response reader thread exiting")
-
-        self._reader_thread = threading.Thread(
-            target=_read_loop, daemon=True, name="iris-parakeet-reader"
-        )
-        self._reader_thread.start()
-
-    def _warm_up_inference(self) -> None:
-        """Pay the first-inference cost inside the worker, not on a live utterance."""
-        import base64 as _b64
-
-        try:
-            clip = (np.zeros(int(1.0 * 16000))).astype(np.float32)
-
-            started = time.monotonic()
-            response = self._round_trip(
-                {
-                    "action": "transcribe",
-                    "audio": _b64.b64encode(clip.tobytes()).decode("ascii"),
-                    "sample_rate": 16000,
-                },
-                timeout=self.WARMUP_TIMEOUT_SEC,
-            )
-            elapsed = time.monotonic() - started
-
-            if response is None:
-                logger.warning(
-                    "[Parakeet] Warm-up inference did not return within %.0fs — "
-                    "first live utterance may pay init cost "
-                    "(TRANSCRIBE_TIMEOUT_SEC=%.0fs)",
-                    self.WARMUP_TIMEOUT_SEC,
-                    self.TRANSCRIBE_TIMEOUT_SEC,
-                )
-                return
-
-            logger.info(
-                "[Parakeet] Warm-up inference complete in %.1fs — "
-                "first-utterance cost paid at startup", elapsed
-            )
-        except Exception as exc:
-            logger.warning("[Parakeet] Warm-up inference failed (non-fatal): %s", exc)
-
-    def _round_trip(self, request: dict, timeout: float) -> Optional[dict]:
-        """Send one JSONL request and wait up to `timeout` for its response.
-
-        The whole exchange is serialised under _io_lock, so at most one request
-        is ever in flight and FIFO pairing is guaranteed. The wait uses
-        Queue.get(timeout=...) because a `readline()` on a Windows pipe cannot
-        be interrupted — that untimed read is what used to wedge the voice
-        pipeline for minutes.
-        """
-        with self._io_lock:
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                return None
-
-            try:
-                proc.stdin.write(json.dumps(request) + "\n")
-                proc.stdin.flush()
-            except (BrokenPipeError, OSError, ValueError) as exc:
-                logger.warning("[Parakeet] Write to worker failed: %s", exc)
-                with self._lock:
-                    self._loaded = False
-                return None
-
-            try:
-                return self._responses.get(timeout=timeout)
-            except queue.Empty:
-                # The worker is still busy. Its reply will arrive later, so
-                # tell the reader to drop it — otherwise the next caller would
-                # receive a transcript belonging to a different utterance.
-                with self._stale_lock:
-                    self._stale += 1
-                logger.warning(
-                    "[Parakeet] Worker did not respond within %.0fs — "
-                    "falling back to faster-whisper for this utterance", timeout
-                )
-                return None
-
-    def _handle_dead_worker(self) -> None:
-        """Mark the worker dead; let the next utterance trigger a respawn.
-
-        The respawn is deliberately NOT done inline here — a synchronous
-        respawn would park the transcription thread behind a model load.
-        """
-        with self._lock:
-            self._loaded = False
-            proc = self._proc
-            self._proc = None
-            if self._restart_count >= self._MAX_RESTARTS:
-                self._load_error = RuntimeError(
-                    f"Worker died {self._MAX_RESTARTS}+ times — "
-                    "permanently falling back to faster-whisper"
-                )
-                logger.error(
-                    "[Parakeet] Max restarts (%d) reached — permanently disabled",
-                    self._MAX_RESTARTS,
-                )
-                return
-            self._restart_count += 1
-            self._load_error = None
-            logger.warning(
-                "[Parakeet] Worker died — will restart on the next utterance "
-                "(attempt %d/%d)", self._restart_count, self._MAX_RESTARTS,
-            )
-
-        try:
-            if proc is not None:
-                proc.kill()
-        except Exception:
-            pass
-
-    def _mark_idle_shutdown(self) -> None:
-        """Mark the worker as cleanly idle-stopped (REQ-1 AC1.6).
-
-        Unlike a crash, an idle exit is EXPECTED: the worker reclaimed its GPU
-        VRAM + host RAM after 20 min of no requests. It must not count against
-        the restart budget, so the next utterance respawns a fresh worker
-        without ever hitting the permanent-fallback cap.
-        """
-        with self._lock:
-            self._loaded = False
-            proc = self._proc
-            self._proc = None
-            self._load_error = None
-        logger.info(
-            "[Parakeet] Worker idle-exited (20 min inactivity) — "
-            "VRAM reclaimed; will respawn on next utterance"
-        )
-        try:
-            if proc is not None:
-                proc.kill()
-        except Exception:
-            pass
-
-    def transcribe(self, audio_np: np.ndarray, sample_rate: int = 16000) -> str:
-        """Transcribe float32 PCM audio via the sherpa worker subprocess.
-
-        Returns transcribed text on success, or empty string on failure
-        (which triggers the faster-whisper fallback in the caller).
-        Word-level timestamps land on self.last_timestamps for long-form use.
-        """
-        if not self._ensure_loaded():
-            return ""
-
-        import base64 as _b64
-
-        try:
-            proc = self._proc
-            if proc is None or proc.poll() is not None:
-                self._handle_dead_worker()
-                return ""
-
-            audio_bytes = np.asarray(audio_np, dtype=np.float32).tobytes()
-            response = self._round_trip(
-                {
-                    "action": "transcribe",
-                    "audio": _b64.b64encode(audio_bytes).decode("ascii"),
-                    "sample_rate": sample_rate,
-                },
-                timeout=self.TRANSCRIBE_TIMEOUT_SEC,
-            )
-            if response is None:
-                return ""
-
-            error = response.get("error")
-            if error:
-                logger.warning("[Parakeet] Worker transcription error: %s", error)
-                return ""
-
-            try:
-                self.last_timestamps = [
-                    float(t) for t in (response.get("timestamps") or [])
-                ]
-            except Exception:
-                self.last_timestamps = []
-            text = str(response.get("text", "")).strip()
-            if text:
-                logger.info("[Parakeet] GPU ASR: '%s'", text[:80])
-            else:
-                logger.info("[Parakeet] GPU ASR returned empty text")
-            return text
-
-        except Exception as exc:
-            logger.error(
-                "[Parakeet] Transcription failed: %s", exc, exc_info=True,
-            )
-            return ""
+_assert_single_stt_engine()
 
 class VoiceState(str, Enum):
     """Voice command states"""
@@ -550,7 +133,9 @@ class VoiceCommandHandler:
         self._whisper = None  # lazy-loaded WhisperModel
         self._whisper_lock = threading.Lock()
         self._whisper_loading = False  # True while a thread is importing faster_whisper
-        self._parakeet = ParakeetTranscriber()  # in-process GPU ASR (lazy-loaded)
+        # Phonon-2 live streaming STT (CPU, fermion server subprocess).
+        # Replaces the retired ParakeetTranscriber (PARAKEET_RETIRED above).
+        self._phonon2 = Phonon2StreamClient()
 
         # State
         self.state = VoiceState.IDLE
@@ -563,7 +148,7 @@ class VoiceCommandHandler:
         self.audio_buffer: List = []
         self._raw_frames: List[np.ndarray] = []  # actual float32 PCM frames
 
-        # STT timing: populated by _transcribe_via_parakeet() / whisper fallback,
+        # STT timing: populated by _finalize_via_phonon2() / whisper fallback,
         # forwarded via the result dict to iris_gateway for real-time metric broadcast.
         self._last_stt_timing: Dict[str, float] = {}
 
@@ -601,6 +186,10 @@ class VoiceCommandHandler:
         # Used by the gateway to broadcast audio_envelope WS events for XurOrb.
         # phase is "listening" during STT, "speaking" during TTS, "idle" otherwise.
         self._on_audio_envelope: Optional[Callable[[float, float, str], None]] = None
+        # Called with the CURRENT interim hypothesis every ~0.5 s while the
+        # user speaks (Phonon-2 partials, REQ-1 AC1.1). The gateway broadcasts
+        # it as a voice_interim WS event; the UI shows provisional text.
+        self._on_stt_interim: Optional[Callable[[str], None]] = None
 
         # Cadence detector — spectral flux for speech rhythm tracking
         self.cadence_detector = CadenceDetector(sample_rate=self.sample_rate)
@@ -614,12 +203,12 @@ class VoiceCommandHandler:
 
         # REQ-1 AC1.2 / REQ-6 AC6.1: NO eager warm-up at construction.
         # Previously this called self.warm_up() (pre-loading faster-whisper)
-        # and self._parakeet_warm_up() (spawning the Parakeet GPU subprocess),
-        # which together added ~4.2 GB to the boot-time idle footprint. Both
-        # models now load lazily on first use: faster-whisper via _get_whisper()
-        # on the first utterance, and Parakeet via _ensure_loaded() which spawns
-        # the worker in a background thread and lets faster-whisper serve
-        # utterance 1 (REQ-1 AC1.3/AC1.4).
+        # and the Parakeet warm-up (spawning the GPU subprocess), which
+        # together added ~4.2 GB to the boot-time idle footprint. Both
+        # engines now start lazily: faster-whisper via _get_whisper() on the
+        # first utterance, and Phonon-2 via _phonon2_warm_up() which spawns
+        # the fermion server in a background thread and lets faster-whisper
+        # serve utterance 1 (REQ-1 AC1.2/AC1.5).
 
     # -------------------------------------------------------------------------
     # Public API  (interface identical to the previous VoiceCommandHandler)
@@ -632,8 +221,14 @@ class VoiceCommandHandler:
     def set_command_result_callback(
         self, callback: Callable[[Dict[str, Any]], None]
     ) -> None:
-        """Register callback fired with the transcription result dict."""
+        """Register callback fired when a voice command's transcript is ready."""
         self._on_command_result = callback
+
+    def set_interim_callback(self, callback: Callable[[str], None]) -> None:
+        """Register callback fired on every Phonon-2 interim hypothesis
+        while the user speaks (REQ-1 AC1.1). The gateway wires this to the
+        voice_interim WS broadcast."""
+        self._on_stt_interim = callback
 
     def set_audio_level_callback(self, callback: Callable[[float], None]) -> None:
         """Register callback fired with smoothed RMS (0.0–1.0) every ~100 ms during recording."""
@@ -728,7 +323,7 @@ class VoiceCommandHandler:
                 return True
 
         try:
-            logger.info("[VoiceCommand] Starting recording (Parakeet primary, faster-whisper fallback)...")
+            logger.info("[VoiceCommand] Starting recording (Phonon-2 streaming primary, faster-whisper final fallback)...")
 
             # Cancel any pending idle timer from a prior SUCCESS so it can't
             # force IDLE while this new recording is active.
@@ -738,13 +333,16 @@ class VoiceCommandHandler:
             self._recording_started_at = time.monotonic()
             self.audio_buffer = []
             self._raw_frames = []
-            # Lazy-load Parakeet on the FIRST wake word trigger (not at
-            # end-of-speech). This gives the GPU engine a head start during
-            # the utterance (~17-22s cold build overlaps with VAD recording),
-            # so by the time VAD detects end-of-speech Parakeet is usually
-            # ready and the first transcription uses GPU, not the CPU whisper
-            # fallback. No-op if already loaded or already loading.
-            self._parakeet_warm_up()
+            # Warm the Phonon-2 server on the FIRST wake word trigger (not at
+            # end-of-speech): the fermion server cold boot (~64 s first run,
+            # ~6 s warm) overlaps with VAD recording, so by the time VAD
+            # detects end-of-speech the stream is usually live. No-op if the
+            # server is already up or spawning.
+            self._phonon2_warm_up()
+            # Open the live stream for THIS utterance. False (server cold)
+            # is fine: frames still accumulate in _raw_frames and the final
+            # falls back to faster-whisper (REQ-1 AC1.2/AC1.5).
+            self._phonon2.begin_utterance(self._on_stt_interim_text)
             # Post-start flush: drop first N frames captured after start.
             # This lets residual TTS echo from barge-in decay before VAD
             # starts speech detection.  Caller sets flush_ms > 0 for barge-in.
@@ -1016,123 +614,106 @@ class VoiceCommandHandler:
             target=_do_warm_up, daemon=True, name="iris-stt-warmup"
         ).start()
 
-    def _parakeet_warm_up(self) -> None:
-            """
-            Pre-load the Parakeet GPU model in a SUBPROCESS so the FIRST
-            transcription has zero model-load latency.
+    def _phonon2_warm_up(self) -> None:
+        """Pre-spawn the Phonon-2 fermion server so the FIRST utterance
+        streams instead of falling back to whisper.
 
-            The subprocess runs in its own Python process, so GIL contention
-            during model loading and inference can never starve the main
-            asyncio event loop. No env-var gates, delay hacks, or idle-wait
-            loops are needed — the subprocess is physically isolated.
+        The engine is a separate process (fermion serve phonon-2), so GIL
+        contention during model loading can never starve the main asyncio
+        event loop. Safe to call on EVERY wake word trigger: if the server
+        is already up or spawning this is a no-op.
+        """
+        from .phonon2_stream import get_server_manager
 
-            Safe to call on EVERY wake word trigger: if already loaded this
-            returns immediately (no thread spawned). Only the first cold
-            trigger spawns the worker.
-            """
-            if self._parakeet._loaded:
-                return  # already warm — no-op, no thread churn
-            def _do_parakeet_warm():
-                try:
-                    if self._parakeet._ensure_loaded():
-                        logger.info(
-                            "[VoiceCommand] Parakeet GPU already loaded — "
-                            "first transcription will be instant"
-                        )
-                    elif getattr(self._parakeet, "_loading", False):
-                        logger.info(
-                            "[VoiceCommand] Parakeet GPU load started in "
-                            "subprocess — faster-whisper remains the live "
-                            "fallback during warm-up"
-                        )
-                    else:
-                        logger.warning(
-                            "[VoiceCommand] Parakeet pre-load unavailable — "
-                            "using faster-whisper CPU fallback"
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        f"[VoiceCommand] Parakeet warm-up failed (non-fatal): {exc}"
+        mgr = get_server_manager()
+        if mgr.server_ready():
+            return  # already warm — no-op, no thread churn
+
+        def _do_phonon2_warm():
+            try:
+                if mgr.ensure():
+                    logger.info(
+                        "[VoiceCommand] Phonon-2 server warm — first "
+                        "utterance will stream"
                     )
+                else:
+                    logger.warning(
+                        "[VoiceCommand] Phonon-2 server unavailable — "
+                        "faster-whisper serves the finals"
+                    )
+            except Exception as exc:
+                logger.warning(
+                    f"[VoiceCommand] Phonon-2 warm-up failed (non-fatal): {exc}"
+                )
 
-            threading.Thread(
-                target=_do_parakeet_warm, daemon=True, name="iris-parakeet-warmup"
-            ).start()
+        threading.Thread(
+            target=_do_phonon2_warm, daemon=True, name="iris-phonon2-warmup"
+        ).start()
 
     # ------------------------------------------------------------------ #
-    # Parakeet ASR path (primary, fall back to faster-whisper on failure)
+    # Phonon-2 streaming ASR path (primary; whisper is the FINAL fallback)
     # ------------------------------------------------------------------ #
 
-    def _transcribe_via_parakeet(self, audio_np: np.ndarray) -> str:
-        """Transcribe audio using in-process Parakeet GPU ASR.
+    def _on_stt_interim_text(self, text: str) -> None:
+        """Relay one Phonon-2 interim hypothesis to the gateway callback
+        (voice_interim WS broadcast). Guarded: a callback fault must never
+        touch the stream reader thread."""
+        cb = self._on_stt_interim
+        if cb is not None:
+            try:
+                cb(text)
+            except Exception:
+                pass
 
-        Returns transcribed text on success, or empty string on failure.
-        Logs explicitly which STT backend was used.
+    def _finalize_via_phonon2(self, audio_np: np.ndarray) -> str:
+        """Close the live stream and return its final transcript.
 
-        Also records STT latency in self._last_stt_timing for the result
-        callback to forward to iris_gateway for real-time metric broadcast.
+        The frames were already fed while recording (see _capture_frame);
+        this runs at VAD end-of-speech. Returns "" on ANY failure (stream
+        never opened, died mid-utterance, finish timeout, empty result) —
+        the caller then transcribes the captured buffer with
+        faster-whisper (REQ-1 AC1.2). Never raises.
+
+        Records STT latency in self._last_stt_timing for the result
+        callback to forward to iris_gateway (stt_backend is greppable
+        evidence for the Wave 1 live gate: never 'parakeet*').
         """
         import time as _stt_time
         _stt_start = _stt_time.monotonic()
-        # If Parakeet is still loading (cold start ~17-22s), WAIT for it
-        # (bounded) instead of immediately falling back to whisper. Parakeet
-        # is the primary GPU engine and resolves within the transcription
-        # watchdog budget; the whisper fallback is only for a genuine load
-        # failure or timeout, not a transient warm-up. This avoids routing
-        # the first utterance to CPU whisper (which can itself hang on the
-        # whisper lock — see _get_whisper).
-        if getattr(self._parakeet, "_loading", False):
-            logger.info(
-                "[STT] parakeet loading — waiting up to 25s for GPU engine"
-            )
-            if not self._parakeet.wait_ready(timeout=25.0):
-                logger.warning(
-                    "[STT] parakeet not ready after 25s — falling back to whisper"
-                )
-                self._last_stt_timing = {
-                    "stt_start_monotonic": _stt_start,
-                    "stt_end_monotonic": _stt_time.monotonic(),
-                    "stt_latency_ms": 0.0,
-                    "stt_backend": "parakeet_timeout",
-                    "stt_audio_seconds": len(audio_np) / self.sample_rate,
-                }
-                return ""
-        text = self._parakeet.transcribe(audio_np, self.sample_rate)
+        audio_s = len(audio_np) / self.sample_rate
+        timing = self._phonon2.last_timing()
+        text = self._phonon2.finish()
         _stt_end = _stt_time.monotonic()
-        # Record timing for the result callback to pick up
-        self._last_stt_timing = {
-            "stt_start_monotonic": _stt_start,
-            "stt_end_monotonic": _stt_end,
-            "stt_latency_ms": (_stt_end - _stt_start) * 1000.0,
-            "stt_backend": "parakeet",
-            "stt_audio_seconds": len(audio_np) / self.sample_rate,
-        }
         if text:
+            self._last_stt_timing = {
+                "stt_start_monotonic": _stt_start,
+                "stt_end_monotonic": _stt_end,
+                "stt_latency_ms": (_stt_end - _stt_start) * 1000.0,
+                "stt_backend": "phonon-2",
+                "stt_audio_seconds": audio_s,
+                # REQ-1 AC1.6: first-hypothesis latency is the streaming
+                # headline number (measured 0.69 s in the Wave 0 smoke).
+                "stt_first_partial_s": timing.get("first_partial_s"),
+            }
             logger.info(
-                f"[STT] parakeet GPU — '{text[:80]}' "
-                f"(latency: {self._last_stt_timing['stt_latency_ms']:.0f}ms)"
+                f"[STT] phonon-2 stream — '{text[:80]}' "
+                f"(final latency: {self._last_stt_timing['stt_latency_ms']:.0f}ms, "
+                f"first partial: {timing.get('first_partial_s')})"
             )
         else:
-            # Distinguish "still warming up" from "broken". They have very
-            # different remedies: the first resolves itself, the second is
-            # permanent until the load error is cleared. Saying merely
-            # "FAILED" during a long warm-up reads like a defect and sends
-            # people looking for a bug that does not exist.
-            if getattr(self._parakeet, "_loading", False):
-                logger.info(
-                    "[STT] parakeet still loading (warm-up in progress) — "
-                    "using whisper for this utterance"
-                )
-                self._last_stt_timing["stt_backend"] = "parakeet_loading"
-            elif getattr(self._parakeet, "_load_error", None) is not None:
-                logger.warning(
-                    "[STT] parakeet unavailable (%s) — falling back to whisper",
-                    self._parakeet._load_error,
-                )
-                self._last_stt_timing["stt_backend"] = "parakeet_failed"
-            else:
-                logger.warning("[STT] parakeet returned empty — falling back to whisper")
-                self._last_stt_timing["stt_backend"] = "parakeet_empty"
+            reason = self._phonon2.last_error or "empty result"
+            backend = "phonon-2_empty" if reason == "empty result" else "phonon-2_failed"
+            self._last_stt_timing = {
+                "stt_start_monotonic": _stt_start,
+                "stt_end_monotonic": _stt_end,
+                "stt_latency_ms": 0.0,
+                "stt_backend": backend,
+                "stt_audio_seconds": audio_s,
+            }
+            logger.warning(
+                "[STT] phonon-2 stream unavailable (%s) — falling back to whisper",
+                reason,
+            )
         return text
 
     def _run_transcription(self) -> None:
@@ -1181,6 +762,7 @@ class VoiceCommandHandler:
                 logger.info(
                     "[VoiceCommand] Recording cancelled — skipping transcription"
                 )
+                self._phonon2.abort()  # drop the live stream without waiting
                 self._raw_frames = []
                 self.audio_buffer = []
                 self._on_transcription_complete("")
@@ -1189,16 +771,17 @@ class VoiceCommandHandler:
             # ── Guard: skip transcription when VAD found no speech ──────
             # After barge-in or auto-relisten, the VAD may timeout without
             # ever detecting speech onset.  The buffer still contains
-            # near-silence frames.  Sending this to Parakeet causes it to
-            # hallucinate short filler words ("yeah", "okay", "hello") which
+            # near-silence frames.  Sending this to the STT engine causes it
+            # to hallucinate short filler words ("yeah", "okay", "hello") which
             # the agent treats as real user input — creating phantom
             # conversational turns.  Skip transcription entirely when no
             # speech was detected.
             if not _speech_detected:
                 logger.info(
                     "[VoiceCommand] VAD detected no speech — "
-                    "discarding buffer (avoid Parakeet hallucination)"
+                    "discarding buffer (avoid STT hallucination)"
                 )
+                self._phonon2.abort()  # drop the live stream without waiting
                 self._raw_frames = []
                 self.audio_buffer = []
                 self._on_transcription_complete("")
@@ -1234,7 +817,7 @@ class VoiceCommandHandler:
             if rms < 1e-4:
                 logger.warning(
                     "[VoiceCommand] Audio RMS near zero — likely silence. "
-                    "Skipping transcription to avoid Parakeet hallucination."
+                    "Skipping transcription to avoid STT hallucination."
                 )
                 self._raw_frames = []
                 self.audio_buffer = []
@@ -1247,7 +830,7 @@ class VoiceCommandHandler:
             # During transcription, is_recording=False so _capture_frame returns
             # early and the orb gets zero audio_envelope messages. Without this,
             # the orb appears dead during the 0.5-30s processing window (latency
-            # varies: whisper ~80ms, Parakeet cold start ~10-30s). Emit a subtle
+            # varies: whisper ~80ms, phonon-2 stream final ~0.1-1s). Emit a subtle
             # periodic pulse so the orb shows it's alive and working.
             _proc_pulse_stop = threading.Event()
             def _emit_proc_pulse():
@@ -1263,8 +846,8 @@ class VoiceCommandHandler:
             )
             _proc_pulse_thread.start()
 
-            # ── Primary path: Parakeet GPU ASR (in-process) ─────────────
-            transcript = self._transcribe_via_parakeet(audio_np)
+            # ── Primary path: Phonon-2 live stream final ────────────────
+            transcript = self._finalize_via_phonon2(audio_np)
 
             _proc_pulse_stop.set()  # stop the processing pulse
 
@@ -1275,7 +858,7 @@ class VoiceCommandHandler:
                 _w_start = _stt_time_w.monotonic()
                 whisper = self._get_whisper()
                 if whisper is None:
-                    # Both engines cold (Parakeet loading + whisper loading).
+                    # Both engines cold (phonon-2 server spawning + whisper loading).
                     # Complete gracefully with "" (IDLE, not ERROR) so the
                     # next wake word still works. Mirrors the no-speech path.
                     logger.warning("[STT] whisper unavailable (loading) — skipping this turn")
@@ -1641,6 +1224,15 @@ class VoiceCommandHandler:
         # Sentinel keeps audio_buffer length accurate for iris_gateway check (> 30 frames)
         self.audio_buffer.append(None)
         self._raw_frames.append(audio_frame.copy())
+
+        # ── Feed the Phonon-2 live stream (REQ-1 AC1.1) ─────────────────
+        # Same frame, second consumer: the stream turns it into interim
+        # hypotheses while the user speaks. Best-effort and never raises
+        # (this runs on the sounddevice callback thread); a dropped frame
+        # only delays the next partial. The _raw_frames copy above stays
+        # the whisper-fallback safety net.
+        if self._phonon2.active:
+            self._phonon2.feed_frame(audio_frame)
 
         # ── Broadcast audio_envelope for orb breathing during STT ──────
         # The VAD loop in _run_transcription also sends audio_envelope (every

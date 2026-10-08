@@ -883,10 +883,10 @@ class TestIdleTimerPreventsStall:
         h._start_lock = threading.Lock()
         h._whisper = None
         h._whisper_lock = threading.Lock()
-        h._parakeet = MagicMock()
+        h._phonon2 = MagicMock()
         h._transcription_thread = None
         h._frame_listener_registered = False
-        h._parakeet_warm_up_done = True
+        h._phonon2_warm_up_done = True
         h.cadence_detector = MagicMock()
         return h
 

@@ -5,7 +5,7 @@ Tests that the latency tracking added in session 154 produces the expected
 log lines when a voice command is processed end-to-end.
 
 Log lines verified:
-  [STT_LATENCY] backend=parakeet latency_ms=... audio_s=... rtf=...x
+  [STT_LATENCY] backend=phonon-2 latency_ms=... audio_s=... rtf=...x
   [TTS_LATENCY] backend=pocket_tts synth_to_audio_ms=...
   [FLOW_LATENCY] vad_to_llm=... llm_ttft=... llm_total=... tts_synth=... vad_to_audio=... flow_total=... wall=...
 
@@ -56,67 +56,63 @@ class _LogCapture:
         ]
 
 
-# --- STT latency: voice_command._transcribe_via_parakeet --------------------
+# --- STT latency: voice_command._finalize_via_phonon2 (Wave 1) ---------------
 
 class TestSTTLatencyLogging:
-    """Verify Parakeet and Whisper transcription record latency in self._last_stt_timing."""
+    """Verify Phonon-2 and Whisper transcription record latency in self._last_stt_timing."""
 
-    def test_parakeet_records_stt_timing(self):
-        """_transcribe_via_parakeet populates _last_stt_timing with all fields."""
+    def test_phonon2_records_stt_timing(self):
+        """_finalize_via_phonon2 populates _last_stt_timing with all fields."""
         from backend.audio.voice_command import VoiceCommandHandler
 
         handler = VoiceCommandHandler.__new__(VoiceCommandHandler)
         handler.sample_rate = 16000
-        handler._parakeet = MagicMock()
-        handler._parakeet.transcribe = MagicMock(
-            return_value="hello world"
-        )
+        handler._phonon2 = MagicMock()
+        handler._phonon2.finish = MagicMock(return_value="hello world")
+        handler._phonon2.last_error = MagicMock(return_value=None)
+        handler._phonon2.last_timing = MagicMock(
+            return_value={"first_partial_s": 0.69, "final_s": 1.2})
 
         # 1 second of audio at 16kHz
         audio = np.zeros(16000, dtype=np.float32)
-        result = handler._transcribe_via_parakeet(audio)
+        result = handler._finalize_via_phonon2(audio)
 
         assert result == "hello world"
         timing = getattr(handler, "_last_stt_timing", None)
         assert timing is not None, "_last_stt_timing must be populated"
         assert "stt_latency_ms" in timing
         assert "stt_backend" in timing
-        assert timing["stt_backend"] == "parakeet"
+        assert timing["stt_backend"] == "phonon-2"
         assert "stt_audio_seconds" in timing
         assert timing["stt_audio_seconds"] == pytest.approx(1.0, abs=0.01)
         assert timing["stt_latency_ms"] >= 0
 
-    def test_parakeet_failure_records_failed_backend(self):
-        """When Parakeet returns empty, _last_stt_timing marks backend as parakeet_failed."""
+    def test_phonon2_failure_records_failed_backend(self):
+        """When the stream yields nothing, _last_stt_timing marks the backend
+        phonon-2_failed (or _empty when it heard silence) — never parakeet*."""
         from backend.audio.voice_command import VoiceCommandHandler
 
         handler = VoiceCommandHandler.__new__(VoiceCommandHandler)
         handler.sample_rate = 16000
-        handler._parakeet = MagicMock()
-        handler._parakeet.transcribe = MagicMock(return_value="")
-        # Mock-fidelity (branch drift, fixed 2026-09-07): the code now
-        # distinguishes still-loading (→ 'parakeet_loading') from genuinely
-        # broken (→ 'parakeet_failed'). A bare MagicMock is truthy for
-        # _loading, so it exercised the wrong branch. This test names the
-        # FAILED path: not loading, load error present.
-        handler._parakeet._loading = False
-        handler._parakeet._load_error = "CUDA unavailable (test)"
+        handler._phonon2 = MagicMock()
+        handler._phonon2.finish = MagicMock(return_value="")
+        handler._phonon2.last_error = MagicMock(
+            return_value="stream closed: broken pipe")
+        handler._phonon2.last_timing = MagicMock(
+            return_value={"first_partial_s": None, "final_s": None})
 
-        result = handler._transcribe_via_parakeet(np.zeros(16000, dtype=np.float32))
+        result = handler._finalize_via_phonon2(np.zeros(16000, dtype=np.float32))
         assert result == ""
-        assert handler._last_stt_timing["stt_backend"] == "parakeet_failed"
+        assert handler._last_stt_timing["stt_backend"] == "phonon-2_failed"
 
     def test_init_initializes_stt_timing_dict(self):
         """__init__ initializes _last_stt_timing to an empty dict."""
         from backend.audio.voice_command import VoiceCommandHandler
         from backend.audio.engine import AudioEngine
 
-        # Patch out the model init to avoid loading Parakeet at import time
-        with patch("backend.audio.voice_command.ParakeetTranscriber") as mock_parakeet:
-            mock_parakeet.return_value = MagicMock()
-            handler = VoiceCommandHandler(MagicMock(spec=AudioEngine))
-            assert hasattr(handler, "_last_stt_timing")
-            assert isinstance(handler._last_stt_timing, dict)
+        handler = VoiceCommandHandler(MagicMock(spec=AudioEngine))
+        assert hasattr(handler, "_last_stt_timing")
+        assert isinstance(handler._last_stt_timing, dict)
 
 
 # --- STT_LATENCY log line: iris_gateway._on_voice_result --------------------
@@ -145,7 +141,7 @@ class TestSTTLatencyLogLine:
                 "session_id": "test-session",
                 "stt_timing": {
                     "stt_latency_ms": 380.5,
-                    "stt_backend": "parakeet",
+                    "stt_backend": "phonon-2",
                     "stt_audio_seconds": 2.3,
                 },
             }
@@ -157,7 +153,7 @@ class TestSTTLatencyLogLine:
                 f"Expected exactly one [STT_LATENCY] log line, got {len(stt_logs)}: {stt_logs}"
             )
             msg = stt_logs[0]
-            assert "backend=parakeet" in msg
+            assert "backend=phonon-2" in msg
             assert "latency_ms=380" in msg
             assert "audio_s=2.30" in msg
             # Real-time factor: 0.3805s / 2.3s = 0.165x
@@ -317,19 +313,22 @@ class TestLiveLatencyMetricsDemo:
         from backend.iris_gateway import IRISGateway
 
         with _LogCapture("irisvoice") as cap:
-            # ── Simulate Parakeet STT ──────────────────────────────────
+            # ── Simulate Phonon-2 stream STT ──────────────────────────
             handler = VoiceCommandHandler.__new__(VoiceCommandHandler)
             handler.sample_rate = 16000
-            handler._parakeet = MagicMock()
+            handler._phonon2 = MagicMock()
 
-            # Parakeet "cold start" delay
-            def fake_parakeet(audio_np, sr):
-                time.sleep(0.4)  # 400ms cold start simulation
+            # Phonon-2 stream finalize delay
+            def fake_phonon2_finish(timeout=12.0):
+                time.sleep(0.4)  # 400ms finalize simulation
                 return "what is the weather today"
 
-            handler._parakeet.transcribe = fake_parakeet
+            handler._phonon2.finish = fake_phonon2_finish
+            handler._phonon2.last_error = MagicMock(return_value=None)
+            handler._phonon2.last_timing = MagicMock(
+                return_value={"first_partial_s": 0.69, "final_s": 1.1})
             audio = np.zeros(16000 * 2, dtype=np.float32)  # 2s of audio
-            transcript = handler._transcribe_via_parakeet(audio)
+            transcript = handler._finalize_via_phonon2(audio)
             assert transcript == "what is the weather today"
             stt_timing = dict(handler._last_stt_timing)
 

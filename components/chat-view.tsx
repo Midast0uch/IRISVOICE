@@ -506,6 +506,10 @@ export function ChatWing({
   }
 
   const [inputText, setInputText] = useState("")
+  // Wave 1 (phonon2-d1-model-swap REQ-1 AC1.1): Phonon-2 interim hypothesis
+  // while the user speaks. Provisional — cleared when the final transcript
+  // lands (iris:voice_final adds the real user message).
+  const [interimVoiceText, setInterimVoiceText] = useState("")
   // handleSendMessage shadows setInputText for pill sends; this is the real setter.
   const setInputTextState = setInputText
   const [webMode, setWebMode] = useState(() => {
@@ -1609,7 +1613,26 @@ export function ChatWing({
     return () => window.removeEventListener('iris:tts_started', handleTtsStarted)
   }, [])
   
-  // Handle Parakeet ASR final transcription (iris:voice_final).
+  // Handle Phonon-2 interim hypotheses (iris:voice_interim, Wave 1):
+  // provisional text while the user speaks; the final (iris:voice_final)
+  // replaces it with the real user message below.
+  useEffect(() => {
+    function handleVoiceInterim(e: Event) {
+      const detail = (e as CustomEvent<{ text: string }>).detail
+      setInterimVoiceText(detail?.text ?? "")
+    }
+    function clearInterim() {
+      setInterimVoiceText("")
+    }
+    window.addEventListener('iris:voice_interim', handleVoiceInterim)
+    window.addEventListener('iris:voice_final', clearInterim)
+    return () => {
+      window.removeEventListener('iris:voice_interim', handleVoiceInterim)
+      window.removeEventListener('iris:voice_final', clearInterim)
+    }
+  }, [])
+
+  // Handle ASR final transcription (iris:voice_final).
   // When the user speaks via the web Parakeet hook (useParakeetSTT), the
   // transcript arrives through the IRIS gateway's voice_result broadcast.
   // We add it as a user message so the conversation thread shows what was
@@ -3365,8 +3388,8 @@ ${message.text}`;
                           original_format: doc.format,
                         })
                       }
-                    />
-                  </motion.div>
+           />
+        </motion.div>
                 )
               })()}
             </AnimatePresence>
@@ -3420,6 +3443,37 @@ ${message.text}`;
               setComposerRefs={setComposerRefs}
               refDocs={refDocs}
             />
+
+            {/* Phonon-2 interim hypothesis (Wave 1, phonon2-d1-model-swap
+                REQ-1 AC1.1): provisional transcript while the user speaks.
+                Fixed + pointer-events-none: zero layout impact; cleared by
+                iris:voice_final (the real user message follows). */}
+            {interimVoiceText && (
+              <div
+                style={{
+                  position: "fixed",
+                  bottom: 120,
+                  left: "50%",
+                  transform: "translateX(-50%)",
+                  maxWidth: "70%",
+                  padding: "6px 14px",
+                  borderRadius: 12,
+                  background: "rgba(0, 255, 136, 0.08)",
+                  border: "1px solid rgba(0, 255, 136, 0.25)",
+                  color: "rgba(255, 255, 255, 0.75)",
+                  fontSize: 13,
+                  fontStyle: "italic",
+                  pointerEvents: "none",
+                  zIndex: 40,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+                aria-label="Interim voice transcription"
+              >
+                {interimVoiceText}
+              </div>
+            )}
           </motion.div>
 
           {/* Edge light: the top edge as one hairline with the spotlight aperture set into it. */}

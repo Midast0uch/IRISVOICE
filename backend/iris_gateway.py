@@ -2443,6 +2443,11 @@ class IRISGateway:
         # later via _CallbackChain (its own design anticipates a gateway
         # callback already being here), so registration order is safe.
         voice_handler.set_state_callback(self._on_voice_state)
+        # Wave 1 (specs/phonon2-d1-model-swap REQ-1 AC1.1): interim STT
+        # hypotheses stream to the UI while the user speaks. The handler
+        # calls this from the Phonon-2 reader thread ~2x/s; the broadcast
+        # hops to the main loop, best-effort only.
+        voice_handler.set_interim_callback(self._on_voice_interim)
 
         # v2 (Phase 7): Instantiate ConversationKernel — thin wrapper
         # on the existing voice pipeline. The kernel adds Caducean
@@ -3096,6 +3101,36 @@ class IRISGateway:
             session_id = getattr(vh, "_active_session_id", None) or "default"
             client_id = (getattr(self, "_active_voice_client", None) or {}).get(session_id)
             self._send_voice_typing(session_id, client_id, value == "processing")
+        except Exception:
+            pass
+
+    def _on_voice_interim(self, text: str) -> None:
+        """Wave 1 (REQ-1 AC1.1): broadcast one Phonon-2 interim hypothesis.
+
+        Called ~2x/s from the Phonon-2 stream reader thread while the user
+        speaks. Best-effort only — a dropped interim must never break the
+        audio path. The frontend (useIRISWebSocket) turns this into the
+        iris:voice_interim event; ChatView shows the text as provisional
+        until the final transcript lands.
+        """
+        try:
+            if not text:
+                return
+            ws = getattr(self, "_ws_manager", None)
+            loop = getattr(self, "_main_loop", None)
+            if ws is None or loop is None or not loop.is_running():
+                return
+            import asyncio as _asyncio
+
+            vh = getattr(self, "_voice_handler", None)
+            session_id = getattr(vh, "_active_session_id", None) or "default"
+            _asyncio.run_coroutine_threadsafe(
+                ws.broadcast_to_session(
+                    session_id,
+                    {"type": "voice_interim", "payload": {"text": text}},
+                ),
+                loop,
+            )
         except Exception:
             pass
 

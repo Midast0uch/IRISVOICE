@@ -1,22 +1,23 @@
 """
 IRIS All-In-One Startup Script
-Spawns Parakeet ASR + Backend + Frontend in sequence, waits for each to
-become healthy, and tears them all down on Ctrl+C.
+Spawns Backend + Frontend in sequence, waits for each to become healthy,
+and tears them all down on Ctrl+C.
 
-Why three services?
-  * Parakeet  (port 8765) -- HuggingFace Parakeet TDT 0.6B on local GPU.
-                              Isolated because torch/CUDA + asyncio are
-                              happier in their own process.
-  * Backend   (port 8090) -- FastAPI: wake word, TTS, orchestrator.
+Why two services?
+  * Backend   (port 8090) -- FastAPI: wake word, TTS, orchestrator. Spawns
+                             the Phonon-2 STT server (fermion, port 8766)
+                             lazily at boot; the retired Parakeet :8765
+                             service is no longer started (Wave 1,
+                             specs/phonon2-d1-model-swap).
   * Frontend  (port 3000) -- Next.js dev server.
 
 The script exits as soon as the last service prints "ready", so you can
-hit the frontend immediately.  All three child processes share a process
+hit the frontend immediately.  All child processes share a process
 group (Windows Job Object) so Ctrl+C kills them all.
 
 Usage:
   venv\\Scripts\\python.exe start_all.py           # start everything
-  venv\\Scripts\\python.exe start_all.py --no-fe   # backend + parakeet only
+  venv\\Scripts\\python.exe start_all.py --no-fe   # backend only
 """
 from __future__ import annotations
 
@@ -159,23 +160,19 @@ def _python_exe() -> str:
 
 
 def _build_services(skip_frontend: bool) -> list[Service]:
-    """Construct the service list in startup order."""
+    """Construct the service list in startup order.
+
+    Wave 1 (specs/phonon2-d1-model-swap, C1/REQ-3): the standalone Parakeet
+    :8765 service is RETIRED from boot — its two consumers now ride the
+    Phonon-2 fermion server (voice pipeline streams to it; media_tools
+    transcribes through it), which the backend spawns lazily. Starting the
+    old ASR service here would put two engines live at once.
+    """
     py = _python_exe()
     logs = base_dir / "logs"
     services: list[Service] = []
 
-    # 1. Parakeet (GPU ASR) -- start first so the backend can connect.
-    services.append(Service(
-        name="parakeet",
-        cmd=[py, "-m", "backend.audio.parakeet_service"],
-        cwd=base_dir,
-        health_url="http://127.0.0.1:8765/healthz",
-        port=8765,
-        color="35",  # magenta
-        log_path=logs / "parakeet.log",
-    ))
-
-    # 2. Backend (FastAPI) -- depends on parakeet being healthy.
+    # 1. Backend (FastAPI) — spawns the Phonon-2 STT server lazily on boot.
     services.append(Service(
         name="backend",
         cmd=[py, "start-backend.py"],

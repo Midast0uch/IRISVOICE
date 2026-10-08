@@ -312,36 +312,32 @@ async def lifespan(app: FastAPI):
         # WHAT THIS UNDOES: REQ-1 AC1.2's ~4.2 GB idle footprint. It is now the
         # owner's to accept (TTS already holds 1-2 GB resident by the same
         # decision); IRIS_PARAKEET_IDLE_TIMEOUT_S puts the release back.
-        # PARAKEEPET WARMS AT BOOT (owner 2026-10-07): the recognizer is built in
-        # a SUBPROCESS during startup, so the first utterance finds it ready.
+        # PHONON-2 WARMS AT BOOT (Wave 1, specs/phonon2-d1-model-swap): the
+        # fermion server (STT engine, CPU) is spawned in a SUBPROCESS during
+        # startup, so the first utterance streams instead of falling back to
+        # whisper. Same rationale as the Parakeet boot warm it replaces
+        # (owner 2026-10-07): a cold engine that resolves AFTER the first
+        # utterance's bounded wait forces a CPU-whisper turn (measured live
+        # 2026-10-07: 16.7 s recognition, rtf 3.39x, false watchdog breach).
         #
-        # Why this reversed REQ-1 AC1.2 (which forbade a boot load for a ~4.2 GB
-        # idle footprint): measured on this machine, a COLD Parakeet build takes
-        # ~56 s, while the first utterance waits only 25 s for it
-        # (voice_command.py `_transcribe_via_parakeet`). So Parakeet was
-        # declared "not ready" and the turn fell back to faster-whisper on CPU —
-        # measured live 2026-10-07: Parakeet became ready 0.14 s AFTER the
-        # fallback fired, and the turn paid 16.7 s of CPU recognition (rtf 3.39x)
-        # plus a 60 s watchdog breach that reported a false error.
-        #
-        # The build runs on a daemon thread in an isolated process: it never
-        # blocks the event loop, and `/health` is NOT gated on it (TTS readiness
-        # still is). Whisper stays the FALLBACK only and is not warmed. The
-        # recognizer now also stays resident (IRIS_PARAKEET_IDLE_TIMEOUT_S=0);
-        # set it to a positive number to restore the old VRAM reclaim.
-        def _parakeet_boot_warm():
+        # The server runs as its own process on a daemon thread: it never
+        # blocks the event loop, and `/health` is NOT gated on it (TTS
+        # readiness still is). Whisper stays the FINAL-segment fallback only
+        # and is not warmed. The server idles out after 20 min
+        # (IRIS_PHONON2_IDLE_EXIT_S) and respawns on the next utterance.
+        def _phonon2_boot_warm():
             try:
-                voice_handler._parakeet_warm_up()
+                voice_handler._phonon2_warm_up()
             except Exception as _w_exc:
-                logger.warning(f"    [x] [PARAKEET] Boot warm failed (non-fatal): {_w_exc}")
+                logger.warning(f"    [x] [PHONON2] Boot warm failed (non-fatal): {_w_exc}")
 
         import threading as _threading
         _threading.Thread(
-            target=_parakeet_boot_warm, daemon=True, name="iris-parakeet-boot-warm"
+            target=_phonon2_boot_warm, daemon=True, name="iris-phonon2-boot-warm"
         ).start()
         logger.info(
-            "    [+] [PARAKEET] GPU recognizer build started at boot (subprocess, "
-            "non-blocking); faster-whisper remains the fallback only"
+            "    [+] [PHONON2] STT server spawn started at boot (subprocess, "
+            "non-blocking); faster-whisper remains the final fallback only"
         )
 
         # ==========================================================================
@@ -520,7 +516,7 @@ async def lifespan(app: FastAPI):
             f"  - [AUDIO DIAG] Wake word: {'READY' if audio_engine._wake_detector_initialized else 'DISABLED'} | "
             f"Pipeline: {'RUNNING' if audio_engine._is_running else 'STOPPED'} | "
             f"Voice handler: {'WIRED' if voice_handler.is_recording is False else 'RECORDING'} | "
-            f"Parakeet: {'READY' if voice_handler._parakeet._loaded else 'LOADS AT FIRST WAKE WORD'} | "
+            f"Phonon-2: {'READY' if voice_handler._phonon2 is not None else 'SPAWNS AT BOOT'} | "
             f"Whisper: {'READY' if voice_handler._whisper is not None else 'FALLBACK (not loaded)'}"
         )
         logger.debug(

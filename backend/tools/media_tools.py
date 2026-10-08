@@ -1,27 +1,37 @@
 """Multimedia tools (Phase 5.2 / research D2).
 
 Three tools that let the agent operate on audio/video:
-  - transcribe_media:     chunk audio -> Parakeet /transcribe (localhost:8765) -> text
+  - transcribe_media:     chunk audio -> Phonon-2 /v1/audio/transcriptions
+                          (fermion server, localhost:8766) -> text
   - analyze_video_frames: extract frames -> vision analyze_screen per frame -> summary
   - clip_video:           ffmpeg trim wrapper
 
-All heavy I/O (HTTP to Parakeet, ffmpeg subprocess, vision calls) is isolated
-behind small injectable helpers so the logic is unit-testable without a live
-Parakeet server, ffmpeg binary, or vision model.
+All heavy I/O (HTTP to the Phonon-2 server, ffmpeg subprocess, vision calls)
+is isolated behind small injectable helpers so the logic is unit-testable
+without a live server, ffmpeg binary, or vision model.
+
+Wave 1 (specs/phonon2-d1-model-swap REQ-3 AC3.2): this was the Parakeet
+:8765 service's one REST consumer; it now rides the SAME Phonon-2 fermion
+server the voice pipeline streams to, so the retired engine has no caller.
 """
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import tempfile
+import wave
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import httpx
 
-# Parakeet transcribe service (standalone FastAPI, see backend/audio/parakeet_service.py)
-PARAKEET_URL = "http://localhost:8765/transcribe"
-MAX_CHUNK_SECONDS = 55  # service caps a single request at 60s
+# Phonon-2 transcribe endpoint (fermion serve, Whisper API shape). The port
+# is owned by backend/audio/phonon2_stream.py (IRIS_PHONON2_PORT, default 8766).
+from backend.audio.phonon2_stream import DEFAULT_PORT as PHONON2_PORT
+
+PHONON2_TRANSCRIBE_URL = f"http://127.0.0.1:{PHONON2_PORT}/v1/audio/transcriptions"
+MAX_CHUNK_SECONDS = 55  # server caps a single request at 60s
 
 
 # ── ffmpeg helpers ────────────────────────────────────────────────────────────
@@ -92,12 +102,37 @@ def _extract_frames(video_path: str, frame_interval: float = 1.0) -> List[Path]:
     return frames
 
 
-# ── Parakeet client ───────────────────────────────────────────────────────────
-def _transcribe_chunk(chunk_bytes: bytes, url: str = PARAKEET_URL) -> Dict:
-    """POST one PCM chunk to Parakeet; returns parsed JSON."""
+# ── Phonon-2 client ──────────────────────────────────────────────────────────
+def _wrap_pcm_as_wav(chunk_bytes: bytes, sample_rate: int = 16000) -> bytes:
+    """Raw mono s16le PCM -> WAV container bytes (the Whisper API shape
+    expects a self-describing file; the chunks are headerless PCM)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(chunk_bytes)
+    return buf.getvalue()
+
+
+def _transcribe_chunk(chunk_bytes: bytes, url: str = PHONON2_TRANSCRIBE_URL) -> Dict:
+    """POST one PCM chunk to the Phonon-2 server; returns parsed JSON.
+
+    Ensures the fermion server is up first (same lazy spawn the voice
+    pipeline uses) so a media transcription never depends on a manual boot.
+    """
+    from backend.audio.phonon2_stream import ensure_server
+
+    if not ensure_server():
+        raise RuntimeError(
+            "Phonon-2 server unavailable (see logs/phonon2.log); "
+            "transcribe_media cannot run"
+        )
     resp = httpx.post(
-        url, content=chunk_bytes,
-        headers={"Content-Type": "application/octet-stream"}, timeout=60,
+        url,
+        files={"file": ("chunk.wav", _wrap_pcm_as_wav(chunk_bytes), "audio/wav")},
+        data={"model": "phonon-2"},
+        timeout=120,
     )
     resp.raise_for_status()
     return resp.json()
@@ -120,9 +155,9 @@ def transcribe_media(
     audio_path: str,
     chunk_seconds: int = MAX_CHUNK_SECONDS,
     transcribe: Callable[[bytes, str], Dict] = _transcribe_chunk,
-    url: str = PARAKEET_URL,
+    url: str = PHONON2_TRANSCRIBE_URL,
 ) -> Dict:
-    """Transcribe an audio/video file via Parakeet, chunking long audio.
+    """Transcribe an audio/video file via Phonon-2, chunking long audio.
 
     Returns {"success": True, "text": ..., "language": ..., "duration_s": ...}
     or {"success": False, "error": ...}.
