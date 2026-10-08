@@ -23,7 +23,9 @@ import os
 import re
 import sys
 import subprocess
+import threading
 import time  # used by _on_page_done; absent until now, see below
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -42,8 +44,7 @@ _DECISION_META: contextvars.ContextVar = contextvars.ContextVar(
 # the engine's answer and the Brain's ACTUAL answer. Without them a monitor or
 # surface row lands with no reference to judge it against, so no precision or
 # ECE can ever be computed from it.
-_DECISION_META_KEYS = (
-    "engine", "consumer_id", "route", "chosen",
+_DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     "confidence", "candidates", "candidate_names", "threshold",
     "args_valid", "retried", "escalated",
     "engine_latency_ms", "decision_latency_ms",
@@ -86,6 +87,12 @@ _DECISION_META_KEYS = (
     # row ever carried it.
     "probability",
 )
+
+# T4.4 (specs/phonon2-d1-model-swap REQ-12 AC12.1, B6): write-time shadow-row
+# dedup state. Bounded LRU — the guard itself cannot grow without limit.
+_SHADOW_DEDUP: "OrderedDict[tuple, int]" = OrderedDict()
+_SHADOW_DEDUP_LOCK = threading.Lock()
+_SHADOW_DEDUP_CAP = 4096
 
 # How long a ledger write may run before it is reported as stuck. A write that
 # has not returned by then is not slow, it is blocked, and the row will very
@@ -2627,8 +2634,41 @@ class AgentToolBridge:
         tool (REASON / FAIL with meta). specs/tool-decision-engine AC5.1 edge:
         one row, outcome=None, SAME writer as tool executions (D4).
         Never raises (AC5.3).
+
+        T4.4 (specs/phonon2-d1-model-swap REQ-12 AC12.1, B6): SHADOW rows are
+        deduplicated AT WRITE TIME on the same key the fit collapses on
+        (consumer, engine, confidence, chosen, reference) — measured
+        2026-10-05: 10,541 of 18,467 rows were repeats the fit skipped while
+        the store accumulated them forever. Temperature-0 scoring makes the
+        outcome tuple a faithful input proxy (same input -> same tuple); a
+        repeat is counted and dropped, never written. Bounded LRU, so the
+        guard itself cannot grow without limit.
         """
         try:
+            if kind == "shadow":
+                key = (
+                    str(decision_meta.get("consumer_id", "")),
+                    str(decision_meta.get("engine", "")),
+                    round(float(decision_meta.get("confidence") or 0.0), 4),
+                    str(decision_meta.get("chosen")),
+                    str(decision_meta.get("brain_choice")
+                        if decision_meta.get("brain_choice") is not None
+                        else decision_meta.get("brain_bool")),
+                )
+                with _SHADOW_DEDUP_LOCK:
+                    if key in _SHADOW_DEDUP:
+                        _SHADOW_DEDUP[key] += 1
+                        _SHADOW_DEDUP.move_to_end(key)
+                        if _SHADOW_DEDUP[key] % 100 == 0:
+                            logger.info(
+                                "[TOOL_BRIDGE] shadow dedup: %d repeats of "
+                                "consumer=%s dropped at write (store stays "
+                                "distinct-only)", _SHADOW_DEDUP[key], key[0],
+                            )
+                        return
+                    _SHADOW_DEDUP[key] = 1
+                    while len(_SHADOW_DEDUP) > _SHADOW_DEDUP_CAP:
+                        _SHADOW_DEDUP.popitem(last=False)
             result: Dict = {"success": None, "route": decision_meta.get("route")}
             if error:
                 result["error"] = str(error)[:200]

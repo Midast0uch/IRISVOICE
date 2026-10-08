@@ -64,7 +64,7 @@ class TestConsumerSetIsPinned:
         assert set(de.CONSUMERS) == {
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
-            "mode", "web_intent", "retry_same",
+            "mode", "web_intent",
             "use_thinking", "escalate_incomplete", "needs_action",
             # Session 364 (owner request): the DEPTH consumer, scored at the
             # run-grade chokepoint against the task's success criteria.

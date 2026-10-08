@@ -818,6 +818,16 @@ class ToolDecisionBox:
     _DE_NONE = "NONE"          # engine says: no tool applies
 
     @staticmethod
+    def _veto_filter(tools: list, vetoed: set) -> list:
+        """REQ-10 AC10.1 (T4.1): remove execution-policy-vetoed tools from a
+        candidate list AT BUILD TIME, so every route that composes a menu —
+        engine, legacy/propose schemas, memory fallback — inherits the veto
+        instead of guarding the pick after the fact. Pure; never raises."""
+        if not vetoed:
+            return tools
+        return [t for t in (tools or []) if t.get("name") not in vetoed]
+
+    @staticmethod
     def _compose_engine_menu(
         names: list, delegate: str, none: str, cap: int,
     ) -> list:
@@ -1732,6 +1742,17 @@ class ToolDecisionBox:
         # agent is converged / budget-exhausted / provider-loaded. The veto is
         # enforced below even if the model proposes a vetoed tool anyway.
         _vetoed: set[str] = set((memory_hint or {}).get("veto") or [])
+
+        # T4.1 (specs/phonon2-d1-model-swap REQ-10 AC10.1, B5): the veto is
+        # applied WHERE THE MENU IS BUILT — every route inherits it. The
+        # engine menu filters at composition (below) and the memory
+        # fallbacks refuse vetoed picks; the LEGACY/propose route built the
+        # Brain's function schemas from the UNFILTERED list, so a vetoed
+        # tool reached the Brain and the post-pick guard fired only after
+        # the wasted call ("sanction -> REASON" on a step that could have
+        # used a surviving tool). Filter here, before tool_list and
+        # to_function_schema: the Brain never sees a vetoed tool.
+        pre_filtered = self._veto_filter(pre_filtered, _vetoed)
 
         def _memory_allowed(_mres):
             """Session 366, track B: refuse a memory-suggested tool the execution

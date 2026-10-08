@@ -1,4 +1,4 @@
-﻿"""Contract tests: decision engine seams (specs/tool-decision-engine).
+"""Contract tests: decision engine seams (specs/tool-decision-engine).
 
 CT-DE-1  DecisionScore shape + Decision.meta channel shape.
 CT-DE-2  Kernel seam invariance: every engine routing outcome resolves to
@@ -159,7 +159,7 @@ class TestCtDe1Shapes:
         assert CONSUMERS == (
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
-            "mode", "web_intent", "retry_same",
+            "mode", "web_intent",
             "use_thinking", "escalate_incomplete", "needs_action",
             # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
             # (no production caller since 2026-10-02) and `has_gaps` (no live

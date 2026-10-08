@@ -1,6 +1,71 @@
-# VERIFY.md — Wave 0-3 gate records (TG-0..TG-3)
+# VERIFY.md — Wave 0-4 gate records (TG-0..TG-4)
 
 Spec: specs/phonon2-d1-model-swap/ — Date: 2026-10-08 — Session 391
+
+## WAVE 4 — the pre-existing Oracle fixes (TG-4): GREEN
+
+### T4.1 — local-goal web veto at menu build (B5): DONE
+- NEW shared `ToolDecisionBox._veto_filter`: the engine menu (session-366
+  line), the LEGACY/propose route (the schemas the Brain picks from — the
+  hole: a vetoed tool reached the Brain and the guard fired only after the
+  wasted call), and the memory fallbacks all inherit the veto at BUILD
+  time now.
+- CT-VETO-1 (backend/tests/contract/test_veto_menu_build_contract.py, 5
+  tests): PROVEN to fail on the old code (4 failed pre-fix, 5 pass after).
+- Slip found and fixed: the first edit landed between @staticmethod and its
+  function, stealing the decorator (9 test failures) — restored.
+
+### T4.2 — depth scoring at the monitor consult (B4): ALREADY FIXED
+- The pin's B4 was STALE: sessions 365/366 wired the depth_met scoring AT
+  the grade/monitor site (surface_bool, defer=True → the oracle_shadow
+  lane), the continuation gate logs RUN/SKIP with named reasons, and the
+  report shows 675 depth_met rows. Verified against REQ-9 AC9.1-9.3; no
+  code change needed.
+
+### T4.3 — biased consumers (B3): DONE (instructions reworked)
+- review_verdict: the incumbent's question asked ONLY about conflicts —
+  most steps conflict with nothing, hence pass@96% and a one-class
+  reference. The reviewer's prompt now carries the QUALITY bar ("REFINE
+  when vague, incomplete, wrong tool, or needing rework") alongside the
+  conflict questions; verdict semantics + JSON shape LOCKED.
+- user_feedback: the instruction conflated two dimensions; now one explicit
+  boundary per option (confirmation/correction/preference/refinement/
+  new_request/none).
+- Both are input-shape changes = new calibration identity (§19.3.6) —
+  landed while the d1 identity is fresh, before rows accumulate. The refit
+  happens when the new rows arrive (the fit is data-driven).
+- 40 contract tests green (verdict shape 8 + event oracle 32).
+
+### T4.4 — duplicate rows prevented at WRITE time (B6): DONE
+- tool_bridge.record_decision: shadow rows dedup AT WRITE on the same key
+  the fit collapses on (consumer, engine, confidence, chosen, reference) —
+  temperature-0 scoring makes the outcome tuple a faithful input proxy.
+  Bounded LRU (4096) so the guard cannot grow; repeats counted and logged
+  every 100th, never written. Measured problem: 10,541 of 18,467 rows were
+  repeats the fit skipped while the store accumulated them.
+
+### T4.5 — retry_same removed from CONSUMERS (B7): DONE (one change)
+- decision_engine: "retry_same" out of CONSUMERS + CONSUMER_JOBS, with the
+  removal note in place; the MENU option and the `retry_same_offered` FIELD
+  on recovery_strategy rows stay (AC12.3). The three pinned-enumeration
+  tests updated in the SAME change (decision_engine_contract,
+  surface_observer_contract, decision_engine_gates).
+- 147 passed across the enumeration + enforcement + triage suites; the one
+  failure (test_chat_message_payload_pinned) baselined PRE-EXISTING on
+  HEAD (a stale AST pin in iris_gateway, unrelated).
+
+### T4.6 — wave5 replay test engine stub (B8): DONE, 20/20
+- Autouse fixture stubs get_decision_engine -> None for the whole module
+  (the lazy imports resolve at call time): no real backend loads on any
+  lane thread. PROVEN: 20 consecutive runs, 0 fails (the INTERNALERROR
+  "Bad file descriptor" hit 15-25% of runs before).
+
+## TG-4 gate verdict: GREEN
+All six B-list items closed (one verified already-fixed, one guard proven
+failing pre-fix). Pre-existing reds baselined and named, never counted
+against the wave.
+
+---
 
 ## WAVE 3 — d1 as the Oracle + recalibration (TG-3): GREEN (one AC5.5 consultation open)
 

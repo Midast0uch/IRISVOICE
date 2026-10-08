@@ -1456,8 +1456,20 @@ class Reviewer:
             f"NEXT STEP TO REVIEW:\n"
             f"  Step {item.step_number}: {item.description}\n"
             f"  Tool: {item.tool or 'none'}\n\n"
-            "Does this step conflict with a gradient warning or contract?\n"
-            "Does it contradict what was already completed?\n\n"
+            # T4.3 (specs/phonon2-d1-model-swap REQ-8 AC8.1, B3): the old
+            # question asked ONLY about conflicts, and most steps conflict
+            # with nothing — so the incumbent answered "pass" 96% of the
+            # time and the reference was one-class (nothing can be fit
+            # against it). The QUALITY bar makes "refine" reachable: a
+            # vague, incomplete or wrong-tool step is a REFINE even when
+            # it conflicts with nothing. VETO stays the conflict answer.
+            "Review this step for QUALITY, not only for conflicts.\n"
+            "Answer REFINE when the step is vague, incomplete, names the "
+            "wrong tool, or would need rework to advance the objective.\n"
+            "Answer VETO when it conflicts with a gradient warning, an "
+            "active contract, or a completed step.\n"
+            "Answer PASS only when it is specific, correct, and ready to "
+            "run as-is.\n\n"
             "Respond with JSON only:\n"
             '{"verdict":"pass|refine|veto",'
             '"reason":"one sentence or empty string",'

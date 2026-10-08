@@ -51,9 +51,17 @@ USER_LABELS: Dict[str, str] = {
     "new_request": "GOAL_SET",
 }
 USER_INSTRUCTION = (
-    "How does the user message relate to the previous assistant message? "
-    "Is it a confirmation, a correction, a standing preference, a refinement of the "
-    "goal, a new request, or none of these?"
+    # T4.3 (specs/phonon2-d1-model-swap REQ-8 AC8.2, B3): the old question
+    # conflated two dimensions (relation to the previous turn AND goal
+    # setting), and the reference collapsed onto one class (2.4% minority).
+    # One boundary per option forces each class to be reachable.
+    "How does the user message relate to the previous assistant turn? "
+    "Choose 'confirmation' when it approves what was done or said; "
+    "'correction' when it fixes an error in what was done or said; "
+    "'preference' when it states a standing rule for future turns; "
+    "'refinement' when it narrows or adjusts the ACTIVE goal; "
+    "'new_request' when it starts a NEW goal; "
+    "'none' when it is standalone chatter that fits none of these."
 )
 
 EVENT_FAMILY = "event_family"

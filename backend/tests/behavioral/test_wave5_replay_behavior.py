@@ -23,6 +23,22 @@ from backend.agent.der_loop import DirectorQueue, QueueItem
 from backend.agent.tool_envelope import evaluate_streak
 
 
+@pytest.fixture(autouse=True)
+def _no_real_decision_engine(monkeypatch):
+    """B8 (specs/phonon2-d1-model-swap REQ-13 AC13.1): this test must NEVER
+    load the real decision backend. Since the shadow scoring moved to the
+    lane, the real model loading on a lane thread hit the pytest
+    INTERNALERROR ("Bad file descriptor") in 15-25% of runs (hit repeatedly
+    2026-10-08). An UNAVAILABLE engine is the honest stand-in: every shadow
+    consumer refuses (None), the finalize paths take their no-engine
+    branches, and nothing loads on any thread. The lazy imports inside the
+    shadow modules resolve get_decision_engine at call time, so patching
+    the source module covers every consumer."""
+    import backend.agent.decision_engine as _de
+
+    monkeypatch.setattr(_de, "get_decision_engine", lambda: None)
+
+
 # ── shared conv-102 trajectory (twin: test_wave5_ledger_contract.py) ─────────
 
 WIKI = "https://github.com/ggerganov/whisper.cpp/wiki"

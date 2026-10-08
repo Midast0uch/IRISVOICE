@@ -85,8 +85,13 @@ CONSUMERS: Tuple[str, ...] = (
     # branch and the duplicated web-trigger lists.
     "mode",
     "web_intent",
-    # REQ-17 AC17.1 (T21): the retry_same triage extension.
-    "retry_same",
+    # `retry_same` REMOVED as a declared consumer (Wave 4 T4.5,
+    # specs/phonon2-d1-model-swap REQ-12 AC12.2 / oracle.md §11.5): it never
+    # had a row of its own — its data rides `recovery_strategy` as the
+    # `retry_same_offered` field, so the declaration was a consumer that
+    # could never move. The MENU option and the field stay (AC12.3); only
+    # the consumer entry is gone. The pinned enumerations are updated in
+    # the SAME change, so the declared set is never left half-changed.
     # REQ-29 (T46–T49): the remaining decision surface — choice-shaped Brain
     # decisions scored in shadow. `has_gaps` REMOVED 2026-10-05 (owner): its only
     # producer (trailing_director.py) was deleted 2026-08-06, so it had no live
@@ -153,7 +158,7 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
 
 CONSUMER_JOBS: Dict[str, str] = {
     "mode": "interpret", "web_intent": "interpret", "user_feedback": "interpret",
-    "tool_choice": "route", "recovery_strategy": "route", "retry_same": "route",
+    "tool_choice": "route", "recovery_strategy": "route",
     "depth_route": "route", "browser_next": "route", "web_depth": "route",
     "click_safety": "guard", "needs_action": "guard", "use_thinking": "guard",
     "review_verdict": "judge_step",
