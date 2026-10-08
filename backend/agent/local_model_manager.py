@@ -4630,6 +4630,19 @@ def kill_orphan_servers() -> None:
     except Exception:  # noqa: BLE001 — the default port is the fallback
         pass
 
+    # Wave 2 (specs/phonon2-d1-model-swap T2.5): the tool model server's port,
+    # resolved the same way so the sweep's spare-rule tracks the configured
+    # port, not a hardcoded number.
+    _tool_port = 8091
+    try:
+        from backend.agent import tool_model_server as _tms
+
+        _val = getattr(_tms, "TOOL_MODEL_PORT", None)
+        if isinstance(_val, int) and 0 < _val < 65536:
+            _tool_port = _val
+    except Exception:  # noqa: BLE001 — the default port is the fallback
+        pass
+
     if PSUTIL_AVAILABLE:
         _killed = _spared = 0
         try:
@@ -4643,14 +4656,26 @@ def kill_orphan_servers() -> None:
                             or f":{_sidecar_port}" in _cmd):
                         _spared += 1          # the embedding sidecar — leave it
                         continue
+                    # Wave 2 (specs/phonon2-d1-model-swap T2.5): the TOOL model
+                    # server is also a llama-server.exe by image name
+                    # (backend/agent/tool_model_server.py, --port 8091, the
+                    # local LFM2.5-2.6B for the tool_execution role). Same
+                    # spare-rule as the sidecar, or every chat-model load
+                    # silently kills the tool server and every tool call
+                    # fails until the next boot.
+                    if (f"--port {_tool_port}" in _cmd
+                            or f":{_tool_port}" in _cmd):
+                        _spared += 1          # the tool model server — leave it
+                        continue
                     _proc.kill()
                     _killed += 1
                 except Exception:  # noqa: BLE001 — one bad proc must not stop it
                     continue
             logger.info(
                 "[LocalModelManager] orphan-server sweep: killed %d, spared %d "
-                "(the embedding sidecar on port %d is never killed by name)",
-                _killed, _spared, _sidecar_port,
+                "(the embedding sidecar on port %d and the tool model server "
+                "on port %d are never killed by name)",
+                _killed, _spared, _sidecar_port, _tool_port,
             )
         except Exception as _sweep_exc:  # noqa: BLE001
             logger.warning(

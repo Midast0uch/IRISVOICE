@@ -17,10 +17,15 @@ Source work order: PiN `pin_1a08a392eafa` (owner-approved handoff, 2026-10-08).
   in the plan as a VERIFICATION of the llama.cpp serving detail, not as a
   feasibility doubt — the owner expects it to pass; if it unexpectedly fails,
   stop and report rather than engineering around it.
-- **Model roles after the swap:** tool execution = LFM2.5-2.6B-Q4_K_M;
-  reasoning = **Inception Mercury** paired with it. Mercury's residency (local
-  GGUF on disk vs hosted Inception API) is UNVERIFIED — verification V4
-  resolves it; a hosted Mercury costs zero VRAM.
+- **Model roles after the swap:** tool execution = LFM2.5-2.6B-QAD-Q4_0
+  (the only 2.6B build on disk, 1.59 GB; the pin's "Q4_K_M" name was
+  approximate — verified 2026-10-08); reasoning = **Inception Mercury**
+  paired with it. Mercury's residency verified (V4): hosted, zero VRAM.
+- **d1 DIRECTS, the tool model EXECUTES (owner, 2026-10-08):** d1 never
+  makes tool calls itself. As the Oracle it scores the candidate menu and
+  picks the right tool; the tool_execution role (the local 2.6B) generates
+  the schema-constrained call with arguments; Mercury writes the prose.
+  Three models, three jobs, one flow: d1 decides, 2.6B calls, Mercury speaks.
 - **Deletions after verification (C5, extended by owner):** Parakeet AND
   GLiNER Decider 2.5 (`decision_backend_onnx.py`,
   `backend/models/gliner2.5-decide-onnx/`, their tests, their env/flags) are
@@ -272,9 +277,12 @@ line 317); `decide(consumer_id, options, frame)` + `generate_args` contract
   None and the incumbent decides (current mechanism: `_enforcement`,
   decision_engine.py:436-453). Old GLiNER rows SHALL be counted
   `other_backend`, not deleted (oracle.md §16, line 759).
-- AC5.4: WHILE d1 is the Oracle THE SYSTEM SHALL NOT combine d1's generative
-  ability with the Oracle role: no prose, no argument generation (§9 "No
-  prose"); `generate_args` continues to degrade to the Brain ladder.
+- AC5.4: WHILE d1 is the Oracle THE SYSTEM SHALL NOT combine d1's scoring
+  role with call execution: d1 DIRECTS (scores the option menu, picks the
+  tool — owner 2026-10-08), the tool_execution role (local LFM2.5-2.6B)
+  EXECUTES (generates the schema-constrained call with arguments), and
+  neither does the other's job. No prose, no argument generation from d1
+  (§9 "No prose"); `generate_args` continues to degrade to the Brain ladder.
 - AC5.5: IF d1's latency per decision exceeds the GLiNER baseline (~154 ms p50
   intra-4, §8.1) by more than 3x on the shadow lane for 95% of runs, THE
   SYSTEM SHALL record the measurement and the owner is consulted before

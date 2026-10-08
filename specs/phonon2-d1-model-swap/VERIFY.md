@@ -1,6 +1,78 @@
-# VERIFY.md — Wave 0 + Wave 1 gate records (TG-0, TG-1)
+# VERIFY.md — Wave 0 + 1 + 2 gate records (TG-0, TG-1, TG-2)
 
 Spec: specs/phonon2-d1-model-swap/ — Date: 2026-10-08 — Session 391
+
+## WAVE 2 — d1 vision + role pairing (TG-2): GREEN (with one recorded finding)
+
+### T2.1 — d1 registry + scan discovery: PASS
+- Registry entry added (models/gguf/.iris_model_settings.json, ctx 8192).
+- Live scan: d1-3B-AD-Q4_K_M.gguf discovered, architecture lfm2, 1.54 GB;
+  mmproj-d1-3B-BF16.gguf ATTACHED via the same-folder fallback (the stems do
+  not match directly — the AD variant token breaks the key; the fallback is
+  load-bearing and now pinned by unit test).
+- Unit tests: backend/tests/unit/test_wave2_d1_tool_server.py (8 green).
+
+### T2.3 — old VL off the live path: PASS
+- iris_config vision_model pin → the d1 path (LFM2.5-VL-3B no longer
+  referenced by the live config). Registry retirement of the VL entry is
+  T5.2; file deletion T5.3.
+
+### T2.4 — d1 vision LIVE gate: PASS
+- d1 loaded on the shared server :8082 WITH --mmproj via the backend WS
+  load_local_model (the Models-card path; verified on the server argv).
+- Raw probe: "red, blue." — d1 names both colours of the 32x16 PNG.
+- In-backend adoption: enable_vision (full resolve_vision_client pass) →
+  vision_status state=WARM. The provider routes vision to d1.
+- Debug note: health_check only reports an ALREADY-discovered server
+  (vision_provider.py:1072 reads _reused_vision_base_url); the discovery
+  itself runs through resolve_vision_client — enable_vision is the trigger.
+
+### T2.5 — tool model server + binding: infrastructure PASS, model FALSIFIED
+- NEW backend/agent/tool_model_server.py (mirrors embedding_sidecar.py):
+  llama-server on :8091 hosting LFM2.5-2.6B-QAD-Q4_0 (the only 2.6B on disk,
+  1.59 GB; the pin's "Q4_K_M" name was approximate), GPU, ctx 16384
+  (TOOL_CTX_CAP), boot warm, adoption rule = /v1/models must name the 2.6B.
+- kill_orphan_servers spare-rule extended for :8091 (the sweep kills by
+  image name; without the spare every chat-model load kills the tool
+  server — the sidecar's exact 2026-09-28 failure mode). PROVEN LIVE:
+  boot log "orphan-server sweep: killed 1, spared 2".
+- Boot: "[TOOLSERVER] LFM2.5-2.6B warm on :8091" (warmup 0.7s).
+- Routing PROVEN: the eval's tool calls reached :8091 (after fixing the
+  provider endpoint — LOCAL_OPENAI transport appends /v1 itself, a trailing
+  /v1 doubled the path into 404 "File Not Found"; convention now pinned
+  by test).
+- **FINDING (the model, not the plumbing):** with tool_execution bound to
+  the 2.6B, eval c10_create_module FAILED — the model invented paths
+  ("Working directory 'C:\home\user' is outside the project"), 0 successful
+  tool calls, reply 100.1s vs the 15.9s standard (2 standards regressions).
+  The 2.6B cannot meet the function-calling bar the standards were recorded
+  at. REVERTED per the spec's report-don't-widen rule: tool_execution →
+  mercury-2 (hosted), reasoning stays mercury-2.5. The iris_tool_local
+  instance stays configured (dormant) for a future re-bind after tuning or
+  an owner-accepted trade-off. Evidence: evals/results/20261008-125204.json
+  (FAIL) vs 20261008-130600.json (PASS after revert).
+
+### T2.6 — role resolution LIVE gate: PASS
+- Boot log: "Model selection updated: reasoning=mercury-2.5,
+  tool_execution=mercury-2" (after the revert; the 2.6B binding showed the
+  same truthful line while it was live).
+- End-to-end: eval c10 PASS 1/1, reply 25.2s, hidden 8/8, NO standards
+  regression — Mercury reasoning + Mercury tool calls over the full new
+  stack (Phonon-2 STT, d1 loaded for vision, tool server warm, sidecar).
+
+### VRAM (AC13.5 preview): measured with d1+mmproj on :8082, 2.6B on :8091,
+sidecar CPU: 5834 MiB used / 2185 free. LFM2.5-8B-A1B (~4.5-5 GB) does NOT
+fit alongside d1 — asserted. (After the tool-binding revert the 2.6B server
+still warms at boot; VRAM headroom improves if the owner disables it.)
+
+## TG-2 gate verdict: GREEN
+T2.1/T2.3/T2.4/T2.6 live-proven; T2.5 infrastructure live-proven with the
+model-level finding recorded and reverted per the spec's own rule. The
+d1-DIRECTS / tool-model-EXECUTES division (owner 2026-10-08) is locked in
+requirements.md AC5.4 + design.md D9a and is unchanged by the revert: when
+d1 becomes the Oracle (Wave 3), it scores the menu; mercury-2 executes.
+
+---
 
 ## WAVE 1 — Phonon-2 streaming STT swap (TG-1): GREEN
 

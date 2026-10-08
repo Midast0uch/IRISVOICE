@@ -340,6 +340,34 @@ async def lifespan(app: FastAPI):
             "non-blocking); faster-whisper remains the final fallback only"
         )
 
+        # WAVE 2 (specs/phonon2-d1-model-swap T2.5): the TOOL model server —
+        # a second llama-server (port 8091) hosting the local LFM2.5-2.6B for
+        # the tool_execution role, while reasoning stays on hosted Mercury
+        # and d1 holds the shared :8082 server (vision + Oracle). Warmed at
+        # boot so the first tool call of a session does not pay the graph
+        # compile. Best-effort: a fault leaves tool_execution on the
+        # incumbent provider (the role binding is config, the server is not).
+        def _tool_server_boot_warm():
+            try:
+                from backend.agent import tool_model_server as _tms
+
+                if _tms.ensure_running():
+                    logger.info(
+                        f"    [+] [TOOLSERVER] LFM2.5-2.6B warm on :{_tms.TOOL_MODEL_PORT} "
+                        f"(tool_execution role)"
+                    )
+                else:
+                    logger.warning(
+                        "    [x] [TOOLSERVER] unavailable — tool_execution "
+                        "stays on the incumbent provider"
+                    )
+            except Exception as _t_exc:
+                logger.warning(f"    [x] [TOOLSERVER] boot warm failed (non-fatal): {_t_exc}")
+
+        _threading.Thread(
+            target=_tool_server_boot_warm, daemon=True, name="iris-toolserver-boot-warm"
+        ).start()
+
         # ==========================================================================
         # IRIS GATEWAY INITIALIZATION WITH DIAGNOSTIC LOGGING
         # ==========================================================================

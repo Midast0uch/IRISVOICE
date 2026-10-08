@@ -226,6 +226,16 @@ Rejected alternative: replace 2.6B with Mercury for tool execution — code-
 specialist diffusion models are unmeasured against this repo's function-
 calling contract; 2.6B is incumbent and measured.
 
+D9a — **d1 DIRECTS, the tool model EXECUTES (owner, 2026-10-08).** d1 never
+makes tool calls. The flow across the three models: d1 (Oracle, :8082) scores
+the candidate menu and picks the tool; the tool_execution role (2.6B on the
+tool server :8091) generates the schema-constrained call with arguments;
+Mercury (hosted) writes the prose. This is the EXISTING decision_engine
+contract (the backend scores labels, never generates arguments —
+decision_engine.py:30-35) restated as the owner's division of labor; the
+Wave 2 serving work (tool server + role binding) is what makes the 2.6B
+reachable for the EXECUTE half.
+
 D10 — **GLiNER is deleted, not archived in-tree (owner).**
 After TG-3 proves the d1 Oracle live, `decision_backend_onnx.py`, the ONNX
 artefacts, and their pinning tests go in ONE change. "No fallback model"
