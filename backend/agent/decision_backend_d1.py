@@ -84,12 +84,35 @@ _IM_START, _IM_END, _BOS = "<|im_start|>", "<|im_end|>", "<|startoftext|>"
 # Readout forms per option code (prompt.py readout_ids): the bare letter and
 # its space-prefixed form, max-pooled. Positional A..Z per option_codes().
 _LETTERS = [chr(ord("A") + i) for i in range(26)]
+# The NOUL readout vocabulary (prompt.py YES_FORMS/NO_FORMS): d1 was TRAINED
+# on yes/no questions in this exact shape ("Reply with yes or no only."),
+# not as a 2-option letter menu. Binary consumers (done/sufficient/depth_met/
+# escalate_incomplete/web_intent/mode...) arrive as ["yes","no"] — render the
+# native noul template for them (V1 probe: 98.8%/96.5% polarity-correct).
+_YES_FORMS = ("yes", "Yes", "YES")
+_NO_FORMS = ("no", "No", "NO")
+_YES_NO_LOWER = frozenset({"yes", "no"})
 
 
-def _httpx():
-    import httpx
+# POOLED keep-alive client (owner: "incredibly slow", found 2026-10-08): a
+# FRESH connection per decision cost ~400 ms of Windows TCP setup
+# (Nagle/delayed-ACK on localhost — measured: fresh /health p50 397 ms vs
+# pooled 1 ms; a full decision 456-546 ms vs 58 ms pooled). One client for
+# the process; llama-server keeps the connection alive. Thread-safe
+# (httpx.Client is). Never raises at import — a client construction failure
+# surfaces per-call as a normal scoring failure.
+_client = None
+_client_lock = threading.Lock()
 
-    return httpx
+
+def _pooled() -> "httpx.Client":
+    global _client
+    with _client_lock:
+        if _client is None:
+            import httpx
+
+            _client = httpx.Client(timeout=_TIMEOUT_S)
+        return _client
 
 
 class D1Backend:
@@ -190,7 +213,7 @@ class D1Backend:
         if not force and self._served_id and (now - self._checked_at) < _D1_CHECK_TTL_S:
             return True, ""
         try:
-            r = _httpx().get(
+            r = _pooled().get(
                 f"http://127.0.0.1:{_server_port()}/v1/models", timeout=5.0
             )
             if r.status_code != 200:
@@ -207,17 +230,21 @@ class D1Backend:
             return False, f"shared server unreachable: {e}"
 
     def _ensure_letter_ids(self) -> None:
-        """Single-token ids for the option letters (+ space forms) from the
-        server's own tokenizer — the readout vocabulary (prompt.py aliases).
-        Cached for the process; the tokenizer does not change with the model
-        file's quant."""
+        """Single-token ids for the option letters AND the yes/no forms, from
+        the server's own tokenizer — the readout vocabulary (prompt.py
+        aliases). Cached for the process; the tokenizer does not change with
+        the model file's quant."""
         if self._letter_ids is not None:
             return
         try:
             ids: Dict[str, List[int]] = {}
-            for letter in _LETTERS:
-                for form in (letter, f" {letter}"):
-                    r = _httpx().post(
+            forms: Dict[str, Sequence[str]] = {
+                **{letter: (letter, f" {letter}") for letter in _LETTERS},
+                "yes": _YES_FORMS, "no": _NO_FORMS,
+            }
+            for key, variants in forms.items():
+                for form in variants:
+                    r = _pooled().post(
                         f"http://127.0.0.1:{_server_port()}/tokenize",
                         json={"content": form, "add_special": False},
                         timeout=5.0,
@@ -225,8 +252,10 @@ class D1Backend:
                     toks = r.json().get("tokens", [])
                     toks = [t["id"] if isinstance(t, dict) else int(t) for t in toks]
                     if len(toks) == 1:
-                        ids.setdefault(letter, []).append(toks[0])
-            if not ids:
+                        ids.setdefault(key, []).append(toks[0])
+            if "yes" not in ids or "no" not in ids:
+                raise RuntimeError("no single-token yes/no from the tokenizer")
+            if not any(k in ids for k in _LETTERS):
                 raise RuntimeError("no single-token letters from the tokenizer")
             self._letter_ids = ids
         except Exception as e:
@@ -257,6 +286,35 @@ class D1Backend:
             f"{question}{_IM_END}\n{_IM_START}assistant\n"
         )
 
+    @classmethod
+    def _render_noul(cls, state: Any, instruction: str) -> str:
+        """The NOUL template (prompt.py question_block for Noul): d1's native
+        calibrated shape for yes/no questions — NOT a 2-option letter menu.
+        V1 probe: 98.8% / 96.5% polarity-correct on this exact shape."""
+        question = f"{instruction}\n\nReply with yes or no only."
+        return (
+            f"{_BOS}{_IM_START}user\n{cls._state_block(state)}\nQUESTION:\n"
+            f"{question}{_IM_END}\n{_IM_START}assistant\n"
+        )
+
+    @staticmethod
+    def _spec_instruction(consumer_id: str, fallback: str) -> str:
+        """The consumer's REGISTERED instruction (ConsumerSpec) when one
+        exists — the Decision Index `instructions` field is core to d1's
+        training; a generic fallback is the last resort."""
+        try:
+            from backend.agent.decision_backend_onnx import (
+                ensure_consumer_spec,
+                get_consumer_spec,
+            )
+
+            spec = get_consumer_spec(consumer_id)
+            if spec is not None and getattr(spec, "instruction", None):
+                return str(spec.instruction)
+        except Exception:
+            pass
+        return fallback
+
     # ── the contract ─────────────────────────────────────────────────────
     def decide(
         self,
@@ -281,14 +339,54 @@ class D1Backend:
             opts = [o for o in options if isinstance(o, str) and o]
             if not opts or len(opts) > len(_LETTERS):
                 return None
-            # The state the model reads: the engine's job frame minus the
-            # engine-internal budget key.
-            state = {k: v for k, v in (frame or {}).items() if not k.startswith("_")}
-            prompt = self._render(
-                state, instruction or f"Choose the best option for {consumer_id}.", opts
+            # THE JOB TEXT + BUDGET (decision_engine.job_input): the engine
+            # renders the job's fields into ONE text and attaches the job's
+            # token budget — the backend APPLIES it. Found live 2026-10-08:
+            # rendering the raw frame ignored the budget, a long goal/step
+            # turned into 800-1500 tokens of prefill through the 3B, and the
+            # measured p50 was 630 ms (owner: "incredibly slow"). The budget
+            # is a CAP: ~4 chars per token is conservative for English, and
+            # a trimmed state is logged, never silent.
+            state = str((frame or {}).get("goal", ""))
+            budget = (frame or {}).get("_max_text_ids")
+            if budget:
+                cap = max(64, int(budget)) * 4
+                if len(state) > cap:
+                    logger.info(
+                        "decision_backend_d1: state trimmed to the job budget "
+                        "(%d chars ~ %s ids) consumer=%s",
+                        cap, budget, consumer_id,
+                    )
+                    state = state[:cap]
+            # d1's NATIVE question shapes (Decision Index schema): a yes/no
+            # consumer gets the NOUL template + yes/no token readout (what the
+            # model was calibrated on), everything else the choice template +
+            # letter readout. The DecisionScore envelope is identical either
+            # way, so the engine's noul() unwrapping is unchanged.
+            _is_noul = (
+                len(opts) == 2
+                and {o.strip().lower() for o in opts} <= _YES_NO_LOWER
             )
+            if _is_noul:
+                instruction = instruction or self._spec_instruction(
+                    consumer_id, "Is this statement true?"
+                )
+                prompt = self._render_noul(state, instruction)
+                readout_keys = ["yes", "no"]
+                names = [o.strip().lower() for o in opts]
+                # Normalise: the true label first, whatever order the caller
+                # used (the engine reads P(true) by NAME, order is ours).
+                if names[0] != "yes":
+                    names = ["no", "yes"]
+            else:
+                instruction = instruction or self._spec_instruction(
+                    consumer_id, f"Choose the best option for {consumer_id}."
+                )
+                prompt = self._render(state, instruction, opts)
+                readout_keys = [_LETTERS[i] for i in range(len(opts))]
+                names = list(opts)
             t0 = self._clock()
-            r = _httpx().post(
+            r = _pooled().post(
                 f"http://127.0.0.1:{_server_port()}/completion",
                 json={
                     "prompt": prompt,
@@ -313,10 +411,10 @@ class D1Backend:
                     logz[int(tid)] = float(e["logprob"])
             if not logz:
                 return None
-            # Readout (prompt.py): max-pool per option letter group, softmax.
+            # Readout (prompt.py): max-pool per option group, softmax.
             scores: List[float] = []
-            for i in range(len(opts)):
-                group = (self._letter_ids or {}).get(_LETTERS[i], [])
+            for key in readout_keys:
+                group = (self._letter_ids or {}).get(key, [])
                 vals = [logz[t] for t in group if t in logz]
                 scores.append(max(vals) if vals else float("-inf"))
             m = max(scores)
@@ -326,8 +424,8 @@ class D1Backend:
                 return None
             probs = [e / tot for e in exps]
             dist = tuple(
-                CandidateScore(name=opts[i], logprob=scores[i], prob=probs[i])
-                for i in range(len(opts))
+                CandidateScore(name=names[i], logprob=scores[i], prob=probs[i])
+                for i in range(len(names))
             )
             best = max(dist, key=lambda c: c.prob)
             self._latency_ms = int((self._clock() - t0) * 1000)

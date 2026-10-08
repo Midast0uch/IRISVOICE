@@ -54,15 +54,46 @@ Spec: specs/phonon2-d1-model-swap/ — Date: 2026-10-08 — Session 391
   standards regression. c10 reply 10 s on the final boot (the fastest this
   session — the D: SSD twin sped the whole stack).
 
-### AC5.5 — Oracle latency (owner consultation OPEN)
-- Measured live (n=21, real eval traffic, this boot):
-  p50=630 ms, p90=805 ms, min=449, max=938, mean=626.
-- GLiNER baseline (oracle.md 8.1): p50 153.9 ms. Ratio ~4.1x — ABOVE the
-  3x bound, so per AC5.5 the owner is consulted. Context: the cost is
-  prompt prefill (~200-800 tokens through the 3B on the shared GPU
-  server); the Oracle is shadow-only on the oracle_shadow lane — measured
-  turn impact NONE (reply_s did not move; evals pass). Recommendation:
-  accept; alternatives recorded (cut job text budgets further).
+### AC5.5 — Oracle latency: RESOLVED by measurement (was an open consultation)
+- First measurement: p50=630 ms (n=21) — owner: "incredibly slow". Root-caused
+  in two parts, both fixed:
+  1. JOB TEXT BUDGET dropped by my first port: job_input caps every decision
+     at 64-128 token ids and the backend must APPLY it; rendering the raw
+     frame sent 800-1500 tokens of prefill. Fixed: the state is the job
+     text, trimmed to the budget (logged, never silent).
+  2. THE DOMINANT COST — ~400 ms of Windows TCP setup PER REQUEST: a fresh
+     httpx connection to llama-server cost 397 ms on GET /health (an
+     endpoint with ZERO model work) vs 1 ms pooled; a full decision 456 ms
+     fresh vs 58 ms pooled (Nagle/delayed-ACK on localhost). Fixed: one
+     pooled keep-alive httpx.Client for the process.
+- FINAL (n=22, live eval traffic, noul shape active): p50=139 ms, p90=320,
+  min=62 — UNDER the GLiNER baseline (154 ms p50, oracle.md 8.1). The
+  consultation closes: no acceptance needed; d1 is faster than GLiNER was.
+
+### d1 at its OPTIMUM (owner question 2026-10-08; docs: LiquidAI open-d1 blog)
+- d1 is a System One decision model with its OWN calibrated question shapes
+  (Decision Index schema: noul/choice/score). Adjustments made so it runs
+  at its native optimum, all BEFORE calibration rows accumulate (the shape
+  IS the identity, oracle.md 19.3.6):
+  1. NOUL template for binary consumers: done/sufficient/depth_met/
+     escalate_incomplete/web_intent/mode arrive as ["yes","no"] — they now
+     render d1's native yes/no shape ("Reply with yes or no only." +
+     yes/no token max-pool readout; V1 probe: 98.8%/96.5% polarity-correct)
+     instead of an off-distribution "A yes / B no" letter menu. The
+     DecisionScore envelope is unchanged, so the engine's noul() unwrapping
+     and every consumer contract hold.
+  2. REGISTERED instructions: the consumer's ConsumerSpec instruction (the
+     Decision Index `instructions` field, core to d1's training) is used
+     before any generic fallback.
+  3. Job budgets stay the operating point (64-128 ids): they are both the
+     latency dial and the shape any future calibration is fit at.
+  4. Reference latencies (LiquidAI, one question): 8 ms RTX 4090, 50 ms
+     Jetson Orin Nano. Our 139 ms p50 = 3070 + mmproj attached + HTTP +
+     prefill; the model's own work is ~10-50 ms.
+- NOTED for a future enhancement (not an adjustment): d1's vision decision
+  benchmarks (74.1 mean) mean image-state decisions are its strength —
+  click_safety could pass the screenshot in the state once the Oracle
+  earns enforcement there.
 
 ### d1 BOOT LOAD (owner request 2026-10-08): 68 s -> 14.6 s
 - d1 now loads on the GPU at STARTUP (like the old Parakeet boot warm):
