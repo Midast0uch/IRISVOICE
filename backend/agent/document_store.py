@@ -167,6 +167,14 @@ class DocumentDataStore:
                 "source_document_id",
                 "sources",
                 "har_path",
+                # 2026-10-08: where this document's fetched evidence actually
+                # lives. `har_path` is NULL for every live crawl because the
+                # live path never writes a HAR (measured: 0 "HAR write" in the
+                # log that contains a successful crawl) - it writes per-page
+                # captures under data/captures/<job_id>/ instead. Linking to
+                # those rather than writing a second copy is deliberate: one
+                # source of truth, no duplicate evidence on disk.
+                "capture_path",
                 "turn_id",
                 # 2026-09-22 (reply-surface-contract audit, REQ-10): persist the
                 # prism card lifecycle id so it survives a reload instead of a
@@ -205,6 +213,7 @@ class DocumentDataStore:
         source_document_id: Optional[str] = None,
         sources: Optional[list] = None,
         har_path: Optional[str] = None,
+        capture_path: Optional[str] = None,
         turn_id: Optional[str] = None,
         card_id: Optional[str] = None,
         title: Optional[str] = None,
@@ -221,9 +230,9 @@ class DocumentDataStore:
                     self._conn,
                     "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
-                " source_document_id, sources, har_path, turn_id, card_id, "
+                " source_document_id, sources, har_path, capture_path, turn_id, card_id, "
                 " title, kind, summary, language) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(document_id) DO UPDATE SET "
                 "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
                 "content=excluded.content, variants=excluded.variants, "
@@ -231,6 +240,7 @@ class DocumentDataStore:
                 "revision=document_data.revision, "
                 "source_document_id=excluded.source_document_id, "
                 "sources=excluded.sources, har_path=excluded.har_path, "
+                "capture_path=excluded.capture_path, "
                 # COALESCE, not excluded: a later write that does not know the
                 # turn (a reformat, a variant refresh) must not erase the
                 # attribution the original render established.
@@ -256,6 +266,7 @@ class DocumentDataStore:
                     source_document_id,
                     json.dumps(sources or [], ensure_ascii=False) if sources is not None else None,
                     har_path,
+                    capture_path,
                     turn_id,
                     card_id,
                     title,

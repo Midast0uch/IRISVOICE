@@ -3744,12 +3744,24 @@ class IRISGateway:
                     or session_id
                 )
                 if _conv_for_voice and response:
+                    # Provenance (2026-10-08): carry the turn's fetched URLs onto
+                    # the persisted turn, so a LATER turn's planner grounds the
+                    # reference as external instead of reading a bare
+                    # `owner/name` token as a local path. Pass the conversation
+                    # THIS path resolved - the kernel's own id can differ.
+                    # Best-effort: provenance must never fail a turn that already
+                    # succeeded on screen.
+                    try:
+                        _srcs = agent_kernel._turn_sources(_conv_for_voice)
+                    except Exception:  # noqa: BLE001
+                        _srcs = []
                     _v_store_add(
                         _conv_for_voice,
                         "assistant",
                         response,
                         thinking=thinking or None,
                         turn_id=_turn_id,
+                        sources=_srcs or None,
                         source="ws_voice_transcription",
                     )
                     self._logger.info(
@@ -6171,12 +6183,21 @@ class IRISGateway:
                         or conversation_id
                     )
                     if _conv_for_turn and response:
+                        # Provenance (2026-10-08): the turn's fetched URLs ride the
+                        # persisted turn, so a later turn's planner grounds the
+                        # reference as EXTERNAL instead of reading a bare
+                        # `owner/name` token as a local path. Best-effort.
+                        try:
+                            _srcs = agent_kernel._turn_sources(_conv_for_turn)
+                        except Exception:  # noqa: BLE001
+                            _srcs = []
                         _store_add(
                             _conv_for_turn,
                             "assistant",
                             response,
                             thinking=thinking or None,
                             turn_id=turn_id,
+                            sources=_srcs or None,
                             source="ws_text_message",
                         )
                         self._logger.info(

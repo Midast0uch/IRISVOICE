@@ -350,7 +350,25 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                     options=["Hey Iris"],
                     value="Hey Iris"  # Default — the trained ONNX model
                 ),
-                InputField(id="wake_word_sensitivity", type=FieldType.SLIDER, label="Wake Word Sensitivity", min=1, max=10, value=5),
+                InputField(
+                    # 2026-10-07: replaced the dead `wake_word_sensitivity`
+                    # (1-10) with the AUTHORITATIVE field. Two sections both
+                    # declared id="wake" and each defined its own sensitivity
+                    # slider: that dead 1-10 one, and core_models.py's
+                    # `detection_sensitivity` (0-100). The gateway reads ONLY
+                    # `detection_sensitivity` (iris_gateway.py `_sens_raw =
+                    # values.get("detection_sensitivity")`) and the card's
+                    # confirm payload carries that field, so moving the 1-10
+                    # slider sent a `field_update` the confirm discarded -
+                    # measured live: user set 10, bar moved 0.555 -> 0.540
+                    # driven entirely by the untouched `detection_sensitivity=70`.
+                    # Both definitions now declare the SAME id and scale, so
+                    # whichever section renders drives the one live control.
+                    id="detection_sensitivity",
+                    type=FieldType.SLIDER,
+                    label="Detection Sensitivity",
+                    min=0, max=100, value=70, unit="%",
+                ),
                 InputField(id="voice_profile", type=FieldType.DROPDOWN, label="Voice Profile", options=["Default", "Personal", "Professional"], value="Default"),
                 InputField(id="activation_sound", type=FieldType.TOGGLE, label="Activation Sound", value=True),
                 InputField(id="sleep_timeout", type=FieldType.SLIDER, label="Sleep Timeout", min=5, max=300, value=60, unit="s"),

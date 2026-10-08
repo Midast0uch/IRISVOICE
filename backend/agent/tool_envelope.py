@@ -53,11 +53,24 @@ SUMMARY_MAX_LINES = 2
 _GATHER_TOOLS = frozenset({
     "web_search", "crawler_query", "search_discovery", "websearch",
     "get_rendered_documents", "fetch_url", "crawl",
+    # ── KD-9 gap closed (2026-10-08) ────────────────────────────────────────
+    # The open-url and browser tools GO AND RETRIEVE from outside the project,
+    # so their expectation IS `gather`. Leaving them as `direct` was not
+    # cosmetic: agent_kernel.py:6991 gates the VLM recovery path on
+    # `tool_family(...) == "gather"`, so a browser_open / open_url step that
+    # came back with NOTHING was never offered recovery - the one case that
+    # needs it most. `browser_act` is deliberately NOT here; see _ACTION_TOOLS.
+    "open_url", "browser_open", "browser_observe", "browser_explore",
 })
 _SYNTHESIS_TOOLS = frozenset({"synthesis", "respond", "compose"})
 _ACTION_TOOLS = frozenset({
     "write_file", "edit_file", "delete_file", "run_command", "create_file",
     "move_file", "speak",
+    # KD-9 gap closed (2026-10-08): browser_act CHANGES the page (click / type)
+    # rather than retrieving from it, so its expectation is `action`, not
+    # `direct`. It stays out of `gather` so it never inherits gather's recovery
+    # semantics, which are about a fetch that returned nothing.
+    "browser_act",
 })
 _READ_TOOLS = frozenset({
     "read_file", "get_document", "read_document", "get_rendered_document",

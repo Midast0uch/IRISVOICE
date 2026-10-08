@@ -62,7 +62,12 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
 - **MTP Speculative Decoding (1.5-3× speedup)**: Multi-Token Prediction for compatible GGUF models (e.g. Qwopus3.6-27B-MTP). Auto-detected from tensor names, routed to compiled `llama-server --spec-type draft-mtp`. Configurable `--spec-draft-n-max` (1-6) and acceptance-rate logging. Non-MTP models fall back transparently to in-process inference.
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
-- **DER Loop**: Director → Explorer → Reviewer agent loop with trailing crystallizer, token-budget enforcement, and mid-loop episodic retrieval (C.4)
+- **DER-DAG Execution Model**: the agent no longer runs a hardcoded Director → Explorer →
+  Reviewer pipeline over a flat queue. Execution is a **physics-governed, memory-backed DAG** of
+  *nodes* — each step is simultaneously a work unit and a memory record — with non-binary steering,
+  split races, outcome-driven recovery, and per-node execution modes. See
+  **[DER-DAG Architecture](./docs/architecture/DER_DAG.md)** (the authoritative map) and the
+  section below.
 - **Caducean Engine v2 — Mitochondria to Mycelium (Domain 19)**: Four-dimensional physics-governed attention governor (Σ = x, y, ξ, u) based on the Duffing oscillator. Now the metabolic regulator of Mycelium memory:
   - **Winding numbers** `(l, m) ∈ ℤ²` control cycle speed `c_eff = (1/√2)√(l²+m²)`
   - **DirectionSignal** exposes bias-free physics to consumers (`target_u`, `force_magnitude`, `u_current`, `phase`, `balance`)
@@ -94,6 +99,40 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
+
+### 🔮 Oracle — the Decision Engine
+
+**Oracle** (renamed 2026-09-26; formerly "Decision Engine") is a resident, in-process,
+**CPU-only** scorer. It answers **one question at a time** against a caller-supplied feature
+frame and returns a calibrated probability distribution — no prose, no provider call, no writes.
+It is the local reproduction of the JEV "System One" shape: a closed output space and calibrated
+probabilities, so an unsure verdict can be *escalated* to the Brain rather than guessed.
+
+- **Separation of duties.** The **Brain** plans, writes prose, and produces tool-call arguments.
+  **Oracle** only *chooses* among a supplied menu (or scores a statement) and never acts. They
+  meet at one point: `ToolDecisionBox` either accepts Oracle's pick or escalates the same choice.
+- **Jobs, not call sites.** Each consumer belongs to a *job* (`interpret`, `route`, `guard`,
+  `judge_step`, `judge_goal`, `shape`, `classify_event`). The **job** — not the caller — decides
+  what the model reads and how much of it (64–128 ids).
+- **Two-key enforcement (fail-closed).** A consumer decides only when **both** keys turn: the
+  owner switched it on (`IRIS_DECISION_ENFORCE`) **and** it earned its measured bar. With the
+  default configuration **nothing decides**, and every caller falls back to its incumbent (a rule
+  or the Brain call).
+- **The bar is hardened.** distinct rows ≥ 100 · both classes with the minority ≥ 5% ·
+  out-of-fold **AUROC ≥ 0.65** · a calibrated threshold with precision ≥ 0.90 (Wilson LB ≥ 0.85)
+  on ≥ 50 rows above · calibrated **ECE ≤ 0.05**. Labels are **agreement with the incumbent** —
+  which is the engine's real ceiling and its biggest open problem.
+- **Calibration is keyed by backend identity.** `gliner25-decide-onnx-int8` *is* the key. A
+  probability threshold is only meaningful for the distribution it was measured on, so
+  **swapping the model is a recalibration, not a rename**: a new identity invalidates every
+  measured curve, enforcement fail-closes for all consumers, and rows from the old model are
+  excluded (counted as `other_backend`) until the new model earns its own bar.
+- **Measured status** (out-of-fold, active engine): `narration` AUROC 0.78 · `on_track` 0.78 ·
+  `tool_choice` 0.68 · `done` 0.67 — the rest at or near chance. Today **no** consumer's
+  incumbent is a Brain call, so none is worth switching on yet.
+
+Full architecture, the job map, the enforcement chokepoint, the phase-domain concurrency model
+and every measured number: **[docs/architecture/oracle.md](./docs/architecture/oracle.md)**.
 
 ### 🕸 DER-DAG Execution Model
 
@@ -1207,7 +1246,9 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[System Overview](./docs/architecture/SYSTEM_OVERVIEW.md)**: Complete system architecture
 - **[Agent Architecture](./docs/architecture/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
 - **[UI Architecture](./docs/architecture/UI_ARCHITECTURE.md)**: Frontend component structure
-- **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: Full DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges
+- **[DER-DAG](./docs/architecture/DER_DAG.md)**: **the authoritative map of the execution model** — turn entry and routing, planning (goals, never tools), the scheduler, node execution, finalize (verify · record · coverage · score), turn end, the data objects (`QueueItem`, `NodeRecord`, `NodeContext`, `ToolResultEnvelope`), and an honest health section of what is solid vs still open
+- **[Oracle — Decision Engine](./docs/architecture/oracle.md)**: the CPU-only calibrated scorer — jobs and their routing, the two-key enforcement chokepoint, the hardened bar, calibration (`fit_oracle_calibration.py`), the phase-domain concurrency model, and every measured number with its provenance
+- **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: *(historical)* the pre-DAG DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges. Superseded by DER-DAG above; the trailing director was deleted 2026-08-06.
 - **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
 - **[Recall-as-Cognition](./docs/architecture/RECALL_AS_COGNITION.md)**: Two-phase memory retrieval protocol — op grammar, iterative recall, streaming filter, episode feedback loop, skill genesis, and performance model
 - **[PiN System](./docs/architecture/PIN_SYSTEM.md)**: Primordial Information Nodes — pin data model, recall ops (`pin="title"`, `pin query="text"`, `pin file="X.md"`, `pin tags="a,b"`), auto-checkpoint heuristic, wiki link graph, tunable search weights
@@ -1354,6 +1395,6 @@ For issues and questions:
 
 ---
 
-**Version**: 5.0.0
-**Last Updated**: August 14, 2026
-**Status**: Production Ready ✅ (DER-DAG Execution Model + Server-Side Browser Automation)
+**Version**: 5.1.0
+**Last Updated**: October 8, 2026
+**Status**: Production Ready ✅ (DER-DAG Execution Model + Oracle Decision Engine)

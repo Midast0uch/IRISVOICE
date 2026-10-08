@@ -534,13 +534,92 @@ class AudioEngine:
             # frame_length was 512 (matched the pipeline), which is why the old
             # loop never dropped samples before the Violawake migration.
             detected, word = self._wake_detector.process_frame(pcm_int16)
+            try:
+                self._push_wake_ring(pcm_int16)
+            except Exception:  # noqa: BLE001
+                pass
             if detected:
                 logger.info(f"[AudioEngine] Wake word detected: '{word}'")
+                # WAKE TRIGGER CAPTURE (diagnostic, 2026-10-07): keep a rolling
+                # 3 s ring of what the detector actually heard, and dump it when
+                # it fires. Live 2026-10-07 the detector fired 3x while the
+                # owner was only TYPING (podcast in headphones, nothing said):
+                # peaks 0.585-0.644, and the energy VAD reported "no speech" in
+                # every one of those recordings. So a NON-SPEECH sound scores at
+                # phrase level against this head and no threshold can separate
+                # it from the phrase. The clip says what it is.
+                #
+                # I/O NEVER runs on the audio callback: the ring is copied and the
+                # file is written on a daemon thread. (Same reason session 280
+                # deleted the per-frame RMS log from _capture_frame: sustained
+                # disk I/O in the callback starves the model load.)
+                try:
+                    self._capture_wake_trigger(word)
+                except Exception:  # noqa: BLE001 - a diagnostic never breaks audio
+                    pass
                 if self._on_wake_word_detected:
                     self._on_wake_word_detected(word)
 
         except Exception as e:
             logger.error(f"[AudioEngine] Frame processing error: {e}", exc_info=True)
+
+    # ── WAKE TRIGGER CAPTURE (diagnostic, 2026-10-07; remove once diagnosed) ──
+    #
+    # A bounded ring of the last ~3 s of mic audio. On a detection the frames
+    # are copied and written to logs/wake_triggers/ on a DAEMON THREAD - never
+    # inline, because this is the PortAudio callback and file I/O there starves
+    # the rest of the app (the reason session 280 removed a per-frame log from
+    # _capture_frame). Bounded: ~94 frames of 320 samples at 16 kHz (~380 KB),
+    # replaced in place, so an idle mic costs one list append per frame.
+
+    _WAKE_RING_SECONDS: float = 3.0
+
+    def _push_wake_ring(self, pcm_int16) -> None:
+        ring = getattr(self, "_wake_ring", None)
+        if ring is None:
+            ring = self._wake_ring = []
+            # 320-sample detector frames at 16 kHz = 20 ms each.
+            self._wake_ring_max = max(
+                8, int(self._WAKE_RING_SECONDS * 16000 / 320)
+            )
+        ring.append(pcm_int16)
+        if len(ring) > self._wake_ring_max:
+            del ring[: len(ring) - self._wake_ring_max]
+
+    def _capture_wake_trigger(self, word: str) -> None:
+        """Copy the ring and write it off-thread. Never raises."""
+        import os as _os
+        import threading as _t
+        import time as _time
+
+        ring = list(getattr(self, "_wake_ring", []) or [])
+        if not ring:
+            return
+        peak = 0.0
+        det = getattr(self, "_wake_detector", None)
+        if det is not None:
+            try:
+                peak = float(getattr(det, "_streak_peak", 0.0) or 0.0)
+            except Exception:  # noqa: BLE001
+                peak = 0.0
+        payload = b"".join(bytes(np.asarray(f, dtype=np.int16).tobytes()) for f in ring)
+        stamp = _time.strftime("%H%M%S")
+        safe = "".join(c for c in str(word) if c.isalnum() or c in "-_") or "wake"
+        path = _os.path.join("logs", "wake_triggers", f"wake_{stamp}_{safe}_{peak:.3f}.wav")
+
+        def _write() -> None:
+            try:
+                import soundfile as _sf
+
+                _os.makedirs(_os.path.dirname(path), exist_ok=True)
+                pcm = np.frombuffer(payload, dtype=np.int16)
+                audio = (pcm.astype(np.float32) / 32768.0)
+                _sf.write(path, audio, 16000)
+                logger.info("[AudioEngine] wake trigger clip written: %s", path)
+            except Exception as _w_exc:  # noqa: BLE001 - a diagnostic never raises
+                logger.debug("[AudioEngine] wake trigger clip failed: %s", _w_exc)
+
+        _t.Thread(target=_write, daemon=True, name="wake-trigger-dump").start()
 
     def _broadcast_threadsafe(self, message: dict):
         """

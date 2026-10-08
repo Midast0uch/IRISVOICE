@@ -23,6 +23,7 @@ Audit result (pin_4cbe8eb4afab): ``WakeDetector`` does NOT expose
 
 import logging
 import os
+from collections import deque
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -110,9 +111,71 @@ def threshold_for_sensitivity(sensitivity: float) -> float:
 #   COOLDOWN_SEC — after a detection, further detections are ignored for this
 #     long. One utterance collapses to one trigger, and the activation chime
 #     (which the mic hears) cannot re-fire the detector.
-CONSECUTIVE_CHUNKS: int = 8
+# HOW MANY CONSECUTIVE CHUNKS must sit above the bar before the streak ARMS.
+# 2026-10-07: was 8 (320 ms). The loaded head is a TEMPORAL model - the SDK
+# logs `Temporal model detected: seq_len=9`, so it already integrates ~360 ms
+# of audio context before emitting ONE score. Requiring 8 further consecutive
+# above-bar chunks demanded a second 320 ms of the same evidence, i.e. it
+# re-asked a question the model had already answered, and the owner's bursty
+# real speech could never satisfy it. Measured live at bar=0.540: a genuine
+# attempt peaked 0.564 ABOVE the bar and still produced no detection, because
+# a single chunk above the line is not a streak of 8. 4 chunks (~160 ms) is
+# enough to reject a click while no longer double-counting the model's own
+# temporal window. The streak is NOT the primary noise defence anyway - that
+# is MIN_INPUT_RMS, which gates scores computed from silence.
+CONSECUTIVE_CHUNKS: int = 4
 COOLDOWN_SEC: float = 2.0
-#   RELEASE_FLOOR — a release chunk BELOW this fires immediately (deep
+# ── The score does not discriminate; ENERGY and SHAPE must (2026-10-07) ────
+#
+# Captured trigger clips (logs/wake_triggers/) proved the peak score carries no
+# information: a MOUSE CLICK scored 0.600, the owner's live voice 0.594, and a
+# near-SILENT clip (peak 0.002 = -54 dBFS) also 0.594. Three unrelated sounds,
+# one number. No threshold can separate them, so the gate now requires:
+#
+# 1. MIN_INPUT_RMS - real energy, as a FLOOR ONLY. The -54 dBFS clip scored
+#    0.594 because the backbone seeds its mel buffer with np.ones (openWakeWord
+#    does the same: `melspectrogram_buffer = np.ones((76, 32))` in reset()),
+#    so after a quiet gap the first frames score high from no acoustic input.
+#    This floor is deliberately LOW (digital silence only): at 0.010 it zeroed
+#    67% of a real spoken phrase's chunks and broke the streak, i.e. it stopped
+#    the wake word entirely. openWakeWord solves this properly with a Silero
+#    VAD gate (vad_threshold, recommended 0.5) and by calling model.reset();
+#    this constant is the poor stand-in until that is wired.
+# 2. RELEASE_FLOOR derived from the bar - it used to be a fixed 0.65, coherent
+#    while the bar was 0.70 but ABOVE the bar once the bar moved to 0.555, so
+#    the two could disagree. It is now `bar - margin`.
+# 3. NO shape gate. Requiring more consecutive chunks for weak input was tried
+#    and removed: the head's score on speech is bursty (the longest run above
+#    0.50 is ~4 chunks), so a longer streak rejected the wake word as surely
+#    as it rejected the click.
+MIN_INPUT_RMS: float = 0.002
+RELEASE_FLOOR_MARGIN: float = 0.05
+# Score above which a chunk counts as "part of an utterance" for the
+# utterance-peak trace. Set well below the bar so a failing voice attempt is
+# still reported - the point is to see how close a real phrase got.
+UTTERANCE_TRACE_FLOOR: float = 0.20
+# Silero speech-probability gate (2026-10-07). The wake score alone cannot
+# reject a microphone tap: measured live, a tap peaks 0.72-0.76 and sustains
+# ABOVE-bar runs of 18-26 chunks, while the owner's voice peaks 0.65-0.74.
+# They overlap, and the tap OUTLASTS the voice, so neither the threshold, the
+# streak, the energy floor, nor impulse/spectral features separate them
+# (crest 2.94 vs 2.98, zcr 0.104 vs 0.113, flatness 0.0275 vs 0.0286 - all
+# indistinguishable). Silero asks a different question - is this SPEECH? - and
+# does separate them.
+#
+# THRESHOLD CALIBRATED FROM LIVE DATA, not from offline replay. An earlier
+# value of 0.40 came from cold-start replay of the recorded clips and was
+# WRONG: this model mis-scores from a cold start because its mel buffer is
+# primed by continuous audio, so replay reads the taps as 0.221 mean and the
+# phrase as 0.473 - both far above what the live values are.
+#
+# Live measured speech_mean over the qualifying streak:
+#   microphone taps : 0.007 0.015 0.015 0.018 0.020 0.022 0.023 0.025 0.029 0.037 0.043
+#   owner's voice   : 0.130 0.310 0.321 0.325 0.397   (0.397 was rejected at 0.40)
+# So 0.15 rejects every measured tap with >3x margin and accepts the voice from
+# 0.310 up. Setting 0.40 sat INSIDE the voice range and rejected the owner
+# while the taps never approached it - the opposite of the intent.
+VAD_SPEECH_MEAN_MIN: float = 0.15
 #     collapse). Synthetic speech collapses to 0.576-0.589 on its first
 #     below-threshold chunk (measured 2026-09-05, full and x0.3 gain).
 #     BUT a live voice in a real room releases GRADUALLY (reverb tail):
@@ -121,10 +184,10 @@ COOLDOWN_SEC: float = 2.0
 #     chunk (floor <= score <= threshold) does NOT disarm — it HOLDS the arm
 #     awaiting either a collapse below the floor (fire) or a re-cross above
 #     threshold (dither: the plateau never ended — reject). The 0.8 s window
-#     still bounds the hold. Floor 0.65 keeps abrupt releases fast while the
-#     hold covers gradual ones; dither is caught by the recross rule instead
-#     of by depth.
-RELEASE_FLOOR: float = 0.65
+#     still bounds the hold. The floor is DERIVED from the bar (bar - 0.05) and
+#     is never a constant: as a fixed 0.65 it sat ABOVE the 0.555 bar and the
+#     two could disagree (2026-10-07). dither is caught by the recross rule
+#     instead of by depth.
 #   REARM_QUIET_CHUNKS — after any fire or sustained-reject, this many
 #     consecutive below-threshold 320-sample chunks (~0.5 s) must pass before
 #     a new streak may arm. Bursty background (TV dialogue with pauses)
@@ -239,6 +302,9 @@ class ViolawakeWakeWordDetector:
         # 0.65 (the default) -> 0.555. A higher sensitivity value LOWERS the
         # bar, which is what the label promises; see THRESHOLD_MIN/MAX.
         self._threshold = threshold_for_sensitivity(sensitivity)
+        # The deep-collapse release floor tracks the bar (see RELEASE_FLOOR):
+        # a fixed constant could drift above the bar and break the release.
+        self._release_floor = max(0.0, self._threshold - RELEASE_FLOOR_MARGIN)
 
         # Bounded remainder buffer for frames not aligned to 320 samples.
         # Max 319 samples after each call — never accumulates unbounded.
@@ -251,6 +317,40 @@ class ViolawakeWakeWordDetector:
         # happens on the below-threshold RELEASE chunk, whose own score is
         # meaningless — report what the phrase itself scored).
         self._streak_peak = 0.0
+        # Highest score seen during the current UTTERANCE (any score above
+        # UTTERANCE_TRACE_FLOOR, independent of the arm state). Emitted as one
+        # line when the utterance ends. Without this, a real voice attempt that
+        # fails to wake is indistinguishable from silence in the log: the
+        # below-threshold branch has always been silent. It is the only way to
+        # compare a live human attempt against the bar without a lab rig.
+        self._utterance_peak = 0.0
+        # Longest run of consecutive above-bar chunks in the current utterance,
+        # plus the run in progress. Reported by the trace so a failed attempt
+        # shows whether the streak gate or the bar was the blocker - peak alone
+        # cannot distinguish "never reached the bar" from "reached it but not
+        # for long enough".
+        self._utterance_above_run = 0
+        self._utterance_above_best = 0
+        # Silero VAD, loaded LAZILY and optionally (a missing dependency must
+        # not disable the wake word - the gate is simply skipped). Fed one
+        # frame per above-bar chunk; the deque holds exactly the frames that
+        # make up the current streak, so its mean IS the mean Silero
+        # probability of the evidence the streak gate accepted.
+        self._vad = None
+        self._recent_speech: deque = deque(maxlen=CONSECUTIVE_CHUNKS)
+        try:
+            from violawake_sdk.vad import SileroVAD  # noqa: PLC0415
+
+            self._vad = SileroVAD()
+            logger.info(
+                "[ViolawakeDetector] Silero VAD gate active "
+                f"(speech_mean_min={VAD_SPEECH_MEAN_MIN})"
+            )
+        except Exception as _vad_e:  # pragma: no cover - optional dependency
+            logger.warning(
+                f"[ViolawakeDetector] Silero VAD unavailable ({_vad_e}) - "
+                "the speech gate is DISABLED and a microphone tap can trigger"
+            )
         # Monotonic timestamp when the streak gate passed (armed, awaiting
         # the release); None while idle or disarmed.
         self._streak_armed_at: float | None = None
@@ -435,6 +535,15 @@ class ViolawakeWakeWordDetector:
                 score = self._detector.process(chunk)
                 # Normalize once: a None score (SDK gap) is silence, never hot.
                 s = 0.0 if score is None else float(score)
+                # ENERGY GATE (2026-10-07): a score computed from a frame with
+                # no acoustic energy is not evidence. The backbone seeds its mel
+                # buffer with np.ones, so after a quiet gap the first frames
+                # score ~0.6 from nothing - a captured clip at -54 dBFS RMS
+                # scored 0.594 and started a recording. Ignore those scores
+                # entirely: they may neither arm a streak nor hold one.
+                _rms = float(np.sqrt(np.mean(np.square(chunk.astype(np.float32))))) / 32768.0
+                if _rms < MIN_INPUT_RMS:
+                    s = 0.0
                 # Dynamic bar: SDK noise-profiler threshold when available,
                 # else the fixed floor. In quiet conditions the profiler sits
                 # at the floor, so behavior there is exactly the old gate.
@@ -443,6 +552,50 @@ class ViolawakeWakeWordDetector:
                     if self._profiler is not None
                     else self._threshold
                 )
+                # UTTERANCE PEAK TRACE: one line per utterance, emitted when the
+                # score falls back below the trace floor. Independent of the arm
+                # state, so a real voice attempt that never reaches the bar is
+                # still visible with the number it actually achieved.
+                # `run` is the LONGEST run of consecutive above-bar chunks in
+                # the utterance - the number that says whether the streak gate
+                # could ever have been satisfied, which peak alone cannot show.
+                if s > UTTERANCE_TRACE_FLOOR:
+                    if s > self._utterance_peak:
+                        self._utterance_peak = s
+                if s > thr:
+                    self._utterance_above_run += 1
+                    if self._utterance_above_run > self._utterance_above_best:
+                        self._utterance_above_best = self._utterance_above_run
+                    # Feed the VAD only on above-bar frames so the deque holds
+                    # exactly the streak's evidence. process_frame takes raw
+                    # bytes and returns a speech probability in [0, 1].
+                    if self._vad is not None:
+                        try:
+                            self._recent_speech.append(
+                                float(
+                                    self._vad.process_frame(
+                                        chunk.astype(np.int16).tobytes()
+                                    )
+                                )
+                            )
+                        except Exception as _ve:  # never block a user response
+                            logger.warning(
+                                f"[ViolawakeDetector] VAD frame failed "
+                                f"({_ve}) - disabling the speech gate"
+                            )
+                            self._vad = None
+                            self._recent_speech.clear()
+                elif self._utterance_peak > UTTERANCE_TRACE_FLOOR:
+                    logger.info(
+                        f"[ViolawakeDetector] utterance peak="
+                        f"{self._utterance_peak:.3f} bar={thr:.3f} "
+                        f"run={self._utterance_above_best} "
+                        f"(need {CONSECUTIVE_CHUNKS}) "
+                        f"{'ABOVE' if self._utterance_peak > thr else 'BELOW'}"
+                    )
+                    self._utterance_peak = 0.0
+                    self._utterance_above_run = 0
+                    self._utterance_above_best = 0
                 if s <= thr:
                     # Below threshold — either idle (restart the streak) or the
                     # RELEASE of an armed streak: the sound ENDED the way a
@@ -466,7 +619,7 @@ class ViolawakeWakeWordDetector:
                         # re-cross above threshold proves the sound never
                         # ended (dither — rejected on the hot path). The
                         # window still bounds the hold.
-                        if s >= RELEASE_FLOOR:
+                        if s >= self._release_floor:
                             self._armed_saw_cold = True
                             self._consecutive_hits = 0
                             continue
@@ -545,8 +698,38 @@ class ViolawakeWakeWordDetector:
                 self._consecutive_hits += 1
                 if s > self._streak_peak:
                     self._streak_peak = s
+                # Streak gate. Uniform for all input strength: the shape gate
+                # that scaled the requirement with RMS was removed after it was
+                # measured. The head's score on speech is BURSTY (longest run
+                # above 0.50 is ~4 chunks), so demanding more chunks for quiet
+                # input rejected the wake word as surely as it rejected the
+                # click - the head does not separate the two on energy alone.
+                # Separating them needs the model/VAD work in the module header.
                 if self._consecutive_hits < CONSECUTIVE_CHUNKS:
                     continue
+
+                # VAD GATE (2026-10-07): the streak gate passed on the wake
+                # score alone, which a microphone tap also satisfies (measured
+                # 18-26 above-bar chunks, peak 0.76). Require Silero to agree
+                # that the qualifying frames were SPEECH. This is the one
+                # chokepoint: nothing arms without it, so no other path can
+                # fire on a tap. Skipped entirely when Silero is unavailable,
+                # so a missing optional dependency degrades to the old
+                # behaviour instead of disabling the wake word.
+                if self._vad is not None:
+                    _speech = self._recent_speech
+                    _mean = (sum(_speech) / len(_speech)) if _speech else 0.0
+                    if _mean < VAD_SPEECH_MEAN_MIN:
+                        logger.debug(
+                            f"[ViolawakeDetector] VAD rejected streak "
+                            f"(speech_mean={_mean:.3f} < "
+                            f"{VAD_SPEECH_MEAN_MIN}, "
+                            f"peak={self._streak_peak:.3f}) - not speech"
+                        )
+                        self._consecutive_hits = 0
+                        self._streak_peak = 0.0
+                        self._recent_speech.clear()
+                        continue
 
                 # Streak gate passed — ARM and wait for the release instead of
                 # firing immediately. If the score never drops (constant hum,

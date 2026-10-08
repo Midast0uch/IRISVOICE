@@ -129,7 +129,13 @@ class TestWakeSpeechReorganization:
         # Verify wake-specific fields
         assert "wake_word_enabled" in field_ids, "wake_word_enabled field should exist"
         assert "wake_phrase" in field_ids, "wake_phrase field should exist"
-        assert "wake_word_sensitivity" in field_ids, "wake_word_sensitivity field should exist"
+        # 2026-10-07: `wake_word_sensitivity` (1-10) was dead on arrival — the
+        # gateway reads only `detection_sensitivity` (0-100), so moving the
+        # 1-10 slider was discarded on confirm (measured live: user set 10,
+        # bar moved only because the untouched 0-100 field changed). The wake
+        # section now declares the authoritative field.
+        assert "detection_sensitivity" in field_ids, "detection_sensitivity field should exist"
+        assert "wake_word_sensitivity" not in field_ids, "dead wake_word_sensitivity must not reappear"
         assert "voice_profile" in field_ids, "voice_profile field should exist"
     
     def test_speech_section_exists(self):

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Voice Command Handler — faster-whisper direct STT pipeline for IRIS.
 
 Uses faster-whisper (tiny/int8, ~40 MB) directly instead of RealtimeSTT.
@@ -38,6 +38,22 @@ logger = logging.getLogger(__name__)
 # ctranslate2 submodules used only for model CONVERSION (they import torch and
 # transformers); never needed to run Whisper. See VoiceCommandHandler._get_whisper.
 _CT2_CONVERSION_MODULES = ("ctranslate2.converters", "ctranslate2.specs")
+
+# ── VAD pause-tolerance ramp (2026-10-07) ──────────────────────────────────
+# MODULE level, not class level, on purpose. The VAD wait loop is a nested
+# function, and the contract tests exercise it through a stand-in handler that
+# binds only some of VoiceCommandHandler's methods and attributes. A constant
+# read from `self` here raised AttributeError on the stand-in while passing on
+# the real class — the exact stand-in trap in AGENTS.md. At module scope the
+# stand-in resolves it through the module it already imports.
+#
+# Short commands stay snappy at the 0.8 s base; the tolerance grows with how
+# long the speaker has been talking, because a mid-sentence thinking pause gets
+# more likely the longer you go on. MAX_SCALE 2.25 is what makes the 1.8 s
+# ceiling reachable from a 0.8 s base.
+_VAD_RAMP_START_SEC: float = 1.5
+_VAD_RAMP_SPAN_SEC: float = 2.5
+_VAD_RAMP_MAX_SCALE: float = 2.25
 
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -521,7 +537,11 @@ class VoiceCommandHandler:
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
     VAD_MIN_SPEECH_SEC: float = 0.3  # ignore blips shorter than this (plan §1.3.4)
     VAD_SILENCE_SEC: float = 0.8  # 0.5 cut mid-sentence pauses (live 2026-09-04); 0.8 covers breaths
-    VAD_SILENCE_SEC_MAX: float = 1.2  # hard cap on adaptive silence (long utterances)
+    # 2026-10-07: was 1.2, and the cap BINNED against `silence_needed * 1.5`
+    # (25 frames x 1.5 = 37 frames = 1.18 s ≈ the 1.2 s cap), so every long
+    # utterance topped out at 1.2 s and raising it could never take effect.
+    # 1.8 is the ceiling the pause ramp below actually reaches.
+    VAD_SILENCE_SEC_MAX: float = 1.8  # hard cap on adaptive silence (long utterances)
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 
@@ -1532,18 +1552,32 @@ class VoiceCommandHandler:
                 else:
                     if speech_started:
                         silence_count += 1
-                        # Adaptive silence frames (plan §1.3.2): shorter for short
-                        # utterances (snappier), longer for long ones (natural pauses).
+                        # Pause tolerance ramps with utterance length (plan §1.3.2): short
+                        # utterances stay snappy, longer ones earn room for a
+                        # natural pause.
+                        #
+                        # 2026-10-07: this was an if/elif —
+                        # `if speech_sec < 2.0: base / elif speech_sec > 5.0: cap`
+                        # — which left a HOLE between 2 s and 5 s. An utterance
+                        # in that band matched neither branch and silently kept
+                        # the BASE 0.8 s cutoff, so it got no pause tolerance at
+                        # all. Measured live: a ~3 s request ("search up the
+                        # recent repo of the math") followed by a ~1 s thinking
+                        # pause was cut off, so IRIS heard only the first half
+                        # and never learned the request also meant to
+                        # cross-reference the project. The missing feature was
+                        # not the cause — the hole was. Now a continuous ramp.
                         adaptive_silence = silence_needed
                         speech_sec = speech_frames_total * frame_sec
-                        if speech_sec < 2.0:
-                            # Short utterance → snappier cutoff, but never below base.
-                            adaptive_silence = silence_needed
-                        elif speech_sec > 5.0:
-                            # Long utterance → allow a little more for natural pauses,
-                            # but cap at VAD_SILENCE_SEC_MAX (1.2s) so it never lags.
+                        if speech_sec >= _VAD_RAMP_START_SEC:
+                            _frac = min(
+                                1.0,
+                                (speech_sec - _VAD_RAMP_START_SEC)
+                                / _VAD_RAMP_SPAN_SEC,
+                            )
+                            _scale = 1.0 + (_VAD_RAMP_MAX_SCALE - 1.0) * _frac
                             adaptive_silence = min(
-                                int(silence_needed * 1.5),
+                                int(silence_needed * _scale),
                                 int(self.VAD_SILENCE_SEC_MAX / frame_sec),
                             )
                         if silence_count % 5 == 0:

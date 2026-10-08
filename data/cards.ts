@@ -112,12 +112,23 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           defaultValue: 'jarvis'
         },
         {
-          id: 'wake_word_sensitivity',
+          // 2026-10-07: was `wake_word_sensitivity`, min 1, max 10, default 5.
+          // That control was DEAD — the backend reads only
+          // `detection_sensitivity` (iris_gateway.py: `_sens_raw =
+          // values.get("detection_sensitivity")`, scaled by 100), and the card's
+          // confirm payload carries that field. Measured live: the user moved
+          // this slider to 10, and the bar moved 0.555 -> 0.540 purely because
+          // the untouched `detection_sensitivity` default (70) was applied.
+          // The 1-10 scale could never reach the bar: at the top of its range
+          // it mapped to sensitivity 1.0 -> bar 0.450, which is the SAME bar the
+          // new scale reaches at 100, so the visible maximum was a dead end.
+          // Now the slider drives the field the backend actually reads.
+          id: 'detection_sensitivity',
           type: 'slider',
-          label: 'Sensitivity',
-          min: 1,
-          max: 10,
-          defaultValue: 5
+          label: 'Detection Sensitivity',
+          min: 0,
+          max: 100,
+          defaultValue: 70
         },
         {
           id: 'voice_profile',

@@ -4,7 +4,8 @@ v2 (post-Domain 6.4): SQLite-backed persistence with in-memory hot cache.
 Schema:
   conversations (id PK, title, created_at, updated_at, pinned,
                  parent_id, tags, reports_to, project_id)
-  messages (id PK, conversation_id FK, role, text, turn_id, thinking, timestamp)
+  messages (id PK, conversation_id FK, role, text, turn_id, thinking, timestamp,
+            sources, source)
 
 Public API is unchanged from the previous in-memory version, but now
 every mutation also writes to SQLite. On startup, load_from_db() populates
@@ -112,6 +113,8 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             turn_id         TEXT,
             thinking        TEXT,
             timestamp       TEXT NOT NULL,
+            sources         TEXT,
+            source          TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
         )
     """
@@ -132,6 +135,38 @@ def _create_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id)"
     )
+    # Provenance (2026-10-08): the URLs a turn's references came from, persisted
+    # so a LATER turn - and the planner - can see WHERE a reference lives. The
+    # alternative was a bare `owner/name` token in the model's prose summary,
+    # which reads like a local path: measured live, a GitHub repo was searched
+    # for inside the project root for ~6 minutes. Guarded like the columns
+    # above, so an existing store opens unchanged.
+    _msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    # `sources` = the URLs a turn's references came from (provenance).
+    # `source`  = which path persisted the turn (ws_text_message /
+    #             ws_voice_transcription). BOTH were passed as kwargs and
+    #             silently dropped by the six-column INSERT until 2026-10-08.
+    for _col in ("sources", "source"):
+        if _col not in _msg_cols:
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {_col} TEXT")
+
+
+def _parse_sources(raw: Any) -> list[str]:
+    """Decode a persisted ``sources`` column into a list of URLs.
+
+    Never raises: an absent, malformed or non-list value is an empty list, so one
+    bad row cannot stop a store load. A row written before this column existed
+    simply has None.
+    """
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except Exception:  # noqa: BLE001 — a bad row must not break the load
+        return []
+    if isinstance(val, list):
+        return [str(u) for u in val if u]
+    return []
 
 
 def load_from_db() -> None:
@@ -166,10 +201,10 @@ def load_from_db() -> None:
                 "messages": [],
             }
         for row in conn.execute(
-            "SELECT id, conversation_id, role, text, turn_id, thinking, timestamp "
-            "FROM messages ORDER BY id"
+            "SELECT id, conversation_id, role, text, turn_id, thinking, timestamp, "
+            "sources, source FROM messages ORDER BY id"
         ).fetchall():
-            mid, cid, role, text, turn_id, thinking, timestamp = row
+            mid, cid, role, text, turn_id, thinking, timestamp, sources, source = row
             if cid in _conversations:
                 _conversations[cid]["messages"].append(
                     {
@@ -179,6 +214,8 @@ def load_from_db() -> None:
                         "turn_id": turn_id,
                         "thinking": thinking,
                         "timestamp": timestamp,
+                        "sources": _parse_sources(sources),
+                        "source": source,
                     }
                 )
 
@@ -290,12 +327,19 @@ def add_message(
     conversation_id: str,
     role: str,
     text: str,
+    sources: list[str] | None = None,
     **kwargs,
 ) -> dict[str, Any] | None:
     """Add a message to a conversation.
 
-    Extra kwargs (turn_id, thinking, etc.) are stored verbatim in the
-    message dict and in the SQLite messages table.
+    ``sources`` - the URLs this turn's references came from - is persisted as a
+    JSON array so a later turn can see WHERE a reference lives instead of
+    re-deriving it from a summary. Structure carries what prose loses.
+
+    Extra kwargs (turn_id, thinking, source, ...) are stored in the message
+    dict. NOTE: only the columns listed in the INSERT below reach SQLite. This
+    docstring used to claim every kwarg was persisted; the six-column INSERT
+    silently dropped them all.
     """
     with _lock:
         conv = _conversations.get(conversation_id)
@@ -309,6 +353,7 @@ def add_message(
             "role": role,
             "text": text,
             "timestamp": timestamp,
+            "sources": list(sources) if sources else [],
             **kwargs,
         }
         conv["messages"].append(msg)
@@ -316,8 +361,8 @@ def add_message(
         # Persist to SQLite
         conn = _get_conn()
         conn.execute(
-            "INSERT INTO messages (conversation_id, role, text, turn_id, thinking, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO messages (conversation_id, role, text, turn_id, thinking, "
+            "timestamp, sources, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 conversation_id,
                 role,
@@ -325,6 +370,8 @@ def add_message(
                 kwargs.get("turn_id"),
                 kwargs.get("thinking"),
                 timestamp,
+                json.dumps(sources) if sources else None,
+                kwargs.get("source"),
             ),
         )
         # Update conversation's updated_at

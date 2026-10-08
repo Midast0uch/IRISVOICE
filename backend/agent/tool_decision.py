@@ -756,10 +756,32 @@ class ToolDecisionBox:
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = asyncio.run_coroutine_threadsafe(coro, asyncio.new_event_loop())
+                # A loop is already running on this thread, so asyncio.run() is
+                # not available. Run the coroutine on a DEDICATED loop that is
+                # actually started in its own thread.
+                #
+                # Before 2026-10-07 this scheduled the coroutine onto
+                # `asyncio.new_event_loop()` and never ran that loop, so the
+                # coroutine could never execute and `future.result()` blocked
+                # for the full timeout on every such dispatch. The ThreadPool
+                # below was created and never used. Measured live: a node stuck
+                # here for 301 s while `run_command` had already been
+                # terminated, leaving the DER loop polling a node that would
+                # never publish.
+                import threading as _threading
+
+                _loop = asyncio.new_event_loop()
+                _t = _threading.Thread(
+                    target=_loop.run_forever, daemon=True, name="tool-dispatch-loop"
+                )
+                _t.start()
+                try:
+                    future = asyncio.run_coroutine_threadsafe(coro, _loop)
                     return future.result(timeout=timeout_s or 120)
+                finally:
+                    _loop.call_soon_threadsafe(_loop.stop)
+                    _t.join(timeout=5)
+                    _loop.close()
         except RuntimeError:
             pass
         if timeout_s is not None:

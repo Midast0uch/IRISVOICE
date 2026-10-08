@@ -5072,19 +5072,37 @@ class AgentKernel:
         openai_tools: List[Dict] = to_function_schema(
             self._tool_bridge.get_available_tools()
         )
-        # ── Filter web tools when not explicitly requested ──────────────
-        # Even when the web toggle is ON, exclude search/crawler tools
-        # unless the user's text explicitly asks for a web search.
-        # The model otherwise calls web_search unnecessarily for simple
-        # conversational prompts. The browser tools are NOT filtered here
-        # (owner 2026-10-02: nothing gates browser use besides the web
-        # toggle; "open my bank and pay the bill" asks for no web search).
-        if text and not self._is_web_search_request(text):
-            openai_tools = [
-                t
-                for t in openai_tools
-                if t.get("function", {}).get("name") not in ("search", "crawler_query")
-            ]
+        # ── Web tools are NOT filtered out of the model's tool list ─────────
+        # REMOVED 2026-10-07. This used to strip `search` and `crawler_query`
+        # unless `_is_web_search_request(text)` was true, and that predicate
+        # reduced to a 16-phrase substring list, because the Oracle can never
+        # decide it:
+        #     threshold_for("web_intent") -> None   (cfg.thresholds is empty)
+        #     oracle_acts("web_intent", conf) -> False at 0.50 .. 0.95
+        # The web_intent consumer was denied enforcement after precision 0.41
+        # (Stage B, 2026-10-05), and an uncalibrated consumer fails closed, so
+        # the KEYWORDS were the sole decider for a capability.
+        #
+        # MEASURED on the owner's real sentences - all evaluated False, so the
+        # web tools were withheld from the model:
+        #   "Could you search up the recent repo of the math?"       -> stripped
+        #   "Could you look into the one by OpenAI and let me know..." -> stripped
+        #   "check the openai/math repository on github"              -> stripped
+        # "look into" is not in the trigger list at all.
+        #
+        # Consequences that made this a defect and not a tuning knob:
+        #   - It is not web-specific in spirit but is web-specific in code:
+        #     exactly two hard-coded names, while open_url / fetch_url /
+        #     browser_explore were never filtered. The model therefore had the
+        #     BROWSER tools and not the SEARCH tools, which is the opposite of
+        #     what a "search the web" phrasing needs.
+        #   - It removed capability rather than adding guidance, so it could
+        #     only ever fail in the direction that broke the turn.
+        #   - Any new phrasing, tool or vocabulary needed a code edit.
+        #
+        # The model is already good at not searching when it is not needed - it
+        # answered from memory in this same session without reaching for a
+        # search tool. The web toggle remains the user's control.
         return openai_tools
 
     # ── ReAct agentic loop ───────────────────────────────────────────────────
@@ -5796,6 +5814,30 @@ class AgentKernel:
         source_document_id = show.get("source_document_id")
         sources = show.get("sources")
         har_path = show.get("har_path")
+        # Provenance linkage (2026-10-08): where the fetched EVIDENCE actually
+        # lives. `har_path` is NULL for every live crawl - measured: 0 "HAR
+        # write" in the log that contains a successful crawl - because the live
+        # path writes per-page captures under data/captures/<job_id>/ instead
+        # (capture_store). The crawl result ALREADY carries `job_id`
+        # (tool_bridge: "The returned dict carries job_id"), and it is the same
+        # id the HAR filename would use, so the path is DERIVED here rather than
+        # threaded through another layer. Linking to the captures already on
+        # disk - never writing a second copy of the same evidence.
+        capture_path = show.get("capture_path")
+        if not capture_path:
+            _cap_job = show.get("job_id")
+            if _cap_job:
+                try:
+                    from backend.crawler.capture_store import (
+                        _captures_dir,
+                        _safe_job,
+                    )
+
+                    capture_path = os.path.join(
+                        _captures_dir(), _safe_job(str(_cap_job))
+                    )
+                except Exception:  # noqa: BLE001 — linkage is best-effort
+                    capture_path = None
         source_tool = show.get("source_tool")
 
         if source_tool == "crawler_query":
@@ -5843,6 +5885,7 @@ class AgentKernel:
                     source_document_id=source_document_id,
                     sources=sources,
                     har_path=har_path,
+                    capture_path=capture_path,
                     # _store_document_data has always TAKEN turn_id and never
                     # passed it on, so every stored document was unattributable:
                     # a rehydrated card could not be paired with the exchange
@@ -6843,7 +6886,18 @@ class AgentKernel:
             for msg in context:  # Entire thread history is included
                 role = (msg.get("role") or "user").upper()
                 content = msg.get("content") or ""
-                history_lines.append(f"{role}: {content}")
+                line = f"{role}: {content}"
+                # Provenance (2026-10-08): the URLs this message's references
+                # came from. This COMPLETES the existing line - it is not a new
+                # section - so a reference is grounded as EXTERNAL instead of
+                # read as a local path (`adalso/openai-math` looks like one).
+                # Cost is the URL text itself; nothing is looked up or re-fetched.
+                _srcs = msg.get("sources") or []
+                if _srcs:
+                    line += "\n  [sources: " + ", ".join(
+                        str(u) for u in _srcs[:8]
+                    ) + "]"
+                history_lines.append(line)
             if history_lines:
                 sections.append(
                     "CONVERSATION HISTORY (full thread):\n"
@@ -6867,6 +6921,31 @@ class AgentKernel:
             sections.append(_visited)
 
         return "\n\n".join(sections)
+
+    def _turn_sources(self, conversation_id: str = "") -> List[str]:
+        """The URLs this conversation's fetches produced (provenance, 2026-10-08).
+
+        Read from the kernel's per-conversation crawled-URL set - the same set
+        ``_der_visited_block()`` renders, which (per the note at the DER dispatch
+        site) SURVIVES ACROSS TURNS per conversation, so a follow-up turn sees
+        the URLs the previous turn fetched. A reference whose URL is recorded
+        here is grounded as EXTERNAL by the planner; without it the thread
+        carries only a bare ``owner/name`` token, which reads as a local path
+        (measured live: a GitHub repo was searched for in the project root).
+
+        ``conversation_id`` lets a caller that resolved the turn's conversation
+        ITSELF (the gateway, whose mapping can differ from the kernel's) read the
+        right key instead of silently getting [] on a mismatch.
+
+        Never raises: provenance must never break a turn.
+        """
+        try:
+            return sorted(
+                (getattr(self, "_der_crawled_urls", None) or {})
+                .get(conversation_id or self.conversation_id or "", ()) or ()
+            )
+        except Exception:  # noqa: BLE001 — an observer never blocks a turn
+            return []
 
     def _der_visited_block(self) -> str:
         """REQ-8 AC8.2: bounded VISITED ledger block for planning and
@@ -8775,7 +8854,9 @@ class AgentKernel:
             # on subsequent turns, causing Cohere/OpenAI 400 errors.
             if response and not response.startswith("[IRIS error:"):
                 try:
-                    self._conversation_memory.add_message("assistant", response)
+                    self._conversation_memory.add_message(
+                        "assistant", response, sources=self._turn_sources(),
+                    )
                 except Exception as _mem_exc:
                     loud_error(_mem_exc, "conversation_memory.add_message (direct)")
             # Option B / Pacman: fragment this turn-pair into the vector DB so future
@@ -9298,7 +9379,9 @@ class AgentKernel:
             )
             if not _is_empty:
                 try:
-                    self._conversation_memory.add_message("assistant", _der_response)
+                    self._conversation_memory.add_message(
+                        "assistant", _der_response, sources=self._turn_sources(),
+                    )
                 except Exception as _mem_exc:
                     loud_error(_mem_exc, "conversation_memory.add_message (der)")
                 metrics.path = "der"
@@ -17321,6 +17404,42 @@ Respond with a JSON object:
             except Exception as _cap_err:
                 logger.warning("[DER] tool-result capture failed: %s", _cap_err)
 
+    def _der_run_direct_node(self, item, goal: str, task: str = "") -> tuple:
+        """A "direct" node: answer the goal from the model's own knowledge.
+
+        The cheap half of the unification - no plan, no node prompt, no tool
+        loop. It is STILL a node, and that is what makes the mode an execution
+        detail rather than a second lane:
+
+          * it returns the SAME ``(step_result, success)`` shape ``_der_run_node``
+            returns, so the finalize site (§5) and the failure seam
+            (``_der_handle_step_failure``) are unchanged and still see it;
+          * it stamps the SAME bookkeeping the DAG reads (``node_calls`` /
+            ``node_call_log`` / ``node_digest``), so repeat detection and the
+            step budget count it;
+          * the envelope is stamped at the finalize site, not here.
+
+        One model call, no tools. Never raises.
+        """
+        text = ""
+        try:
+            _msgs = [{"role": "user", "content": (task or goal)}]
+            _text, _thinking, _calls = self._router.generate("reasoning", _msgs)
+            text = str(_text or "").strip()
+        except Exception as exc:  # noqa: BLE001 — a node never crashes the turn
+            logger.debug("[DER] direct node failed: %r", exc)
+        item.node_calls = []
+        item.node_call_log = []
+        try:
+            from backend.agent.tool_envelope import params_digest
+
+            item.node_digest = params_digest(
+                "run_node_direct", {"goal": (goal or "")[:200]}
+            )
+        except Exception:  # noqa: BLE001 — bookkeeping never fails a step
+            pass
+        return text, bool(text)
+
     def _der_run_node(self, item, _session: str, _turn_id: Optional[str], _prior_results: list, task: str = "") -> tuple:
         """Adapter for node_executor.run_node: this kernel's router, the box's
         dispatch (ledger rows, deadlines, permissions) and the developer tools."""
@@ -17362,9 +17481,72 @@ Respond with a JSON object:
 
         _held: List[str] = []
 
+        # One domain correction per step (2026-10-08). Bounded deliberately:
+        # unbounded re-steering is the TrailingDirector failure mode.
+        _domain_steered = [False]
+
         def _execute(name, params):
             if not _turn_live():
                 return {"success": False, "error": _ended, "error_type": "aborted"}
+            # ── Domain guard (2026-10-08) ───────────────────────────────────
+            # A step whose goal names an EXTERNAL resource, but which reaches
+            # for a LOCAL tool, is searching the wrong domain. Measured live: a
+            # plan step "Read the README and main files from the OpenAI math
+            # repository" ran glob_files/grep_files INSIDE the project root for
+            # ~6 minutes and ended "no dedicated `openai_math` repository folder
+            # exists in the project root" - the repo was on GitHub.
+            #
+            # This corrects the PICK, never the menu: the menu keeps BOTH
+            # families so a task can move local -> external -> local freely, and
+            # nothing is removed. It only fires when the goal is external AND
+            # the pick is local, and only once per step.
+            try:
+                from backend.agent import external_reference as _xr
+
+                if name in _xr.LOCAL_TOOLS and not _domain_steered[0]:
+                    _names = [
+                        t.get("function", {}).get("name") for t in tools
+                    ]
+                    # Provenance, DER-NATIVE FIRST: the step's OWN envelope
+                    # records the URLs that step fetched (ToolEnvelope.sources,
+                    # REQ-8 AC8.1). Only when the step carries no envelope do we
+                    # fall back to the conversation-level set - the envelope is
+                    # the DER's per-step truth and must win.
+                    _env_srcs = list(
+                        getattr(getattr(item, "envelope", None), "sources", [])
+                        or []
+                    )
+                    _srcs = _env_srcs or self._turn_sources()
+                    # The predicate is goal-external AND the PICK is local - not
+                    # "the menu is all local". The menu legitimately holds both
+                    # families, which is what lets a task move between them.
+                    _shape = _xr.domain_mismatch(goal, [name], _srcs)
+                    _alt = _xr.resolving_tool(_shape) if _shape else None
+                    # Params are unambiguous for BOTH steered families:
+                    #   search   -> {"query": ...}  (the goal IS the query)
+                    #   open_url -> {"url": ...}    (the URL is IN the goal)
+                    _steer_params = None
+                    if _alt == "search":
+                        _steer_params = {"query": goal[:300]}
+                    elif _alt == "open_url":
+                        _u = _xr.first_url(goal)
+                        _steer_params = {"url": _u} if _u else None
+                    if _steer_params and _alt in _names:
+                        _domain_steered[0] = True
+                        logger.info(
+                            "[DER] domain guard: goal names an EXTERNAL %s but "
+                            "the pick was local (%s) -> steering to %s",
+                            _shape, name, _alt,
+                        )
+                        name, params = _alt, _steer_params
+                    elif _alt:
+                        logger.info(
+                            "[DER] domain guard: goal names an EXTERNAL %s but "
+                            "%s is not offered/steerable - local pick %s left "
+                            "alone", _shape, _alt, name,
+                        )
+            except Exception as _dg_exc:  # noqa: BLE001 — a guard never blocks a step
+                logger.debug("[DER] domain guard skipped: %r", _dg_exc)
             # parallel nodes: the browser page / the screen has one driver - a
             # node claims it at its first such call and keeps it to the end.
             _claim = _node_claim_of(name)
@@ -17387,6 +17569,18 @@ Respond with a JSON object:
             return raw if raw is not None else {"success": False, "error": getattr(dr, "error", "") or "no result"}
 
         goal = item.description or item.objective_anchor or ""
+        # ── mode (2026-10-08, unification) ──────────────────────────────────
+        # The node's GOAL decides its mode, exactly as it decides its domain
+        # (the domain guard in _execute). Chosen ONCE here, at node entry -
+        # never switched mid-step. A "direct" node answers from the model's own
+        # knowledge instead of running the planned tool loop, so a simple step
+        # does not pay the planning cost, and a turn is no longer locked into
+        # one lane: _needs_planning is now only the TURN-LEVEL DEFAULT.
+        from backend.agent import external_reference as _xr_mode
+
+        item.mode = _xr_mode.mode_for_goal(goal, self._turn_sources())
+        if item.mode == _xr_mode.DIRECT:
+            return self._der_run_direct_node(item, goal, task)
         _menu = set(NODE_TOOLS) | (set(NODE_SCREEN_TOOLS) if _vision_relevant(goal) else set())
         tools = [t for t in self._get_openai_tools() if t.get("function", {}).get("name") in _menu]
         # The shadow scores the menu the node's model was OFFERED, not the

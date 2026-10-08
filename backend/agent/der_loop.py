@@ -236,6 +236,23 @@ class QueueItem:
     result: Optional[str] = None  # populated after step execution
     expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; still read by _verified_fraction
     is_subloop: bool = False  # DER Phase 2: child of a growth-width split; collapses to parent as one COMPRESS
+    # ── mode (2026-10-08, unification) ──────────────────────────────────────
+    # "react" (default) | "direct". STAMPED at node entry by _der_run_node from
+    # external_reference.mode_for_goal(goal) - the node's GOAL decides its mode,
+    # exactly as it decides its domain. Chosen ONCE; never switched mid-step.
+    #
+    # A "direct" node answers from the model's own knowledge instead of running
+    # the planned tool loop, so a simple step does not pay the planning cost -
+    # and because the mode is a NODE property, a turn is no longer locked into
+    # one lane (_needs_planning is only the TURN-LEVEL DEFAULT).
+    #
+    # PURELY AN EXECUTION DETAIL - never surfaced in the card, never a new step
+    # concept, never hardcoded per group (parallel siblings each derive their
+    # own from their own goal). A direct node is STILL a node: it counts in the
+    # step budget and stays visible to _der_handle_step_failure, because it
+    # returns the same (step_result, success) shape and stamps the same
+    # node_calls / node_call_log / node_digest bookkeeping.
+    mode: str = "react"
     independent: bool = False  # Wave 4 / REQ-18 AC1: safe to batch with siblings
     batch: Optional["BatchToolCall"] = None  # REQ-24 (T37): composite batch node this item carries; materialized by expand_batch_nodes()
     # REQ-21 (T40): compressed context for sub-loop children — survives DCP

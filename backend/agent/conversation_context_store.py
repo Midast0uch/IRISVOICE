@@ -57,6 +57,12 @@ class ConversationMessage:
     content: str
     timestamp: float = field(default_factory=time.time)
     turn_id: Optional[str] = None
+    # The URLs this message's references came from (2026-10-08). The planner
+    # renders this thread as the planning prompt's CONVERSATION HISTORY, so a
+    # reference whose URL is here is grounded as EXTERNAL; without it a bare
+    # `owner/name` token reads as a local path (measured: a GitHub repo was
+    # searched for inside the project root).
+    sources: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -159,10 +165,21 @@ class ConversationContext:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
-    def add_message(self, role: str, content: str, turn_id: Optional[str] = None) -> None:
+    def add_message(
+        self,
+        role: str,
+        content: str,
+        turn_id: Optional[str] = None,
+        sources: Optional[List[str]] = None,
+    ) -> None:
         """Add a message and enforce the message cap (oldest removed first)."""
         self.messages.append(
-            ConversationMessage(role=role, content=content, turn_id=turn_id)
+            ConversationMessage(
+                role=role,
+                content=content,
+                turn_id=turn_id,
+                sources=list(sources) if sources else [],
+            )
         )
         if len(self.messages) > MAX_MESSAGES_PER_CONV:
             self.messages = self.messages[-MAX_MESSAGES_PER_CONV:]
