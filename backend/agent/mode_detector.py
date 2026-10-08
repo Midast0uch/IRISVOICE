@@ -170,6 +170,15 @@ class ModeDetector:
                 # reference and could never be scored.
                 "chosen": ds.chosen,
                 "brain_choice": keyword_mode.value,
+                # REQ-7 AC7.3 (Wave 3, phonon2-d1-model-swap): mode's OUTSIDE
+                # label is the OBSERVED mode (which tools actually ran) —
+                # knowable at TURN END, not here. external_reference's
+                # DIRECT/REACT is a DIFFERENT vocabulary (node execution mode),
+                # and writing it here would be a false label. The mechanism
+                # (decision_label reads outside_label first; the whitelist
+                # passes it) is live; the label itself arrives with the
+                # turn-end annotator — see VERIFY.md Wave 3, the join-key
+                # finding (the ledger holds no turn key today).
                 # ECE pairs a row's confidence with THAT ROW'S `chosen`, and this
                 # row's `chosen` is the ENGINE's pick. Reporting the probability
                 # of the KEYWORD mode here was incoherent: the engine is often

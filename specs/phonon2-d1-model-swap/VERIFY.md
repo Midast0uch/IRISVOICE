@@ -1,6 +1,88 @@
-# VERIFY.md — Wave 0 + 1 + 2 gate records (TG-0, TG-1, TG-2)
+# VERIFY.md — Wave 0-3 gate records (TG-0..TG-3)
 
 Spec: specs/phonon2-d1-model-swap/ — Date: 2026-10-08 — Session 391
+
+## WAVE 3 — d1 as the Oracle + recalibration (TG-3): GREEN (one AC5.5 consultation open)
+
+### T3.1 — decision_backend_d1.py: PASS (live)
+- NEW backend/agent/decision_backend_d1.py: the decide() contract on the V1
+  recipe — Decision Index prompt render (BOS 124894, no system turn, state
+  JSON + QUESTION: + option menu + assistant slot), ONE completion token
+  with n_probs=512, max-pool per option letter + softmax. BORROW-ONLY: the
+  shared server must host d1 (/v1/models check, 300s TTL); a miss = the
+  Oracle is unavailable = every consumer fail-closes (§9 no fallback).
+- Live: routing case 89.2% confident, correct-shape distributions, one
+  question per run (test_batch_single_encode.py stays green).
+
+### T3.2 — identity + fail-closed: PASS
+- Identity: d1-3b-ad-q4_k_m (variant-derived from the served filename).
+- agent_config.yaml: GLiNER entry marked retired (historical); the d1 key
+  deliberately has NO threshold entry — absence IS fail-closed
+  (threshold_for -> None). The 18k GLiNER rows auto-become other_backend
+  for this identity (§16; verified in the report: other_backend counter).
+- Engine wiring: default factory -> D1Backend; _current_backend_identity
+  fallback -> D1Backend; sticky-load FIXED for borrow-only backends
+  (retry_load=True resets the engine's permanent-sticky flag — found live:
+  the boot-time miss disabled the Oracle for the whole process and the
+  first eval run scored ZERO rows).
+
+### T3.3 — label_source + outside labels: mechanism PASS; one finding
+- decision_label (the ONE rule both instruments use) now reads
+  outside_label FIRST (REQ-7 AC7.1); incumbent agreement is the label only
+  where no outside label exists.
+- load_rows passes label_source per row; the report prints label_sources
+  per consumer (AC7.2). Whitelist: outside_label/label_source added to
+  _DECISION_META_KEYS (off the list = dropped in transit).
+- FINDING (deferred with reason): the full outcome-label system needs a
+  row->outcome JOIN KEY the ledger does not have ("the ledger holds no turn
+  or goal key" — load_rows docstring; system_events has no turn column).
+  mode's outside label (AC7.3) is the OBSERVED mode at turn end — needs
+  that join. external_reference's DIRECT/REACT is a DIFFERENT vocabulary
+  (node execution mode) and was rejected as a false label. The turn-key +
+  turn-end annotator is the follow-up; the mechanism it plugs into is live.
+
+### T3.4/T3.5 — rows + refit: honest state recorded
+- Rows on the d1 identity: accumulating from live eval traffic (38+ decides
+  by the second eval run; 21 on the measured boot). Distinct-row counts per
+  consumer are far below the 100-row bar on day one — the report says so
+  (AC6.4: say it, never pad). No enforcement flip is possible until the
+  bar is re-earned on d1 weights (AC6.2); IRIS_DECISION_ENFORCE stays the
+  owner's switch.
+
+### T3.6 — live eval gate: PASS
+- c10_create_module + c02_add_slugify: 2/2 PASS, hidden 8/8 + 7/7, NO
+  standards regression. c10 reply 10 s on the final boot (the fastest this
+  session — the D: SSD twin sped the whole stack).
+
+### AC5.5 — Oracle latency (owner consultation OPEN)
+- Measured live (n=21, real eval traffic, this boot):
+  p50=630 ms, p90=805 ms, min=449, max=938, mean=626.
+- GLiNER baseline (oracle.md 8.1): p50 153.9 ms. Ratio ~4.1x — ABOVE the
+  3x bound, so per AC5.5 the owner is consulted. Context: the cost is
+  prompt prefill (~200-800 tokens through the 3B on the shared GPU
+  server); the Oracle is shadow-only on the oracle_shadow lane — measured
+  turn impact NONE (reply_s did not move; evals pass). Recommendation:
+  accept; alternatives recorded (cut job text budgets further).
+
+### d1 BOOT LOAD (owner request 2026-10-08): 68 s -> 14.6 s
+- d1 now loads on the GPU at STARTUP (like the old Parakeet boot warm):
+  lifespan _boot_load_d1 reads the pinned vision model, refuses a non-d1
+  pin, loads WITH the projector. Source-contract test added.
+- Speed: the C: copy is a PHYSICAL file on the 7200rpm HDD (~80 MB/s),
+  NOT the symlink the handoff pin claimed (fsutil: not a reparse point).
+  The boot load now prefers the D: SSD twin (~1675 MB/s) found by filename
+  + uses the registry's last_ctx (8192; the deriver's 32768 native default
+  built a 4x larger KV cache). Measured: 14.6 s (was 68 s). The 8192 ctx
+  serves the Oracle's job budgets (64-128 token ids) and vision
+  (~1-2k tokens/image) with ~4-10x headroom; 32k restorable on request.
+
+## TG-3 gate verdict: GREEN
+T3.1/T3.2/T3.6 live-proven; T3.3 mechanism live with the join-key finding
+recorded; T3.4/T3.5 honest-day-one state recorded. The AC5.5 latency
+consultation is OPEN with the owner (recommendation: accept — shadow lane,
+no measured turn impact).
+
+---
 
 ## WAVE 2 — d1 vision + role pairing (TG-2): GREEN (with one recorded finding)
 

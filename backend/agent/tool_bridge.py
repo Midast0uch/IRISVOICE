@@ -69,6 +69,13 @@ _DECISION_META_KEYS = (
     # does not pass, so the ledger row reached the report with no reference and
     # was counted as no_label instead of scored.
     "brain_choice",
+    # outside_label / label_source (specs/phonon2-d1-model-swap REQ-7, Wave 3):
+    # an OUTSIDE label (observed outcome, structural signal, user correction)
+    # takes precedence over the incumbent reference when scoring the row, and
+    # label_source says which curve the row is built on. Off this list both
+    # are dropped in transit and every curve silently reads as incumbent-only.
+    "outside_label",
+    "label_source",
     # job (2026-10-01): the Oracle job (decision_engine.ORACLE_JOBS) the row was
     # scored under - its input recipe and budget. Off this list it is dropped.
     "job",

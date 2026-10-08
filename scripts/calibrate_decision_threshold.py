@@ -48,12 +48,22 @@ def _connect(db: str) -> sqlite3.Connection:
 def decision_label(outcome, payload: dict, d: dict) -> bool | None:
     """THE label of one decision row - the ONE rule both instruments use.
 
+    OUTSIDE LABELS FIRST (specs/phonon2-d1-model-swap REQ-7 / B1, 2026-10-08):
+    a shadow row carrying ``outside_label`` scores against THAT - an observed
+    outcome, a structural signal, a user correction - because agreement with
+    the incumbent caps the engine at the incumbent's quality (measured live:
+    mode's incumbent is a substring keyword scorer, AUROC 0.4906). The
+    incumbent reference (brain_choice/brain_bool) remains the label ONLY
+    where no outside label exists; ``label_source`` on the row (or derived
+    here) says which curve a consumer's rows are built on.
+
     A SHADOW row (the engine scored, the legacy path decided) is correct when
-    the engine's `chosen` agrees with the Brain's recorded answer: name vs
-    name (`brain_choice`) or bool vs bool (`brain_bool`). Its event outcome
-    is the outcome of the BRAIN's pick, so it says nothing about the engine.
-    Scoring a shadow row by outcome read web_intent as accuracy 1.0 in every
-    band while its parity precision was 0.377 (2026-09-30).
+    the engine's `chosen` agrees with the recorded answer: the OUTSIDE label
+    when present, else the Brain's answer: name vs name (`brain_choice`) or
+    bool vs bool (`brain_bool`). Its event outcome is the outcome of the
+    BRAIN's pick, so it says nothing about the engine. Scoring a shadow row
+    by outcome read web_intent as accuracy 1.0 in every band while its parity
+    precision was 0.377 (2026-09-30).
 
     A DISPATCHED row is correct when the event outcome is success/reason; a
     route-only row (`no_tool`) carries no outcome and is not evidence of a
@@ -62,6 +72,12 @@ def decision_label(outcome, payload: dict, d: dict) -> bool | None:
     """
     shadow = bool(d.get("shadow")) or str(d.get("route") or "") == "shadow"
     if shadow:
+        # REQ-7 AC7.1: the outside label, in preference to the incumbent.
+        if d.get("outside_label") is not None:
+            ol = d["outside_label"]
+            if isinstance(ol, bool):
+                return bool(d.get("chosen")) == bool(ol)
+            return str(d.get("chosen")) == str(ol)
         if d.get("brain_choice") is not None:
             return str(d.get("chosen")) == str(d["brain_choice"])
         if d.get("brain_bool") is not None:

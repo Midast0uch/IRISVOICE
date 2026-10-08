@@ -20,11 +20,13 @@ models:
   #   executor → any ~1B tool-call model at Q4_K_M  (~1 GB VRAM)
   # Select actual model names in the IRIS Settings → Configure → Models card.
   - id: "oracle"
-    # REQ-21 AC21.5: the ONNX model directory. null = the default shippable
-    # location (backend/models/gliner2.5-decide-onnx/, weights gitignored);
-    # resolved by backend/agent/decision_backend_onnx.resolve_model_dir().
-    # An explicit path is authoritative: configured-and-missing means
-    # "unavailable", never "silently substitute another model".
+    # Wave 3 (specs/phonon2-d1-model-swap T3.1/T3.2): the resident decision
+    # backend is d1-3B on the shared llama-server (backend/agent/
+    # decision_backend_d1.py; borrow-only — the server must already host the
+    # d1 GGUF, the same server vision uses). The GLiNER ONNX directory below
+    # is RETIRED from construction (its code + history stay until the T5.3
+    # deletion; oracle.md §9 — no fallback model). `path` is accepted for
+    # factory-signature compatibility and is unused by the d1 backend.
     path: null
     capabilities: ["tool_decision", "surface_choice", "narration_gate"]
     constraints:
@@ -45,7 +47,12 @@ models:
       # so a future model swap degrades to shadow rather than silently mis-enforcing.
       backend_thresholds:
         lfm2-350m-extract: 0.85           # retiring backend (REQ-21); historical rows only
-        gliner25-decide-onnx-int8: 0.40   # REQ-22 AC22.1 — the deployed operating point
+        gliner25-decide-onnx-int8: 0.40   # retired backend (Wave 3); historical rows only
+        # d1-3b-ad-q4_k_m (Wave 3): the ACTIVE identity — deliberately NO
+        # entry: absence IS the fail-closed state (threshold_for returns
+        # None). A measured threshold lands here only after the calibration
+        # is re-earned on the d1 weights (REQ-6 AC6.2: a flip earned on a
+        # retired model cannot carry over), via fit_oracle_calibration.py.
       # Per-consumer overrides sit ON TOP of the backend threshold (REQ-13).
       thresholds: {}
     optional: true   # decision paths degrade to the legacy heuristics if missing

@@ -150,3 +150,13 @@ class TestConfigBindings:
         )
         assert "d1-3B-AD-Q4_K_M.gguf" in reg
         assert reg["d1-3B-AD-Q4_K_M.gguf"]["last_ctx"] <= 8192
+
+    def test_d1_boots_on_gpu_like_parakeet_did(self):
+        """Wave 3 (owner 2026-10-08): d1 loads at STARTUP — vision and the
+        Oracle find it resident instead of racing a manual Models-card load.
+        Source contract: the lifespan boot load exists, reads the pinned
+        vision model, refuses a non-d1 pin, and loads WITH the projector."""
+        src = (REPO / "backend" / "main.py").read_text(encoding="utf-8")
+        assert "_boot_load_d1" in src, "no d1 boot load in lifespan"
+        assert "with_projector=True" in src, "the boot load must attach the mmproj"
+        assert '"d1-3b" not in' in src, "a non-d1 pin must be refused, not loaded"

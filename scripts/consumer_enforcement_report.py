@@ -196,6 +196,14 @@ def load_rows(
                 "reference": ref,
                 "correct": bool(correct),
                 "repeats": 1,
+                # REQ-7 AC7.2: which curve this row is built on - an outside
+                # label (observed outcome / structural signal) or the
+                # incumbent's answer. Derived when the row does not say.
+                "label_source": str(
+                    d.get("label_source")
+                    or ("outside" if d.get("outside_label") is not None
+                        else "incumbent")
+                ),
             }
             seen[key] = row
             rows.append(row)
@@ -297,6 +305,15 @@ def measure(
             "threshold": th,
             "shadow_rows": sum(1 for r in grp if r["shadow"]),
             "engines": sorted({r["engine"] for r in grp if r["engine"]}),
+            # REQ-7 AC7.2: which curve this consumer's rows are built on -
+            # incumbent agreement (capped at the incumbent's quality) or an
+            # outside label (observed outcome / structural signal). A curve
+            # must not silently mix the two.
+            "label_sources": {
+                src: sum(1 for r in grp if r.get("label_source") == src)
+                for src in sorted({str(r.get("label_source", "incumbent"))
+                                   for r in grp})
+            },
         }
     return measured
 

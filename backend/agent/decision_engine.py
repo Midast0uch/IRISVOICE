@@ -329,9 +329,13 @@ def _current_backend_identity() -> str:
     except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
         pass
     try:
-        from .decision_backend_onnx import GlinerOnnx, resolve_model_dir
+        # Wave 3: the declared backend is d1 (decision_backend_d1); the
+        # identity is variant-derived from the served GGUF filename, and
+        # constructing the backend does NOT load anything or touch the
+        # server (same cheap-construction rule GlinerOnnx had).
+        from .decision_backend_d1 import D1Backend
 
-        return str(GlinerOnnx(model_dir=resolve_model_dir(None)).backend_id or "")
+        return str(D1Backend().backend_id or "")
     except Exception:  # noqa: BLE001 — unknown identity = no flips
         return ""
 
@@ -967,18 +971,32 @@ class DecisionEngine:
         try:
             factory = self._backend_factory
             if factory is None:
-                from backend.agent.decision_backend_onnx import (
-                    GlinerOnnx,  # heavy import kept lazy
-                )
+                # Wave 3 (specs/phonon2-d1-model-swap T3.1): the resident
+                # decision backend is d1-3B on the shared llama-server. The
+                # GLiNER ONNX backend is RETIRED from construction (its code
+                # and history stay until the T5.3 deletion; oracle.md §9 —
+                # no fallback model: a d1 miss means unavailable, never a
+                # silent GLiNER substitute).
+                from backend.agent.decision_backend_d1 import D1Backend
 
                 def factory(**kwargs: Any) -> Any:
-                    return GlinerOnnx(**kwargs)
+                    return D1Backend(**kwargs)
 
             backend = factory(model_dir=self._cfg.model_dir)
             if backend is None or not backend.load():
                 self._log_unavailable(
-                    "onnx model dir not found or incomplete — no fallback model"
+                    "decision backend unavailable (Wave 3: the shared server "
+                    "must host the d1 GGUF) — no fallback model"
                 )
+                # BORROW-ONLY backends (d1) may become available later — the
+                # shared server can host the model minutes after this miss
+                # (found live 2026-10-08: the boot-time miss made the load
+                # sticky and the Oracle scored nothing all session). A
+                # backend that declares retry_load resets the stickiness so
+                # the next decide() probes again; a file-based backend keeps
+                # the old permanent-sticky behaviour.
+                if backend is not None and getattr(backend, "retry_load", False):
+                    self._load_attempted = False
                 return False
             self._backend = backend
             self.model_id = getattr(backend, "backend_id", None) or getattr(

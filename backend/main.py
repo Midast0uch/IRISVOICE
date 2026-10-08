@@ -915,6 +915,133 @@ async def lifespan(app: FastAPI):
         # cold-start outliers on the first decision after every backend restart).
         # A no-op when the engine is not configured (missing model file — the
         # box degrades to the legacy ladder). Runs off the async loop.
+        # ── d1 boot load (owner 2026-10-08, Wave 3) ─────────────────────────
+        # d1 goes on the GPU at STARTUP, like the old Parakeet boot warm:
+        # vision AND the Oracle find it resident instead of racing a manual
+        # Models-card load. The pinned vision model IS the d1 build (the
+        # only model this boot will auto-load — an arbitrary future pin is
+        # refused with a log, never silently loaded). The load is async on
+        # the main loop; the engine warm below retries until it lands
+        # (decision_backend_d1.retry_load).
+        async def _boot_load_d1():
+            from pathlib import Path as _P
+
+            def _read_vision_pin() -> str:
+                # The pin lives at field_values.vision.vision_model — a nested
+                # dict in the JSON and possibly an object on the loaded config;
+                # tolerate both, then fall back to the file.
+                try:
+                    from backend.iris_config import load_config as _load_cfg
+
+                    _fv = getattr(_load_config(), "field_values", None)
+                    _vis = (
+                        _fv.get("vision") if isinstance(_fv, dict)
+                        else getattr(_fv, "vision", None)
+                    )
+                    _pin = (
+                        _vis.get("vision_model") if isinstance(_vis, dict)
+                        else getattr(_vis, "vision_model", "")
+                    )
+                    if _pin:
+                        return str(_pin)
+                except Exception:
+                    pass
+                try:
+                    import json as _json
+
+                    _cfgp = _P(__file__).resolve().parents[1] / "data" / "iris_config.json"
+                    return str(
+                        _json.loads(_cfgp.read_text(encoding="utf-8"))
+                        .get("field_values", {})
+                        .get("vision", {})
+                        .get("vision_model", "") or ""
+                    )
+                except Exception:
+                    return ""
+
+            try:
+                _pin = _read_vision_pin()
+                if not _pin or "d1-3b" not in _P(_pin).name.lower():
+                    logger.warning(
+                        f"    [x] [D1BOOT] pinned vision model is not the d1 "
+                        f"build ({_P(_pin).name or 'no pin'}) — skipping the "
+                        f"boot load; load d1 from the Models card"
+                    )
+                    return
+                # SSD TWIN (owner 2026-10-08, "68s is long"): the C: copy is a
+                # PHYSICAL file on the 7200rpm HDD (~80 MB/s measured,
+                # SESSION-2026-08-27), not the symlink the handoff pin claimed
+                # (fsutil: not a reparse point). The same bytes sit on the D:
+                # SSD (~1675 MB/s) under a DIFFERENT directory layout — find
+                # them by filename, not by mirroring the C: path. Loading from
+                # there cuts the 2.52 GB read from ~32 s to ~2 s. The
+                # registry/scan keep serving the C: path; only the BOOT load
+                # prefers the faster twin.
+                _load_path = _pin
+                try:
+                    _hits = list(
+                        (_P("D:/lmstudio/models")).rglob(_P(_pin).name)
+                    )
+                    if _hits:
+                        _load_path = str(_hits[0])
+                        logger.info(
+                            f"    [+] [D1BOOT] loading from the D: SSD twin "
+                            f"({_hits[0]}) instead of the C: HDD copy"
+                        )
+                except Exception:
+                    pass
+                from backend.agent.local_model_manager import get_local_model_manager
+
+                _mgr = get_local_model_manager()
+                _st = _mgr.get_status()
+                if _st.get("loaded") and "d1-3b" in _P(
+                    str(_st.get("model_path", ""))
+                ).name.lower():
+                    logger.info(
+                        f"    [+] [D1BOOT] d1 already resident on "
+                        f"{_st.get('endpoint', '8082')} — nothing to do"
+                    )
+                    return
+                logger.info(
+                    "    [+] [D1BOOT] loading d1 (+mmproj) on the shared "
+                    "server at boot (vision + Oracle resident, like the old "
+                    "Parakeet boot warm)",
+                )
+                # ctx from the REGISTRY entry (8192): the deriver's default
+                # picked d1's NATIVE 32768, and the 32k KV build was a large
+                # slice of the 68 s. 8192 is the owner's VRAM budget entry.
+                _nctx = 8192
+                try:
+                    import json as _json
+
+                    _reg = _json.loads(
+                        (_P(__file__).resolve().parents[1]
+                         / "models" / "gguf" / ".iris_model_settings.json"
+                         ).read_text(encoding="utf-8")
+                    )
+                    _nctx = int(
+                        _reg.get(_P(_pin).name, {}).get("last_ctx", 8192) or 8192
+                    )
+                except Exception:
+                    pass
+                _ok = await _mgr.load_model(
+                    _load_path, with_projector=True,
+                    custom_params={"n_ctx": _nctx},
+                )
+                if _ok:
+                    logger.info("    [+] [D1BOOT] d1 resident — vision + Oracle warm")
+                else:
+                    logger.warning(
+                        "    [x] [D1BOOT] d1 boot load failed — vision and "
+                        "the Oracle stay borrow-only until a Models-card load"
+                    )
+            except Exception as _d1_exc:
+                logger.warning(
+                    f"    [x] [D1BOOT] boot load failed (non-fatal): {_d1_exc}"
+                )
+
+        asyncio.create_task(_boot_load_d1())
+
         async def _warm_decision_engine():
             import asyncio as _asyncio
 
