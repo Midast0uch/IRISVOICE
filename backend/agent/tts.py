@@ -218,7 +218,7 @@ class TTSManager:
     #
     # NOT a per-waiter slice. A Pocket-TTS cold start measured 238 s on this
     # box (2026-09-05 pid 8180, all CPU): ~151 s importing torch/pocket_tts
-    # while the Parakeet worker loaded alongside it, 17.3 s model load,
+    # while the STT engine loaded alongside it, 17.3 s model load,
     # 51.0 s audio-prompt encode, 68.5 s voice state. The old fixed 120 s
     # wait expired mid-load, and every later caller only re-polled for 30 s
     # at a time — so the manager declared "worker startup timeout" while the
@@ -342,7 +342,7 @@ class TTSManager:
         # speaking) and on-demand spawn inside ``synthesize_stream``.
         # Either path still pays one cold load (~20 s measured); a 300 s
         # startup budget covers pathological contention (2026-09-05: 238 s
-        # with Parakeet loading alongside). Set IRIS_TTS_EARLY_SPAWN=1 to
+        # with the STT engine loading alongside). Set IRIS_TTS_EARLY_SPAWN=1 to
         # restore the old boot-time spawn.
         #
         # Skipped under pytest (test suites construct TTSManager() for unit

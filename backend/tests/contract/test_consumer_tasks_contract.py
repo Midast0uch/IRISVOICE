@@ -1,16 +1,25 @@
-"""Contract tests: per-consumer Task specs (REQ-19 AC19.3, T25).
+"""Contract tests: per-consumer scoring specs (REQ-19 AC19.3, T25).
 
-CT-DEI-9 — Consumer Head Binding: the Task used to score a consumer matches
-that consumer's REGISTERED specification, so another consumer's labels or
-instruction can never be silently reused.
+CT-DEI-9 — Consumer Head Binding: a consumer is scored under its OWN
+registered specification, so another consumer's labels or instruction can
+never be silently reused.
+
+Wave 5 (specs/phonon2-d1-model-swap T5.3): the GLiNER build_task/Task shape
+this test pinned died with the ONNX backend. The INTENT transfers to the
+d1 backend unchanged: the registered ConsumerSpec's INSTRUCTION is what
+the model is asked (the Decision Index `instructions` field), and an
+unregistered consumer gets the generic AUTO_INSTRUCTION — never another
+consumer's question.
+
+Run: python -m pytest backend/tests/contract/test_consumer_tasks_contract.py -q
 """
-
 from __future__ import annotations
 
-from backend.agent.decision_backend_onnx import (
+from backend.agent.decision_engine import (
+    AUTO_INSTRUCTION,
     CONSUMER_TASKS,
     ConsumerSpec,
-    build_task,
+    get_consumer_spec,
     register_consumer_spec,
 )
 
@@ -22,46 +31,49 @@ def _spec(cid: str, **kw) -> ConsumerSpec:
     return ConsumerSpec(**base)
 
 
-class TestTaskMatchesRegisteredSpec:
-    def test_task_matches_registered_spec(self):
-        """AC19.3: the scored Task is built FROM the registered spec — same
-        instruction, same labels, same task name."""
-        register_consumer_spec(_spec(
-            "tst_review", task_name="tst_review",
-            instruction="Should this step pass, be refined, or be vetoed?",
-            labels=("pass", "refine", "veto"),
-        ))
-        spec = CONSUMER_TASKS["tst_review"]
+class TestScoringUsesRegisteredSpec:
+    def test_registered_instruction_is_what_the_backend_asks(self):
+        """AC19.3 on the d1 backend: the registered spec's instruction is
+        the question the model sees — resolve_consumer_instruction returns
+        it, never another consumer's."""
+        from backend.agent.decision_backend_d1 import D1Backend
 
-        t = build_task("tst_review", [])
-        assert t.name == spec.task_name
-        assert t.instruction == spec.instruction
-        assert list(t.labels) == list(spec.labels)
-        assert t.exclusive == spec.exclusive
+        register_consumer_spec(_spec("tst_review", task_name="tst_review"))
+        try:
+            got = D1Backend._spec_instruction("tst_review", "FALLBACK")
+            assert got == "Question for tst_review?", got
+        finally:
+            CONSUMER_TASKS.pop("tst_review", None)
 
-    def test_two_consumers_never_share_a_head(self):
-        """AC19.3: distinct consumers produce distinct Tasks — the silent-reuse
-        defect this contract exists to catch."""
-        register_consumer_spec(_spec("tst_x", instruction="Question X?",
-                                     labels=("yes", "no")))
-        register_consumer_spec(_spec("tst_y", instruction="Question Y?",
-                                     labels=("up", "down")))
+    def test_unregistered_consumer_gets_the_generic_question(self):
+        """No registered spec -> the honest generic AUTO_INSTRUCTION (the
+        consumer is still MEASURED), never a borrowed question. The path is
+        decide()'s: ensure_consumer_spec registers with AUTO_INSTRUCTION,
+        then the spec reader finds it."""
+        from backend.agent.decision_backend_d1 import D1Backend
+        from backend.agent.decision_engine import ensure_consumer_spec
 
-        tx = build_task("tst_x", [])
-        ty = build_task("tst_y", [])
+        CONSUMER_TASKS.pop("tst_never_registered", None)
+        ensure_consumer_spec("tst_never_registered", ["a", "b"], None)
+        got = D1Backend._spec_instruction("tst_never_registered", "FALLBACK")
+        assert got == AUTO_INSTRUCTION, got
 
-        assert tx.instruction != ty.instruction
-        assert list(tx.labels) != list(ty.labels)
-        assert tx.name != ty.name
+    def test_explicit_fallback_only_when_registry_unreadable(self):
+        """The caller's fallback is the LAST resort (registry failure)."""
+        from backend.agent.decision_backend_d1 import D1Backend
 
-    def test_tool_choice_keeps_the_pinned_bench_task(self):
-        """AC19.4 (contract half): tool_choice's Task is byte-identical to the
-        measured bench shape — otherwise the 0.40 threshold curve is invalid."""
-        t = build_task("tool_choice", ["read_file", "NONE"])
-        assert t.name == "tool"
-        assert t.instruction == "Which tool should handle this request?"
-        assert list(t.labels) == ["read_file", "NONE"]
-        assert t.exclusive is True
-        # labels carry NO descriptions — an unmeasured prompt change would
-        # invalidate the threshold (AC22.1/D13).
-        assert all(v is None for v in t.labels.values())
+        got = D1Backend._spec_instruction("tool_choice", "FALLBACK")
+        assert got != "FALLBACK"
+        assert got == CONSUMER_TASKS["tool_choice"].instruction
+
+    def test_registry_is_shared_not_per_backend(self):
+        """The registry lives on decision_engine (ONE home since Wave 5):
+        registering through it is visible to every backend and site."""
+        register_consumer_spec(_spec("tst_shared"))
+        try:
+            assert get_consumer_spec("tst_shared") is not None
+            from backend.agent.decision_backend_d1 import D1Backend
+
+            assert D1Backend._spec_instruction("tst_shared", "F") == "Question for tst_shared?"
+        finally:
+            CONSUMER_TASKS.pop("tst_shared", None)

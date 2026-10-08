@@ -15,7 +15,7 @@ import ast
 import re
 from pathlib import Path
 
-from backend.agent.decision_backend_onnx import build_task
+from backend.agent.decision_backend_d1 import D1Backend
 
 _REPO = Path(__file__).resolve().parents[3]
 _MAIN = _REPO / "backend" / "main.py"
@@ -70,20 +70,19 @@ class TestWarmupAtEffectiveCap:
             "from the effective candidate_cap (AC30.4)"
         )
 
-    def test_a_cap_width_menu_is_longer_than_two_options(self, onnx_runner):
-        """Why the width matters: the encoder's structure grows with the label
-        set, which is exactly what a 2-option warm-up failed to exercise."""
-        two = build_task("tool_choice", ["NONE", "DELEGATE"])
-        six = build_task("tool_choice", [
-            "WARM_LABEL_0", "WARM_LABEL_1", "WARM_LABEL_2", "WARM_LABEL_3",
-            "NONE", "DELEGATE",
-        ])
-        assert two is not None and six is not None
-
-        ids_two, _ = onnx_runner._structure(two)
-        ids_six, _ = onnx_runner._structure(six)
-
-        assert len(ids_six) > len(ids_two), (
-            "a 6-label menu did not produce a longer structure than a 2-label "
+    def test_a_cap_width_menu_is_longer_than_two_options(self):
+        """Why the width matters: the d1 prompt grows with the option set
+        (one rendered line per option), which is exactly what a 2-option
+        warm-up failed to exercise. Wave 5: the GLiNER encoder-structure
+        version died with the ONNX backend; the intent transfers to the
+        d1 render unchanged."""
+        two = D1Backend._render("warm goal", "pick a tool", ["NONE", "DELEGATE"])
+        six = D1Backend._render(
+            "warm goal", "pick a tool",
+            ["WARM_LABEL_0", "WARM_LABEL_1", "WARM_LABEL_2", "WARM_LABEL_3",
+             "NONE", "DELEGATE"],
+        )
+        assert len(six) > len(two), (
+            "a 6-option menu did not produce a longer prompt than a 2-option "
             "one — the warm-up width would not matter and AC30.4 is moot"
         )

@@ -7,7 +7,7 @@ Point IRIS at ANY media and get a local file path back:
 
 The analysis tools (transcribe_media / analyze_video_frames / clip_video)
 only understand local files, so every media request funnels through
-``resolve_media_source`` first. This is what makes "point vision + Parakeet
+``resolve_media_source`` first. This is what makes "point vision + STT
 at any media" work — the source is normalized before analysis.
 """
 from __future__ import annotations

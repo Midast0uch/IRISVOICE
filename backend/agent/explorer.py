@@ -191,7 +191,7 @@ def _emit_row(row: Optional[dict]) -> None:
 def register_web_intent_consumer() -> bool:
     """Register the web_intent consumer's criteria (REQ-15 AC15.3). Idempotent."""
     try:
-        from backend.agent.decision_backend_onnx import (
+        from backend.agent.decision_engine import (
             ConsumerSpec,
             get_consumer_spec,
             register_consumer_spec,

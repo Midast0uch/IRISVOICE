@@ -5,7 +5,7 @@ Usage:
     python scripts/measure_memory.py --assert-idle   # also assert total <= 4.0 GB
 
 Identifies IRIS processes by matching the command line of python processes for
-the known backend entry points (uvicorn/main.py, parakeet_worker, tts_worker,
+the known backend entry points (uvicorn/main.py, fermion (STT), tts_worker,
 crawl_worker, browser_pool). On Windows reports Private Bytes (psutil
 ``memory_info().private``) and Working Set (``memory_info().wset``); on other
 platforms falls back to RSS for both columns.
@@ -29,7 +29,7 @@ _IRIS_MARKERS = (
     "iris",
     "backend",
     "uvicorn",
-    "parakeet",
+    "fermion",
     "tts_worker",
     "crawl_worker",
     "browser_pool",

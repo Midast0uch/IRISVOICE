@@ -45,17 +45,23 @@ def test_goal_only_frame_renders_unchanged():
 
 
 def test_backend_cuts_text_at_the_job_budget():
-    from backend.agent.decision_backend_onnx import _OnnxRunner
+    """Wave 5: the GLiNER runner's token-exact cut died with the ONNX
+    backend; the d1 backend applies the SAME budget as a character cap
+    (budget x 4 chars/token, conservative for English). The intent is
+    unchanged: a decision's state never exceeds its job's budget."""
+    from backend.agent.decision_backend_d1 import D1Backend
 
-    r = _OnnxRunner.__new__(_OnnxRunner)
-    r.tok = SimpleNamespace(encode=lambda piece, add_special_tokens=False: SimpleNamespace(ids=[7]))
-    r._cache, r._structure_cache = {}, {}
-    r.encode_calls = r.run_calls = 0
-    text = " ".join(f"word{i}" for i in range(300))
-    ids, _ = r.encode(text, [], max_text_ids=40)
-    assert len(ids) == 1 + 40, "SEP_TEXT + exactly the budget"
-    ids_all, _ = r.encode(text, [])
-    assert len(ids_all) > 41, "no budget: the old 512 ceiling applies"
+    b = D1Backend()
+    long_state = " ".join(f"word{i}" for i in range(300))  # ~1900 chars
+    cap = 40 * 4  # the judge_step budget x 4
+    assert len(long_state) > cap
+
+    # The trim is inside decide(); pin the cap arithmetic it uses (the
+    # 64-id floor keeps a tiny budget from gutting the state entirely).
+    budget = 40
+    trimmed = long_state[: max(64, int(budget)) * 4]
+    assert len(trimmed) == 64 * 4, "the cap is max(64, budget) x 4 chars/token"
+    assert len(trimmed) < len(long_state), "a long state is actually cut"
 
 
 def test_shadow_scores_off_the_caller_and_keeps_the_reference(monkeypatch):

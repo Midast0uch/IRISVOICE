@@ -249,7 +249,7 @@ def _is_alive(pid: int) -> bool:
 #
 # Why this exists (2026-09-12): starting backend/frontend could leave the
 # operator looking at processes that should not be there — a stale
-# parakeet_sherpa_worker, a legacy `.backend_pid`/`pids.txt` pair that named
+# the retired parakeet_sherpa_worker, a legacy `.backend_pid`/`pids.txt` pair that named
 # long-dead PIDs, and an orphaned server still holding a port. Each start now
 # runs a bounded pre-flight so the process table reflects ONLY what this
 # manager tracks and started.
@@ -268,7 +268,7 @@ _SERVICE_PORTS = {"backend": 8090, "frontend": 3000, "launcher": 8080}
 _SERVICE_SIGNATURES = {
     "backend": (
         "start-backend.py",
-        "backend.audio.parakeet_sherpa_worker",
+        # "backend.audio.parakeet_sherpa_worker" retired 2026-10-08 (phonon2-d1-model-swap)
     ),
     "frontend": (
         "next/dist/bin/next",
@@ -427,7 +427,7 @@ def _free_service_port(service: str) -> None:
 
     Ports are unambiguous where command lines are not, so this is the reliable
     half of the pre-flight. /T reaps the whole tree (npm -> next -> esbuild,
-    or backend -> parakeet worker), which is how the transient worker
+    or backend -> STT server), which is how the transient worker
     subprocesses get cleaned up on a restart.
 
     Same tracked-alive guard as _reap_orphans: a HEALTHY tracked service is

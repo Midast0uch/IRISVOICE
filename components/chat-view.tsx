@@ -1633,7 +1633,7 @@ export function ChatWing({
   }, [])
 
   // Handle ASR final transcription (iris:voice_final).
-  // When the user speaks via the web Parakeet hook (useParakeetSTT), the
+  // When the user speaks (the voice pipeline), the
   // transcript arrives through the IRIS gateway's voice_result broadcast.
   // We add it as a user message so the conversation thread shows what was
   // heard before the assistant replies.

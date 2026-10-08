@@ -1,10 +1,10 @@
 """OS working-set memory trimming helpers (Windows).
 
-Used by the TTS and Parakeet subprocess workers and the Uvicorn main process
+Used by the TTS and STT subprocess workers and the Uvicorn main process
 to reclaim private memory after heavy model loads. On non-Windows platforms
 these are no-ops — the OS reclaims pages under memory pressure anyway.
 
-The heavy ML workers (Pocket-TTS, Parakeet) deserialize safetensors into heap
+The heavy ML workers (Pocket-TTS, the STT server) deserialize safetensors into heap
 buffers that are freed during load but whose pages stay resident in the
 process's working set. ``EmptyWorkingSet`` forces the OS to reclaim those
 pages, dropping the process's private footprint without touching live state.

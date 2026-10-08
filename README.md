@@ -8,8 +8,26 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 - **Wake Word Detection**: Custom "Hey Iris" wake word using Violawake (custom ONNX head + OpenWakeWord backbone), armed at backend startup — no key, no cloud, CPU-first
 - **Wake Word Memory**: Violawake custom ONNX head + OpenWakeWord backbone (~50 MB RAM, 0 VRAM at runtime; 320-sample frames)
 - **Wake Word Model**: Custom-trained "Hey Iris" Violawake model (`data/hey iris_237_1788045452.onnx`, threshold 0.70). The legacy `.ppn` file in `models/wake_words/` is Porcupine-era and not loaded.
-- **Parakeet ASR (GPU)**: NVIDIA Parakeet TDT 0.6B v3 via the sherpa-onnx native runtime (e.g. RTX 3070) — in-process, lazy-built on first speech (~12–22 s cold, sub-second after; CUDA default with CPU fallback; word timestamps for long-form work). The standalone `:8765` service (`parakeet_service.py` — WS `/ws/stream`, REST `/transcribe`, Prometheus `/metrics`) is retained for non-pipeline consumers. Graceful fallback to faster-whisper on CPU.
-- **End-to-End Audio Processing**: Violawake (wake words) → Parakeet TDT 0.6B (sherpa-onnx GPU ASR) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS (TTS)
+- **Phonon-2 Live Streaming ASR (CPU)**: Fermion Research's Phonon-2 speech recognition engine, streamed live over WebSocket (`/v1/audio/stream`) from a dedicated fermion server the backend spawns at boot — interim hypotheses reach the UI while you speak (~0.35 s first hypothesis, ~2/s updates), and the final transcript lands ~0.8 s after you stop. Runs entirely on CPU (AVX2), freeing the GPU for the vision and decision models. Hotwords (≤25) bias the wake word and command vocabulary. faster-whisper (CPU) backs up the final transcript.
+- **End-to-End Audio Processing**: Violawake (wake words) → Phonon-2 live streaming (CPU ASR) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS (TTS)
+
+#### Measured performance (2026-10-08, live on this machine — RTX 3070, C: HDD / D: SSD)
+
+| Path | Metric | Measured |
+|------|--------|----------|
+| STT (Phonon-2, streaming) | first interim hypothesis | **0.62 s** from speech start |
+| STT | interim update rate | **~2/s** (11 partials over a 5.7 s utterance) |
+| STT | final transcript after speech ends | **~0.8 s** |
+| STT | transcription accuracy (smoke) | exact transcript, hotword-biased |
+| STT | VRAM cost | **0** (CPU-only; the GPU stays free for vision + the Oracle) |
+| Oracle (d1-3B) | decision latency p50 / p90 | **139 ms / 320 ms** (min 62 ms) |
+| Oracle | decision accuracy probes | noul 98.8%/96.5% polarity-correct; 3-option choice 98.7% |
+| d1 boot load (GPU, from the D: SSD twin) | startup → resident | **14.6–21.3 s** (vision + Oracle warm at boot) |
+| Vision (d1 + projector) | capability probe | exact ("red, blue") — probe-gated routing |
+| VRAM budget (d1 + projector + 2.6B tool server, ctx 8192) | used / free | **5.9 GB / 2.1 GB** of 8 GB |
+| Eval coding tasks (c10/c02/c05) | reply_s, pass rate | **8–19 s, 3/3 pass**, no standards regression |
+
+> The Oracle latency has a sharp lesson attached: a fresh TCP connection per decision cost **~400 ms** of Windows connection setup (Nagle/delayed-ACK) — the model's own work is ~10-50 ms. One pooled keep-alive client is why the p50 reads 139 ms and not 630 ms.
 - **Voice Commands**: Natural language voice interaction with double-click activation
 - **Text-to-Speech**: Pocket-TTS (~100M int8 quantized, zero-shot voice cloning from a user-provided reference WAV) with built-in speaker presets
 - **Streaming LLM→TTS**: IRIS starts speaking as soon as the first sentence is ready — no waiting for the full LLM response
@@ -30,7 +48,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Half-Duplex Gate**: During TTS playback, `engine._tts_active = True` drops mic frames in the PortAudio callback. Prevents TTS echo from triggering false VAD.
 - **Word Highlighting**: Character-proportional timing at 12.5 chars/sec, driven by `tts_word` WebSocket events. Dynamic word count (`while True` loop) catches words from later sentences. Re-entrancy-safe via shared `turn_id` between `tts_started` and `text_response` events. `is_final=True` only sent after the audio stream closes — highlighting never finishes before TTS ends.
 - **Latency Metrics** (logs only, no frontend UI): Per-turn log lines surface STT and TTS latency in real time:
-  - `[STT_LATENCY] backend=parakeet latency_ms=380 audio_s=2.30 rtf=0.17x`
+  - `[STT_LATENCY] backend=phonon-2 latency_ms=380 audio_s=2.30 rtf=0.17x`
   - `[TTS_LATENCY] backend=pocket_tts synth_to_audio_ms=340`
   - `[FLOW_LATENCY] vad_to_llm=380ms llm_ttft=620ms llm_total=1120ms tts_synth=340ms vad_to_audio=1350ms flow_total=1520ms`
   - `[VOICE_TIMING_SUMMARY]` cumulative offsets from VAD end for each phase boundary
@@ -41,25 +59,16 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   | Component | VRAM | RAM | When |
   |-----------|------|-----|------|
   | Violawake (wake word) | 0 | ~50 MB | Always |
-  | Parakeet sherpa int8 (GPU) | ~0.7–1 GB | ~50 MB (native lib) | Lazy-built on first speech; 20-min idle release reclaims VRAM |
-  | faster-whisper (int8) | 0 | ~40 MB | Fallback if parakeet fails |
-  | sherpa-onnx runtime | 0 | (included above) | No torch at STT runtime; cuDNN via torch bundle |
+  | Phonon-2 STT server (CPU) | 0 | ~600 MB | Spawned at boot; 20-min idle exit, respawns on next utterance |
+  | faster-whisper (int8) | 0 | ~40 MB | Final-transcript fallback if the stream is cold/dead |
   | Native C++ player | 0 | ~1 MB | During TTS playback |
   | Pocket-TTS | 0 | ~50 MB | During TTS synthesis |
-  | **Total (parakeet path)** | **~1 GB** | **~150 MB** | idle backend measured 0.39 GB (2026-09-03) |
+  | **Total (phonon-2 path)** | **0** | **~750 MB** | GPU stays free for vision + the Oracle |
   | **Total (whisper path)** | **0** | **~95 MB** | — |
 
 ### 🤖 AI Agent System
-- **Tool Decision Engine (new, session 344)**: Calibrated 350M local model (LFM2.5-350M)
-  that scores every candidate tool in ONE forward pass ("parallel sampler") and returns
-  the tool + a measured confidence level — instead of sending tool selection through a
-  second LLM call that sometimes produces malformed JSON (or nothing). The engine runs
-  in SHADOW by default (it logs answers but doesn't act until measured tooling flips
-  `IRIS_DECISION_ENFORCE`): scripts/calibrate_decision_threshold.py keeps a ledger per
-  decision. Fifteen consumers share ONE calibrated scorer (Oracle). The three core ones: tool_choice (DER step → tool pick +
-  fallback), presentation (when a Prism card opens), narration (when TTS speaks). See
-  docs/architecture/oracle.md + specs/tool-decision-engine-improvements/**.
-- **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
+- **Oracle Decision Engine (d1-3B)**: A JEV-style System One decision model (LiquidAI d1-3B) that scores every candidate option in ONE forward pass and returns a calibrated probability distribution — instead of sending tool selection through a second LLM call that sometimes produces malformed JSON (or nothing). Served borrow-only by the shared llama-server (:8082, the same server vision uses); answers are read from the logits at a single answer slot using d1's native question shapes (a calibrated yes/no "noul" for boolean consumers, letter-coded choice menus otherwise). Measured p50 139 ms per decision. The engine runs in SHADOW by default (it logs answers but doesn't act until measured tooling flips `IRIS_DECISION_ENFORCE`): scripts/fit_oracle_calibration.py fits per-consumer thresholds from the ledger, and scripts/consumer_enforcement_report.py reports the bar (≥100 distinct rows, precision ≥0.90, ECE ≤0.05). Consumers share ONE calibrated scorer — the core ones: tool_choice (DER step → tool pick + fallback), presentation (when a Prism card opens), narration (when TTS speaks). See docs/architecture/oracle.md + specs/phonon2-d1-model-swap/**.
+- **Flexible Inference**: Brain model via the shared llama-server (port 8082) or a remote OpenAI-compatible API — select in Settings. Vision and the Oracle ride the same shared server (d1-3B + its vision projector, boot-loaded on the GPU at startup).
 - **MTP Speculative Decoding (1.5-3× speedup)**: Multi-Token Prediction for compatible GGUF models (e.g. Qwopus3.6-27B-MTP). Auto-detected from tensor names, routed to compiled `llama-server --spec-type draft-mtp`. Configurable `--spec-draft-n-max` (1-6) and acceptance-rate logging. Non-MTP models fall back transparently to in-process inference.
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
 - **DER-DAG Execution Model**: the agent no longer runs a hardcoded Director → Explorer →
@@ -95,7 +104,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
-- **DER+PACMAN Execution Hardening**: Plan events (VALIDATION_FAILED, RECOVERY_START, TOPOLOGY_RECOVERY) streamed to frontend as `iris:plan_event` system messages; verified workflow capture with automatic skill stub generation after ≥3 tools; multimedia tools (transcribe_media, analyze_video_frames, clip_video) via ffmpeg + Parakeet + vision; resilient tool dispatch with `retry_with_backoff`; all file I/O offloaded to worker threads (`asyncio.to_thread`)
+- **DER+PACMAN Execution Hardening**: Plan events (VALIDATION_FAILED, RECOVERY_START, TOPOLOGY_RECOVERY) streamed to frontend as `iris:plan_event` system messages; verified workflow capture with automatic skill stub generation after ≥3 tools; multimedia tools (transcribe_media, analyze_video_frames, clip_video) via ffmpeg + STT + vision; resilient tool dispatch with `retry_with_backoff`; all file I/O offloaded to worker threads (`asyncio.to_thread`)
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
@@ -122,7 +131,7 @@ probabilities, so an unsure verdict can be *escalated* to the Brain rather than 
   out-of-fold **AUROC ≥ 0.65** · a calibrated threshold with precision ≥ 0.90 (Wilson LB ≥ 0.85)
   on ≥ 50 rows above · calibrated **ECE ≤ 0.05**. Labels are **agreement with the incumbent** —
   which is the engine's real ceiling and its biggest open problem.
-- **Calibration is keyed by backend identity.** `gliner25-decide-onnx-int8` *is* the key. A
+- **Calibration is keyed by backend identity.** `d1-3b-ad-q4_k_m` *is* the key (the active backend identity; the retired GLiNER entry stays as history). A
   probability threshold is only meaningful for the distribution it was measured on, so
   **swapping the model is a recalibration, not a rename**: a new identity invalidates every
   measured curve, enforcement fail-closes for all consumers, and rows from the old model are
@@ -507,7 +516,7 @@ npm run dev:tauri
   │  ┌──────────────────────────────────────────────────────┐  │
   │  │                   Voice Pipeline                     │  │
   │  │  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │  │
-  │  │  │ Violawake│  │ Parakeet │  │   TTS            │  │  │
+  │  │  │ Violawake│  │ Phonon-2 │  │   TTS            │  │  │
   │  │  │ Wake Word│  │ TDT 0.6B│  │  (Pocket-TTS)    │  │  │
   │  │  │   (CPU)  │  │  (GPU)   │  │    (CPU)         │  │  │
   │  │  └──────────┘  └──────────┘  └──────────────────┘  │  │
@@ -554,7 +563,7 @@ npm run dev:tauri
 - **Model Router**: Routes requests between GGUF brain model and tool-calling model
 - **Streaming Utilities** (`backend/agent/streaming.py`): chunk batching, provider-agnostic chunk parsing, safe iteration with silence/total timeouts
 - **Tool Bridge**: MCP tool execution
-- **Voice Pipeline**: End-to-end audio processing (Violawake → Parakeet TDT 0.6B (sherpa-onnx GPU) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS)
+- **Voice Pipeline**: End-to-end audio processing (Violawake → Phonon-2 live streaming (CPU) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS)
 - **C++ Hybrid Core Memory Engine** (`iris_core.dll`): Replaces the Python memory hot path with compiled C++ — **~570× faster** Caducean attention decisions (87 ns vs ~50 μs in pure Python), eliminates SQLite `database is locked` errors via a dedicated single-writer thread, and removes ReDoS risk entirely via Google RE2. All backed by transparent Python fallback if the DLL is unavailable.
 
 ### Model Architecture
@@ -985,7 +994,7 @@ IRISVOICE/
 │   └── TransitionContext.tsx
 ├── hooks/                # Custom React hooks
 │   ├── useIRISWebSocket.ts    # WS → CustomEvent dispatcher (tts_word, voice_result)
-│   ├── useParakeetSTT.ts      # Web mic capture + WS streaming to Parakeet service
+│   ├── useIRISWebSocket.ts      # (voice_interim interim STT display lives in chat-view)
 │   ├── useAudioDevices.ts
 │   └── useNavigationSettings.ts
 ├── lib/                  # Utility libraries
@@ -998,11 +1007,11 @@ IRISVOICE/
 │   │   ├── vps_gateway.py
 │   │   ├── streaming.py  # Streaming chunk batching, safe iteration, chunk parsing
 │   │   └── personality.py
-│   ├── audio/           # Audio pipeline (Violawake + Parakeet ASR)
+│   ├── audio/           # Audio pipeline (Violawake + Phonon-2 streaming ASR)
 │   │   ├── engine.py          # AudioEngine — frame ingest, VAD, listener dispatch
-│   │   ├── voice_command.py   # Voice command — Parakeet primary STT, faster-whisper fallback
-│   │   ├── parakeet_buffer.py # TDT streaming buffer (Hypothesis, ring buffer, decoder callback)
-│   │   ├── parakeet_service.py# FastAPI HuggingFace Parakeet TDT ASR service (4 endpoints, lazy import, throttled decode)
+│   │   ├── voice_command.py   # Voice command - Phonon-2 streaming primary, faster-whisper final fallback
+│   │   ├──
+│   │   ├──phonon2_stream.py  # Phonon-2 live stream client + fermion server manager (CPU)
 │   │   └── tts_normalizer.py
 │   ├── tools/           # MCP tool integration
 │   │   └── vision_system.py
@@ -1072,14 +1081,14 @@ npm run dev
 npm run dev:backend & npm run dev:frontend
 ```
 
-**Parakeet ASR service (separate terminal, requires NVIDIA GPU with CUDA):**
+**Phonon-2 STT server (spawned automatically by the backend at boot):**
 ```bash
-python backend/audio/parakeet_service.py
+# nothing to run manually - the backend spawns the fermion server at boot
 # Listens on http://localhost:8765 with WebSocket streaming at ws://localhost:8765/ws/stream
 # Prometheus /metrics also on port 8765 (default) or custom PORT env var
 ```
 
-The Parakeet service runs as a standalone FastAPI process on port 8765 (separate from the main backend). The voice pipeline (`voice_command.py`) tries Parakeet first and falls back to faster-whisper on CPU if the service is unreachable or `parakeet_service_url` is `None`. Both Tauri (backend mic) and web (`getUserMedia` via `useParakeetSTT.ts`) stream PCM to the same `ws://localhost:8765/ws/stream` endpoint.
+The Phonon-2 fermion server runs as a managed subprocess on port 8766 (spawned by the backend at boot; 20-min idle exit, respawned on the next utterance). The voice pipeline (`voice_command.py`) tries phonon-2 first and falls back to faster-whisper on CPU if the service is unreachable or `phonon-2_service_url` is `None`. Both Tauri (backend mic) and web (`getUserMedia` via `usephonon-2STT.ts`) stream PCM to the same `ws://localhost:8765/ws/stream` endpoint.
 
 ### Code Style
 
@@ -1120,11 +1129,11 @@ python -m pytest backend/agent/tests/ -v
 # C++ Hybrid Core smoke tests (9 tests — FFI, Caducean, EML, Ingestor, Immortus)
 python -m pytest backend/tests/test_iris_core_smoke.py -v
 
-# Parakeet ASR unit tests (53 pass, 10 skip — service, gateway, voice_command, Porcupine regression)
-python -m pytest backend/tests/test_parakeet_service.py backend/tests/test_iris_gateway_patches.py backend/tests/test_voice_command_parakeet.py backend/tests/test_porcupine_regression.py -v
+# Phonon-2 STT unit tests (streaming client, seam, retirement guard)
+python -m pytest backend/tests/unit/test_voice_command_phonon2.py backend/tests/behavioral/test_voice_whisper_to_phonon2_flow.py -v
 
-# Parakeet GPU integration tests (skip if no CUDA or service not running)
-python -m pytest backend/tests/test_parakeet_integration.py -v
+# Oracle contract tests (d1 backend, enforcement, calibration, consumers)
+python -m pytest backend/tests/contract/test_oracle_enforcement_contract.py backend/tests/contract/test_decision_engine_contract.py -v
 
 # E2E voice-to-chat (Playwright — 8 tests: dedup, transcript, tts_word, WS routing)
 npx playwright test tests/e2e/test_voice_to_chat.spec.ts --config=playwright.e2e.config.ts
@@ -1311,8 +1320,8 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - `model_selection_updated` - Model selection change confirmed
 - `cleanup_report` - Cleanup analysis result
 - `cleanup_result` - Cleanup execution result
-- `voice_result` - Parakeet ASR final transcript routed to session (Tailscale multi-view)
-- `voice_audio_chunk` - PCM chunk acknowledgment from Parakeet service
+- `voice_result` - ASR final transcript routed to session (Tailscale multi-view)
+- `voice_audio_chunk` - PCM chunk acknowledgment (monitor path)
 - `voice_final` - ASR transcript delivered as CustomEvent to chat-view (web mode)
 - `tts_word` - Word index + count for current TTS spoken word (highlighting sync)
 

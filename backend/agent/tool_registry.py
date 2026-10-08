@@ -181,7 +181,7 @@ def declare_default_node_metadata() -> int:
     alone (REQ-6 AC4 — no backend code change; the modules stay untouched).
 
     This is the REQ-6 proof: the five ``vision.*`` MCP tools, the media
-    (audio/parakeet) tools, and the web tools become nodes purely by declaring
+    (audio/STT) tools, and the web tools become nodes purely by declaring
     their artifact types and advertised recovery here. Registration is
     idempotent (a tool already declared is skipped). Returns the number of
     declarations applied.
@@ -200,7 +200,7 @@ def declare_default_node_metadata() -> int:
         "vision_analyze_screen": "text",
         "vision_validate_action": "text",
         "vision_get_context": "text",
-        # media / parakeet pipeline -> large artifacts by REFERENCE (D7)
+        # media / STT pipeline -> large artifacts by REFERENCE (D7)
         "transcribe_media": "audio_ref",
         "analyze_video_frames": "video_ref",
         "clip_video": "video_ref",
@@ -1272,7 +1272,7 @@ def register_builtin_tools() -> None:
         ToolSpec(
             name="transcribe_media",
             description=(
-                "Transcribe an audio or video file to text using the local Parakeet "
+                "Transcribe an audio or video file to text using the local Phonon-2 "
                 "ASR service. Automatically chunks long media into <=60s segments. "
                 "Input is a local file path OR a URL (http/https, incl. YouTube) — the "
                 "media pipeline resolves either to a local file automatically. Returns "
@@ -1325,7 +1325,7 @@ def register_builtin_tools() -> None:
 
     for spec in specs:
         register_tool(spec)
-    # REQ-6 AC4 / T14: vision.* MCP tools + media/parakeet + web tools become
+    # REQ-6 AC4 / T14: vision.* MCP tools + media/STT + web tools become
     # nodes by registration alone — no backend code change. Runs after the
     # tools exist so register_node's tool-must-exist guard passes.
     declare_default_node_metadata()

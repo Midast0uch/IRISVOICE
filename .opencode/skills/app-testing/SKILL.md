@@ -56,7 +56,9 @@ $env:IRIS_STACK_DUMP_S = '4'   # in-process thread dump every 4 s -> logs/stackd
 npm run iris:start:backend      # or: Start-Process python start-backend.py -WindowStyle Hidden ...
 # poll /health until 200 — it answers 503 {"status":"starting","tts":{"status":"loading"}}
 # until the TTS worker is warm (by design since 2026-09-30); budget 300 s cold.
-python evals/load_tool_model.py # loads the LFM2.5 tool model on :8082 via WS load_local_model
+python evals/load_tool_model.py # VERIFIES the boot state (d1 on :8082, boot-loaded
+                                # since phonon2-d1-model-swap Wave 3/5 — it is NOT a
+                                # loader anymore; loading anything else would evict d1)
 ```
 Wait ~45-75 s after the model load before a run (warm-ups). The Brain is `gemma4:31b-cloud`
 on Ollama :11434; use `127.0.0.1`, never `localhost`, for local ports (+2 s/request here).

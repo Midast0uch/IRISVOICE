@@ -58,7 +58,7 @@ class TestConsumerRegistry:
             "registration was not idempotent — a second call re-registered"
         )
 
-        from backend.agent.decision_backend_onnx import get_consumer_spec
+        from backend.agent.decision_engine import get_consumer_spec
 
         for cid in _SURFACE:
             spec = get_consumer_spec(cid)

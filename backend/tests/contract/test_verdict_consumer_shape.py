@@ -227,7 +227,7 @@ class TestModeConfidenceMeasured:
     def test_mode_consumer_scored_under_its_own_labels(self):
         """AC19.3: the mode consumer is scored with the six mode labels and
         its own instruction — never another consumer's head."""
-        from backend.agent.decision_backend_onnx import get_consumer_spec
+        from backend.agent.decision_engine import get_consumer_spec
         from backend.agent.mode_detector import ModeDetector
 
         class _Eng:

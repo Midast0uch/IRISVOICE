@@ -1,0 +1,3 @@
+{"ts": 1791404739.4390368, "conversation_id": "strand-ca4878666e7c", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.12797341156500136, "xi": 2.5763682482022054, "text": "", "tts_played": false}
+{"ts": 1791404774.1962233, "conversation_id": "strand-ca4878666e7c", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.2753351560571756, "xi": 5.049144808955244, "text": "", "tts_played": false}
+{"ts": 1791404782.823246, "conversation_id": "strand-ca4878666e7c", "step_id": "steer-2", "decision": "silence", "signal": null, "u": 0.0550059010905809, "xi": 5.392264800134001, "text": "", "tts_played": false}

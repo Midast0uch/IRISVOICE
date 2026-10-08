@@ -7772,7 +7772,7 @@ class AgentKernel:
             return
         self._narration_scored_key = _nkey
         try:
-            from backend.agent.decision_backend_onnx import (
+            from backend.agent.decision_engine import (
                 ConsumerSpec,
                 get_consumer_spec,
                 register_consumer_spec,

@@ -240,10 +240,14 @@ def thresholds_by_consumer(
         if loaded:
             backend_id, identity_source = loaded, "loaded engine"
         else:
-            from backend.agent.decision_backend_onnx import GlinerOnnx, resolve_model_dir
+            # Wave 5 (specs/phonon2-d1-model-swap): the declared backend is
+            # d1 on the shared llama-server — constructing it loads nothing
+            # and touches no server; the identity is variant-derived from
+            # the served GGUF filename.
+            from backend.agent.decision_backend_d1 import D1Backend
 
-            backend_id = GlinerOnnx(model_dir=resolve_model_dir(None)).backend_id
-            identity_source = "declared ONNX variant"
+            backend_id = D1Backend().backend_id
+            identity_source = "declared d1 variant"
     except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
         pass
     # AC25.8: resolve the thresholds BY that identity.

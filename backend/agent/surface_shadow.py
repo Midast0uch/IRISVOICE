@@ -109,7 +109,7 @@ def register_surface_consumers() -> int:
     under another consumer's head, so this must run before any shadow scoring.
     """
     try:
-        from backend.agent.decision_backend_onnx import (
+        from backend.agent.decision_engine import (
             ConsumerSpec,
             get_consumer_spec,
             register_consumer_spec,

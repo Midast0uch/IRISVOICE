@@ -33,3 +33,5 @@
 {"ts": 1791247719.5833697, "conversation_id": "conv-d1-guard", "step_id": "d1-step", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
 {"ts": 1791248455.2891986, "conversation_id": "conv-d1-guard", "step_id": "d1-warm", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
 {"ts": 1791248455.4930654, "conversation_id": "conv-d1-guard", "step_id": "d1-step", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1791397599.7994418, "conversation_id": "conv-d1-guard", "step_id": "d1-warm", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1791397599.9873173, "conversation_id": "conv-d1-guard", "step_id": "d1-step", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}

@@ -1297,7 +1297,7 @@ class AgentToolBridge:
     async def execute_media_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
         """Execute a media-pipeline tool (transcribe / analyze / clip).
 
-        The 'black box' for pointing vision + Parakeet at any media. Every
+        The 'black box' for pointing vision + STT at any media. Every
         source URI is normalized to a local file via MediaSource (files + URLs)
         before the analysis tool runs.
         """

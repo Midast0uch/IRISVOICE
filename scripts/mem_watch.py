@@ -22,7 +22,7 @@ from datetime import datetime
 import psutil
 
 IRIS_MARKERS = (
-    "iris", "backend", "uvicorn", "parakeet", "tts_worker",
+    "iris", "backend", "uvicorn", "fermion", "tts_worker",
     "crawl_worker", "browser_pool", "main.py", "llama-server",
     "llama_server", "embedding_sidecar", "start-backend",
 )
@@ -89,8 +89,8 @@ def main() -> int:
                             label = "embed"
                         elif "tts_worker" in cmd:
                             label = "tts"
-                        elif "parakeet" in cmd:
-                            label = "parakeet"
+                        elif "fermion" in cmd:
+                            label = "fermion"
                         procs.append(f"{label}:{p.pid}:{mb:.0f}MB")
                         if mb > top_mb:
                             top_mb, top_proc = mb, label

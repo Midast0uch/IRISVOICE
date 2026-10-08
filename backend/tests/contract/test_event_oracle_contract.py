@@ -27,7 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from backend.agent import event_oracle as eo
-from backend.agent.decision_backend_onnx import CONSUMER_TASKS, get_consumer_spec
+from backend.agent.decision_engine import CONSUMER_TASKS, get_consumer_spec
 from backend.agent.decision_engine import DecisionScore
 from backend.memory import event_alphabet as ea
 from backend.memory import memory_events as me

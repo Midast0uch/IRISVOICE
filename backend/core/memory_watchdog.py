@@ -32,7 +32,7 @@ from typing import Callable, Awaitable, Optional
 logger = logging.getLogger("backend.memory.watchdog")
 
 # ── Thresholds raised for GPU model host ──────────────────────────────────
-# Backend loads Parakeet (1000-2000 MB GPU + CPU overhead), Pocket-TTS
+# Backend loads the STT server (CPU) and Pocket-TTS
 # (~200 MB CPU), Python runtime (~600 MB), and CUDA context (~500 MB).
 # Baseline RSS is 2000-3500 MB with all models loaded.
 SOFT_CAP_MB: int = int(os.getenv("IRIS_MEM_SOFT_MB", "5000"))

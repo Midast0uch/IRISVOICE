@@ -304,18 +304,18 @@ async def lifespan(app: FastAPI):
         # the 60 s watchdog); it waited for 90 s + 20 s idle (eval c01 lost
         # 220 s to it once) and pre-read its files in a low-priority child.
         # 2026-10-05 (owner): Whisper is the FALLBACK only - no warm-up.
-        # 2026-10-07 (owner): Parakeet warms WITH the backend, like TTS. The
+        # 2026-10-07 (owner): the STT engine warms WITH the backend, like TTS. The
         # 25 s wait could not cover a ~56 s cold build on this disk, so the
-        # fallback fired while Parakeet was 0.14 s from ready. That 90 s + idle
+        # fallback fired while the engine was 0.14 s from ready. That 90 s + idle
         # file pre-read is deleted: building the recognizer reads the files too,
-        # and doing it at boot is what keeps Parakeet off the reply path.
+        # and doing it at boot is what keeps the STT engine off the reply path.
         # WHAT THIS UNDOES: REQ-1 AC1.2's ~4.2 GB idle footprint. It is now the
         # owner's to accept (TTS already holds 1-2 GB resident by the same
-        # decision); IRIS_PARAKEET_IDLE_TIMEOUT_S puts the release back.
+        # decision); the engine idles out after 20 min and respawns.
         # PHONON-2 WARMS AT BOOT (Wave 1, specs/phonon2-d1-model-swap): the
         # fermion server (STT engine, CPU) is spawned in a SUBPROCESS during
         # startup, so the first utterance streams instead of falling back to
-        # whisper. Same rationale as the Parakeet boot warm it replaces
+        # whisper. Same rationale as the retired Parakeet boot warm it replaces
         # (owner 2026-10-07): a cold engine that resolves AFTER the first
         # utterance's bounded wait forces a CPU-whisper turn (measured live
         # 2026-10-07: 16.7 s recognition, rtf 3.39x, false watchdog breach).

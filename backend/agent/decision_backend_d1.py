@@ -2,7 +2,7 @@
 
 Wave 3 (specs/phonon2-d1-model-swap, T3.1/T3.2). Replaces GLiNER2.5-Decide
 ONNX as the resident decision backend (the ONNX module is retired with the
-rest of GLiNER at T5.3; until then it stays on disk, unconstructed).
+rest of GLiNER at T5.3 — deleted 2026-10-08; the spec registry it hosted moved into decision_engine).
 
 CONTRACT (unchanged from decision_backend_onnx.GlinerOnnx — the engine
 calls the same shape): ``decide(consumer_id, options, frame, instruction)``
@@ -303,10 +303,7 @@ class D1Backend:
         exists — the Decision Index `instructions` field is core to d1's
         training; a generic fallback is the last resort."""
         try:
-            from backend.agent.decision_backend_onnx import (
-                ensure_consumer_spec,
-                get_consumer_spec,
-            )
+            from backend.agent.decision_engine import get_consumer_spec
 
             spec = get_consumer_spec(consumer_id)
             if spec is not None and getattr(spec, "instruction", None):
@@ -339,6 +336,19 @@ class D1Backend:
             opts = [o for o in options if isinstance(o, str) and o]
             if not opts or len(opts) > len(_LETTERS):
                 return None
+            # REQ-19 (the GLiNER contract, carried over): auto-register the
+            # consumer's criteria on first sight — a new decision point
+            # measures itself from its first run (ensure_consumer_spec),
+            # and the registered instruction is what _spec_instruction
+            # reads. Without this an unregistered consumer never registers
+            # and silently loses the generic-question path (found by the
+            # rewritten CT-DEI-9, 2026-10-08).
+            try:
+                from backend.agent.decision_engine import ensure_consumer_spec
+
+                ensure_consumer_spec(consumer_id, opts, instruction)
+            except Exception:
+                pass
             # THE JOB TEXT + BUDGET (decision_engine.job_input): the engine
             # renders the job's fields into ONE text and attaches the job's
             # token budget — the backend APPLIES it. Found live 2026-10-08:

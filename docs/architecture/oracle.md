@@ -4,6 +4,23 @@
 > `tool-decision-engine.md`. The engine's *name* is Oracle; the *model* it runs  
 > keeps its own identity, and that distinction is load-bearing — see §2.
 >
+> **2026-10-08 (specs/phonon2-d1-model-swap, Waves 3-5): the resident backend is
+> d1-3B** (`d1-3b-ad-q4_k_m`, a JEV-style System One decision model) served
+> BORROW-ONLY by the shared llama-server :8082 — the same server vision uses.
+> `backend/agent/decision_backend_d1.py` implements decide() on the Decision
+> Index prompt shapes (native NOUL for yes/no consumers, choice menus
+> otherwise), reads the answer from the logits at the single answer slot, and
+> fail-closes when the server hosts anything else (§9: no fallback model).
+> Measured live 2026-10-08: p50 139 ms per decision (pooled keep-alive client;
+> a fresh connection per decision costs ~400 ms of Windows TCP setup), min
+> 62 ms, p90 320 ms. d1 boot-loads on the GPU at startup (14.6-21 s from the
+> D: SSD twin). The consumer spec registry lives in decision_engine.py. The
+> calibration is FRESH: no consumer has a threshold for the d1 identity yet
+> (fail-closed by design, REQ-6 AC6.2); rows accumulate in shadow as the app
+> runs and `fit_oracle_calibration.py` writes the first d1 thresholds when
+> the bar is met. §0 below is the 2026-10-05 state, kept as history; the
+> two-key enforcement architecture it describes is UNCHANGED.
+>
 > **2026-10-05: read §0 (current state, calibration + two-key enforcement) first, then §19
 > (Jobs).** §0-prev is the 2026-10-01 state. Sections between §1 and §17 describe the engine
 > as of 2026-09-26/27; where §0 or §19 disagree, those win.

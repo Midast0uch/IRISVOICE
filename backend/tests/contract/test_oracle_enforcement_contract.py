@@ -43,7 +43,7 @@ from backend.agent import monitor_shadow as ms
 from backend.agent import oracle_calibration as oc
 from backend.agent import surface_shadow as ss
 from backend.agent import tool_decision
-from backend.agent.decision_backend_onnx import CONSUMER_TASKS
+from backend.agent.decision_engine import CONSUMER_TASKS
 from backend.agent.decision_engine import (
     CandidateScore,
     DecisionScore,
@@ -629,7 +629,7 @@ def test_the_narration_gate_never_decides_and_never_scores(
     _engine_permits_speech) are removed. Fails on the old code: both scored the
     Oracle inline and a confident enforced 'silent' suppressed speech."""
     from backend.agent import narration
-    from backend.agent.decision_backend_onnx import ConsumerSpec, register_consumer_spec
+    from backend.agent.decision_engine import ConsumerSpec, register_consumer_spec
 
     register_consumer_spec(ConsumerSpec(
         consumer_id="narration", task_name="narration", instruction="q",
@@ -655,7 +655,7 @@ def test_the_narration_gate_never_decides_and_never_scores(
 def test_gate_acts_only_on_the_registered_question(
         install, narration_spec_restored, chokepoint):
     """A matching menu may act, and only above the calibrated threshold."""
-    from backend.agent.decision_backend_onnx import ConsumerSpec, register_consumer_spec
+    from backend.agent.decision_engine import ConsumerSpec, register_consumer_spec
 
     labels = ("speak_all", "speak_first_only", "stay_silent")
     register_consumer_spec(ConsumerSpec(

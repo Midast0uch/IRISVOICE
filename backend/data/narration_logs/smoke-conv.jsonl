@@ -43,3 +43,4 @@
 {"ts": 1791231700.2366147, "conversation_id": "smoke-conv", "step_id": "s10", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
 {"ts": 1791231998.9061627, "conversation_id": "smoke-conv", "step_id": "s10", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
 {"ts": 1791232269.2519155, "conversation_id": "smoke-conv", "step_id": "s10", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1791397603.1229157, "conversation_id": "smoke-conv", "step_id": "s10", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}

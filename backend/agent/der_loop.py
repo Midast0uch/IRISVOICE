@@ -1201,7 +1201,7 @@ class Reviewer:
             # Register the consumer's criteria on first use (REQ-19: a consumer
             # with no criteria is refused, never scored under another head).
             try:
-                from backend.agent.decision_backend_onnx import (
+                from backend.agent.decision_engine import (
                     ConsumerSpec,
                     get_consumer_spec,
                     register_consumer_spec,

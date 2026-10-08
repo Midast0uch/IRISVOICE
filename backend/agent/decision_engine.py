@@ -1,6 +1,7 @@
-"""Calibrated small-model decision engine — ORACLE (Jev/RLCD pattern reproduction).
+"""Calibrated decision engine — ORACLE (Jev/RLCD pattern reproduction).
 
-Spec: specs/tool-decision-engine-improvements (REQ-21, REQ-22, REQ-25, REQ-26).
+Spec: specs/tool-decision-engine-improvements (REQ-21, REQ-22, REQ-25, REQ-26);
+specs/phonon2-d1-model-swap (Wave 3/5 — the d1 backend).
 
 NAME vs KEY (read this before renaming anything). ``Oracle`` is the engine's
 DISPLAY name — what a human reads in logs, telemetry and the UI. The technical
@@ -8,18 +9,20 @@ keys stay exactly as they are, because they carry meaning that a rename would
 destroy:
   * the config block id ``oracle`` (agent_config.yaml) is what
     ``load_engine_config`` looks up; and
-  * the backend identity ``gliner25-decide-onnx-int8`` KEYS THE CALIBRATED
+  * the ACTIVE backend identity ``d1-3b-ad-q4_k_m`` KEYS THE CALIBRATED
     THRESHOLD (``backend_thresholds``, REQ-22 AC22.1 / REQ-25 AC25.8). Renaming
     that key marks every measured curve unaddressable and enforcement
     fail-closes — a rename there is a configuration migration, not a label
-    change.
+    change. (The retired ``gliner25-decide-onnx-int8`` entry stays as history:
+    its rows are other_backend evidence, oracle.md §16.)
 
-One resident decision backend, loaded in-process: GLiNER2.5-Decide via its
-torch-free ONNX export (REQ-21/D12 — replaced LFM2-350M-Extract; measured
-71.7% @119 ms vs 60.0% @1172 ms, with all errors <= 0.352 confidence). It
-never writes to memory, never emits events, never touches the 8082 server or
-the VRAM ledger. Its only job: score a caller-provided option set against a
-caller-provided feature frame and return a probability distribution.
+One resident decision backend, BORROW-ONLY: d1-3B (a JEV-style System One
+decision model) served by the shared llama-server :8082 — the same server
+vision uses (backend/agent/decision_backend_d1.py; the GLiNER ONNX backend it
+replaced is deleted, Wave 5). It never writes to memory, never emits events,
+never spawns a process. Its only job: score a caller-provided option set
+against a caller-provided feature frame and return a probability distribution,
+one question per run, read from the logits at the single answer slot.
 Consumers: `tool_choice` (Wave 2), `presentation` and `narration` (Wave 4).
 
 Two primitives, both return DecisionScore/ArgsResult or None (None = degrade
@@ -27,7 +30,7 @@ to legacy path):
   - decide(consumer_id, options, frame)      — Jev "Choice" (schema scoring)
   - generate_args(consumer_id, option, schema, frame) — constrained args JSON
 
-The ONNX backend scores labels; it does not generate arguments (D12), so
+The d1 backend scores options; it does not generate arguments (D12 stands), so
 ``generate_args`` has no generative backend in production and degrades to
 ``ArgsResult(args=None)`` — the box then escalates to the legacy ladder, where
 the Brain does schema-constrained generation via function-calling (AC2.4).
@@ -175,6 +178,113 @@ def oracle_job(consumer_id: str) -> OracleJob:
     if name is None and str(consumer_id).startswith("event_type:"):
         name = "classify_event"
     return ORACLE_JOBS[name or "general"]
+
+
+# ── Consumer criteria (REQ-19) ─────────────────────────────────────────────
+# Wave 5 (specs/phonon2-d1-model-swap T5.3): this machinery MOVED here from
+# decision_backend_onnx.py, which is deleted with the rest of the GLiNER
+# backend. The registry is backend-agnostic — the d1 backend reads the
+# registered instruction (the Decision Index `instructions` field), and
+# every consumer site registers through it. One home, one import.
+
+_TOOL_TASK_INSTRUCTION = "Which tool should handle this request?"
+
+
+@dataclass(frozen=True)
+class ConsumerSpec:
+    """One consumer's own scoring criteria (REQ-19 AC19.1).
+
+    ``labels`` empty means the caller supplies the option set (menu-shaped
+    consumers such as ``tool_choice``); a non-empty tuple is a FIXED label set
+    (the bool consumers). ``criteria=False`` registers a consumer WITHOUT
+    criteria — the engine refuses to score it rather than borrowing another
+    consumer's head (REQ-19 edge case).
+    """
+
+    consumer_id: str
+    task_name: str
+    instruction: str
+    exclusive: bool = True
+    labels: Tuple[str, ...] = ()
+    criteria: bool = True
+
+
+CONSUMER_TASKS: Dict[str, ConsumerSpec] = {
+    # Pinned to the measured bench shape (AC22.1 / AC19.4) — do not edit.
+    "tool_choice": ConsumerSpec(
+        consumer_id="tool_choice",
+        task_name="tool",
+        instruction=_TOOL_TASK_INSTRUCTION,
+        exclusive=True,
+    ),
+}
+
+
+# The question used for a consumer that registers ITSELF (2026-09-27). A new
+# decision point that never declared its question can still be MEASURED this
+# way; the bar then decides whether it deserves a better question. Deliberately
+# generic: an honest vague question beats no measurement, and an uncalibrated
+# consumer can never enforce.
+AUTO_INSTRUCTION = (
+    "Choose the single best option for the goal below. The options are the "
+    "candidate answers to one question about the current step."
+)
+
+
+def ensure_consumer_spec(
+    consumer_id: str,
+    options: Sequence[str],
+    instruction: Optional[str] = None,
+) -> Optional[ConsumerSpec]:
+    """Return *consumer_id*'s criteria, REGISTERING them on first sight.
+
+    WHY (2026-09-27): a new decision point could not be measured at all until
+    someone hand-wrote a ``ConsumerSpec``, and ``DecisionEngine.decide`` refused
+    any id outside the frozen CONSUMERS tuple - so the application could not
+    evolve with use, and every new consumer needed manual creation. Measured
+    consequence: `recovery_strategy` scored nothing for its whole life, and
+    `narration` produced no row until a registration block was written by hand.
+
+    The caller already passes the option set on EVERY call, so the labels need no
+    declaration. ``instruction`` is taken from the caller when given (the best
+    question), else a generic one is used so the consumer is still measured.
+
+    SAFETY: REGISTERING IS NOT ENFORCING. An uncalibrated consumer has no
+    threshold for the active backend, so it cannot steer anything. The report
+    shows it fail-closed ("no threshold for the active backend") until a
+    threshold is calibrated for it, and the bar still requires 100 rows,
+    precision >= 0.90 and ECE <= 0.05 before a flip.
+    """
+    spec = CONSUMER_TASKS.get(consumer_id)
+    if spec is not None:
+        return spec
+    labels = tuple(o for o in options if isinstance(o, str) and o)
+    if not labels:
+        return None
+    logger.info(
+        "decision_engine: auto-registered consumer=%s labels=%d "
+        "(no declared criteria; measuring in shadow)",
+        consumer_id,
+        len(labels),
+    )
+    return register_consumer_spec(ConsumerSpec(
+        consumer_id=consumer_id,
+        task_name=consumer_id,
+        instruction=instruction or AUTO_INSTRUCTION,
+        # Menu-shaped: the caller's own options supply the labels.
+        labels=(),
+    ))
+
+
+def register_consumer_spec(spec: ConsumerSpec) -> ConsumerSpec:
+    """Register (or replace) a consumer's criteria (REQ-19 AC19.3)."""
+    CONSUMER_TASKS[spec.consumer_id] = spec
+    return spec
+
+
+def get_consumer_spec(consumer_id: str) -> Optional[ConsumerSpec]:
+    """The registered criteria for *consumer_id*, or None."""
+    return CONSUMER_TASKS.get(consumer_id)
 
 
 # Off-path threads: the ordered lanes ("iris-<lane>") and the shadow scorers'
@@ -948,10 +1058,13 @@ class DecisionEngine:
         if self._load_attempted:
             return False, "load_failed_or_missing"
         try:
-            from backend.agent.decision_backend_onnx import resolve_model_dir
+            # Wave 5: the backend is d1 on the shared llama-server — its
+            # availability is its own truthful check (borrow-only), not a
+            # model_dir probe (the GLiNER path this replaced).
+            from backend.agent.decision_backend_d1 import D1Backend
 
-            if resolve_model_dir(self._cfg.model_dir) is None:
-                return False, "model_dir_not_found"
+            ok, why = D1Backend().availability()
+            return ok, why
         except Exception:
             pass
         return True, "loadable_pending"
@@ -1659,8 +1772,8 @@ def gate(
     is the chokepoint's verdict for THIS score's confidence.
     """
     try:
-        from .decision_backend_onnx import get_consumer_spec
-
+        # Wave 5: the spec registry lives in THIS module now (moved from the
+        # deleted decision_backend_onnx) — no import needed.
         spec = get_consumer_spec(consumer_id)
         if spec is not None and spec.labels and set(options) != set(spec.labels):
             return None, False

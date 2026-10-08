@@ -1,80 +1,55 @@
-"""Wait for the backend API, then load the local tool model the way the Models card does.
+"""Verify the model boot state, then exit. NOT a loader anymore.
+
+Wave 5 (specs/phonon2-d1-model-swap): this script USED to load the
+LFM2.5-2.6B tool model onto the shared server :8082 — running it now would
+EVICT d1 (vision + the Oracle), which the backend boot-loads at startup
+(main.py _boot_load_d1, measured 14.6 s from the D: SSD twin). The tool
+model lives on its own server (:8091, backend/agent/tool_model_server.py)
+and is dormant since the live-falsified 2.6B binding revert (VERIFY.md
+Wave 2).
 
 Run after starting the backend, before evals/run_evals.py:
     python evals/load_tool_model.py
-Override the model with IRIS_TOOL_MODEL_PATH.
+Exit 0 when d1 is resident on :8082 (and reports the tool server state);
+exit 1 with the reason when it is not. IRIS_TOOL_MODEL_PATH is OBSOLETE and
+ignored.
 """
-import asyncio
 import json
-import os
 import socket
-import time
+import sys
 import urllib.request
 
-import websockets
-
-PATH = os.environ.get(
-    "IRIS_TOOL_MODEL_PATH",
-    r"C:\Users\midas\.lmstudio\models\LiquidAI\LFM2.5-2.6B-GGUF\LFM2.5-2.6B-QAD-Q4_0.gguf",
-)
-PORT = int(os.environ.get("IRIS_LOCAL_PORT", "8082"))
+D1_PORT = int(__import__("os").environ.get("IRIS_LOCAL_MODEL_PORT", "8082"))
+TOOL_PORT = 8091
 
 
-def api_ready() -> bool:
+def _get(url: str, timeout: float = 5.0):
+    with urllib.request.urlopen(url, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def main() -> int:
     try:
-        urllib.request.urlopen("http://127.0.0.1:8090/api/mode", timeout=5).read()
-        return True
+        models = _get(f"http://127.0.0.1:{D1_PORT}/v1/models")
+        served = str((models.get("data") or [{}])[0].get("id", ""))
+    except Exception as exc:
+        print(f"FAIL: no server on :{D1_PORT} ({exc!r}) — start the backend; "
+              f"d1 loads at boot")
+        return 1
+    if "d1-3b" not in served.lower():
+        print(f"FAIL: :{D1_PORT} serves {served!r}, not d1 — the Oracle and "
+              f"vision are borrow-only until d1 is loaded (Models card)")
+        return 1
+    print(f"OK: d1 resident on :{D1_PORT} ({served})")
+    try:
+        _get(f"http://127.0.0.1:{TOOL_PORT}/health")
+        print(f"OK: tool model server warm on :{TOOL_PORT} (dormant; "
+              f"tool_execution is on Mercury)")
     except Exception:
-        return False
-
-
-def port_open() -> bool:
-    try:
-        socket.create_connection(("127.0.0.1", PORT), timeout=1).close()
-        return True
-    except OSError:
-        return False
-
-
-async def main() -> None:
-    t0 = time.time()
-    while not api_ready():
-        if time.time() - t0 > 300:
-            print("API never became ready")
-            return
-        await asyncio.sleep(5)
-    print("API ready after", round(time.time() - t0), "s")
-    if port_open():
-        print(f"tool model already serving on {PORT}")
-        return
-    async with websockets.connect("ws://127.0.0.1:8090/ws/eval-loader?session_id=eval-loader",
-                                  max_size=2**24, ping_interval=None) as ws:
-        await ws.send(json.dumps({"type": "load_local_model",
-                                  "payload": {"model_path": PATH, "with_projector": False}}))
-        # Hold the socket until the backend reports the model "loaded": the
-        # handler registers the model (kernel wire, role binding, config) AFTER
-        # the port opens, and closing the socket at port-open cancelled it
-        # (2026-10-02: llama-server up on 8082, config still "unloaded").
-        t1 = time.time()
-        hold_until = None
-        while time.time() - t1 < 400:
-            if hold_until and time.time() > hold_until:
-                return
-            try:
-                m = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-            except asyncio.TimeoutError:
-                continue
-            if m.get("type") == "ping":
-                await ws.send(json.dumps({"type": "pong", "payload": {}}))
-            elif m.get("type") == "local_model_status" and not hold_until:
-                status = (m.get("payload") or {}).get("status")
-                print("model", status, "after", round(time.time() - t1), "s")
-                if status != "loaded":
-                    return
-                hold_until = time.time() + 30  # post-status registration
-        if not hold_until:
-            print("model never reported loaded")
+        print(f"note: tool model server not on :{TOOL_PORT} (non-fatal — "
+              f"tool_execution is on Mercury)")
+    return 0
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(main())

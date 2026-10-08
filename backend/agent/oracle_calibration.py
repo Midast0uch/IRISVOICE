@@ -126,7 +126,7 @@ def binary_consumers() -> frozenset:
     registrars are idempotent and load no model.
     """
     try:
-        from backend.agent.decision_backend_onnx import CONSUMER_TASKS
+        from backend.agent.decision_engine import CONSUMER_TASKS
 
         for mod, fn in (("monitor_shadow", "register_monitor_consumers"),
                         ("surface_shadow", "register_surface_consumers"),

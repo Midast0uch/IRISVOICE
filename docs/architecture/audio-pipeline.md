@@ -43,9 +43,9 @@
 │  │  WORD    │    │          │    │          │    │          │    │          │ │
 │  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘ │
 │       │               │               │               │               │        │
-│  Violawake       Energy-based    Parakeet GPU   Provider-agnostic  Pocket-TTS │
-│  (custom ONNX    + silence       (sherpa-onnx   (agent card picks  (subprocess)│
-│  head + OWW      detection       subprocess     the provider)                  │
+│  Violawake       Energy-based    Phonon-2      Provider-agnostic  Pocket-TTS │
+│  (custom ONNX    + silence       live stream   (agent card picks  (subprocess)│
+│  head + OWW      detection       (CPU, WS)     the provider)                  │
 │  backbone)                                                          │          │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -67,8 +67,9 @@ WebSocket broadcasts.
 | **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; loads at backend startup (`main.py` lifespan → `prewarm()` → `_load_until_ready`), backend not ready until TTS is (`readiness()` gates /health + /ready); idle unload OFF by default (`IRIS_TTS_IDLE_TIMEOUT_S=0`), growth recycle (`IRIS_TTS_MAX_GROWTH_MB`, 500) then immediate reload; respawns on demand (singleflight); sends JSONL, yields audio | Proxy (main) + reaper daemon |
 | **TTS Worker (subprocess)** | `backend/audio/tts_worker.py` | Pocket-TTS model + hash-guarded voice-state disk cache (`data/tts_voice_cache/`, 10.7s encode → ~0s load) + streaming synthesis + post-synthesis heap compact (gc → `_heapmin` → trim) in a SEPARATE PROCESS. Spawn env sets `MKL_DISABLE_FAST_MM=1` (operator override respected) — without it Intel MKL retains ~18MB per synthesis forever (see Known Issues, session-306) | Subprocess |
 | **VoiceCommandHandler** | `backend/audio/voice_command.py` | VAD, recording, STT orchestration, cadence detection, activation beep | Multi-threaded (VAD + STT + beep) |
-| **ParakeetTranscriber** | `backend/audio/voice_command.py` | sherpa-onnx Parakeet TDT 0.6B v3 int8 in a worker SUBPROCESS (`parakeet_sherpa_worker.py`, JSONL): lazy first-speech spawn (~2 s) + build (~4–13 s cold), CUDA default (`IRIS_PARAKEET_PROVIDER`), word timestamps | Spawner thread + reader thread (bounded round-trip) |
-| **parakeet_sherpa** | `backend/audio/parakeet_sherpa.py` | Model-dir resolution, cuDNN DLL path (via torch bundle), recognizer factory with CPU fallback | Import-time only |
+| **Phonon2StreamClient** | `backend/audio/phonon2_stream.py` | Live streaming STT client: opens the fermion server's WS `/v1/audio/stream` per utterance, feeds 16 kHz mono frames from the capture callback, surfaces interim hypotheses (~0.35 s first, ~2/s) and the final segment at end-of-speech; `finish()` returns the transcript, `abort()` drops the stream on cancel/no-speech. Hotwords (≤25) bias the vocabulary. Word timestamps on finals. | Reader thread per utterance |
+| **Phonon2 server manager** | `backend/audio/phonon2_stream.py` | Spawns the fermion server (`fermion serve phonon-2`, port 8766, CPU/AVX2) at backend boot; health-polled, sticky-failure, 20-min idle exit with respawn on the next utterance. The engine is a SUBPROCESS — torch never loads in the backend process. Also serves `POST /v1/audio/transcriptions` (the Whisper API shape) for `transcribe_media`. | Boot warm thread |
+| **faster-whisper (fallback)** | `backend/audio/voice_command.py` | tiny/int8 CPU — the FINAL-segment fallback when the stream is cold, dead or empty; interim hypotheses are best-effort and never routed here | STT thread |
 | **CadenceDetector** | `backend/audio/cadence_detector.py` | Spectral flux → 0-1 cadence envelope | Inline |
 | **iris_gateway** | `backend/iris_gateway.py` | TTS orchestration, WS events, word timing, state management, stop-listening sleep state (`_sleeping_sessions`) | Multi-threaded (producer + consumer + word monitor + cadence) |
 | **WS Manager** | `backend/ws_manager.py` | WebSocket broadcast/send with session tracking | Async |
@@ -116,7 +117,7 @@ WebSocket broadcasts.
 - Until that init completes, the 31 Hz audio callback logs
   `wake_detector_initialized=False. Wake word detection never started.` and drops
   frames. **The backend is READY in ~22 s (measured 2026-09-03; STT, TTS and
-  Parakeet are all lazy — nothing heavy preloads at boot);
+  the STT server is boot-warmed - nothing heavy preloads — nothing heavy preloads at boot);
   saying "Hey Iris" during that window is silently dropped.** Wait for the
   `AUDIO DIAG ... Wake word: READY` line before testing the wake word.
 - `engine.start()` does NOT arm Violawake on its own — only `initialize_detector()`
@@ -187,44 +188,54 @@ Violawake detects "Hey Iris"
 ~400ms of captured frames are dropped via `flush_ms=400`. This lets residual
 TTS echo from the interrupted playback decay before VAD speech detection begins.
 
-### Phase 3: Speech-to-Text (STT)
+### Phase 3: Speech-to-Text (STT) — live streaming
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  VoiceCommandHandler._run_transcription()                │
+│  VoiceCommandHandler — streaming STT (Phonon-2, CPU)     │
 │                                                          │
-│  1. _vad_wait_for_speech_then_silence() returns bool    │
-│     ├─ False → skip Parakeet (prevents hallucination)    │
-│     └─ True → proceed to transcription                   │
+│  0. start_recording() → _phonon2_warm_up() (no-op when   │
+│     the server is up) + begin_utterance(): the stream    │
+│     opens; a cold server spawns in the background and    │
+│     this utterance falls to whisper (the same cold-start │
+│     contract the GPU engine had).                        │
 │                                                          │
-│  2. Try ParakeetTranscriber (sherpa worker GPU)          │
-│     ├─ LAZY-LOADED ON FIRST WAKE WORD (start_recording)  │
-│     │  — GPU engine gets a head start during the         │
-│     │  utterance (~17-22s build overlaps VAD recording). │
-│     │  No-op when already loaded (no thread churn).      │
-│     ├─ If still loading, _transcribe_via_parakeet WAITS  │
-│     │  (bounded 25s via wait_ready()) instead of bailing │
-│     │  to whisper — Parakeet is the PRIMARY engine.      │
-│     ├─ int8 transducer (encoder 622 MB), GPU-resident    │
-│     ├─ JSONL base64 PCM → text + timestamps (90 s bound) │
-│     ├─ Worker owns sole ORT: no clash w/ wake-word DLL   │
-│     ├─ 20-min worker idle-exit reclaims VRAM (respawn)   │
-│     └─ Returns "" on failure → falls back                │
+│  1. _capture_frame feeds EVERY frame twice:              │
+│     ├─ _raw_frames (the whisper-fallback safety net)     │
+│     └─ Phonon2StreamClient.feed_frame (non-blocking;     │
+│        the sounddevice callback never waits)             │
+│     Interim hypotheses (~0.35 s first, ~2/s) flow to    │
+│     the gateway → voice_interim WS event → the UI shows  │
+│     provisional text while the user speaks.              │
+│                                                          │
+│  2. _vad_wait_for_speech_then_silence() returns bool    │
+│     ├─ False / cancel → _phonon2.abort() (drop stream)  │
+│     │  and skip STT (prevents hallucination)            │
+│     └─ True → _finalize_via_phonon2()                   │
+│        ├─ finish(): {"type":"end"} → the server's       │
+│        │  segmenter closes the final (~0.7 s silence    │
+│        │  or 30 s cap) → done.text                     │
+│        ├─ stt_backend="phonon-2" + first-partial        │
+│        │  latency in _last_stt_timing                  │
+│        └─ "" on any failure → whisper                   │
 │                                                          │
 │  3. Fallback: faster-whisper (tiny/int8, ~40MB CPU)      │
-│     ├─ WhisperModel('tiny', compute_type='int8')         │
+│     ├─ FINAL segments only — interim hypotheses are      │
+│     │  best-effort and never routed here               │
 │     ├─ _get_whisper uses a _whisper_loading FLAG (not a  │
-│     │  lock held across the ~126s cold import) — the     │
-│     │  +90s background warm-up never blocks a live turn. │
-│     │  A concurrent caller waits up to 5s then returns   │
-│     │  None (skips whisper) instead of hanging.          │
-│     ├─ transcribe(wav_buffer, beam_size=1)               │
-│     └─ ~40MB RAM, no VRAM conflict                       │
+│     │  lock held across the cold import) — a concurrent  │
+│     │  caller waits up to 5s then returns None          │
+│     └─ transcribe(captured_buffer, beam_size=1)          │
 │                                                          │
 │  → _on_command_result callback with client_id            │
 └──────────────────────┬───────────────────────────────────┘
                        │ transcribed text
                        ▼
 ```
+
+Measured (2026-10-08, live): first interim hypothesis **0.62 s** from
+speech start, **~2 updates/s**, final transcript **~0.8 s** after speech
+ends, exact transcript on the smoke utterance, **0 VRAM** (the engine is
+CPU/AVX2 in its own server process).
 
 ### Phase 4: LLM Processing (Provider-Agnostic)
 ```
@@ -604,7 +615,7 @@ iris_gateway._speak_response()
 └── VoiceCommandHandler (recording phase)
     ├── _capture_frame() — AudioEngine frame listener
     ├── VAD loop thread — energy-based silence detection
-│     ├── ParakeetTranscriber → sherpa worker subprocess (JSONL)
+│     ├── Phonon2StreamClient → fermion server WS (CPU) (JSONL)
 │     │   └── OR _whisper.transcribe() — CPU fallback
     └── CadenceDetector.process() — spectral flux
 ```
@@ -681,7 +692,7 @@ DONE → return True (speech detected and ended naturally)
 
 - **True**: Speech was detected and ended naturally. Proceed to transcription.
 - **False**: Only silence was captured (timeout or max duration). **Skip
-  transcription** to avoid Parakeet hallucinating text from silence.
+  transcription** to avoid the STT engine hallucinating text from silence.
 
 ### Barge-in VAD Flush
 
@@ -998,14 +1009,14 @@ the fixed audio-pipeline costs:
 
 | Component | VRAM | RAM | When |
 |-----------|------|-----|------|
-| Parakeet sherpa int8 (GPU worker) | ~0.7–1 GB | ~50 MB (native lib) | Lazy-spawned on first speech; 20-min worker idle-exit reclaims VRAM |
-| faster-whisper (int8) | 0 | ~40 MB | Fallback if parakeet fails |
+| Phonon-2 STT server (CPU) | 0 | ~600 MB | Spawned at backend boot; 20-min idle exit, respawns on next utterance |
+| faster-whisper (int8) | 0 | ~40 MB | Final-segment fallback if the stream is cold/dead/empty |
 | Violawake (ONNX + OWW) | 0 | ~50 MB | Always (wake word) |
 | sherpa-onnx runtime | 0 | (included above) | No torch at STT runtime; cuDNN via torch bundle |
 | Native C++ player | 0 | ~1 MB | During TTS playback |
 | Pocket-TTS worker (subprocess) | 0 | **~2.05–2.3 GB commit** (~1.1 GB resident fresh, decaying toward ~0.3 GB over idle hours; 438 MB weights on disk) — **resident while the backend runs** (2026-09-30: loads at startup, no idle unload by default; capped by the 500 MB growth recycle + reload). Spawn env MUST carry `MKL_DISABLE_FAST_MM=1` (else +25MB/synth leak, session-306) | From backend startup; recycled (and reloaded at once) only on growth |
-| **Total (audio pipeline, parakeet, TTS live)** | **~1 GB** | **~2.5 GB commit** | measured 2026-09-07: backend 1.30 + worker 2.05 GB |
-| **Total (audio pipeline, parakeet, TTS idle)** | **~1 GB** | **~1.3 GB commit** | measured 2026-09-07 post-unload (was 3.35–3.59 GB before REQ-28). Since 2026-09-30 the worker is not unloaded when idle, so the LIVE row applies at rest too (owner accepted the memory for "ready with the backend") |
+| **Total (audio pipeline, phonon-2, TTS live)** | **0** | **~2.5 GB commit** | measured 2026-09-07: backend 1.30 + worker 2.05 GB |
+| **Total (audio pipeline, phonon-2, TTS idle)** | **0** | **~1.3 GB commit** | measured 2026-09-07 post-unload (was 3.35–3.59 GB before REQ-28). Since 2026-09-30 the worker is not unloaded when idle, so the LIVE row applies at rest too (owner accepted the memory for "ready with the backend") |
 | **Total (audio pipeline, whisper)** | **0** | **~95 MB** | — |
 
 **Watchdog thresholds** (in `backend/core/memory_watchdog.py`):
@@ -1026,9 +1037,9 @@ LLM provider memory (separate, user-selected):
 
 | Failure | Recovery |
 |---------|----------|
-| Parakeet GPU OOM | Falls back to faster-whisper (CPU) |
-| Parakeet load error | Falls back to faster-whisper, logs error once |
-| Parakeet hallucination from silence | `_vad_wait_for_speech_then_silence()` returns False → skip transcription |
+| STT server down/cold | Final falls back to faster-whisper (CPU) |
+| STT stream error | Falls back to faster-whisper, logs error once |
+| STT hallucination from silence | `_vad_wait_for_speech_then_silence()` returns False → skip transcription |
 | TTS synthesis error | `_succeeded=False` → sends idle state (unsticks orb) |
 | TTS subprocess crash | TTSManager proxy restarts the worker; next synthesis retries |
 | Native player fails | Falls back to sounddevice (PortAudio) |
@@ -1042,8 +1053,8 @@ LLM provider memory (separate, user-selected):
 | Timer(2.0) orphan | Fixed: stored as `_idle_timer`, cancelled on next recording start |
 | Activation beep during barge-in | Fixed: `play_beep=False` skips beep during re-recordings |
 | .env PICOVOICE_ACCESS_KEY missing (Porcupine era) | Legacy row: Violawake needs no key and runs fully offline; kept for history |
-| Parakeet hallucination after barge-in | Fixed: RMS guard (`< 1e-4`) skips Parakeet on near-silence |
-| Parakeet still loading on first utterance | Fixed (2026-09-03): lazy-load on first wake word; `_transcribe_via_parakeet` waits (bounded 25s) for the GPU engine instead of bailing to whisper |
+| STT hallucination after barge-in | Fixed: RMS guard (`< 1e-4`) skips STT on near-silence |
+| STT server cold on first utterance | The boot warm covers it; a cold utterance falls to whisper; `_transcribe_via_the old engine` waits (bounded 25s) for the GPU engine instead of bailing to whisper |
 | faster-whisper cold import (~126s) blocks a live turn | Fixed (2026-09-03): `_get_whisper` uses a `_whisper_loading` flag, not a lock held across the import — the +90s warm-up never blocks a live transcription thread (waits up to 5s then skips whisper) |
 | TTS worker dies mid-synthesis on long text | **ROOT CAUSE FOUND + GUARDED (2026-09-07; was OPEN since 2026-09-03)**: the documented deaths match the stderr-pipe backpressure incident signature exactly (same date, ~853-char synthesis, 30 s of silence, manager kills a *healthy* worker) — fixed since `3b09f929` added the stderr drain thread. Reproductions now SURVIVE: 2500 chars → 61.7 s, 3.0M samples, alive; 7500 chars → 196.5 s, 9.2M samples, alive. Residual measured risk (not fragility): one synthesis retains ~0.15–0.19 MB/char in native arenas (+1082 MB for 7500 chars), so ~10k+ char single requests could OOM — mitigated by the `_MAX_SINGLE_SYNTH_CHARS=2000` sequential-split guard in `synthesize_stream` (identical audio, compact runs between pieces; pinned by `test_tts_lifecycle.py` split tests). Remaining sub-item (untouched): reset `_tts_active` even when the producer is stuck — still open. The 30 s chunk-gap timeout is intentionally NOT shortened (healthy chunks stream continuously; only true silence trips it). |
 

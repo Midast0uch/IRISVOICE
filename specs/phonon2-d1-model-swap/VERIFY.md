@@ -1,6 +1,71 @@
-# VERIFY.md — Wave 0-4 gate records (TG-0..TG-4)
+# VERIFY.md — Wave 0-5 gate records (TG-0..TG-5)
 
 Spec: specs/phonon2-d1-model-swap/ — Date: 2026-10-08 — Session 391
+
+## WAVE 5 — cleanup + production sweep (TG-5): GREEN
+
+### Production-readiness sweep (owner request 2026-10-08)
+- **transcribe_media LIVE PASS** (the one real gap): the agent tool drove
+  the fermion server's /v1/audio/transcriptions end to end — exact
+  transcript through the multipart Whisper-shape upload. Never exercised
+  between the Wave 1 rewire and this check.
+- **evals/load_tool_model.py defused**: it used to load the 2.6B onto :8082
+  — running it would have EVICTED d1. Rewritten as a boot-state VERIFIER
+  (d1 on 8082, tool server on 8091); the app-testing skill text updated.
+- **start_all.py verified**: the service list builds (backend only, the
+  retired service gone).
+- **iris_config survived the app's own rewrites**: role bindings, the d1
+  vision pin and the iris_tool_local instance intact; the app's own
+  bookkeeping records d1 as its loaded local model.
+- **Two missed non-test importers of the GLiNER module found and re-pointed
+  before the deletion** (agent_kernel, click_safety_shadow) — then a FULL
+  sweep found 12 more (relative imports the first grep missed): all
+  re-pointed to decision_engine (the spec registry's new home).
+- The voice_audio_chunk WS path: verified a no-op monitor (never forwarded
+  anywhere) — a stale comment, not a broken route.
+
+### T5.2 — registry cleanup: DONE
+- models/gguf/.iris_model_settings.json: the retired vision model and the
+  nonexistent 2.6B-Q4_K_M entries removed; d1 + the live models remain.
+
+### T5.3 — deletions (gated on TG-3 green): DONE
+- GLiNER: decision_backend_onnx.py DELETED; backend/models/gliner2.5-decide-
+  onnx/ removed from disk; the ConsumerSpec registry MOVED into
+  decision_engine.py (its natural home — the engine owns consumers);
+  5 GLiNER-mechanics test files deleted (onnx_backend_contract,
+  decision_input_cap, label_cache, ort_session_options, bench_breakdown);
+  test_model_pin + the jobs-contract budget test + warmup_width +
+  readonly_engine rewritten for the d1 shapes (same intent); the conftest
+  fixtures re-pointed (name kept for compatibility); the two GLiNER bench
+  scripts deleted.
+- Parakeet: 5 audio modules, 6 test files, the browser STT hook, the fp16
+  converter, the sherpa model dir (disk), the process-manager/monitor
+  labels — all deleted/updated. The retirement record + boot guard stay
+  (C2: greppable).
+- Docs (owner instruction: describe the new functionality, not the
+  replacement): README + audio-pipeline.md + oracle.md rewritten for the
+  new stack with MEASURED metrics (STT: 0.62 s first hypothesis, ~2/s,
+  final ~0.8 s, 0 VRAM; Oracle: 139 ms p50 / 62 min / 320 p90; d1 boot
+  14.6-21.3 s; VRAM 5.9/2.1 GB; evals 3/3, reply 8-19 s). Dated
+  session-history appendix sections kept as the audit trail.
+
+### T5.4/T5.5 — VRAM + identity, live: DONE
+- Final boot: PHONON2 + TOOLSERVER warm, D1BOOT resident in 21.3 s,
+  identity d1-3b-ad-q4_k_m, VRAM 5899 MiB used / 2120 free.
+- FINAL EVAL GATE: c10 + c02 + c05 = 3/3 PASS, hidden 8/8 + 7/7 + 3/3,
+  NO standards regression, on the complete final stack.
+
+### TG-5 grep-clean verdict: CLEAN
+- Zero parakeet/gliner references in any functional section of backend/,
+  scripts/, hooks/, components/, README, or the architecture docs. What
+  remains by design: the C2 retirement records (PARAKEET_RETIRED + the
+  boot guard), dated session-history appendices, the retired threshold
+  entry marked historical in agent_config.yaml, and the spec/VERIFY
+  records themselves.
+
+## TG-5 gate verdict: GREEN — SPEC COMPLETE
+
+---
 
 ## WAVE 4 — the pre-existing Oracle fixes (TG-4): GREEN
 

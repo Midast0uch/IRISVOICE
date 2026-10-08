@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import backend.agent.decision_backend_onnx as _onnx
+import backend.agent.decision_backend_d1 as _onnx  # Wave 5: the resident backend
 import backend.agent.decision_engine as _de
 import backend.agent.tool_decision as _td
 from backend.agent.decision_engine import EngineConfig

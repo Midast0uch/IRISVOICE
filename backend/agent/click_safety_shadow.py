@@ -58,7 +58,7 @@ def emit_row(row: Optional[dict]) -> None:
 
 def register_consumer() -> None:
     """Register the consumer's criteria (REQ-19 AC19.1). Idempotent."""
-    from backend.agent.decision_backend_onnx import (
+    from backend.agent.decision_engine import (
         ConsumerSpec,
         get_consumer_spec,
         register_consumer_spec,

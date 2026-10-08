@@ -175,7 +175,7 @@ def family_labels(family: str) -> List[str]:
 def _register(consumer_id: str, instruction: str, labels: Sequence[str]) -> None:
     """Register fixed-label criteria; replace when the label set moved (a Layer-2 data
     edit adds a label to a family). Registering is not enforcing."""
-    from backend.agent.decision_backend_onnx import (
+    from backend.agent.decision_engine import (
         ConsumerSpec,
         get_consumer_spec,
         register_consumer_spec,

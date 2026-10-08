@@ -38,3 +38,4 @@
 {"ts": 1791227943.220676, "conversation_id": "conv-answer-path-std", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
 {"ts": 1791232089.4302685, "conversation_id": "conv-answer-path-std", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
 {"ts": 1791232347.722433, "conversation_id": "conv-answer-path-std", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1791397315.8042321, "conversation_id": "conv-answer-path-std", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}

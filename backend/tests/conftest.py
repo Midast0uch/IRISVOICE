@@ -255,33 +255,33 @@ def approval_ui_attached(monkeypatch):
     yield
 
 
-# ── Real ONNX decision backend (specs/tool-decision-engine REQ-30) ──────────
+# ── Real d1 decision backend (specs/phonon2-d1-model-swap Wave 5) ────────────
 #
-# The Wave 10 tasks (T38–T42) tune the REAL runner: session options, the label
-# structure cache, and the encode/session-run counts only exist on a live
-# onnxruntime session. These fixtures load it once per session and skip cleanly
-# when the model directory is absent, so the suites stay runnable on a machine
-# without the 642 MB export (the engine's own contract is "degrade, never
-# raise" — a skipped tuning test is honest, a fabricated one is not).
+# The resident decision backend is d1-3B on the shared llama-server (:8082,
+# borrow-only). This fixture loads it once per session and skips cleanly when
+# the shared server does not host d1, so the suites stay runnable on a
+# machine without the server up (the engine's own contract is "degrade,
+# never raise" — a skipped test is honest, a fabricated one is not).
 @_pytest.fixture(scope="session")
 def onnx_backend():
-    """A loaded `GlinerOnnx`, or skip when the model is unavailable."""
-    from backend.agent.decision_backend_onnx import GlinerOnnx
+    """A loaded `D1Backend`, or skip when the shared server lacks d1.
 
-    backend = GlinerOnnx()
+    Name kept (`onnx_backend`) so the existing suites read unchanged; the
+    GLiNER ONNX backend this fixture used to load is deleted (Wave 5 T5.3).
+    """
+    from backend.agent.decision_backend_d1 import D1Backend
+
+    backend = D1Backend()
     if not backend.load():
-        _pytest.skip("ONNX decision model unavailable — tuning tests skipped")
+        _pytest.skip("d1 decision backend unavailable (shared server does not host d1)")
     yield backend
-    try:
-        backend.shutdown()
-    except Exception:  # noqa: BLE001 — teardown is best-effort
-        pass
 
 
 @_pytest.fixture(scope="session")
 def onnx_runner(onnx_backend):
-    """The live `_OnnxRunner` behind the loaded backend."""
-    return onnx_backend._runner
+    """Compatibility alias: the loaded backend itself (the ONNX `_runner`
+    seam died with GLiNER; the d1 backend has no inner runner)."""
+    return onnx_backend
 
 
 # ── Oracle enforcement chokepoint, for tests that exercise a DECIDING consumer ──

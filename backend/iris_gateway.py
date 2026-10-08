@@ -922,7 +922,7 @@ class IRISGateway:
                 await self._handle_tts_play(session_id, client_id, message)
 
             elif msg_type == "voice_result":
-                # Parakeet ASR final transcription → parrot to all clients in
+                # ASR final transcription → parrot to all clients in
                 # the same session (used for Tailscale multi-view, where a
                 # phone via Tailscale should see the Tauri client's transcript).
                 self._logger.info(
@@ -940,8 +940,8 @@ class IRISGateway:
                     )
 
             elif msg_type == "voice_audio_chunk":
-                # PCM chunk from frontend → forward to in-process Parakeet ASR.
-                # Parakeet is now embedded in VoiceCommandHandler — no separate
+                # PCM chunk from frontend (monitor path — logged, never forwarded).
+                # The STT engine is a separate server (phonon2_stream) — no separate
                 # service needed.  This handler is a secondary / monitor path.
                 self._logger.debug(
                     "[Voice] Audio chunk received from %s (%.0f bytes)",
@@ -2439,7 +2439,7 @@ class IRISGateway:
         # H2 (session 291): mirror transcription-phase states to the chat
         # typing indicator. Between VAD-end and the transcript (whole STT
         # window, 23s cold) the frontend otherwise hears nothing — no
-        # thinking Xur while Parakeet works. ConversationKernel wraps this
+        # thinking Xur while the STT engine works. ConversationKernel wraps this
         # later via _CallbackChain (its own design anticipates a gateway
         # callback already being here), so registration order is safe.
         voice_handler.set_state_callback(self._on_voice_state)
@@ -3147,8 +3147,8 @@ class IRISGateway:
             conversation_id = result.get("conversation_id") or self._active_conversation_id.get(session_id)
             client_id = self._active_voice_client.get(session_id)
 
-            # ── Log STT latency (Parakeet / Whisper) ──────────────────────
-            # Populated by voice_command._transcribe_via_parakeet() or the
+            # ── Log STT latency (Phonon-2 / Whisper) ──────────────────────
+            # Populated by voice_command._finalize_via_phonon2() or the
             # whisper fallback. Surface it in the log so latency regressions
             # are immediately visible alongside the existing VOICE_TIMING lines.
             stt_timing = result.get("stt_timing") or {}
@@ -3896,7 +3896,7 @@ class IRISGateway:
                     if value is not None:
                         _flow_parts.append(f"{label}={value:.0f}ms")
 
-                # STT: time from VAD end until Parakeet/Whisper returns text.
+                # STT: time from VAD end until Phonon-2/Whisper returns text.
                 # Approximated as vad_end -> llm_start (the agent starts only
                 # after the STT result lands via _on_voice_result).
                 _add("vad_to_llm", _elapsed_ms("llm_start"))

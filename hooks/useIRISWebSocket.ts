@@ -2052,7 +2052,7 @@ export function useIRISWebSocket(
       }
 
       case 'error': {
-        // Backend error notification (parakeet_service, iris_gateway, crawler).
+        // Backend error notification (STT server, iris_gateway, crawler).
         // Shapes vary: { error: "..." } or { payload: { message: "..." } }.
         // Surface it as a CustomEvent so UI components can react, and log it
         // properly instead of falling through to "Unknown message type".

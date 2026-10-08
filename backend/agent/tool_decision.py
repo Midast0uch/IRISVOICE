@@ -2589,7 +2589,7 @@ class ToolDecisionBox:
                 # consumer can never reach the Wave 7 bar however often the
                 # triage runs. Registered on first use, mirroring the reviewer.
                 try:
-                    from backend.agent.decision_backend_onnx import (
+                    from backend.agent.decision_engine import (
                         ConsumerSpec,
                         get_consumer_spec,
                         register_consumer_spec,
@@ -2788,7 +2788,7 @@ class ToolDecisionBox:
             # row is written, and the consumer can never reach the bar however
             # often the continuation decision runs.
             try:
-                from backend.agent.decision_backend_onnx import (
+                from backend.agent.decision_engine import (
                     ConsumerSpec,
                     get_consumer_spec,
                     register_consumer_spec,
