@@ -1101,6 +1101,12 @@ class Reviewer:
         # when the engine is unavailable / has no criteria). The kernel's
         # existing single writer is the row sink — never a second writer here.
         self.last_shadow_verdict: Optional[dict] = None
+        # Model-agnostic parse health (owner 2026-10-08): how often the
+        # bound EXECUTION model failed the JSON verdict shape. A silent
+        # fallback used to hide this; now it is the reviewer's health
+        # signal, whatever model is bound.
+        self.parse_failures: int = 0
+        self._last_parse_failed: bool = False
         self._review_engine_override = None
         self._review_engine_set = False
         # Installed by the kernel (its single row writer). With a sink the
@@ -1150,7 +1156,14 @@ class Reviewer:
             verdict, out = self._parse_verdict(response.raw_text)
             # REQ-13 AC13.1 (T17): shadow-score the SAME question. The Brain
             # verdict above still decides — this only produces the row.
-            self._shadow_review_verdict(item, completed_steps, verdict)
+            # MODEL-AGNOSTIC HONESTY: on a parse failure the verdict is the
+            # fail-open PASS (the step runs), but the shadow row must carry
+            # NO reference — a fallback PASS is not a real review, and a fake
+            # brain_choice=pass would poison the calibration with phantom
+            # agreement. None -> the row lands unlabelled -> the fit counts
+            # it as no_label, never as a pass.
+            _ref_for_row = None if self._last_parse_failed else verdict
+            self._shadow_review_verdict(item, completed_steps, _ref_for_row)
             return verdict, out
 
         except Exception:
@@ -1247,13 +1260,22 @@ class Reviewer:
                 "engine_latency_ms": ds.engine_latency_ms,
                 # The Brain's actual verdict, so the row is a shadow PAIR
                 # (engine said X, reality ran Y) and the parity metric exists.
-                "brain_verdict": getattr(brain_verdict, "value", str(brain_verdict)),
+                # None = a parse failure (model-agnostic honesty): the row
+                # lands UNLABELLED and the fit counts it as no_label — a
+                # fallback PASS must never masquerade as a real reference.
+                "brain_verdict": (
+                    None if brain_verdict is None
+                    else getattr(brain_verdict, "value", str(brain_verdict))
+                ),
                 # ...and the SAME fact under the name the ledger passes through
                 # and the report reads (2026-09-27). `brain_verdict` is kept for
                 # the caller and the log; it is not in the meta whitelist, so on
                 # its own the row reached the ledger with no reference and was
                 # counted as no_label instead of being scored.
-                "brain_choice": getattr(brain_verdict, "value", str(brain_verdict)),
+                "brain_choice": (
+                    None if brain_verdict is None
+                    else getattr(brain_verdict, "value", str(brain_verdict))
+                ),
                 "shadow": True,
             }
             return row
@@ -1477,10 +1499,24 @@ class Reviewer:
         )
 
     def _parse_verdict(self, raw: str) -> tuple:
+        """Parse the reviewer model's JSON verdict.
+
+        MODEL-AGNOSTIC HONESTY (owner 2026-10-08: "this should work
+        regardless of what the brain model is"): a model that answers prose
+        instead of JSON used to fall back to a SILENT (PASS, None) — a dead
+        reviewer that looked alive, and a FAKE pass reference on every
+        shadow row. The fallback DECISION stays fail-open (the step still
+        runs; the review is advisory), but the failure is now COUNTED,
+        LOGGED, and the shadow row carries NO reference (brain_choice=None
+        -> the fit counts it as no_label, never as a fake pass). The
+        counter is the health signal: a model that cannot produce the
+        shape shows up here, whatever model is bound to EXECUTION.
+        """
+        self._last_parse_failed = False
         try:
             m = re.search(r"\{[\s\S]+?\}", raw)
             if not m:
-                return ReviewVerdict.PASS, None
+                return self._verdict_parse_failed(), None
             data = json.loads(m.group())
             v = data.get("verdict", "pass").lower()
             reason = data.get("reason", "") or None
@@ -1490,9 +1526,24 @@ class Reviewer:
                 return ReviewVerdict.VETO, reason
             if v == "refine" and refined:
                 return ReviewVerdict.REFINE, refined
-            return ReviewVerdict.PASS, None
+            if v == "pass":
+                return ReviewVerdict.PASS, None
+            # An unknown verdict word is a parse failure, not a pass.
+            return self._verdict_parse_failed(), None
         except Exception:
-            return ReviewVerdict.PASS, None
+            return self._verdict_parse_failed(), None
+
+    def _verdict_parse_failed(self) -> "ReviewVerdict":
+        """The counted, visible fallback: PASS for the STEP (fail-open),
+        never a silent fake reference for the MEASUREMENT."""
+        self._last_parse_failed = True
+        self.parse_failures += 1
+        logger.warning(
+            "[Reviewer] verdict parse failed (%d total) — the bound model "
+            "did not answer the JSON shape; the step proceeds unreviewed "
+            "and the shadow row carries NO reference", self.parse_failures,
+        )
+        return ReviewVerdict.PASS
 
 
 # ─────────────────────────────────────────────────────────────────────────────
