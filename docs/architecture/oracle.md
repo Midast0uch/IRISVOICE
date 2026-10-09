@@ -1,8 +1,68 @@
 # Oracle — Decision Engine Architecture & Operations
 
-> **Renamed 2026-09-26 (owner): "Decision Engine" is now Oracle.** This file was  
-> `tool-decision-engine.md`. The engine's *name* is Oracle; the *model* it runs  
-> keeps its own identity, and that distinction is load-bearing — see §2.
+> **2026-10-09 (specs/oracle-native-decision-surface, Waves 0-6 ALL COMMITTED): the
+> d1 surface is rebuilt. In one line: d1 now answers in its OWN named readout,
+> the identity keys on readout+criteria, the state is structured (images
+> declared), the sampled rung exists, an outcome-join labels rows, per-job
+> batch machinery exists and was MEASURED OFF.** Where this note disagrees with
+> §0/§19 (the 2026-10-05/01 state) or REQ-20's retired one-question letter, this
+> note wins. Commits: W0 `c1ce03b9`, W1 `c4b49fee`, W2 `e02fec98`, W3 `c375e15f`,
+> W4 `89956385`, W5 `ab3f0735`, W6 `4df192c6`; the measured record is
+> `specs/oracle-native-decision-surface/VERIFY.md`; pins: `pin_208c91542f5b`
+> (W0), `pin_e3cf92296718` (W1), `pin_ad5318b0e63e` (W2),
+> `pin_b480f896b79f` (W3), `pin_8345e29e25b2` (W4), `pin_5df98dd6fb33` (W5),
+> `pin_88041e0e1fe6` (W6).
+>
+> **Readout (W2).** Retired forever is the A/B/C letter readout; a `choice`
+> renders LiquidAI's named criteria block and pools over the option NAME tokens
+> (with collision widening to the full name sequence when first tokens collide);
+> a `noul` renders the yes/no instruction and pools over the yes/no forms;
+> `score` (ordered levels) is schema-only. Measured: probe 3/3; the
+> verdict-equality contract 297/297; warm p50 34 ms per consult.
+>
+> **Identity (W3, AC2.1): `model_id|readout_mode|criteria_hash(consumer, cap)`.**
+> `decision_engine.criteria_hash` digests the declared criteria plus the
+> candidate cap (AC13.3); the retired letter mode is named `legacy_letters`.
+> An identity with no entry resolves `None` (fail closed); a criteria edit or
+> cap change re-identifies the consumer and kills its threshold; a flip measured
+> under a moved readout/criteria is reported superseded (never deleted).
+> `EngineConfig.backend_id` stays the BARE model id (the ledger's `engine`
+> field); the bar record's per-consumer config carries the full decision
+> identity (`benchmarks/consumer_bar_record.json`).
+>
+> **State and images (W4, REQ-3/5).** `job_input()` returns a structured
+> `OracleState` (job, declared fields, text, budget_ids, images); the backend
+> reads it whole and applies the budget cap (logged). `guard` declares
+> `image_fields=("screenshot",)`; click_safety's consult carries the SESSION
+> screenshot (never the desktop), pinned at gate time. `capture_base64` keeps
+> its 2-tuple; `capture_frame()` returns the MEASURED scale + origin (no DPR
+> assumption).
+>
+> **The sampled rung + outcome labels (W5, REQ-6/10/14).** Rows carry the full
+> scope `(turn_id, step_id, node_exec_id, call_ordinal)`; write-time shadow
+> dedup keys on scope so distinct turns stay joinable (the AC6.3a-1 ridge,
+> option (a): a larger store, honest joins). Tiers (AC6.6): SAMPLABLE =
+> needs_action/recovery_strategy/escalate_incomplete; REFUSE-DIRECTION =
+> click_safety/review_verdict; JOIN-only = done/sufficient/depth_met/
+> tool_choice; `call_closing` is tier C (REFUSED - measurement-only, forever).
+> The sampling decision channel: `SAMPLE_FRACTION=0.05` named constant,
+> `IRIS_ORACLE_SAMPLE=0` kills it, a deterministic scope hash decides; the
+> incumbent answers every non-sampled consult; sampled rows are registered
+> PENDING and labelled by the turn outcome at run-grade. `call_closing` claims
+> are measured per executed call and labelled by the loop's own exits:
+> correct / premature / untested / abandoned (the six-exit map is
+> fixture-proven; the closing rule stays the sole judge - the fence test bans
+> even the name from node_executor).
+>
+> **Batching (W6, REQ-7): mechanism shipped, MEASURED OFF.** The dial's load
+> counts QUESTIONS in flight (AC7.3-relevant only once runs batch); one run
+> stays one state; criteria/failure isolation and batch-is-never-one-row are
+> contract-pinned. The LOCAL transport cannot answer a multi-question call
+> (no `/v1/systemone` on the hosted llama-server build; a 3-question prompt
+> folds to one answer), so production keeps one-question runs. REQ-20's
+> intent (independence of answers) stands; its letter ("one question per run")
+> is restated: one run = one state, answering that state's questions, when the
+> transport can.
 >
 > **2026-10-08 (specs/phonon2-d1-model-swap, Waves 3-5): the resident backend is
 > d1-3B** (`d1-3b-ad-q4_k_m`, a JEV-style System One decision model) served
