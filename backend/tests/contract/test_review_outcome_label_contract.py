@@ -75,6 +75,25 @@ def test_flag_off_for_the_explicit_off_values(monkeypatch):
 
 # ── the label itself ────────────────────────────────────────────────────────
 
+def test_a_verified_step_makes_refine_wrong(monkeypatch):
+    """`refine` is the MOST COMMON verdict (2204 of 2881 live rows). An earlier
+    incomplete map left it unstamped under VERIFIED, so nearly every row fell
+    through and the label never landed."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    row = _row(chosen="refine", brain="pass")
+    rol.register(row)
+    assert rol.stamp("s1", "VERIFIED") == 1
+    assert row["outside_label"] is False
+
+
+def test_a_verified_step_makes_veto_wrong(monkeypatch):
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    row = _row(chosen="veto", brain="pass")
+    rol.register(row)
+    assert rol.stamp("s1", "VERIFIED") == 1
+    assert row["outside_label"] is False
+
+
 def test_a_verified_step_makes_pass_correct(monkeypatch):
     monkeypatch.setenv(rol.ENV_FLAG, "1")
     row = _row(chosen="pass", brain="pass")
@@ -104,13 +123,19 @@ def test_a_failed_step_makes_veto_right(monkeypatch):
 
 def test_an_unverified_step_stamps_nothing(monkeypatch):
     """No ground truth -> no label. Guessing would be the phantom agreement the
-    review row already guards against for parse failures."""
+    review row already guards against for parse failures.
+
+    The row is still EMITTED (it is a real measurement on its parity
+    reference); only the outcome keys are absent. Dropping it would lose
+    evidence."""
     monkeypatch.setenv(rol.ENV_FLAG, "1")
     row = _row()
-    rol.register(row)
-    assert rol.stamp("s1", "UNVERIFIED") == 0
+    written = []
+    assert rol.defer(row, written.append) is True
+    assert rol.stamp("s1", "UNVERIFIED") == 1
     assert "outside_label" not in row
     assert "label_source" not in row
+    assert written == [row]  # emitted, not dropped
 
 
 def test_an_unknown_verified_label_stamps_nothing(monkeypatch):
@@ -187,11 +212,79 @@ def test_stamp_never_raises(bad, monkeypatch):
 
 
 def test_a_missing_outcome_key_never_raises(monkeypatch):
-    """A row with no verdict name at all."""
+    """A row with no verdict name at all: emitted unstamped, never stamped."""
     monkeypatch.setenv(rol.ENV_FLAG, "1")
     row = {"consumer_id": "review_verdict", "step_id": "s1", "shadow": True}
-    rol.register(row)
-    assert rol.stamp("s1", "VERIFIED") == 0
+    written = []
+    assert rol.defer(row, written.append) is True
+    assert rol.stamp("s1", "VERIFIED") == 1
+    assert "outside_label" not in row
+    assert written == [row]
+
+
+def test_the_deferred_row_is_written_only_after_the_stamp(monkeypatch):
+    """THE regression this module exists to prevent: the single writer copies
+    the row (`meta = dict(row)`), so writing first and stamping after would
+    silently lose the label forever."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    row = _row(chosen="pass", brain="pass")
+    written = []
+    assert rol.defer(row, written.append) is True
+    assert written == [], "the row must NOT be written before the step settles"
+    assert rol.stamp("s1", "FAILED") == 1
+    assert len(written) == 1
+    assert written[0]["outside_label"] is False
+
+
+def test_flag_off_does_not_defer(monkeypatch):
+    """With the flag off the caller writes immediately, exactly as before."""
+    row = _row()
+    written = []
+    assert rol.defer(row, written.append) is False
+    assert written == []
+
+
+def test_a_row_with_no_step_id_is_not_deferred(monkeypatch):
+    """No join key -> write it now on parity; deferring would strand it."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    row = _row(step="")
+    assert rol.defer(row, lambda r: None) is False
+
+
+def test_sweep_flushes_rows_whose_step_never_settled(monkeypatch):
+    """A turn that ends early must not lose the measurement."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    a, b = _row(step="a"), _row(step="b")
+    written = []
+    rol.defer(a, written.append)
+    rol.defer(b, written.append)
+    assert rol.sweep() == 2
+    assert len(written) == 2
+
+
+def test_the_flush_writer_is_NOT_re_deferred(monkeypatch):
+    """THE bug that hid the whole feature (measured live: 263 review_verdict
+    decisions in the last 2000 rows and the stored total never moved).
+
+    The held row is handed back to the SAME writer, which calls `defer` again -
+    so without a re-entrancy guard the flush re-holds the row forever and the
+    measurement is never written. This models the real kernel sink:
+    `defer(row, write)` then `write(row)` -> must reach the store."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    store = []
+
+    def kernel_sink(row):
+        # the real _shadow_row_sink defers first, then writes
+        if rol.defer(row, kernel_sink):
+            return
+        store.append(row)
+
+    row = _row(chosen="pass", brain="pass")
+    assert kernel_sink(row) is None
+    assert store == [], "held until the step settles"
+    assert rol.stamp("s1", "VERIFIED") == 1
+    assert len(store) == 1, "the flush must actually write, not re-defer"
+    assert store[0]["outside_label"] is True
 
 
 # ── bounded, and the drop is counted ────────────────────────────────────────

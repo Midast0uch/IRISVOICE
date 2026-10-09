@@ -1714,21 +1714,27 @@ class AgentKernel:
         if not row or not isinstance(row, dict):
             return
         try:
-            # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper): hold
-            # a review_verdict row until its step settles, so the loop's REAL
-            # verified_label can be attached to the SAME row. This is THE single
-            # writer every shadow row passes through (set as `_shadow_sink` on
-            # the reviewer and every consumer module), so one hook covers every
-            # path and no second writer is opened. Flag off == no-op, identical
-            # to commit 0bdd1ad1. Deletion contract: this block, the
-            # `_rol.stamp` call in _der_finalize_step, and
-            # backend/agent/review_outcome_label.py. Nothing else.
+            # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper): a
+            # review_verdict row is written at REVIEW time, but the step's real
+            # verified_label only exists at SETTLE time. The writer below does
+            # `meta = dict(row)` - a COPY - so a stamp applied afterwards would
+            # never reach the ledger. The review row must therefore be DEFERRED:
+            # hold it here and write it from `stamp()` once the step settles
+            # (`flush`). Measured live: with the write left in place, 0 of the
+            # rows carried an outcome label no matter what the stamp did.
+            #
+            # Flag OFF -> `_rol.defer` returns False immediately and the write
+            # below runs exactly as before (byte-identical to 0bdd1ad1).
+            #
+            # Deletion contract: this block, the `_rol.stamp(...)` call in
+            # _der_finalize_step, and backend/agent/review_outcome_label.py.
             try:
                 from backend.agent import review_outcome_label as _rol
 
-                _rol.register(row)
+                if _rol.defer(row, self._shadow_row_sink):
+                    return  # held; the settle path writes it
             except Exception:  # noqa: BLE001 — a label never blocks a row
-                logger.debug("[AgentKernel] review outcome register failed")
+                logger.debug("[AgentKernel] review outcome defer failed")
             bridge = getattr(self, "_tool_bridge", None)
             if bridge is None or not hasattr(bridge, "record_decision"):
                 return
@@ -7284,6 +7290,17 @@ class AgentKernel:
 
                 _de_oc.resolve_turn_pending(_turn_id or "", _grade == "pass")
                 _de_oc.sweep_turn_pending(_turn_id or "")
+                # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper):
+                # flush any review row whose step never settled (early turn
+                # end, exception) so the measurement is emitted unstamped rather
+                # than lost. try/except: a label never blocks a turn.
+                try:
+                    from backend.agent import review_outcome_label as _rol
+
+                    if _rol.sweep():
+                        logger.debug("[Oracle] flushed unsettled review rows")
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception:  # noqa: BLE001 - a label never blocks the turn
                 pass
             # REQ-7 AC7.2: log the counters the contract introduced, naming

@@ -60,16 +60,21 @@ VERIFIED_LABELS = ("VERIFIED", "UNVERIFIED", "FAILED")
 # How a settled outcome reads against the three verdict NAMES. This is the
 # whole point of the module, so it is stated rather than computed:
 #
-#   VERIFIED   -> the step did its job -> `pass` was RIGHT.
-#   FAILED     -> the step did not    -> `pass` was WRONG, and so was `refine`
-#                 for anything that let it through; `veto` would have been
-#                 RIGHT (it refuses to run).
+#   VERIFIED   -> the step did its job. `pass` was RIGHT; `refine` (needs
+#                 another pass) and `veto` (refuse to run) were both WRONG -
+#                 too harsh against a step that settled fine.
+#   FAILED     -> the step did not do its job. `pass` and `refine` were WRONG
+#                 (refine lets a bad step continue); `veto` was RIGHT.
 #   UNVERIFIED -> neither confirmed nor refuted. There is NO ground truth here,
 #                 so no label is emitted and the row stays on parity. Stamping
 #                 a guess would be the exact phantom-agreement failure the
 #                 review row already guards against for parse failures.
+#
+# MEASURED CONSEQUENCE of an earlier incomplete map (VERIFIED carried only
+# `pass`): `refine` is the MOST COMMON verdict (2204 of 2881 live rows), so
+# nearly every stamped row fell through unstamped and the label never landed.
 GROUND_TRUTH = {
-    "VERIFIED": {"pass": True},
+    "VERIFIED": {"pass": True, "refine": False, "veto": False},
     "FAILED": {"pass": False, "refine": False, "veto": True},
 }
 
@@ -79,6 +84,7 @@ _LOCK = threading.Lock()
 _PENDING: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _CAP = 256
 _DROPPED = 0
+_WRITING = False
 
 
 def enabled() -> bool:
@@ -109,18 +115,75 @@ def _verdict_name(row: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def register(
-    row: Optional[Dict[str, Any]],
-    step_id: Optional[str] = None,
-) -> Optional[str]:
-    """Hold a review row until its step settles. Returns the step_id held, or
-    None when the flag is off, the row is not a review row, or it carries no
-    step scope. Never raises - a missing label must not break a review.
+def _noop_write(_row) -> None:
+    """Sink for `register()` (in-memory only). The row is already in the ledger
+    by the time `register` is used; `defer` is the path that also WRITES."""
+
+
+class _Emitting:
+    """Re-entrancy guard: while a held row is being handed back to the writer,
+    `defer` must not hold it again."""
+
+    def __enter__(self):
+        global _WRITING
+        _WRITING = True
+        return self
+
+    def __exit__(self, *exc):
+        global _WRITING
+        _WRITING = False
+        return False
+
+
+def defer(row: Optional[Dict[str, Any]], write) -> bool:
+    """HOLD a review row instead of writing it now. Returns True when the caller
+    must NOT write (the row is held and ``stamp`` writes it after the step
+    settles).
+
+    Why deferral rather than register-then-write: the single ledger writer does
+    ``meta = dict(row)`` - a COPY - so a stamp applied after that write can never
+    reach the ledger. Measured live with the write left in place: 0 rows carried
+    an outcome label regardless of what the stamp did.
+
+    Returns False (caller writes exactly as before) when the flag is off, the row
+    is not a review row, or it has no join key - and, critically, when this is
+    the RE-ENTRANT call from ``stamp``/``sweep`` handing the row back to the
+    same writer. Without that guard the flush re-defers the row instead of
+    writing it, so the measurement is silently held forever (measured live:
+    263 review_verdict decisions in the last 2000 rows and the stored total
+    never moved).
+
+    Never raises.
+    """
+    if _WRITING:
+        return False  # re-entrant flush from stamp/sweep: write it for real
+    if not enabled() or not row or not isinstance(row, dict):
+        return False
+    if str(row.get("consumer_id") or "") != CONSUMER:
+        return False
+    sid = str(row.get("step_id") or "").strip()
+    if not sid:
+        return False  # no join key -> write it now on parity, as before
+    with _LOCK:
+        _PENDING[sid] = {"row": row, "write": write}
+        _PENDING.move_to_end(sid)
+        while len(_PENDING) > _CAP:
+            _PENDING.popitem(last=False)
+            globals()["_DROPPED"] += 1
+    return True
+
+
+def register(row: Optional[Dict[str, Any]], step_id: Optional[str] = None) -> Optional[str]:
+    """Hold a review row until its step settles, WITHOUT a writer.
+
+    Kept for the in-memory case only (no ledger write). `defer` is the real
+    entry point when the caller has a writer. Returns the step_id held, or None
+    when the flag is off, the row is not a review row, or it carries no step
+    scope. Never raises.
 
     ``step_id`` is passed explicitly because the review site's scope contextvar
     binds only turn_id (measured live: 2877 of 2877 review_verdict rows carried
-    an EMPTY step_id, so nothing could ever join). The caller knows the item;
-    the contextvar does not.
+    an EMPTY step_id, so nothing could ever join).
     """
     if not enabled() or not row or not isinstance(row, dict):
         return None
@@ -135,7 +198,7 @@ def register(
     # still have no join key.
     row["step_id"] = sid
     with _LOCK:
-        _PENDING[sid] = row
+        _PENDING[sid] = {"row": row, "write": _noop_write}
         _PENDING.move_to_end(sid)
         while len(_PENDING) > _CAP:
             _PENDING.popitem(last=False)
@@ -144,51 +207,57 @@ def register(
 
 
 def stamp(step_id: Optional[str], verified_label: Optional[str]) -> int:
-    """Attach the outcome to the held row. Returns 1 when a row was stamped.
+    """Attach the outcome to the held row and WRITE it. Returns 1 when a row was
+    emitted.
 
-    Idempotent per step: a step that settles twice does not double-stamp, and a
-    UNVERIFIED step stamps nothing so the row keeps its parity reference.
-    Never raises."""
+    Idempotent per step: a step that settles twice does not double-write, and an
+    UNVERIFIED step emits the row UNSTAMPED (parity reference preserved) rather
+    than dropping a real measurement. Never raises."""
     if not enabled() or not step_id:
         return 0
     label = str(verified_label or "").strip().upper()
     if label not in VERIFIED_LABELS:
         return 0
     with _LOCK:
-        row = _PENDING.pop(str(step_id), None)
-    if not row:
+        entry = _PENDING.pop(str(step_id), None)
+    if not entry:
         return 0
+    row = entry["row"]
+    truth = GROUND_TRUTH.get(label) or {}
     verdict = _verdict_name(row)
-    if verdict is None:
-        return 0
-    truth = GROUND_TRUTH.get(label)
-    if label == "UNVERIFIED" or not truth:
-        return 0
-    correct = truth.get(verdict)
-    if correct is None:
-        return 0
-    # REQ-7: an outside label takes precedence over the incumbent reference.
-    # `label_source` says which curve the row is built on, so the report can
-    # keep parity and outcome measurable SEPARATELY instead of blending them.
-    row["outside_label"] = bool(correct)
-    row["label_source"] = "outcome"
+    correct = truth.get(verdict) if verdict is not None else None
+    if correct is not None:
+        # REQ-7: an outside label takes precedence over the incumbent
+        # reference. `label_source` says which curve the row is built on, so
+        # the report keeps parity and outcome SEPARATE instead of blending.
+        row["outside_label"] = bool(correct)
+        row["label_source"] = "outcome"
+    # UNVERIFIED (or an unknown verdict) emits the row UNSTAMPED: it is still a
+    # real measurement on its parity reference. Dropping it would lose evidence.
+    try:
+        with _Emitting():
+            entry["write"](row)
+    except Exception:  # noqa: BLE001 — a label never blocks a settle
+        pass
     return 1
 
 
-def sweep(session_scoped_step_ids=None) -> int:
-    """Drop rows whose step will never settle (a turn ended early). Returns the
-    count dropped. Those rows were already written with parity, so nothing is
-    lost - they simply never gain an outcome. Never raises."""
-    if not enabled() or not session_scoped_step_ids:
+def sweep() -> int:
+    """Flush rows whose step will never settle (turn ended early, exception).
+    Returns the count emitted; those rows keep their parity reference. Never
+    raises."""
+    if not enabled():
         return 0
-    gone = 0
     with _LOCK:
-        for sid in list(_PENDING):
-            if sid in session_scoped_step_ids:
-                continue
-            _PENDING.pop(sid, None)
-            gone += 1
-    return gone
+        entries = list(_PENDING.values())
+        _PENDING.clear()
+    for ent in entries:
+        try:
+            with _Emitting():
+                ent["write"](ent["row"])
+        except Exception:  # noqa: BLE001
+            pass
+    return len(entries)
 
 
 def reset() -> None:
