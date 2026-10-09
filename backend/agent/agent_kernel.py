@@ -4316,6 +4316,16 @@ class AgentKernel:
                 # = a daemon thread, so the fast chat path pays ZERO added
                 # latency; the whole block is best-effort and cannot break it.
                 try:
+                    # `last_result`: the most recent tool message in the ReAct
+                    # conversation - the signal the Brain actually picks on.
+                    _lr = ""
+                    try:
+                        for _m in reversed(messages):
+                            if _m.get("role") == "tool":
+                                _lr = str(_m.get("content") or "")[:600]
+                                break
+                    except Exception:  # noqa: BLE001
+                        _lr = ""
                     self._get_tool_box().record_shadow_tool_choice(
                         goal=text,
                         observed_tool=_name,
@@ -4325,6 +4335,7 @@ class AgentKernel:
                             (t.get("function") or {}).get("name")
                             for t in (_tools or [])
                         ] or None,
+                        last_result=_lr or None,
                         session_id=self.conversation_id or "voice",
                         conversation_id=self.conversation_id or "",
                         async_=True,
@@ -17661,9 +17672,18 @@ Respond with a JSON object:
         def _shadow(name, params):
             # Same single ledger writer as the direct loop; async_=True runs it
             # on a daemon thread, so the node pays no latency.
+            # `last_result`: the previous step's result - the most predictive
+            # signal for the next tool (see the route job's declaration).
+            _lr = ""
+            try:
+                if _prior_results:
+                    _p = _prior_results[-1]
+                    _lr = f"{_p.get('description') or ''}: {_p.get('result') or ''}"
+            except Exception:  # noqa: BLE001 — a shadow never needs context
+                _lr = ""
             box.record_shadow_tool_choice(
                 goal=goal, observed_tool=name, observed_params=params,
-                candidates=_offered,
+                candidates=_offered, last_result=_lr or None,
                 session_id=self.conversation_id or "voice",
                 conversation_id=self.conversation_id or "", async_=True,
             )

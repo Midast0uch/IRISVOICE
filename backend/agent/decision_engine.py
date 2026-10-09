@@ -183,7 +183,22 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     OracleJob("interpret", "what does the user's message mean?",
               ("goal",), 64),
     OracleJob("route", "which of these next actions? (the menu carries the content)",
-              ("coverage", "open_facts", "depth_met", "grade", "goal"), 64),
+              # `last_result` (2026-10-10): the previous step's result snippet.
+              # MEASURED ROOT CAUSE of tool_choice's 45% parity accuracy: the
+              # shadow frame carried ONLY a 200-char goal, while the Brain picks
+              # with the full conversation, the tool schemas and - most
+              # predictive of all - what the last call returned. A ReAct loop's
+              # next tool is largely a function of the last result (just read a
+              # file -> edit it; tests failed -> fix the file). Without it d1
+              # answers a strictly harder question blind, and the disagreement
+              # measured the INFORMATION GAP, not the engine's judgment.
+              # Budget 64 -> 256 (1024 chars rendered): goal[:200] plus a
+              # ~600-char result snippet must both fit; at 64 the goal alone
+              # nearly filled the cap. The budget is a CAP, not a floor, so the
+              # other route consumers (depth_route, recovery_strategy) are
+              # unaffected beyond headroom.
+              ("coverage", "open_facts", "depth_met", "grade", "goal",
+               "last_result"), 256),
     OracleJob("guard", "is this action safe to take without asking?",
               # REQ-5 AC5.2 (AC9.1 sanctioned exception 4): `guard` is the
               # first IMAGE job - click_safety's question is visual by

@@ -1636,6 +1636,7 @@ class ToolDecisionBox:
         conversation_id: str = "",
         threshold: Optional[float] = None,
         async_: bool = False,
+        last_result: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """REQ-16 AC16.2 (T20): shadow-score a tool choice made OUTSIDE the box.
 
@@ -1701,6 +1702,13 @@ class ToolDecisionBox:
                 "goal": (goal or "")[:200],
                 "n_candidates": len(menu),
                 "source": "respond_direct",
+                # THE INFORMATION GAP FIX (2026-10-10): the previous call's
+                # result is the single most predictive signal for the NEXT tool
+                # in a ReAct loop, and the shadow never carried it - measured
+                # 45% parity accuracy against a Brain that picks with the full
+                # conversation. Declared on the `route` job; renders empty when
+                # a caller has nothing to pass (the first call of a turn).
+                "last_result": (last_result or "")[:600] or None,
             }
             ds = eng.decide("tool_choice", menu, frame)
             if ds is None:
@@ -1725,6 +1733,13 @@ class ToolDecisionBox:
                 "conversation_id": conversation_id or None,
                 "source": "respond_direct",
                 "shadow": True,
+                # criteria_version (session 364's mechanism): the frame gained
+                # `last_result` on 2026-10-10, and the frame is NOT inside
+                # criteria_hash - so without this stamp the rows measured under
+                # the blind frame would mix with rows measured under the
+                # enriched one and poison the curve. Scope comparisons to one
+                # version; never blend them.
+                "criteria_version": "tc-frame-v2",
             }
             self._record_shadow_row(row, session_id=session_id)
             return row
