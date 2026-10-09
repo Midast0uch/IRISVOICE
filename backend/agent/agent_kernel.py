@@ -1714,6 +1714,21 @@ class AgentKernel:
         if not row or not isinstance(row, dict):
             return
         try:
+            # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper): hold
+            # a review_verdict row until its step settles, so the loop's REAL
+            # verified_label can be attached to the SAME row. This is THE single
+            # writer every shadow row passes through (set as `_shadow_sink` on
+            # the reviewer and every consumer module), so one hook covers every
+            # path and no second writer is opened. Flag off == no-op, identical
+            # to commit 0bdd1ad1. Deletion contract: this block, the
+            # `_rol.stamp` call in _der_finalize_step, and
+            # backend/agent/review_outcome_label.py. Nothing else.
+            try:
+                from backend.agent import review_outcome_label as _rol
+
+                _rol.register(row)
+            except Exception:  # noqa: BLE001 — a label never blocks a row
+                logger.debug("[AgentKernel] review outcome register failed")
             bridge = getattr(self, "_tool_bridge", None)
             if bridge is None or not hasattr(bridge, "record_decision"):
                 return
@@ -1750,7 +1765,7 @@ class AgentKernel:
     def _forward_consumer_rows(self, *holders: Any) -> None:
         """Write any row the given holders EXPOSE, once, then clear it.
 
-        Clearing is what makes this idempotent: a forwarded row must not be
+        Clearing is what makes it idempotent: a forwarded row must not be
         written again on the next turn, or the ledger gains duplicates and every
         rate derived from it is inflated. Never raises.
         """
@@ -11122,6 +11137,22 @@ Respond with a JSON object:
 
             # ── REVIEWER PHASE ─────────────────────────────────────────────
             if reviewer is not None:
+                # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper):
+                # bind the step id into the measurement scope for THIS review.
+                # Measured live: 2877 of 2877 review_verdict rows carried an
+                # EMPTY step_id - the loop binds turn_id at turn entry but never
+                # the step - so the outcome label had no join key and could
+                # never be stamped. scope_now() reads these as VALUES at
+                # row-build time, so a lane thread still gets them. try/except:
+                # measurement must never block a review.
+                try:
+                    from backend.agent import decision_engine as _de
+
+                    _de.set_scope(
+                        step_id=getattr(item, "step_id", None) or None,
+                    )
+                except Exception:  # noqa: BLE001 — measurement never blocks
+                    logger.debug("[DER] review scope bind failed")
                 try:
                     verdict, feedback = reviewer.review(
                         item=item,
@@ -19512,6 +19543,18 @@ Respond with a JSON object:
         # tool_choice edges, the AVOID header and the recovery graft read the
         # miss episode), so a lane would hand them a stale view. Node steps
         # score here since S54; a slow run is logged so a cost shows up.
+        # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper): the step
+        # has just settled, so its real outcome now exists. Stamp it onto the
+        # review_verdict row held at review time, BEFORE the single ledger
+        # writer emits it. try/except twice over: this must never delay, block
+        # or fail a step settle.
+        try:
+            from backend.agent import review_outcome_label as _rol
+
+            _rol.stamp(getattr(item, "step_id", None), _verified)
+        except Exception:  # noqa: BLE001 — a label never blocks a settle
+            logger.debug("[DER] review outcome stamp failed")
+
         try:
             _score_t0 = time.monotonic()
             self._der_score_step_outcome(item, _verified, _session, step_result)

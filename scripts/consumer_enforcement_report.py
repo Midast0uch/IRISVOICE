@@ -299,6 +299,40 @@ def thresholds_by_consumer(
     return out, config
 
 
+def split_by_reference(
+    rows: List[Dict[str, Any]],
+) -> tuple:
+    """Partition rows by WHICH REFERENCE they are scored against.
+
+    The owner's requirement (2026-10-09): the parity data (did d1 agree with
+    the incumbent) and the outcome data (did the step actually verify) must not
+    interfere. They are already separate per ROW - `decision_label` prefers
+    `outside_label` and falls back to `brain_choice`, and `label_source` records
+    which - so the risk is not in the rows but in the FIT: pooling both kinds
+    into one isotonic curve averages two different questions and produces a
+    number that means nothing.
+
+    So this returns them apart, grouped by consumer, and the caller fits each
+    kind on its own. A row with no `label_source` is a pre-REQ-7 row and is
+    incumbent-reference by definition.
+
+    Returns ``(outcome_rows, incumbent_by_consumer, outcome_by_consumer)``.
+    """
+    incumbent: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    outcome: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        cid = str(r.get("consumer_id") or "")
+        if str(r.get("label_source") or "incumbent") == "outcome":
+            outcome[cid].append(r)
+        else:
+            incumbent[cid].append(r)
+    return (
+        [r for cid in sorted(outcome) for r in outcome[cid]],
+        dict(incumbent),
+        dict(outcome),
+    )
+
+
 def measure(
     rows: List[Dict[str, Any]],
     thresholds: Dict[str, Optional[float]],

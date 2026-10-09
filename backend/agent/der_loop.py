@@ -1255,8 +1255,22 @@ class Reviewer:
             )[:800]
             sink = self._shadow_sink
             if callable(sink):
-                def _job(_goal=goal, _verdict=brain_verdict):
-                    _row = self._review_row(engine, _goal, _verdict)
+                # AC6.3a: the scope must be read AT SUBMIT TIME as VALUES. A
+                # shadow lane scores later on a worker thread whose context
+                # says nothing, so calling scope_now() inside `_review_row`
+                # (which runs on the lane) reads an EMPTY scope - measured live:
+                # every review_verdict row carried an empty step_id, so the
+                # outcome label had no join key and could never be stamped.
+                try:
+                    from backend.agent.decision_engine import scope_now
+
+                    _scope_at_submit = scope_now()
+                except Exception:  # noqa: BLE001 — attribution is best-effort
+                    _scope_at_submit = {}
+
+                def _job(_goal=goal, _verdict=brain_verdict,
+                         _scope=dict(_scope_at_submit or {})):
+                    _row = self._review_row(engine, _goal, _verdict, scope=_scope)
                     if _row is not None:
                         sink(_row)
 
@@ -1272,8 +1286,14 @@ class Reviewer:
             logger.debug("[Reviewer] shadow verdict failed: %r", _e)
             return None
 
-    def _review_row(self, engine, goal: str, brain_verdict) -> Optional[dict]:
-        """One engine score of a review, as a shadow PAIR row (or None)."""
+    def _review_row(self, engine, goal: str, brain_verdict,
+                    scope: Optional[dict] = None) -> Optional[dict]:
+        """One engine score of a review, as a shadow PAIR row (or None).
+
+        ``scope`` is the measurement scope captured AT SUBMIT TIME (see the
+        lane submission above). It defaults to the live context for the
+        synchronous path.
+        """
         try:
             from backend.agent.decision_engine import scope_now
 
@@ -1313,7 +1333,7 @@ class Reviewer:
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).
-            row.update(scope_now())
+            row.update(scope if scope is not None else scope_now())
             return row
         except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
             logger.debug("[Reviewer] shadow verdict failed: %r", _e)
