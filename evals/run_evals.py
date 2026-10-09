@@ -210,7 +210,16 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
         else:
             await ws.send(json.dumps({"type": "text_message",
                                       "payload": {"text": prompt, "conversation_id": conv_id}}))
-            final_types = {"chat_message", "text_response"}
+            # turn.end is the ONE reply courier on the text_message path: the
+            # legacy chat_message was retired 2026-10-06 and the frontend reads
+            # turns (lib/turns/legacyBridge.ts). The harness was never updated,
+            # so every chat-path task waited for a frame that never comes and
+            # burned the full deadline - measured live 2026-10-10: all 9
+            # research tasks timed out at 600s each while event_counts showed
+            # turn.end: 1 (the reply WAS delivered; the harness ignored it).
+            # chat_message/text_response stay for the dev_cli path and any
+            # legacy sender.
+            final_types = {"chat_message", "text_response", "turn.end"}
 
         deadline = time.monotonic() + timeout_s
         while True:
@@ -268,6 +277,21 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
                 text = payload.get("content") or payload.get("text") or ""
                 if mtype == "chat_message" and payload.get("role") not in (None, "assistant", "error"):
                     continue
+                if mtype == "turn.end":
+                    # The turn protocol's terminal frame: status ok/error/
+                    # cancelled, text = the reply, error = the failure reason
+                    # (backend/agent/turn_protocol.py SCHEMA["end"]). A
+                    # cancelled or errored turn is an ERROR REPLY so the task
+                    # fails honestly rather than hanging to the deadline.
+                    _status = payload.get("status")
+                    if _status == "cancelled":
+                        record["reply"] = "[IRIS error] turn cancelled"
+                        record["reply_at"] = time.monotonic()
+                        break
+                    if _status == "error":
+                        text = "[IRIS error] " + (
+                            payload.get("error") or text or "turn failed"
+                        )
                 if payload.get("role") == "error" and not text.lower().startswith("[iris error"):
                     text = "[IRIS error] " + text
                 record["reply"] = text
