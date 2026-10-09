@@ -115,6 +115,45 @@ def _pooled() -> "httpx.Client":
         return _client
 
 
+def _extract_logprobs(payload: Dict[str, Any]) -> Dict[int, float]:
+    """Token id -> logprob from EITHER llama.cpp response shape (AC0.3).
+
+    llama.cpp answers two shapes depending on the route:
+      * ``/completion``          -> top-level ``completion_probabilities``
+      * ``/v1/chat/completions`` -> OpenAI ``choices[0].logprobs.content[]``
+                                    ``.top_logprobs``
+
+    In BOTH, each entry carries ``id`` (the token id) AND ``bytes`` (the
+    utf-8 byte list). **``bytes[0]`` is a CHARACTER CODE, never an id** -
+    reading it yields 116 for "t" and silently mismatches every readout
+    token. That defect voided two probe runs on 2026-10-08 and is the reason
+    AC0.3 exists. ``id`` is authoritative; ``bytes`` is never consulted.
+
+    Returns ``{}`` when neither shape carries logprobs.
+    """
+    def _collect(entries: Any) -> Dict[int, float]:
+        out: Dict[int, float] = {}
+        for e in entries or []:
+            tid = e.get("id")          # `id` is the token id; bytes[0] is NOT
+            lp = e.get("logprob")
+            if tid is not None and lp is not None:
+                out[int(tid)] = float(lp)
+        return out
+
+    # Shape 1: llama.cpp native (/completion), top-level.
+    for comp in payload.get("completion_probabilities") or []:
+        got = _collect(comp.get("top_logprobs") or comp.get("top_probs"))
+        if got:
+            return got
+    # Shape 2: OpenAI (/v1/chat/completions), nested under choices[].
+    for choice in payload.get("choices") or []:
+        for tok in ((choice.get("logprobs") or {}).get("content") or []):
+            got = _collect(tok.get("top_logprobs"))
+            if got:
+                return got
+    return {}
+
+
 class D1Backend:
     """One resident decision backend: d1-3B on the shared llama-server."""
 
@@ -409,16 +448,8 @@ class D1Backend:
                 timeout=_TIMEOUT_S,
             )
             r.raise_for_status()
-            comps = r.json().get("completion_probabilities") or []
-            if not comps:
-                return None
-            top = comps[0].get("top_logprobs") or comps[0].get("top_probs") or []
-            # logprob by token id (the server returns ids alongside strings).
-            logz: Dict[int, float] = {}
-            for e in top:
-                tid = e.get("id")
-                if tid is not None and e.get("logprob") is not None:
-                    logz[int(tid)] = float(e["logprob"])
+            # Both llama.cpp logprob shapes, `id` authoritative (AC0.3).
+            logz = _extract_logprobs(r.json())
             if not logz:
                 return None
             # Readout (prompt.py): max-pool per option group, softmax.

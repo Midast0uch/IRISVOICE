@@ -1,0 +1,182 @@
+{
+  "trials": 6,
+  "route_proven": true,
+  "results": [
+    {
+      "shape": "choice",
+      "word": "ZEPHYR",
+      "gold": "A",
+      "with_image": "A",
+      "no_image": "B",
+      "probs_with": {
+        "A": 0.9922773884718383,
+        "B": 0.004494457535890858,
+        "C": 0.0032281539922707813
+      },
+      "prompt_tokens_with": 302,
+      "prompt_tokens_without": 48,
+      "error_with": null
+    },
+    {
+      "shape": "choice",
+      "word": "QUARTZ",
+      "gold": "B",
+      "with_image": "A",
+      "no_image": "B",
+      "probs_with": {
+        "A": 0.9745502966294961,
+        "B": 0.02188263286857685,
+        "C": 0.00356707050192714
+      },
+      "prompt_tokens_with": 301,
+      "prompt_tokens_without": 47,
+      "error_with": null
+    },
+    {
+      "shape": "choice",
+      "word": "NIMBUS",
+      "gold": "C",
+      "with_image": "A",
+      "no_image": "B",
+      "probs_with": {
+        "A": 0.7731978696455788,
+        "B": 0.0062877261795993775,
+        "C": 0.22051440417482188
+      },
+      "prompt_tokens_with": 302,
+      "prompt_tokens_without": 48,
+      "error_with": null
+    },
+    {
+      "shape": "choice",
+      "word": "FLINT",
+      "gold": "A",
+      "with_image": "A",
+      "no_image": "B",
+      "probs_with": {
+        "A": 0.9925015549721865,
+        "B": 0.004397665098416466,
+        "C": 0.003100779929396955
+      },
+      "prompt_tokens_with": 300,
+      "prompt_tokens_without": 46,
+      "error_with": null
+    },
+    {
+      "shape": "choice",
+      "word": "OBSIDIAN",
+      "gold": "B",
+      "with_image": "A",
+      "no_image": "B",
+      "probs_with": {
+        "A": 0.951473511322981,
+        "B": 0.04475116534066908,
+        "C": 0.0037753233363499532
+      },
+      "prompt_tokens_with": 302,
+      "prompt_tokens_without": 48,
+      "error_with": null
+    },
+    {
+      "shape": "choice",
+      "word": "CINDER",
+      "gold": "C",
+      "with_image": "A",
+      "no_image": "B",
+      "probs_with": {
+        "A": 0.7676292955126873,
+        "B": 0.006563477811177688,
+        "C": 0.22580722667613493
+      },
+      "prompt_tokens_with": 301,
+      "prompt_tokens_without": 47,
+      "error_with": null
+    },
+    {
+      "shape": "noul",
+      "word": "ZEPHYR",
+      "gold": "yes",
+      "with_image": "yes",
+      "no_image": "no",
+      "probs_with": {
+        "yes": 0.9881494080771234,
+        "no": 0.01185059192287663
+      },
+      "error_with": null
+    },
+    {
+      "shape": "noul",
+      "word": "QUARTZ",
+      "gold": "no",
+      "with_image": "no",
+      "no_image": "yes",
+      "probs_with": {
+        "yes": 0.023591514766605492,
+        "no": 0.9764084852333945
+      },
+      "error_with": null
+    },
+    {
+      "shape": "noul",
+      "word": "NIMBUS",
+      "gold": "yes",
+      "with_image": "yes",
+      "no_image": "yes",
+      "probs_with": {
+        "yes": 0.9899493404376409,
+        "no": 0.010050659562359067
+      },
+      "error_with": null
+    },
+    {
+      "shape": "noul",
+      "word": "FLINT",
+      "gold": "no",
+      "with_image": "yes",
+      "no_image": "yes",
+      "probs_with": {
+        "yes": 0.9888098906777952,
+        "no": 0.011190109322204881
+      },
+      "error_with": null
+    },
+    {
+      "shape": "noul",
+      "word": "OBSIDIAN",
+      "gold": "yes",
+      "with_image": "yes",
+      "no_image": "no",
+      "probs_with": {
+        "yes": 0.9895891109478423,
+        "no": 0.010410889052157766
+      },
+      "error_with": null
+    },
+    {
+      "shape": "noul",
+      "word": "CINDER",
+      "gold": "no",
+      "with_image": "yes",
+      "no_image": "yes",
+      "probs_with": {
+        "yes": 0.9913137484099241,
+        "no": 0.008686251590075822
+      },
+      "error_with": null
+    },
+    {
+      "shape": "permutation",
+      "word": "ZEPHYR",
+      "answers_as_word_moves": [
+        "A",
+        "B",
+        "C"
+      ],
+      "follows": true,
+      "distinct": 3
+    }
+  ],
+  "choice_with_image": 2,
+  "choice_without_image": 2,
+  "verdict": "GROUNDS: the answer tracks the image when only the image changes (permutation test passed)."
+}

@@ -1,0 +1,7 @@
+{
+  "hits": {
+    "image_first": 0,
+    "text_first": 3
+  },
+  "verdict": "NATIVE SCHEMA GROUNDS: d1 reads the image through LiquidAI's published schema."
+}
