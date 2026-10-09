@@ -1,0 +1,870 @@
+{
+  "config": {
+    "backend_id": "d1-3b-ad-q4_k_m",
+    "backend_identity_source": "declared d1 variant",
+    "candidate_cap": 6,
+    "calibrated_cap": 6
+  },
+  "bar": {
+    "min_rows": 100,
+    "min_precision": 0.9,
+    "max_ece": 0.05,
+    "min_minority": 0.05,
+    "min_auroc": 0.65,
+    "min_rows_above": 50,
+    "min_wilson_lb": 0.85
+  },
+  "skipped": {
+    "unreadable": 0,
+    "no_confidence": 0,
+    "no_label": 27,
+    "other_backend": 19781,
+    "duplicates": 64
+  },
+  "n_consumers": 21,
+  "flipped": [],
+  "consumers": {
+    "call_closing": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "depth_met": {
+      "rows": 36,
+      "rows_raw": 36,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 36,
+        "rows_raw": 36,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 20,
+          "wrong": 16
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.0622,
+      "brier": 0.2641,
+      "auroc": 0.4938,
+      "threshold": null,
+      "shadow_rows": 36,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 36
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "depth_route": {
+      "rows": 5,
+      "rows_raw": 5,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 5,
+        "rows_raw": 5,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 3
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.555,
+      "brier": 0.4873,
+      "auroc": 0.25,
+      "threshold": null,
+      "shadow_rows": 5,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 5
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "done": {
+      "rows": 5,
+      "rows_raw": 5,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 5,
+        "rows_raw": 5,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 3,
+          "wrong": 2
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.0877,
+      "brier": 0.2652,
+      "auroc": 0.1667,
+      "threshold": null,
+      "shadow_rows": 5,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 5
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "escalate_incomplete": {
+      "rows": 2,
+      "rows_raw": 2,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 2,
+        "rows_raw": 2,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 1,
+          "wrong": 1
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4047,
+      "brier": 0.2015,
+      "auroc": 1.0,
+      "threshold": null,
+      "shadow_rows": 2,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 2
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_family": {
+      "rows": 14,
+      "rows_raw": 25,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 14,
+        "rows_raw": 25,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 12
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2124,
+      "brier": 0.1852,
+      "auroc": 0.3333,
+      "threshold": null,
+      "shadow_rows": 14,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 14
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:control": {
+      "rows": 2,
+      "rows_raw": 4,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 2,
+        "rows_raw": 4,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 2
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2273,
+      "brier": 0.0519,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 2,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 2
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:delivery": {
+      "rows": 6,
+      "rows_raw": 9,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 6,
+        "rows_raw": 9,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 4
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2504,
+      "brier": 0.2729,
+      "auroc": 0.5625,
+      "threshold": null,
+      "shadow_rows": 6,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 6
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:knowledge": {
+      "rows": 1,
+      "rows_raw": 1,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 1,
+        "rows_raw": 1,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 1,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.3638,
+      "brier": 0.1324,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 1,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 1
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:memory": {
+      "rows": 8,
+      "rows_raw": 12,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 8,
+        "rows_raw": 12,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 6
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4314,
+      "brier": 0.3391,
+      "auroc": 0.5833,
+      "threshold": null,
+      "shadow_rows": 8,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 8
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "mode": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "narration": {
+      "rows": 32,
+      "rows_raw": 32,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 32,
+        "rows_raw": 32,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 14,
+          "wrong": 18
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2843,
+      "brier": 0.3084,
+      "auroc": 0.5933,
+      "threshold": null,
+      "shadow_rows": 32,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 32
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "needs_action": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "presentation": {
+      "rows": 4,
+      "rows_raw": 36,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 4,
+        "rows_raw": 36,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 4
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4881,
+      "brier": 0.2503,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 4,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 4
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "recovery_strategy": {
+      "rows": 1,
+      "rows_raw": 1,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 1,
+        "rows_raw": 1,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 1
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.5789,
+      "brier": 0.3351,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 1,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 1
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "review_verdict": {
+      "rows": 89,
+      "rows_raw": 89,
+      "honest": {
+        "method": "isotonic",
+        "knots": [
+          [
+            0.437279,
+            0.323529
+          ],
+          [
+            0.678656,
+            0.509091
+          ]
+        ],
+        "threshold": null,
+        "rows_distinct": 89,
+        "rows_raw": 89,
+        "rows_above": 0,
+        "oof": {
+          "ece": 0.0728,
+          "brier": 0.2475,
+          "auroc": 0.5449,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 39,
+          "wrong": 50
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.1482,
+      "brier": 0.2572,
+      "auroc": 0.6041,
+      "threshold": null,
+      "shadow_rows": 89,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 89
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "sufficient": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "tool_choice": {
+      "rows": 144,
+      "rows_raw": 152,
+      "honest": {
+        "method": "isotonic",
+        "knots": [
+          [
+            0.518878,
+            0.218182
+          ],
+          [
+            0.885065,
+            0.347826
+          ],
+          [
+            0.950635,
+            0.5
+          ]
+        ],
+        "threshold": null,
+        "rows_distinct": 144,
+        "rows_raw": 152,
+        "rows_above": 0,
+        "oof": {
+          "ece": 0.0729,
+          "brier": 0.2227,
+          "auroc": 0.6067,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 53,
+          "wrong": 91
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4072,
+      "brier": 0.4014,
+      "auroc": 0.6327,
+      "threshold": null,
+      "shadow_rows": 144,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 144
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "use_thinking": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "user_feedback": {
+      "rows": 8,
+      "rows_raw": 8,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 8,
+        "rows_raw": 8,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 8,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.284,
+      "brier": 0.0954,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 8,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 8
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "web_intent": {
+      "rows": 31,
+      "rows_raw": 35,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 31,
+        "rows_raw": 35,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 25,
+          "wrong": 6
+        },
+        "fitted_at": "2026-10-09T01:08:54+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.0691,
+      "brier": 0.1358,
+      "auroc": 0.7333,
+      "threshold": null,
+      "shadow_rows": 31,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 31
+      },
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    }
+  }
+}

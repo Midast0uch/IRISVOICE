@@ -81,7 +81,7 @@ def test_score_exists_in_the_schema_and_the_renderer():
     """AC4.5: no consumer is promoted to `score` in this wave, but the type must
     exist so an ordered-level question has a home."""
     assert "score" in de.DECISION_TYPES
-    out = D1Backend._render_score("a state", "How deep is this?", ["shallow", "deep"])
+    out = D1Backend._question_score("a state", "How deep is this?", ["shallow", "deep"])
     assert "shallow" in out and "deep" in out
 
 

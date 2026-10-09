@@ -11,26 +11,34 @@ One question per run; no batching (REQ-20 retired 2026-09-26 — the guard
 test test_batch_single_encode.py must stay green); never writes text; never
 calls a hosted provider.
 
-HOW d1 SCORES (verified live, Wave 0 VERIFY.md V1): d1 is a JEV-style
-decision model — the answer is read from the LM logits at the ONE answer
-slot after a Decision Index prompt (LiquidAI/d1-3B prompt.py + runner.py,
-ported verbatim in spirit):
+HOW d1 SCORES (REQ-1, AC1.1-AC1.4): d1 is a typed DECISION model, not a chat
+model. Its published API is `system_one(state, questions, images=None)`: a state
+is read once and typed questions are answered over it in ONE forward pass with
+zero output tokens, each answer a typed value with calibrated probabilities.
+LiquidAI's native Decision Index shapes are served over
+`/v1/chat/completions`:
 
-    <|startoftext|><|im_start|>user
-    {state as JSON}
     QUESTION:
     {instruction}
 
     Options:
-    A {option a}
-    B {option b}
+    {name}: {description}
     ...
 
-    Reply with the option code only.<|im_end|>
-    <|im_start|>assistant
+    Reply with the option name only.
 
-...then ONE completion token with logprobs; each option scores its best
-letter-token form (max-pool), softmax across options (prompt.py readout).
+...then ONE completion token with logprobs; each option scores its NAME token
+(max-pool), softmax across options (prompt.py readout). The hand-rolled
+BOS/im_start `/completion` prompt and the A/B/C LETTER menu are RETIRED from
+scoring (AC1.4): the letter shape collapses to a constant answer when the
+question text varies while reporting high confidence, and d1 is trained on
+NAMED options. A failure to score returns None and the consumer fails closed.
+
+The DECISION TYPE comes from the consumer's declaration (`declared_type`), never
+from inference (AC4.3): `noul` renders the yes/no template and pools over the
+yes/no forms; `choice` renders the criteria block and pools over the NAME
+tokens; `score` renders ordered levels. An UNDECLARED consumer scores nothing
+(AC1.6).
 
 SERVING (borrow-only, specs/vision-single-server): the shared llama-server
 (LocalModelManager.PORT, default 8082) must ALREADY host the d1 GGUF —
@@ -61,6 +69,7 @@ from backend.agent.decision_engine import (
     DECISION_TYPES,
     CandidateScore,
     DecisionScore,
+    declared_criteria,
     declared_type,
 )
 
@@ -84,16 +93,15 @@ _D1_CHECK_TTL_S = float(os.environ.get("IRIS_D1_CHECK_TTL_S", "300"))
 _N_PROBS = int(os.environ.get("IRIS_D1_N_PROBS", "512"))
 _TIMEOUT_S = float(os.environ.get("IRIS_D1_TIMEOUT_S", "20"))
 
-_IM_START, _IM_END, _BOS = "<|im_start|>", "<|im_end|>", "<|startoftext|>"
-
-# Readout forms per option code (prompt.py readout_ids): the bare letter and
-# its space-prefixed form, max-pooled. Positional A..Z per option_codes().
-_LETTERS = [chr(ord("A") + i) for i in range(26)]
 # The NOUL readout vocabulary (prompt.py YES_FORMS/NO_FORMS): d1 was TRAINED
 # on yes/no questions in this exact shape ("Reply with yes or no only."),
 # not as a 2-option letter menu. Binary consumers (done/sufficient/depth_met/
-# escalate_incomplete/web_intent/mode...) arrive as ["yes","no"] — render the
-# native noul template for them (V1 probe: 98.8%/96.5% polarity-correct).
+# escalate_incomplete/web_intent/use_thinking/needs_action/call_closing) arrive
+# as ["yes","no"] — render the native noul template for them (V1 probe:
+# 98.8%/96.5% polarity-correct).
+#
+# The LETTER readout vocabulary is GONE (AC1.4): a choice now pools over the
+# option NAME tokens (AC1.2), and no fallback scores through letters.
 _YES_FORMS = ("yes", "Yes", "YES")
 _NO_FORMS = ("no", "No", "NO")
 _YES_NO_LOWER = frozenset({"yes", "no"})
@@ -120,8 +128,41 @@ def _pooled() -> "httpx.Client":
         return _client
 
 
+def _extract_logprobs_all(payload: Dict[str, Any]) -> List[Dict[int, float]]:
+    """PER-POSITION token id -> logprob, from EITHER llama.cpp shape (AC0.3).
+
+    Position 0 is what ``_extract_logprobs`` returns; later positions exist only
+    when more than one token was generated. The NAME readout uses them to match
+    a multi-token option name across positions.
+    """
+    def _collect(entries: Any) -> Dict[int, float]:
+        out: Dict[int, float] = {}
+        for e in entries or []:
+            tid = e.get("id")          # `id` is the token id; bytes[0] is NOT
+            lp = e.get("logprob")
+            if tid is not None and lp is not None:
+                out[int(tid)] = float(lp)
+        return out
+
+    positions: List[Dict[int, float]] = []
+    # Shape 1: llama.cpp native (/completion), top-level, one entry per token.
+    for comp in payload.get("completion_probabilities") or []:
+        got = _collect(comp.get("top_logprobs") or comp.get("top_probs"))
+        if got:
+            positions.append(got)
+    if positions:
+        return positions
+    # Shape 2: OpenAI (/v1/chat/completions), nested under choices[].
+    for choice in payload.get("choices") or []:
+        for tok in ((choice.get("logprobs") or {}).get("content") or []):
+            got = _collect(tok.get("top_logprobs"))
+            if got:
+                positions.append(got)
+    return positions
+
+
 def _extract_logprobs(payload: Dict[str, Any]) -> Dict[int, float]:
-    """Token id -> logprob from EITHER llama.cpp response shape (AC0.3).
+    """The ANSWER SLOT's token id -> logprob from EITHER llama.cpp shape (AC0.3).
 
     llama.cpp answers two shapes depending on the route:
       * ``/completion``          -> top-level ``completion_probabilities``
@@ -136,27 +177,9 @@ def _extract_logprobs(payload: Dict[str, Any]) -> Dict[int, float]:
 
     Returns ``{}`` when neither shape carries logprobs.
     """
-    def _collect(entries: Any) -> Dict[int, float]:
-        out: Dict[int, float] = {}
-        for e in entries or []:
-            tid = e.get("id")          # `id` is the token id; bytes[0] is NOT
-            lp = e.get("logprob")
-            if tid is not None and lp is not None:
-                out[int(tid)] = float(lp)
-        return out
+    positions = _extract_logprobs_all(payload)
+    return positions[0] if positions else {}
 
-    # Shape 1: llama.cpp native (/completion), top-level.
-    for comp in payload.get("completion_probabilities") or []:
-        got = _collect(comp.get("top_logprobs") or comp.get("top_probs"))
-        if got:
-            return got
-    # Shape 2: OpenAI (/v1/chat/completions), nested under choices[].
-    for choice in payload.get("choices") or []:
-        for tok in ((choice.get("logprobs") or {}).get("content") or []):
-            got = _collect(tok.get("top_logprobs"))
-            if got:
-                return got
-    return {}
 
 
 class D1Backend:
@@ -178,7 +201,8 @@ class D1Backend:
         self._loaded = False
         self._served_id: Optional[str] = None
         self._checked_at = 0.0
-        self._letter_ids: Optional[Dict[str, List[int]]] = None
+        self._yesno_ids: Optional[Dict[str, List[int]]] = None
+        self._name_ids: Dict[str, List[int]] = {}
         self._lock = threading.Lock()
         self._clock = time.monotonic
         self._latency_ms: Optional[int] = None
@@ -234,7 +258,7 @@ class D1Backend:
                     "Oracle unavailable, consumers fail-closed", why,
                 )
                 return False
-            self._ensure_letter_ids()
+            self._ensure_yes_no_ids()
             self._loaded = True
             logger.info(
                 "decision_backend_d1: ready on :%d serving %s (identity=%s)",
@@ -273,41 +297,125 @@ class D1Backend:
         except Exception as e:
             return False, f"shared server unreachable: {e}"
 
-    def _ensure_letter_ids(self) -> None:
-        """Single-token ids for the option letters AND the yes/no forms, from
-        the server's own tokenizer — the readout vocabulary (prompt.py
-        aliases). Cached for the process; the tokenizer does not change with
-        the model file's quant."""
-        if self._letter_ids is not None:
-            return
+    def _tokenize_first(self, form: str) -> Optional[int]:
+        """The FIRST token id of *form* from the server's own tokenizer, or None."""
         try:
-            ids: Dict[str, List[int]] = {}
-            forms: Dict[str, Sequence[str]] = {
-                **{letter: (letter, f" {letter}") for letter in _LETTERS},
-                "yes": _YES_FORMS, "no": _NO_FORMS,
-            }
-            for key, variants in forms.items():
-                for form in variants:
-                    r = _pooled().post(
-                        f"http://127.0.0.1:{_server_port()}/tokenize",
-                        json={"content": form, "add_special": False},
-                        timeout=5.0,
-                    )
-                    toks = r.json().get("tokens", [])
-                    toks = [t["id"] if isinstance(t, dict) else int(t) for t in toks]
-                    if len(toks) == 1:
-                        ids.setdefault(key, []).append(toks[0])
-            if "yes" not in ids or "no" not in ids:
-                raise RuntimeError("no single-token yes/no from the tokenizer")
-            if not any(k in ids for k in _LETTERS):
-                raise RuntimeError("no single-token letters from the tokenizer")
-            self._letter_ids = ids
-        except Exception as e:
-            logger.warning("decision_backend_d1 letter ids failed: %r", e)
-            self._letter_ids = None
-            raise
+            r = _pooled().post(
+                f"http://127.0.0.1:{_server_port()}/tokenize",
+                json={"content": form, "add_special": False},
+                timeout=5.0,
+            )
+            toks = r.json().get("tokens", [])
+            ids = [t["id"] if isinstance(t, dict) else int(t) for t in toks]
+            return ids[0] if ids else None
+        except Exception:  # noqa: BLE001 - a failed lookup is a missing id
+            return None
 
-    # ── prompt rendering (port of LiquidAI/d1-3B prompt.py) ──────────────
+    def _ensure_yes_no_ids(self) -> Dict[str, List[int]]:
+        """Single-token ids for every yes/no form - the NOUL readout (AC1.3).
+        Cached for the process; the tokenizer does not change with the quant."""
+        if self._yesno_ids is not None:
+            return self._yesno_ids
+        ids: Dict[str, List[int]] = {}
+        for key, forms in (("yes", _YES_FORMS), ("no", _NO_FORMS)):
+            for form in forms:
+                tid = self._tokenize_first(form)
+                if tid is not None:
+                    ids.setdefault(key, []).append(tid)
+        if "yes" not in ids or "no" not in ids:
+            raise RuntimeError("no single-token yes/no from the tokenizer")
+        self._yesno_ids = ids
+        return ids
+
+    def _name_tokens(self, name: str) -> List[int]:
+        """The option NAME's token ids, in the BARE form.
+
+        Measured live 2026-10-08: the criteria block renders each name at the
+        start of a line, so d1 emits the BARE form (`pass`, id 9358) - the
+        space-prefixed form (` pass`) is not in the answer-slot distribution at
+        all. The bare form IS the readout. Cached per name.
+        """
+        cached = self._name_ids.get(name)
+        if cached is None:
+            try:
+                r = _pooled().post(
+                    f"http://127.0.0.1:{_server_port()}/tokenize",
+                    json={"content": name, "add_special": False},
+                    timeout=5.0,
+                )
+                toks = r.json().get("tokens", [])
+                cached = [t["id"] if isinstance(t, dict) else int(t) for t in toks]
+            except Exception:  # noqa: BLE001 - a failed lookup is a missing id
+                cached = []
+            self._name_ids[name] = cached
+        return list(cached)
+
+    def _name_readout(
+        self, names: Sequence[str]
+    ) -> Optional[Tuple[Dict[str, Tuple[Tuple[int, ...], ...]], int]]:
+        """``(name -> per-position acceptable token ids, positions needed)`` -
+        the CHOICE readout (AC1.2), or None when the options cannot be
+        separated.
+
+        The answer slot holds ONE token, so the fast path reads each name's
+        FIRST token. Two options can share that token (`speak_all` and
+        `speak_first_only` both begin `speak`; `unsafe` and `unsure` both begin
+        `uns`): a max-pool would then hand them EQUAL probability - a coin flip
+        reported as a calibrated probability. When that happens the readout
+        widens to the FULL name sequence and matches it across positions, so the
+        options separate again and no consumer loses its scoring (REQ-9 AC9.5).
+
+        Returns None only when two options are truly inseparable (identical
+        token sequences) or a name has no tokenizer form at all.
+        """
+        firsts: Dict[str, int] = {}
+        for name in names:
+            toks = self._name_tokens(name)
+            if not toks:
+                logger.warning(
+                    "decision_backend_d1: option %r has no tokenizer form - the "
+                    "native readout cannot score it", name,
+                )
+                return None
+            firsts[name] = toks[0]
+
+        seen: Dict[int, str] = {}
+        collide = False
+        for name, tid in firsts.items():
+            other = seen.get(tid)
+            if other is not None and other != name:
+                collide = True
+                logger.info(
+                    "decision_backend_d1: options %r and %r share first token id "
+                    "%d - reading the full NAME sequence instead (AC1.2)",
+                    other, name, tid,
+                )
+            seen[tid] = name
+        if not collide:
+            return {n: ((t,),) for n, t in firsts.items()}, 1
+
+        seqs = {n: self._name_tokens(n) for n in names}
+        used: Dict[Tuple[int, ...], str] = {}
+        for name, seq in seqs.items():
+            key = tuple(seq)
+            other = used.get(key)
+            if other is not None and other != name:
+                logger.warning(
+                    "decision_backend_d1: options %r and %r have IDENTICAL token "
+                    "sequences - the native readout cannot separate them; "
+                    "refusing to score (AC1.4)", other, name,
+                )
+                return None
+            used[key] = name
+        return {n: tuple((t,) for t in seq) for n, seq in seqs.items()}, \
+            max(len(s) for s in seqs.values())
+
+    # ── prompt rendering (LiquidAI/d1-3B native Decision Index shapes) ────
+    #
+    # REQ-1 (AC1.1-AC1.4): the native named-criteria shapes, transported over
+    # /v1/chat/completions. The renderers return the QUESTION TEXT; the chat
+    # template is applied by the server, so the hand-rolled BOS/im_start prompt
+    # of the retired /completion path is gone.
     @staticmethod
     def _state_block(state: Any) -> str:
         """json_only style: a string renders as itself; anything else as
@@ -317,48 +425,48 @@ class D1Backend:
         return json.dumps(state, ensure_ascii=False, indent=2, default=str) + "\n\n"
 
     @classmethod
-    def _render(cls, state: Any, instruction: str, options: Sequence[str]) -> str:
-        lines = "\n".join(
-            f"{_LETTERS[i]} {opt}" for i, opt in enumerate(options)
-        )
-        question = (
-            f"{instruction}\n\nOptions:\n{lines}\n\n"
-            "Reply with the option code only."
-        )
+    def _question_choice(cls, state: Any, instruction: str,
+                         criteria: Any, names: Sequence[str]) -> str:
+        """The native CHOICE question (AC1.2).
+
+        The criteria block is a mapping of ``name -> description`` and the
+        answer IS the name - d1 is trained on named options, not on A/B/C
+        letters. A name with no declared description renders as the bare name.
+        """
+        lines = []
+        for n in names:
+            desc = ""
+            if isinstance(criteria, dict):
+                desc = str(criteria.get(n) or "")
+            lines.append(f"{n}: {desc}".rstrip() if desc else str(n))
         return (
-            f"{_BOS}{_IM_START}user\n{cls._state_block(state)}\nQUESTION:\n"
-            f"{question}{_IM_END}\n{_IM_START}assistant\n"
+            f"{cls._state_block(state)}\nQUESTION:\n{instruction}\n\n"
+            f"Options:\n" + "\n".join(lines) + "\n\n"
+            "Reply with the option name only."
         )
 
     @classmethod
-    def _render_noul(cls, state: Any, instruction: str) -> str:
-        """The NOUL template (prompt.py question_block for Noul): d1's native
-        calibrated shape for yes/no questions — NOT a 2-option letter menu.
+    def _question_noul(cls, state: Any, instruction: str) -> str:
+        """The NOUL template: d1's native calibrated shape for yes/no questions.
         V1 probe: 98.8% / 96.5% polarity-correct on this exact shape."""
-        question = f"{instruction}\n\nReply with yes or no only."
         return (
-            f"{_BOS}{_IM_START}user\n{cls._state_block(state)}\nQUESTION:\n"
-            f"{question}{_IM_END}\n{_IM_START}assistant\n"
+            f"{cls._state_block(state)}\nQUESTION:\n{instruction}\n\n"
+            "Reply with yes or no only."
         )
 
     @classmethod
-    def _render_score(cls, state: Any, instruction: str,
-                      levels: Sequence[str]) -> str:
-        """The SCORE template: an ORDERED level answer, lowest first (AC4.5).
+    def _question_score(cls, state: Any, instruction: str,
+                        levels: Sequence[str]) -> str:
+        """The SCORE question: an ORDERED level answer, lowest first (AC4.5).
 
         Schema-only in this spec - no consumer is promoted to `score` yet - but
-        the type must exist in the renderer (AC4.5) so an ordered-level question
-        has a home instead of being forced into a `choice`. The readout pools
-        over the level NAME tokens exactly as `choice` does, in the declared
-        order."""
-        lines = "\n".join(f"{_LETTERS[i]} {lv}" for i, lv in enumerate(levels))
-        question = (
-            f"{instruction}\n\nLevels, lowest first:\n{lines}\n\n"
-            "Reply with the level code only."
-        )
+        the type must exist in the renderer so an ordered-level question has a
+        home instead of being forced into a `choice`."""
+        body = "\n".join(str(lv) for lv in levels)
         return (
-            f"{_BOS}{_IM_START}user\n{cls._state_block(state)}\nQUESTION:\n"
-            f"{question}{_IM_END}\n{_IM_START}assistant\n"
+            f"{cls._state_block(state)}\nQUESTION:\n{instruction}\n\n"
+            f"Levels, lowest first:\n{body}\n\n"
+            "Reply with the level name only."
         )
 
     @staticmethod
@@ -398,7 +506,7 @@ class D1Backend:
                 )
                 return None  # fail-closed: never score on a wrong model
             opts = [o for o in options if isinstance(o, str) and o]
-            if not opts or len(opts) > len(_LETTERS):
+            if not opts:
                 return None
             # REQ-19 (the GLiNER contract, carried over): auto-register the
             # consumer's criteria on first sight — a new decision point
@@ -456,7 +564,7 @@ class D1Backend:
             if dtype == "noul":
                 # A noul consumer's options ARE the true/false pair. A caller
                 # that passes anything else is a declaration mismatch: refuse
-                # (fail-closed) rather than silently render a letter menu.
+                # (fail-closed) rather than silently render another shape.
                 if not {o.strip().lower() for o in opts} <= _YES_NO_LOWER:
                     logger.info(
                         "decision_backend_d1: consumer=%s is declared noul but "
@@ -467,8 +575,13 @@ class D1Backend:
                 instruction = instruction or self._spec_instruction(
                     consumer_id, "Is this statement true?"
                 )
-                prompt = self._render_noul(state, instruction)
-                readout_keys = ["yes", "no"]
+                text = self._question_noul(state, instruction)
+                # The yes/no readout max-pools over the FORMS (yes/Yes/YES) at
+                # the single answer slot - the alternatives live in position 0.
+                readout = {
+                    k: (tuple(ids),) for k, ids in self._ensure_yes_no_ids().items()
+                }
+                width = 1
                 names = [o.strip().lower() for o in opts]
                 # Normalise: the true label first, whatever order the caller
                 # used (the engine reads P(true) by NAME, order is ours).
@@ -483,35 +596,61 @@ class D1Backend:
                 # in the renderer so a level question has a home rather than
                 # being forced into a `choice`.
                 if dtype == "score":
-                    prompt = self._render_score(state, instruction, opts)
+                    text = self._question_score(state, instruction, opts)
                 else:
-                    prompt = self._render(state, instruction, opts)
-                readout_keys = [_LETTERS[i] for i in range(len(opts))]
+                    text = self._question_choice(
+                        state, instruction, declared_criteria(consumer_id), opts,
+                    )
+                # AC1.2: the readout pools over the NAME tokens. A consumer
+                # whose option names cannot be separated at the answer slot
+                # widens to the full name sequence; one that is truly
+                # inseparable fails closed here, with the pair named in the log.
+                got = self._name_readout(opts)
+                if got is None:
+                    return None
+                readout, width = got
                 names = list(opts)
+            # REQ-1 (AC1.1): ONE forward pass over /v1/chat/completions with the
+            # image-capable message shape. The retired /completion letter path is
+            # GONE (AC1.4) - a failure to score returns None and the consumer
+            # fails closed, exactly as before.
             t0 = self._clock()
             r = _pooled().post(
-                f"http://127.0.0.1:{_server_port()}/completion",
+                f"http://127.0.0.1:{_server_port()}/v1/chat/completions",
                 json={
-                    "prompt": prompt,
-                    "n_predict": 1,
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"type": "text", "text": text}],
+                    }],
+                    "max_tokens": max(1, int(width)),
                     "temperature": 0.0,
                     "n_probs": _N_PROBS,
-                    "add_special": False,
-                    "cache_prompt": False,
                 },
                 timeout=_TIMEOUT_S,
             )
             r.raise_for_status()
             # Both llama.cpp logprob shapes, `id` authoritative (AC0.3).
-            logz = _extract_logprobs(r.json())
-            if not logz:
+            positions = _extract_logprobs_all(r.json())
+            if not positions:
                 return None
-            # Readout (prompt.py): max-pool per option group, softmax.
+            # Readout: for each position take the best accepted form, then
+            # average across the option's positions, so a longer name is not
+            # penalised by summing more terms.
             scores: List[float] = []
-            for key in readout_keys:
-                group = (self._letter_ids or {}).get(key, [])
-                vals = [logz[t] for t in group if t in logz]
-                scores.append(max(vals) if vals else float("-inf"))
+            for key in names:
+                plan = (readout or {}).get(key, ())
+                vals: List[float] = []
+                for i, accepted in enumerate(plan):
+                    if i >= len(positions):
+                        vals = []
+                        break
+                    present = [positions[i][t] for t in accepted
+                               if t in positions[i]]
+                    if not present:
+                        vals = []
+                        break
+                    vals.append(max(present))
+                scores.append(sum(vals) / len(vals) if vals else float("-inf"))
             m = max(scores)
             exps = [math.exp(s - m) if s > float("-inf") else 0.0 for s in scores]
             tot = sum(exps)

@@ -334,7 +334,138 @@ differently.
 
 ## Wave 2 — Native readout (gate TG-2)
 
-_pending._
+The transport swap. This is where behaviour changes.
+
+### What landed
+
+- **T2.1** `decide()` posts to `/v1/chat/completions` with the image-capable
+  message shape (`messages[0].content = [{"type":"text", ...}]`). `DecisionScore`
+  and `CandidateScore` are unchanged (AC1.1).
+- **T2.2** `_question_choice` renders LiquidAI's criteria block
+  (`name: description`, answer = the NAME) and the readout pools over the NAME
+  tokens (AC1.2).
+- **T2.3** `_question_noul` renders the yes/no instruction; the readout
+  max-pools over the yes/no FORMS at the answer slot, and `true` is normalised
+  first regardless of caller order - the previous behaviour, preserved exactly
+  (AC1.3).
+- **T2.4** Both logprob shapes are parsed, `id` authoritative. The new
+  `_extract_logprobs_all` returns PER-POSITION maps; `_extract_logprobs` is now
+  its position-0 view (AC0.3).
+- **T2.5** The letter scoring path is DELETED: no `_LETTERS`, no
+  "Reply with the option code only.", no `/completion` call, and the hand-rolled
+  BOS/im_start prompt is gone (the chat template is the server's). A failure to
+  score still returns `None` and the consumer fails closed (AC1.4).
+- **T1.5/T2** `_question_score` renders ordered levels for the `score` type
+  (schema-only).
+
+### The readout: three measurements that changed the design
+
+The spec's AC1.2 says the readout "pools over the NAME tokens". Measuring the
+real option names on the live tokenizer showed that is not a one-token problem:
+
+1. **d1 emits the BARE form.** The criteria block renders each name at the start
+   of a line, and the answer-slot distribution contains the bare name
+   (`pass` = id 9358 at −1.03, the top token) - the space-prefixed form
+   (` pass` = 1729) is not in the top 512 at all. The readout therefore reads
+   the bare form. (An earlier draft used the space form, which made
+   `review_verdict` and `mode` return nothing.)
+2. **Real names are multi-token.** `search_web`, `cover_open_fact`,
+   `speak_first_only`, `card_plus_summary` are 2-3 tokens each. A one-token
+   readout can only ever use the FIRST token.
+3. **Two consumers' first tokens collide.** `speak_all` and
+   `speak_first_only` both begin `speak` (id 6575); `unsafe` and `unsure` both
+   begin `uns` (id 5994). A max-pool over a shared token gives those options
+   EQUAL probability - a coin flip reported as a calibrated probability.
+
+  The first-token-only readout would therefore have to fail those two consumers
+  closed, which is a capability traded away - forbidden by **REQ-9 AC9.5**. The
+  readout is instead **widened only when a collision occurs**: it then matches
+  the option's FULL name sequence across positions and averages per position.
+  This satisfies AC1.2 (it pools over the NAME tokens - all of them) and AC9.5
+  (no consumer loses its scoring). The non-colliding path is unchanged: one
+  token, one position.
+
+  Measured after the change, all 14 consumers score:
+
+  | consumer | type | chosen | conf | ms |
+  |---|---|---|---|---|
+  | done | noul | yes | 0.902 | 64 |
+  | sufficient | noul | yes | 0.811 | 64 |
+  | needs_action | noul | no | 0.808 | 36 |
+  | web_intent | noul | no | 0.764 | 25 |
+  | use_thinking | noul | no | 0.967 | 33 |
+  | escalate_incomplete | noul | no | 0.921 | 30 |
+  | call_closing | noul | yes | 0.914 | 27 |
+  | tool_choice | choice | search_web | 0.979 | 55 |
+  | review_verdict | choice | pass | 0.711 | 25 |
+  | click_safety | choice | safe | 1.0 | 63 |
+  | narration | choice | stay_silent | 1.0 | 93 |
+  | presentation | choice | prism_card | 0.368 | 30 |
+  | depth_route | choice | finalize | 0.963 | 35 |
+  | mode | choice | research | 0.979 | 27 |
+
+  **Per-consult latency p50 34 ms, max 93 ms** (n=14, warm) - FASTER than the
+  retired `/completion` letter path, which measured p50 139 ms. The chat
+  template route costs less prefill than the hand-rolled prompt.
+
+  `narration` and `click_safety` are exactly the two consumers the widening
+  rescues; without it they would have produced no rows.
+
+### A RIPPLE-map gap
+
+`backend/tests/behavioral/test_warmup_width.py` pins `D1Backend._render` - the
+retired letter renderer - and the RIPPLE map does not list it. The test's
+property (the prompt grows with the option count) is unchanged, so its
+assertion moved to `_question_choice` in the same commit, marked
+STALE-BY-SPEC. **The RIPPLE map's "tests that MUST change" table is
+incomplete**: it lists six tests plus the new ones and misses this one.
+
+### Verification
+
+- **T2.6** Native probe re-run: **3/3 image-first, 3/3 text-first** at
+  0.85-1.00 confidence. VERDICT: NATIVE SCHEMA GROUNDS. (The Wave 0 image-first
+  failure did not reproduce; both orders pass.)
+- **AC8.1** Contract suite + the new readout file: **118 passed, 1 pre-existing
+  failure**.
+- **AC8.2 / T2.7** Row counts (`evidence/wave1_...json` → `wave2_...json`):
+  distinct 214 → 388, and **`skipped.other_backend` is UNCHANGED at 19781** -
+  every letter-era row is still in the ledger and still counted as
+  `other_backend`. Nothing was deleted (AC1.5). Consumers that moved:
+  `tool_choice` 72→144, `review_verdict` 45→89, `depth_met` 24→36,
+  `narration` 23→32, `web_intent` 22→31, `event_family` 8→14,
+  `user_feedback` 4→8, `event_type:memory` 4→8, `presentation` 3→4,
+  `event_type:delivery` 4→6, `event_type:control` 1→2.
+  **Two consumers that read 0 rows now produce them: `done` 0→5 and
+  `depth_route` 0→5.** Both are REWIRE/REGISTER cases in `FEASIBILITY.md` - the
+  native readout scores them where the retired path returned nothing, so the
+  wiring verdict is at least partly a READOUT problem, not only a lane problem.
+  `flipped` is empty and every consumer is still `shadow`. `duplicates` rose
+  46 → 64 (the write-time dedup eating rows - the AC6.3a-1 ridge, Wave 5's job).
+  No consumer changed status.
+- **AC8.3** Live eval, coding trio, **3/3 PASS, STANDARDS: no regression**:
+
+  | task | reply_s (Wave 2) | reply_s (Wave 0 baseline) |
+  |---|---|---|
+  | c02_add_slugify | 14 | 25.4 |
+  | c10_create_module | 18 | 11.7 |
+  | c15_iterate_until_green | 38 | 136.9 |
+
+  As in Wave 1, a first run taken immediately after the backend restart reported
+  two `reply_s` standards regressions (c02 91.3s, c10 37.3s); the warm re-run
+  shows none. The Oracle is FASTER on this route (p50 34 ms vs the retired
+  139 ms), so there is no mechanism for a latency regression.
+- **REQ-9** No consumer lost its scoring; the two colliding consumers are kept
+  by the widening. No new orphan. Phase flags untouched.
+
+### TG-2 verdict
+
+- The native probe is still 3/3 → **PASS**
+- The live eval passes with no standards regression → **PASS**
+- The letter rows are present and reclassified → **PASS** (present, and still
+  `other_backend`; the reclassification-by-identity lands in Wave 3)
+
+**TG-2 GREEN.**
+
 
 ## Wave 3 — Identity includes readout and criteria (gate TG-3)
 
