@@ -326,7 +326,11 @@ def _enable_oracle(monkeypatch, tmp_path, consumers, threshold=0.85):
     monkeypatch.setattr(_oc, "CALIBRATION_PATH", tmp_path / "cal.json")
     _oc._CACHE.clear()
     monkeypatch.setenv("IRIS_DECISION_ENFORCE", ",".join(consumers))
-    monkeypatch.setattr(_de, "_current_backend_identity", lambda: backend)
+    # REQ-2 Wave 3: `_current_backend_identity` now takes (consumer_id,
+    # candidate_cap) to compose the full decision identity; the fake answers
+    # the identity question for ANY consumer, so the keys below can key the
+    # bar record and the calibration file by the same constant.
+    monkeypatch.setattr(_de, "_current_backend_identity", lambda *a, **k: backend)
     monkeypatch.setattr(_de, "_config_stale", lambda: False)
     monkeypatch.setattr(_de, "_ENFORCEMENT_LOGGED", True)
 

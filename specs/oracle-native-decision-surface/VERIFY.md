@@ -469,7 +469,143 @@ incomplete**: it lists six tests plus the new ones and misses this one.
 
 ## Wave 3 — Identity includes readout and criteria (gate TG-3)
 
-_pending._
+**T3.1 identity composition.** `CURRENT_READOUT_MODE = "native"`,
+`LEGACY_READOUT_MODE = "legacy_letters"`, `CANDIDATE_CAP_DEFAULT = 6` in
+`decision_engine.py`. `criteria_hash(cid, cap)` is SHA1[:12] over JSON
+`{type, criteria, cap}` of the consumer's DECLARED criteria (AC13.3: the cap is
+inside the hash). `decision_identity(model, readout, cid=None, cap=6)` builds
+`model|readout` without a consumer and the full
+`model|readout|criteria_hash` with one. `_current_backend_identity(cid, cap)`
+resolves the model from the loaded engine, else the declared d1 variant
+(cheap construction, no weights/server touch), and composes around it. Smoke
+(reproduces the handoff's hashes exactly):
+`backend: d1-3b-ad-q4_k_m|native`;
+`done: d1-3b-ad-q4_k_m|native|d02f1c9fb68e`;
+`tool_choice: d1-3b-ad-q4_k_m|native|cda1f8f4ca17`;
+`legacy tool_choice: d1-3b-ad-q4_k_m|legacy_letters|cda1f8f4ca17`;
+cap 6->8 changes the hash; editing `done`'s criteria changes it
+(`d02f1c9fb68e` -> a new digest).
+
+**T3.2 fail-closed stays.** `EngineConfig.threshold_for` composes the key from
+`self.backend_id` (the BARE model id, set from the loaded backend at load
+time) plus `CURRENT_READOUT_MODE` plus `criteria_hash(cid, cap)`; with no
+`backend_id` on the config it falls back to the process-wide resolver. An
+unknown identity resolves `None` (AC2.2). `decides()`/`oracle_acts()` ask the
+calibration map with the full per-consumer identity; the existing
+`benchmarks/oracle_calibration.json` is keyed by the retired bare ONNX id and
+STOPS RESOLVING - fail-closed and deliberate (design §2: no consumer is
+enforced today, so this is the empty-map state TG-3 requires). The file is NOT
+re-keyed to pretend its entries are native (that would be a silent identity
+lie); a fitted d1 curve arrives with Wave 5+ measurement.
+
+**T3.3 superseded_flips.** Gains `readout_mode` in the compared scalars and a
+`criteria_hash_of(cid)` callback for the per-consumer hash (a callback because
+the hash is per consumer and cannot live in the shared `deployed` dict).
+AC13.8 is stated in the docstring AND pinned by a test: only
+`status == "enforced"` is inspected, so a `sampled` consumer is never reported
+superseded - a real gap once Wave 5's sampled rung is live, stated not fixed.
+
+**T3.4 criteria edit re-identifies.** Pinned end-to-end by the new contract
+file (below): editing one consumer's criteria text kills its threshold; a
+readout change kills it; a cap move kills it; a threshold recorded under
+another consumer's identity is not theirs; a bare model id is no longer a key.
+
+**T3.5 the reset, measured and stated honestly.**
+Evidence: `evidence/wave3_consumer_report_before.json` (HEAD code, pre-reset)
+and `evidence/wave3_consumer_report_after.json` (this wave's code).
+Before: 21 consumers, all shadow, all threshold=None (the d1 yaml entry is
+deliberately absent - fail-closed since the model swap), flipped empty,
+`other_backend` 19781, `no_label` 27, `duplicates` 64; distinct rows:
+tool_choice 144 (152 raw), review_verdict 89, depth_met 36, narration 32,
+web_intent 31 (35 raw), event_family 14 (25 raw), event_type:* 17 (26 raw),
+user_feedback 8, depth_route 5, done 5, presentation 4 (36 raw),
+escalate_incomplete 2, recovery_strategy 1, five at 0.
+After: IDENTICAL per-consumer row counts and skips - nothing deleted, nothing
+reclassified in the ledger; the only change is the config block
+(`engine_id: d1-3b-ad-q4_k_m` bare for row filtering, `backend_id:
+d1-3b-ad-q4_k_m|native`, `readout_mode: native`).
+
+THE ATTRIBUTION FINDING (handoff blocker #5, answered by inspection): a
+ledger decision row carries NO readout marker. Payload fields observed on
+20,260 rows: `criteria_version` is a per-consumer criteria tag
+(`done/v2`, `depth_met/v2`...) set by three hand-written sites, NOT a readout
+marker; `engine` is the bare model id. d1 served BOTH eras under one id -
+479 raw d1 rows span 2026-10-08 17:40 -> 2026-10-09 01:07, i.e. the letter
+window (Wave 0/1 eval traffic) AND the native window (Wave 2 eval traffic).
+So design §2's consequence "every letter-era row becomes other_backend on the
+report" CANNOT be executed from row content: a wall-clock cutoff would be a
+guess measured against a restart nobody timestamped. The honest reset is what
+this wave actually implements: letter-era THRESHOLDS, calibration entries and
+flips stop resolving because the identity now contains the readout and the
+criteria - the map is legitimately empty, and `--write` persisted the bar
+record re-keyed to per-consumer full decision identities (sample:
+`tool_choice.config.backend_id = d1-3b-ad-q4_k_m|native|cda1f8f4ca17`,
+`engine_id = d1-3b-ad-q4_k_m`, `readout_mode = native`;
+`benchmarks/consumer_bar_record.json` was stale gliner-era and is now the
+measured d1 state - 21 consumers, all shadow). Row-level `other_backend`
+reclassification needs a readout field ON the row, which means touching the
+row writers - Wave 5 territory (RIPPLE assigns `tool_bridge` row production
+there); stated, not smuggled in.
+
+**The test-seam repair (stale-by-spec, same commit).** The identity function
+gained `(consumer_id, candidate_cap)`; five fakes monkeypatched it zero-arg
+(`backend/tests/conftest.py`, `contract/test_bar_record_enforcement.py` x6
+sites, `contract/test_oracle_enforcement_contract.py`,
+`tests/test_consumer_tasks.py`, `behavioral/test_config_roundtrip.py`). Each
+fake now answers the SAME constant for any args - the tmp bar/calibration
+files are keyed by that constant, so every test still varies exactly the one
+key it pins; no assertion, input or load changed. 27 of the 28 failures the
+partial worktree produced trace to this one signature change (TypeError
+swallowed by `decides()`'s fail-closed handler). Two fixtures keyed thresholds
+by a BARE model id - a shape AC2.1 deletes on purpose
+(`unit/test_tool_decision_threshold_resolution.py`,
+`behavioral/test_config_roundtrip.py::test_cap_change_marks_threshold_stale`);
+both now key by the real composed identity via `decision_identity()`, pinning
+the same properties (own curve resolves, unknown/stale refuses). Named out
+loud per the test rule: these two fixtures' INPUTS moved from bare-model keys
+to identity keys; their names and assertions still describe what they drive.
+
+**RIPPLE-map gap (noted, as Wave 2 did for warmup_width).** RIPPLE lists the
+report script only for `load_rows` (Wave 5); this wave also touches
+`thresholds_by_consumer`/the `--write` path so the bar record carries
+per-consumer decision identities (handoff blockers #1/#2 sanction it).
+
+**Contract suite (AC8.1)** - 6 named files + Wave 1/2 additions +
+`test_decision_identity_contract.py` (13 new tests) + behavioral gates +
+warmup width: **218 passed, 1 PRE-EXISTING failure**
+(`TestCtDe6EventShapes::test_chat_message_payload_pinned`, the stale AST pin
+failing since Wave 0's baseline). Widened sweep (decision-engine unit,
+tool-decision unit + threshold resolution, calibration unit + contract,
+telemetry, dev-menu, consumer-tasks, event-oracle, oracle-phase, bar-record,
+surface-observer, config-roundtrip, consumer-parity): **183 passed, 5
+PRE-EXISTING failures** - proven by `git stash push` of all wave files and
+re-running: 3x `TestScoring` (stale FakeOnnxBackend), 1x
+`test_missing_db_unverified`, 1x `test_tool_choice_unchanged_by_task_refactor`
+(`ModuleNotFoundError: decision_backend_onnx` - the module the model swap
+deleted); identical failures on HEAD.
+
+**Live eval (AC8.3)** - fixed coding trio, warm backend, machine quiet: c02
+31s cold / **19s warm re-run**, c10 9s, c15 38s - **3/3 PASS, STANDARDS: no
+regression** (results `evals/results/20261009-023910.json`). The cold c02
+matches the Wave 1/2 cold-boot artifact; the warm re-run is the claim.
+
+### TG-3 verdict
+
+- A readout change demonstrably returns `None` for the threshold -> **PASS**
+  (`test_a_readout_change_kills_the_threshold`).
+- A criteria edit demonstrably re-identifies the consumer and kills its
+  threshold -> **PASS** (`test_a_criteria_edit_kills_the_threshold`,
+  `test_criteria_edit_reidentifies_the_consumer`).
+- A flip measured under the letter readout / edited criteria is reported
+  superseded -> **PASS** (the four `superseded_flips` tests).
+- The map is legitimately empty -> **PASS** (every d1 consumer resolves
+  `threshold=None` before AND after; the bar record is re-keyed, all shadow,
+  nothing flipped).
+- Row counts unchanged; the reset is by IDENTITY, and the missing readout
+  marker on rows is stated rather than papered over -> **PASS, with the
+  finding above**.
+
+**TG-3 GREEN.**
 
 ## Wave 4 — State honoured, and images (gate TG-4)
 

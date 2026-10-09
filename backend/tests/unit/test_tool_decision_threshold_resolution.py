@@ -19,16 +19,29 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.agent.decision_engine import EngineConfig
+from backend.agent.decision_engine import (
+    CURRENT_READOUT_MODE,
+    EngineConfig,
+    decision_identity,
+)
 from backend.agent.tool_decision import (
     _LEGACY_THRESHOLD,
     _NEVER_ENFORCE_THRESHOLD,
     ToolDecisionBox,
 )
 
+
+def _identity(backend_id, consumer_id="tool_choice", cap=6):
+    """REQ-2 AC2.1 (Wave 3): the threshold key is the full DECISION identity
+    ``model|readout_mode|criteria_hash`` - a bare model id is no longer a key
+    (a readout change or criteria edit must empty the map, AC2.2), so these
+    fixtures key their curves by the identity the composition really builds."""
+    return decision_identity(backend_id, CURRENT_READOUT_MODE, consumer_id, cap)
+
+
 _THRESHOLDS = {
-    "lfm2-350m-extract": 0.85,
-    "gliner25-decide-onnx-int8": 0.40,
+    _identity("lfm2-350m-extract"): 0.85,
+    _identity("gliner25-decide-onnx-int8"): 0.40,
 }
 
 

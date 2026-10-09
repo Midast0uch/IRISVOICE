@@ -13,6 +13,12 @@ active engine's rows reported precision 0.442 for a model that was right every
 time. A flip carrying over from a retired model is the same error pointed the
 other way - it would trust a model that is no longer the one answering.
 
+"`_current_backend_identity` (REQ-2 Wave 3 note: the identity function now
+takes ``(consumer_id, candidate_cap)`` and composes the per-consumer decision
+identity ``model|readout_mode|criteria_hash``; these fakes answer the SAME
+constant for every consumer, so each test still varies exactly the one key it
+pins - the record path).
+
 CHANGED (2026-10-05, Oracle Stage B, owner-approved): a record alone no longer
 enforces. `enforced_consumers()` is the INTERSECTION of the owner's switch
 (IRIS_DECISION_ENFORCE, default empty), the earned bar and a fitted threshold.
@@ -61,7 +67,7 @@ def test_a_flip_measured_on_the_active_engine_is_enforced(tmp_path, monkeypatch)
     _write_record(tmp_path, monkeypatch, consumer_id="mode",
                   status="enforced", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity",
-                        lambda: "gliner25-decide-onnx-int8")
+                        lambda *a, **k: "gliner25-decide-onnx-int8")
     assert "mode" in de.enforced_consumers()
 
 
@@ -70,7 +76,7 @@ def test_a_flip_measured_on_a_RETIRED_engine_is_refused(tmp_path, monkeypatch):
     _write_record(tmp_path, monkeypatch, consumer_id="mode",
                   status="enforced", measured_on="LFM2-350M-Extract")
     monkeypatch.setattr(de, "_current_backend_identity",
-                        lambda: "gliner25-decide-onnx-int8")
+                        lambda *a, **k: "gliner25-decide-onnx-int8")
     assert "mode" not in de.enforced_consumers()
 
 
@@ -78,7 +84,7 @@ def test_a_shadow_record_enforces_nothing(tmp_path, monkeypatch):
     _write_record(tmp_path, monkeypatch, consumer_id="mode",
                   status="shadow", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity",
-                        lambda: "gliner25-decide-onnx-int8")
+                        lambda *a, **k: "gliner25-decide-onnx-int8")
     assert "mode" not in de.enforced_consumers()
 
 
@@ -86,7 +92,7 @@ def test_an_unknown_engine_identity_cannot_unlock_a_flip(tmp_path, monkeypatch):
     """An identity we cannot resolve must never be treated as a match."""
     _write_record(tmp_path, monkeypatch, consumer_id="mode",
                   status="enforced", measured_on="gliner25-decide-onnx-int8")
-    monkeypatch.setattr(de, "_current_backend_identity", lambda: "")
+    monkeypatch.setattr(de, "_current_backend_identity", lambda *a, **k: "")
     assert "mode" not in de.enforced_consumers()
 
 
@@ -94,7 +100,7 @@ def test_a_record_with_no_engine_recorded_cannot_unlock_a_flip(tmp_path, monkeyp
     _write_record(tmp_path, monkeypatch, consumer_id="mode",
                   status="enforced", measured_on="")
     monkeypatch.setattr(de, "_current_backend_identity",
-                        lambda: "gliner25-decide-onnx-int8")
+                        lambda *a, **k: "gliner25-decide-onnx-int8")
     assert "mode" not in de.enforced_consumers()
 
 
@@ -114,7 +120,7 @@ def test_the_manual_list_alone_enforces_nothing(tmp_path, monkeypatch):
     _write_record(tmp_path, monkeypatch, consumer_id="mode",
                   status="enforced", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity",
-                        lambda: "gliner25-decide-onnx-int8")
+                        lambda *a, **k: "gliner25-decide-onnx-int8")
     monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice")
     assert de.enforced_consumers() == frozenset()
     monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,mode")

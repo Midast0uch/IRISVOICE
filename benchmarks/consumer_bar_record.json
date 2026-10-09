@@ -1,310 +1,359 @@
 {
+  "call_closing": {
+    "config": {
+      "backend_id": "d1-3b-ad-q4_k_m|native|766aafe69f6f",
+      "backend_identity_source": "declared d1 variant",
+      "calibrated_cap": 6,
+      "candidate_cap": 6,
+      "criteria_hash": "766aafe69f6f",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
+    },
+    "consumer_id": "call_closing",
+    "ece": null,
+    "gap": "rows 0 < 100",
+    "precision": 0.0,
+    "rows": 0,
+    "status": "shadow"
+  },
   "depth_met": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|742ee317b9db",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "742ee317b9db",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "depth_met",
-    "ece": 0.0408,
-    "gap": "oof AUROC 0.5591 < 0.65 (confidence does not rank errors)",
-    "precision": 0.6086,
-    "rows": 654,
+    "ece": null,
+    "gap": "rows 36 < 100",
+    "precision": 0.0,
+    "rows": 36,
     "status": "shadow"
   },
   "depth_route": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|9b98d41ab20d",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "9b98d41ab20d",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "depth_route",
-    "ece": 0.1781,
-    "gap": "oof AUROC 0.5345 < 0.65 (confidence does not rank errors)",
+    "ece": null,
+    "gap": "rows 5 < 100",
     "precision": 0.0,
-    "rows": 454,
+    "rows": 5,
     "status": "shadow"
   },
   "done": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|d02f1c9fb68e",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "d02f1c9fb68e",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "done",
-    "ece": 0.053,
-    "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
-    "precision": 0.7397,
-    "rows": 534,
+    "ece": null,
+    "gap": "rows 5 < 100",
+    "precision": 0.0,
+    "rows": 5,
     "status": "shadow"
   },
   "escalate_incomplete": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|3c644f055a11",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "3c644f055a11",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "escalate_incomplete",
-    "ece": 0.1839,
-    "gap": "oof AUROC 0.4162 < 0.65 (confidence does not rank errors)",
-    "precision": 0.5578,
-    "rows": 346,
+    "ece": null,
+    "gap": "rows 2 < 100",
+    "precision": 0.0,
+    "rows": 2,
     "status": "shadow"
   },
   "event_family": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "event_family",
-    "ece": 0.1016,
-    "gap": "distinct rows 14 < 100",
+    "ece": null,
+    "gap": "rows 14 < 100",
     "precision": 0.0,
     "rows": 14,
     "status": "shadow"
   },
   "event_type:control": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "event_type:control",
-    "ece": 0.1933,
-    "gap": "distinct rows 4 < 100",
+    "ece": null,
+    "gap": "rows 2 < 100",
     "precision": 0.0,
-    "rows": 4,
+    "rows": 2,
     "status": "shadow"
   },
   "event_type:delivery": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "event_type:delivery",
-    "ece": 0.0383,
-    "gap": "distinct rows 4 < 100",
+    "ece": null,
+    "gap": "rows 6 < 100",
     "precision": 0.0,
-    "rows": 4,
+    "rows": 6,
     "status": "shadow"
   },
   "event_type:knowledge": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "event_type:knowledge",
-    "ece": 0.1584,
-    "gap": "distinct rows 6 < 100",
+    "ece": null,
+    "gap": "rows 1 < 100",
     "precision": 0.0,
-    "rows": 6,
+    "rows": 1,
     "status": "shadow"
   },
   "event_type:memory": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "event_type:memory",
-    "ece": 0.106,
-    "gap": "distinct rows 6 < 100",
+    "ece": null,
+    "gap": "rows 8 < 100",
     "precision": 0.0,
-    "rows": 6,
+    "rows": 8,
     "status": "shadow"
   },
   "mode": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|9dbe37590798",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "9dbe37590798",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "mode",
-    "ece": 0.3369,
-    "gap": "oof AUROC 0.4913 < 0.65 (confidence does not rank errors)",
-    "precision": 0.6304,
-    "rows": 545,
+    "ece": null,
+    "gap": "rows 0 < 100",
+    "precision": 0.0,
+    "rows": 0,
     "status": "shadow"
   },
   "narration": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|4c381b58c242",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "4c381b58c242",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "narration",
-    "ece": 0.2041,
-    "gap": "",
-    "precision": 0.8528,
-    "rows": 533,
-    "status": "enforced"
+    "ece": null,
+    "gap": "rows 32 < 100",
+    "precision": 0.0,
+    "rows": 32,
+    "status": "shadow"
   },
   "needs_action": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|e73783eedcee",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "e73783eedcee",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "needs_action",
     "ece": null,
-    "gap": "distinct rows 0 < 100",
+    "gap": "rows 0 < 100",
     "precision": 0.0,
     "rows": 0,
-    "status": "shadow"
-  },
-  "on_track": {
-    "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
-      "calibrated_cap": 6,
-      "candidate_cap": 6
-    },
-    "consumer_id": "on_track",
-    "ece": 0.2286,
-    "gap": "oof calibrated ECE 0.1177 > 0.05",
-    "precision": 0.7029,
-    "rows": 418,
     "status": "shadow"
   },
   "presentation": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|19cdf101a30d",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "19cdf101a30d",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "presentation",
-    "ece": 0.5696,
-    "gap": "distinct rows 2 < 100",
-    "precision": 1.0,
-    "rows": 2,
-    "status": "shadow"
-  },
-  "recovery_strategy": {
-    "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
-      "calibrated_cap": 6,
-      "candidate_cap": 6
-    },
-    "consumer_id": "recovery_strategy",
-    "ece": 0.2889,
-    "gap": "distinct rows 72 < 100",
-    "precision": 0.0,
-    "rows": 72,
-    "status": "shadow"
-  },
-  "retry_same": {
-    "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
-      "calibrated_cap": 6,
-      "candidate_cap": 6
-    },
-    "consumer_id": "retry_same",
     "ece": null,
-    "gap": "distinct rows 0 < 100",
-    "precision": 0.0,
-    "rows": 0,
-    "status": "shadow"
-  },
-  "review_verdict": {
-    "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
-      "calibrated_cap": 6,
-      "candidate_cap": 6
-    },
-    "consumer_id": "review_verdict",
-    "ece": 0.1743,
-    "gap": "oof AUROC 0.5498 < 0.65 (confidence does not rank errors)",
-    "precision": 0.2878,
-    "rows": 1537,
-    "status": "shadow"
-  },
-  "sufficient": {
-    "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
-      "calibrated_cap": 6,
-      "candidate_cap": 6
-    },
-    "consumer_id": "sufficient",
-    "ece": 0.8001,
-    "gap": "distinct rows 4 < 100",
+    "gap": "rows 4 < 100",
     "precision": 0.0,
     "rows": 4,
     "status": "shadow"
   },
+  "recovery_strategy": {
+    "config": {
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
+      "calibrated_cap": 6,
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
+    },
+    "consumer_id": "recovery_strategy",
+    "ece": null,
+    "gap": "rows 1 < 100",
+    "precision": 0.0,
+    "rows": 1,
+    "status": "shadow"
+  },
+  "review_verdict": {
+    "config": {
+      "backend_id": "d1-3b-ad-q4_k_m|native|672504bd12c6",
+      "backend_identity_source": "declared d1 variant",
+      "calibrated_cap": 6,
+      "candidate_cap": 6,
+      "criteria_hash": "672504bd12c6",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
+    },
+    "consumer_id": "review_verdict",
+    "ece": null,
+    "gap": "rows 89 < 100",
+    "precision": 0.0,
+    "rows": 89,
+    "status": "shadow"
+  },
+  "sufficient": {
+    "config": {
+      "backend_id": "d1-3b-ad-q4_k_m|native|9ad9e195fe49",
+      "backend_identity_source": "declared d1 variant",
+      "calibrated_cap": 6,
+      "candidate_cap": 6,
+      "criteria_hash": "9ad9e195fe49",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
+    },
+    "consumer_id": "sufficient",
+    "ece": null,
+    "gap": "rows 0 < 100",
+    "precision": 0.0,
+    "rows": 0,
+    "status": "shadow"
+  },
   "tool_choice": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "tool_choice",
-    "ece": 0.0664,
-    "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
-    "precision": 0.562,
-    "rows": 2122,
+    "ece": null,
+    "gap": "precision 0.000 < 0.90",
+    "precision": 0.0,
+    "rows": 144,
     "status": "shadow"
   },
   "use_thinking": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|13c559e10fb0",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "13c559e10fb0",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "use_thinking",
     "ece": null,
-    "gap": "distinct rows 0 < 100",
+    "gap": "rows 0 < 100",
     "precision": 0.0,
     "rows": 0,
     "status": "shadow"
   },
   "user_feedback": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|cda1f8f4ca17",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "cda1f8f4ca17",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.2608,
-    "gap": "minority class 2.4% < 5%",
+    "ece": null,
+    "gap": "rows 8 < 100",
     "precision": 0.0,
-    "rows": 250,
+    "rows": 8,
     "status": "shadow"
   },
   "web_intent": {
     "config": {
-      "backend_id": "gliner25-decide-onnx-int8",
-      "backend_identity_source": "declared ONNX variant",
+      "backend_id": "d1-3b-ad-q4_k_m|native|63e24d3d9d00",
+      "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 6,
-      "candidate_cap": 6
+      "candidate_cap": 6,
+      "criteria_hash": "63e24d3d9d00",
+      "engine_id": "d1-3b-ad-q4_k_m",
+      "readout_mode": "native"
     },
     "consumer_id": "web_intent",
-    "ece": 0.101,
-    "gap": "oof AUROC 0.5349 < 0.65 (confidence does not rank errors)",
-    "precision": 0.4939,
-    "rows": 654,
+    "ece": null,
+    "gap": "rows 31 < 100",
+    "precision": 0.0,
+    "rows": 31,
     "status": "shadow"
   }
 }

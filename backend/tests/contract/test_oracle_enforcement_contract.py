@@ -74,7 +74,11 @@ class _Chokepoint:
         self.asked: list = []
         self.stale = False
         monkeypatch.delenv("IRIS_DECISION_ENFORCE", raising=False)
-        monkeypatch.setattr(de, "_current_backend_identity", lambda: BACKEND)
+        # REQ-2 Wave 3: the identity function now takes (consumer_id,
+        # candidate_cap); this fake answers for ANY consumer, so the tmp
+        # record/calibration (keyed by BACKEND) keep pinning the chokepoint's
+        # behaviour rather than the identity string's composition.
+        monkeypatch.setattr(de, "_current_backend_identity", lambda *a, **k: BACKEND)
         monkeypatch.setattr(de, "_config_stale", lambda: self.stale, raising=False)
         monkeypatch.setattr(de, "_ENFORCEMENT_LOGGED", False, raising=False)
         self._write([], [], 0.70, BACKEND)

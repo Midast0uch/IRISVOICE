@@ -23,7 +23,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("consumer_bar")
 
@@ -174,10 +174,23 @@ def record_bars(
     measured: Dict[str, Dict[str, Any]],
     *,
     config: Optional[Dict[str, Any]] = None,
+    config_of: Optional[Callable[[str], Dict[str, Any]]] = None,
 ) -> Dict[str, ConsumerBar]:
-    """Build and persist the bar record for every measured consumer."""
+    """Build and persist the bar record for every measured consumer.
+
+    ``config`` is the SHARED measurement configuration. ``config_of(cid)``,
+    when given, merges PER-CONSUMER fields on top of it (REQ-2 AC2.1: the
+    decision identity and criteria hash belong to the decision point, not to
+    the shared header).
+    """
     record = {
-        cid: build_bar(cid, m, config=config)
+        cid: build_bar(
+            cid, m,
+            config=(
+                {**dict(config or {}), **dict(config_of(cid))}
+                if config_of is not None else config
+            ),
+        )
         for cid, m in (measured or {}).items()
     }
     save_bar_record(record)
@@ -219,21 +232,43 @@ def load_bar_record(path: Optional[Path] = None) -> Dict[str, ConsumerBar]:
 def superseded_flips(
     record: Dict[str, ConsumerBar],
     deployed: Dict[str, Any],
+    criteria_hash_of: Optional[Callable[[str], str]] = None,
 ) -> list:
-    """AC31.6: consumers ENFORCED on a configuration that has since moved.
+    """AC31.6 + REQ-2 AC2.3: consumers ENFORCED on a configuration that has
+    since moved.
 
     Returns their ids. A flip is only valid for the configuration it was
     measured at; when the deployed backend/cap/variant differs, the flip must
     be re-validated (or reverted to shadow) rather than silently standing.
+
+    REQ-2 (specs/oracle-native-decision-surface) adds the READOUT to the
+    compared scalars and the CRITERIA to the comparison: a flip measured under
+    the retired letter readout, or under criteria that have since been edited,
+    cannot stand (AC2.3). `criteria_hash_of(cid)` supplies the DEPLOYED criteria
+    hash - it is per-consumer, so it cannot live in the shared `deployed` dict.
+
+    KNOWN LIMIT (AC13.8, stated not fixed): this function returns early unless
+    ``bar.flipped`` - i.e. ``status == "enforced"``. A ``sampled`` consumer is
+    therefore never reported as superseded. Acceptable today, because a sampled
+    consumer is not enforcing anything, but it is a real gap once the sampled
+    rung (Wave 5) is live.
     """
     out: list = []
     for cid, bar in (record or {}).items():
         if not bar.flipped:
             continue
         measured_at = bar.config or {}
-        for key in ("candidate_cap", "backend_id", "variant"):
+        superseded = False
+        for key in ("candidate_cap", "backend_id", "variant", "readout_mode"):
             if key in measured_at and key in deployed:
                 if measured_at[key] != deployed[key]:
-                    out.append(cid)
+                    superseded = True
                     break
+        if not superseded and criteria_hash_of is not None:
+            recorded = measured_at.get("criteria_hash")
+            wanted = criteria_hash_of(cid)
+            if recorded and wanted and recorded != wanted:
+                superseded = True
+        if superseded:
+            out.append(cid)
     return sorted(out)

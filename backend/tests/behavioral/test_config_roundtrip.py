@@ -87,12 +87,22 @@ class TestCapChangeMarksThresholdStale:
         """AC25.5 / BT-DEI-16: a cap change marks the calibrated threshold
         STALE — threshold_for returns None (fail-closed) and enforcement is
         refused until the curve is re-derived."""
-        from backend.agent.decision_engine import EngineConfig
+        from backend.agent.decision_engine import (
+            CURRENT_READOUT_MODE,
+            EngineConfig,
+            decision_identity,
+        )
 
         # The calibrated configuration: cap 6 = the calibrated width.
+        # REQ-2 AC2.1 (Wave 3): the threshold key is the full DECISION
+        # identity `model|readout_mode|criteria_hash`; a bare model id is no
+        # longer a key. The property pinned below is unchanged: the curve
+        # resolves at the calibrated width and refuses once the cap moves.
+        _key = decision_identity(
+            "gliner25-decide-onnx-int8", CURRENT_READOUT_MODE, "tool_choice", 6)
         calibrated = EngineConfig(
             backend_id="gliner25-decide-onnx-int8",
-            backend_thresholds={"gliner25-decide-onnx-int8": 0.40},
+            backend_thresholds={_key: 0.40},
             candidate_cap=6,
             calibrated_cap=6,
         )
@@ -102,7 +112,7 @@ class TestCapChangeMarksThresholdStale:
         # on a curve measured at a different width.
         moved = EngineConfig(
             backend_id="gliner25-decide-onnx-int8",
-            backend_thresholds={"gliner25-decide-onnx-int8": 0.40},
+            backend_thresholds={_key: 0.40},
             candidate_cap=32,
             calibrated_cap=6,
         )
@@ -145,7 +155,9 @@ class TestStaleRefusesEnforcement:
         monkeypatch.setattr(consumer_bar, "BAR_PATH", tmp_path / "bar.json")
         monkeypatch.setattr(oracle_calibration, "CALIBRATION_PATH", tmp_path / "cal.json")
         oracle_calibration._CACHE.clear()
-        monkeypatch.setattr(de_mod, "_current_backend_identity", lambda: engine_id)
+        # REQ-2 Wave 3: the identity function takes (consumer_id,
+        # candidate_cap); the fake answers for ANY consumer.
+        monkeypatch.setattr(de_mod, "_current_backend_identity", lambda *a, **k: engine_id)
         monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,depth_met")
 
         # (a) calibrated configuration → enforcement proceeds.

@@ -677,30 +677,105 @@ class EngineCounters:
 # ENFORCEMENT (2026-10-05, Oracle Stage B): ONE chokepoint, `decides()` below.
 # Every site that lets the Oracle's verdict replace a rule or the Brain asks it;
 # nothing reads IRIS_DECISION_ENFORCE, the bar record or a threshold on its own.
-def _current_backend_identity() -> str:
-    """The ACTIVE engine's identity, resolved the way the report resolves it.
+# ── REQ-2: the DECISION IDENTITY (AC2.1) ────────────────────────────────────
+# Today the identity is the served GGUF filename variant alone
+# (`_current_backend_identity()`), and it is too small: the probe showed the
+# READOUT changes the model's behaviour more than any instruction does, and
+# oracle.md §19.3.6 already says a changed INPUT is a new identity. The readout
+# is the largest such input, and the criteria are the second.
+#
+#     identity = f"{model_id}|{readout_mode}|{criteria_hash}"
+#
+# A calibrated threshold cannot survive a change of readout or of criteria: the
+# curve was measured on ONE input shape, so re-using it under another is the
+# silent-flip mistake this key exists to prevent.
+CURRENT_READOUT_MODE = "native"
+# The RETIRED letter mode, recorded so historical rows address a real, nameable
+# identity rather than silently matching the native one (T3.1).
+LEGACY_READOUT_MODE = "legacy_letters"
+# AC13.3: the candidate cap changes the RENDERED criteria block, so it belongs
+# inside the hash - tuning the cap re-identifies every choice consumer exactly
+# as editing its criteria text does.
+CANDIDATE_CAP_DEFAULT = 6
 
-    The loaded engine knows its own id; this process usually has not loaded one,
-    so the DECLARED ONNX variant is the fallback (constructing the backend does
-    not load its weights). "" when neither is available - and an unknown identity
-    must never unlock an enforcement.
+
+def criteria_hash(consumer_id: str,
+                  candidate_cap: int = CANDIDATE_CAP_DEFAULT) -> str:
+    """A stable digest of *consumer_id*'s DECLARED criteria block (AC2.1).
+
+    Editing a consumer's criteria - or the candidate cap that bounds its
+    rendered option list (AC13.3) - changes this digest, so the consumer is
+    re-identified and its threshold stops resolving. That is oracle.md §19.3.6's
+    existing rule, now actually enforceable because the criteria are
+    addressable.
     """
     try:
-        loaded = str(getattr(get_decision_engine(), "model_id", "") or "")
-        if loaded:
-            return loaded
-    except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
-        pass
-    try:
-        # Wave 3: the declared backend is d1 (decision_backend_d1); the
-        # identity is variant-derived from the served GGUF filename, and
-        # constructing the backend does NOT load anything or touch the
-        # server (same cheap-construction rule GlinerOnnx had).
-        from .decision_backend_d1 import D1Backend
+        import hashlib
 
-        return str(D1Backend().backend_id or "")
-    except Exception:  # noqa: BLE001 — unknown identity = no flips
+        decl = _declaration(consumer_id)
+        payload = {
+            "type": decl.decision_type if decl is not None else "",
+            "criteria": decl.criteria if decl is not None else None,
+            "cap": int(candidate_cap),
+        }
+        blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha1(blob).hexdigest()[:12]
+    except Exception:  # noqa: BLE001 - an unhashable criteria is its own answer
+        return "unhashed"
+
+
+def decision_identity(model_id: str, readout_mode: str,
+                      consumer_id: Optional[str] = None,
+                      candidate_cap: int = CANDIDATE_CAP_DEFAULT) -> str:
+    """Build an identity for ANY (model, readout, consumer) triple (AC2.1).
+
+    Used by the live path through `_current_backend_identity`, and to NAME a
+    retired configuration: `decision_identity("d1-3b-ad-q4_k_m",
+    LEGACY_READOUT_MODE, "tool_choice")` addresses the letter-era rows' identity
+    instead of letting them silently match the native one (T3.1).
+    """
+    parts = [str(model_id), str(readout_mode)]
+    if consumer_id:
+        parts.append(criteria_hash(consumer_id, candidate_cap))
+    return "|".join(parts)
+
+
+def _current_backend_identity(
+    consumer_id: Optional[str] = None,
+    candidate_cap: int = CANDIDATE_CAP_DEFAULT,
+) -> str:
+    """The ACTIVE engine's identity, resolved the way the report resolves it.
+
+    Without a consumer this is the BACKEND identity `model|readout_mode`; with
+    one it is the full decision identity `model|readout_mode|criteria_hash`
+    (AC2.1), because the criteria belong to the decision point rather than to
+    the model.
+
+    The loaded engine knows its own id; this process usually has not loaded one,
+    so the DECLARED backend's variant is the fallback (constructing the backend
+    does not load its weights). "" when neither is available - and an unknown
+    identity must never unlock an enforcement (AC2.2).
+    """
+    model = ""
+    try:
+        model = str(getattr(get_decision_engine(), "model_id", "") or "")
+    except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
+        model = ""
+    if not model:
+        try:
+            # Wave 3 (specs/phonon2-d1-model-swap): the declared backend is d1;
+            # the identity is variant-derived from the served GGUF filename, and
+            # constructing the backend does NOT load anything or touch the
+            # server (same cheap-construction rule GlinerOnnx had).
+            from .decision_backend_d1 import D1Backend
+
+            model = str(D1Backend().backend_id or "")
+        except Exception:  # noqa: BLE001 — unknown identity = no flips
+            return ""
+    if not model:
         return ""
+    return decision_identity(model, CURRENT_READOUT_MODE, consumer_id, candidate_cap)
+
 
 
 def _bar_record_enforced() -> frozenset:
@@ -723,6 +798,13 @@ def _bar_record_enforced() -> frozenset:
     bar, which cannot happen without a calibrated threshold for the active
     backend. An absent record (never written, unreadable, empty) enforces
     nothing - the safe default.
+
+    REQ-2 (AC2.1/AC2.2): the recorded ``backend_id`` is the FULL DECISION
+    identity ``model|readout_mode|criteria_hash`` of the consumer the bar was
+    earned for, so each consumer is compared against ITS OWN active identity.
+    A bar recorded under the retired letter readout carries a
+    ``legacy_letters`` (or bare model) identity and never matches a native one
+    - the flip must be re-earned on the deployed readout and criteria.
     """
     try:
         from .consumer_bar import load_bar_record
@@ -733,7 +815,6 @@ def _bar_record_enforced() -> frozenset:
         return frozenset()
     if not record:
         return frozenset()
-    current = _current_backend_identity()
     out = set()
     for cid, bar in record.items():
         try:
@@ -742,6 +823,7 @@ def _bar_record_enforced() -> frozenset:
             measured_on = str(
                 (getattr(bar, "config", None) or {}).get("backend_id") or ""
             )
+            current = _current_backend_identity(cid)
             if not current or measured_on != current:
                 logger.warning(
                     "decision_engine: NOT enforcing %s - its bar was measured on "
@@ -812,7 +894,9 @@ def _enforcement(consumer_id: str) -> Tuple[Optional[float], str]:
         return None, "not earned (no enforced bar record for the active engine)"
     from . import oracle_calibration
 
-    t = oracle_calibration.threshold(_current_backend_identity(), consumer_id)
+    t = oracle_calibration.threshold(
+        _current_backend_identity(consumer_id), consumer_id)
+
     if t is None:
         return None, "no fitted threshold for the active engine"
     if _config_stale():
@@ -928,7 +1012,7 @@ def oracle_acts(consumer_id: str, raw_conf: float) -> bool:
         from . import oracle_calibration
 
         c = oracle_calibration.calibrated(
-            _current_backend_identity(), consumer_id, raw_conf)
+            _current_backend_identity(consumer_id), consumer_id, raw_conf)
         return c is not None and c >= t
     except Exception as e:  # noqa: BLE001 - fail closed
         logger.debug("decision_engine: oracle_acts(%s) failed (%r)", consumer_id, e)
@@ -952,19 +1036,22 @@ class EngineConfig:
     model_dir: Optional[str] = None      # explicit ONNX model dir wins
     max_args_tokens: int = 192
     acquire_timeout_s: float = 2.0
-    # The ACTIVE backend identity (AC25.8). Set from the loaded backend at
-    # load time; thresholds resolve against it.
+    # The ACTIVE backend's bare MODEL id (AC25.8). Set from the loaded backend
+    # at load time; `threshold_for` composes the full decision identity
+    # (model|readout_mode|criteria_hash, REQ-2 AC2.1) around it.
     backend_id: Optional[str] = None
-    # THRESHOLDS ARE KEYED BY BACKEND IDENTITY (REQ-22 AC22.1, REQ-25 AC25.8).
+    # THRESHOLDS ARE KEYED BY DECISION IDENTITY (REQ-22 AC22.1, REQ-25 AC25.8,
+    # REQ-2 AC2.1: `model_id|readout_mode|criteria_hash`).
     # A probability threshold is only meaningful for the distribution it was
     # measured on: 0.85 suits LFM's sharpened softmax, 0.40 suits GLiNER's
-    # menu-wide softmax. Keyed by backend, a model swap degrades to SHADOW
-    # (no entry for the new backend = fail-closed) instead of silently
-    # enforcing on the previous model's curve.
+    # menu-wide softmax. Keyed by the full identity, a model swap, a READOUT
+    # change or a CRITERIA edit degrades to SHADOW (no entry for the new
+    # identity = fail-closed) instead of silently enforcing on a curve
+    # measured under a different input shape.
     backend_thresholds: Dict[str, float] = None  # set in __post_init__ below
     # Per-consumer thresholds (REQ-13): tools that execute external side effects
     # sit higher than display gates; calm narration anti-spamming sits lower.
-    # Ordered: explicit per-consumer → backend threshold (by active identity).
+    # Ordered: explicit per-consumer → decision-identity threshold (AC2.1).
     thresholds: Dict[str, float] = None  # set in __post_init__ below
     # Bounded cost per decision. Ships at 6 — the menu width the 0.40
     # accuracy/coverage curve was derived at (Decision C, REQ-25 AC25.7).
@@ -988,14 +1075,18 @@ class EngineConfig:
         return self.candidate_cap != self.calibrated_cap
 
     def threshold_for(self, consumer_id: str) -> Optional[float]:
-        """Threshold for one consumer, keyed by ACTIVE BACKEND IDENTITY.
+        """Threshold for one consumer, keyed by the ACTIVE DECISION IDENTITY.
 
-        Resolution (AC22.1/AC25.8): explicit per-consumer override → the
-        active backend's ``backend_thresholds`` entry. Returns None when the
-        active backend has no entry, or when the deployed cap differs from
-        the calibrated width (AC25.5 stale → fail-closed) — callers REFUSE
-        ENFORCEMENT: the consumer stays shadow rather than enforcing on an
+        Resolution (AC22.1/AC25.8, REQ-2 AC2.1): explicit per-consumer override
+        → the active decision identity's ``backend_thresholds`` entry. Returns
+        None when the active identity has no entry, or when the deployed cap
+        differs from the calibrated width (AC25.5 stale → fail-closed) — callers
+        REFUSE ENFORCEMENT: the consumer stays shadow rather than enforcing on an
         unknown curve.
+
+        The key is `model|readout_mode|criteria_hash` (AC2.1), so a READOUT
+        change or a CRITERIA edit empties the map instead of silently reusing a
+        curve measured on a different input shape (AC2.2/AC2.4).
         """
         if consumer_id in REFUSED_CONSUMERS:
             return None  # AC6.6 tier C: never resolved to a threshold
@@ -1004,8 +1095,19 @@ class EngineConfig:
         if consumer_id in (self.thresholds or {}):
             return float(self.thresholds[consumer_id])
         bt = self.backend_thresholds or {}
-        if self.backend_id in bt:
-            return float(bt[self.backend_id])
+        # AC2.1: the key is the FULL DECISION identity for THIS consumer.
+        # `self.backend_id` is the bare MODEL id (the row's `engine` field),
+        # set from the loaded backend at load time; the readout and the
+        # consumer's criteria hash complete it here. With no declared backend
+        # on the config, fall back to the process-wide resolver.
+        if self.backend_id:
+            key = decision_identity(
+                str(self.backend_id), CURRENT_READOUT_MODE, consumer_id,
+                self.candidate_cap)
+        else:
+            key = _current_backend_identity(consumer_id, self.candidate_cap)
+        if key and key in bt:
+            return float(bt[key])
         return None
 
 

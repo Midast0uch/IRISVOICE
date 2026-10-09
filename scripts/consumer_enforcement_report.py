@@ -250,12 +250,29 @@ def thresholds_by_consumer(
             identity_source = "declared d1 variant"
     except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
         pass
-    # AC25.8: resolve the thresholds BY that identity.
-    cfg.backend_id = backend_id or None
+    # REQ-2 (specs/oracle-native-decision-surface AC2.1): the DECISION IDENTITY
+    # is `model|readout_mode|criteria_hash(consumer)`. The config carries:
+    #   * `engine_id`  - the BARE MODEL id, which a row's `engine` field holds
+    #     and which `load_rows` filters on, and what `EngineConfig.backend_id`
+    #     must be for `threshold_for` to compose per-consumer identities;
+    #   * `backend_id` - the BACKEND-level identity `model|readout_mode`
+    #     (reported; each bar record's config carries the full per-consumer
+    #     decision identity instead - see main()).
+    engine_id = backend_id
+    identity = ""
+    try:
+        from backend.agent.decision_engine import _current_backend_identity
+
+        identity = _current_backend_identity() or ""
+    except Exception:  # noqa: BLE001 — identity is best-effort
+        pass
+    cfg.backend_id = engine_id or None
     out = {cid: cfg.threshold_for(cid) for cid in (*CONSUMERS, *extra)}
     config = {
-        "backend_id": backend_id,
+        "engine_id": engine_id,          # what `load_rows` filters on
+        "backend_id": identity or engine_id,  # model|readout (header/base)
         "backend_identity_source": identity_source,
+        "readout_mode": str(identity).split("|")[1] if "|" in str(identity) else "",
         "candidate_cap": int(getattr(cfg, "candidate_cap", 0) or 0),
         "calibrated_cap": int(getattr(cfg, "calibrated_cap", 0) or 0),
     }
@@ -441,7 +458,9 @@ def main() -> int:
     try:
         # Scoped to the ACTIVE backend: rows from a retired engine cannot speak
         # for the model actually deployed (AC25.8).
-        rows, skipped = load_rows(str(db), config.get("backend_id"))
+        # REQ-2: the row filter matches the row's `engine` field, which holds
+        # the MODEL id - not the decision identity.
+        rows, skipped = load_rows(str(db), config.get("engine_id"))
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
@@ -452,7 +471,30 @@ def main() -> int:
     rep = build_report(measured, skipped, config)
 
     if args.write:
-        record_bars(bar_rows(measured), config=config)
+        # REQ-2 (AC2.1): each bar record's config carries the consumer's OWN
+        # decision identity - the criteria belong to the decision point, so a
+        # shared backend identity would let a flip survive a criteria edit.
+        # `engine_id` stays the bare model (the row filter), `readout_mode`
+        # and `criteria_hash` are what `superseded_flips` compares (AC2.3).
+        from backend.agent.decision_engine import (
+            CURRENT_READOUT_MODE,
+            criteria_hash,
+            decision_identity,
+        )
+
+        _model = str(config.get("engine_id") or "")
+        _cap = int(config.get("candidate_cap") or 0)
+
+        def _bar_config(cid: str) -> Dict[str, Any]:
+            return {
+                "backend_id": (
+                    decision_identity(_model, CURRENT_READOUT_MODE, cid, _cap)
+                    if _model else ""
+                ),
+                "criteria_hash": criteria_hash(cid, _cap),
+            }
+
+        record_bars(bar_rows(measured), config=config, config_of=_bar_config)
         rep["written"] = True
 
     if args.json:
