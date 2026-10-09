@@ -1,5 +1,99 @@
 # Oracle — Decision Engine Architecture & Operations
 
+> **2026-10-09 (measured against the LIVE store, `data/memory.db`, 225 d1 `tool_choice` rows): the enforcement bar is blocked by two HARNESS defects and by real 45% accuracy — NOT by row volume. Read this before asking "why is the Oracle still shadow".**
+>
+> The rows exist and are already labelled. Every `tool_choice` shadow row carries
+> `brain_choice` (the Brain's ACTUAL pick), and `scripts/consumer_enforcement_report.py`
+> scores on that pair; its own `honest` block reports
+> `label_source = "agreement with the incumbent (brain_choice/brain_bool)"`. The report's
+> `label_sources` SUMMARY field is derived from `outside_label` (line ~202), which parity
+> rows never set — so it prints `incumbent:205` while the scorer reads `brain_choice`
+> (line ~178). **Two fields, two keys. The summary is cosmetically misleading; there is
+> NO missing labelling path.** `tool_choice` has 225 rows against a 100-row bar, so
+> volume is not the constraint.
+>
+> **DEFECT 1 — 24% of rows are structurally unscoreable.** In 53 of 225 rows the Brain's
+> actual tool was never ON THE MENU the engine scored (`list_directory` x31, `write_file`
+> x21, `search` x1). Cause, and it is documented in its own docstring
+> (`tool_decision.py` `_order_engine_names`): "278 tool_choice rows where the Brain's tool
+> was never on the menu". The 2026-10-01 fix corrected the ORDER but the CAP still
+> truncates — `candidate_cap=6` and `_compose_engine_menu` reserves 2 slots for
+> DELEGATE/NONE, so only FOUR real tools ever reach the menu. 224 of 225 rows scored the
+> SAME six names. **`write_file` — a primary tool in a coding agent — is unreachable.**
+>
+> **DEFECT 2 — 10% of rows are forced wrong.** 23 of 225: d1 answered `DELEGATE` (19) or
+> `NONE` (4); the reference is a sentinel in ZERO rows, so every one scores wrong by
+> construction. This is the mirror of the error the report docstring already warns about
+> ("collapsing a name to a bool would manufacture agreement and inflate precision") —
+> here the label manufactures DISAGREEMENT and depresses precision.
+>
+> **THE HONEST NUMBER.** Reported 90/225 = 40.0%. Excluding both defects: **90/202 =
+> 44.6% agreement on genuinely comparable rows.** That is far below the bar
+> (`min_precision` 0.90), so `threshold: None` and `rows_above: 0` are CORRECT — the report
+> is right to refuse. Fixing the harness is necessary but **will not produce a passing
+> consumer**; say so before spending time on it. `review_verdict` is separate and worse:
+> AUROC **0.42**, below random — and its parity reference (the Brain's verdict) is itself
+> not the truth about whether a step verified.
+>
+> **REFUTED, recorded so it is not re-investigated:** d1 does NOT emit a constant answer.
+> A burst of 3 identical-looking rows suggested a frozen model; measured over all 225
+> there are 124 distinct probability vectors and 100+ distinct confidences, and `chosen`
+> varies (read_file 83, edit_file 66, run_command 52, DELEGATE 19, NONE 4, grep_files 1).
+> Three samples is not a distribution.
+>
+> **BOTH DEFECTS ARE NOW FIXED (2026-10-09, measured after).** (1) `decision_label`
+> returns `None` for a row whose reference was truncated off the scored menu or whose
+> answer is a control label, and the report counts them separately
+> (`unscoreable_offmenu`, `unscoreable_control`) instead of scoring them wrong;
+> `backend/tests/contract/test_decision_label_unscoreable_contract.py` guards it and is
+> proven to fail on the old rule (72 live rows disagree; the old code scored every one
+> wrong). (2) `candidate_cap` is **6 → 11** in BOTH `decision_engine.CANDIDATE_CAP_DEFAULT`
+> and the LIVE `agent_config.yaml` `constraints` block — the yaml overrides the code
+> default, so changing only the constant does nothing (measured: `candidates=6` in the
+> log until the yaml was changed too). 11 covers `_DEV_MENU_ORDER`'s nine tools plus the
+> two control labels.
+>
+> **PROOF THE MENU FIX WORKS (live d1 rows, split by menu width).** Off-menu references
+> **25% → 5%**; control-label rows **10% → 0%**; and the engine now *picks*
+> `write_file` 11 times in 20 rows — a tool it could not previously see at all. Note the
+> accuracy on comparable rows **did not improve** (45.1% old, 40.0% new, n=20): fixing
+> the menu made the measurement honest, it did not make d1 right.
+>
+> **CONSEQUENCE, BY DESIGN (AC13.3/AC25.5).** The cap lives inside `criteria_hash`, so
+> widening it re-identifies every choice consumer and `calibrated_cap` stays at 6 —
+> thresholds are correctly STALE and enforcement is refused. The log line
+> `deployed configuration differs from the calibrated one (candidate_cap=11,
+> calibrated_cap=6) - thresholds are STALE` is the system working, not failing. Any
+> curve fitted at width 6 says nothing about width 11 and must be re-derived.
+>
+> **LIVE GATE (app-testing Mode A), coding trio, run ONE AT A TIME.** c02 51s/reply 19s
+> PASS, c10 10s/reply 8s PASS, c15 75s/reply 43s PASS — **STANDARDS: no regression** on
+> all three. `tool_choice` decision latency at width 11: 85–432 ms (was 6-name menus).
+> A first c02 run showed FAIL/454 s, which was SELF-INFLICTED: I launched c02 and c10
+> concurrently. The skill warns of exactly this (contention roughly doubles `reply_s`);
+> run sequentially. An earlier c15 at 128 s was the same mistake.
+>
+> **CONCLUSION ON ENFORCEMENT (item 4).** d1 is NOT ready to enforce anything, and the
+> reason is now measured rather than assumed. On genuinely comparable rows it agrees
+> with the incumbent ~40–45%; `review_verdict` sits at **AUROC 0.375–0.42, worse than
+> random**, so its confidence is anti-correlated with correctness. The parity reference
+> is also the wrong ground truth for a reviewer — the Brain's verdict is not whether the
+> step verified. So the honest position: the pipeline is now sound, the rows are valid,
+> the menu is complete, and **the engine's judgment does not currently beat the thing it
+> is measuring against**. No flip is warranted; `threshold: None` everywhere is correct.
+> Row volume is no longer the blocker and never was.
+>
+> Evidence: `evidence/rowgap/before.json`; pins `pin_43e198d5b697` (measurements),
+> `pin_4f8ebc74fd3e` (methodology), `pin_80eba17ac837` (the unscoreable fix),
+> `pin_17fdedfda7fa` (the cap fix + live gate + conclusion).
+>
+> **Role bindings (unrelated defect, now explained):** `iris_gateway.py:~10862` writes the
+> newest BINDING stamp into the flat `provider_selected_at`, collapsing two clocks into one
+> value, so the strict `>` authority tie-break at `backend/main.py:~713` has nothing to
+> break — any later flat-only writer wins by default. That is how `reasoning` reached the
+> stale `cerebras` key and every planning call 401'd. Same bug class the 2026-08-16 comment
+> at `main.py:687` describes; the stamp fix reintroduced a weaker form of it.
+
 > **2026-10-09 (specs/oracle-native-decision-surface, Waves 0-6 ALL COMMITTED): the
 > d1 surface is rebuilt. In one line: d1 now answers in its OWN named readout,
 > the identity keys on readout+criteria, the state is structured (images

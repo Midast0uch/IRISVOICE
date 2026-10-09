@@ -31,12 +31,24 @@ models:
     capabilities: ["tool_decision", "surface_choice", "narration_gate"]
     constraints:
       # REQ-25 makes this block LIVE (it was never parsed — grep "oracle"
-      # returned zero hits, so every value here was decorative). This value ships at
-      # the menu width the 0.40 accuracy/coverage curve was derived at, so making the
-      # block live does NOT invalidate the calibration. Was 32, which was never read.
-      # Changing this value marks the calibrated threshold STALE and requires a curve
-      # re-derivation before anything enforces on the new width (REQ-25 AC25.5).
-      candidate_cap: 6
+      # returned zero hits, so every value here was decorative). Was 32, which
+      # was never read.
+      #
+      # RAISED 6 -> 11 on 2026-10-09, measured live against data/memory.db. At 6
+      # this reserved two slots for DELEGATE/NONE and passed only FOUR real
+      # tools to the model, so 224 of 225 d1 tool_choice rows scored the SAME
+      # six names and `write_file` — a PRIMARY tool in a coding agent — was
+      # structurally unreachable; 53 rows (24%) recorded a reference the model
+      # was never offered. 11 covers `_DEV_MENU_ORDER`'s nine tools plus the two
+      # control labels.
+      #
+      # This value is the LIVE one (it overrides CANDIDATE_CAP_DEFAULT), so
+      # changing it marks the calibrated threshold STALE and requires a curve
+      # re-derivation before anything enforces on the new width (REQ-25
+      # AC25.5). That is the correct outcome: the curve was derived at width 6
+      # and says nothing about width 11. No consumer is enforced today, so
+      # nothing flips — the stale marker is doing its job.
+      candidate_cap: 11
       acquire_timeout_s: 2.0
       # THRESHOLDS ARE KEYED BY BACKEND IDENTITY (REQ-25 AC25.8).
       # A probability threshold is only meaningful for the distribution it was

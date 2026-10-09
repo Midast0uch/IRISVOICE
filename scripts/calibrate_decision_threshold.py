@@ -45,8 +45,56 @@ def _connect(db: str) -> sqlite3.Connection:
     return c
 
 
+CONTROL_LABELS = ("DELEGATE", "NONE", "delegate", "none")
+
+
+def _reference_on_menu(d: dict) -> bool:
+    """Was the row's reference ACTUALLY one of the options the engine scored?
+
+    The shadow writer caps the menu (``candidate_cap`` minus two reserved
+    control slots), so a tool the Brain was offered - and then actually
+    called - can be truncated away. When that happened the engine was never
+    offered the right answer, so the row says nothing about its judgment and
+    must be counted as unscoreable rather than scored wrong.
+
+    A row with NO candidate list cannot be checked this way; it is left
+    scoreable (the pre-cap era wrote no menu, so there is nothing to prove).
+    """
+    cands = d.get("candidates")
+    if not isinstance(cands, list) or not cands:
+        return True
+    names = set()
+    for c in cands:
+        if isinstance(c, dict):
+            n = c.get("name")
+            if n:
+                names.add(str(n))
+    return str(d.get("brain_choice")) in names
+
+
 def decision_label(outcome, payload: dict, d: dict) -> bool | None:
     """THE label of one decision row - the ONE rule both instruments use.
+
+    STRUCTURALLY UNSCOREABLE (measured live 2026-10-09, d1, 225 tool_choice
+    rows) - returns None, which the callers COUNT under ``skipped`` and never
+    score. These rows carry no information about the engine's judgment:
+
+      1. The reference was never on the menu the engine scored. The shadow
+         writer caps the menu at ``candidate_cap`` minus two reserved control
+         slots, so a tool the Brain was OFFERED (and then actually called) can
+         be truncated away - 53 of 225 rows, ``list_directory`` x31,
+         ``write_file`` x21, ``search`` x1. The engine was never offered the
+         right answer, so scoring the row punishes it for the harness's
+         truncation. Cause: ``tool_decision.py`` ``_order_engine_names``
+         (whose docstring already records this defect class at 278 rows) plus
+         ``_compose_engine_menu``'s 2-slot control reservation.
+      2. The engine chose a CONTROL label (``DELEGATE``/``NONE``). The
+         reference is a sentinel in zero of 225 rows, so a control-label row
+         can only ever score wrong. That is the mirror of the parity trap this
+         function already guards - a reference that cannot represent the
+         engine's answer manufactures DISAGREEMENT and depresses precision.
+
+    Both are counted, never dropped in silence and never scored as correct.
 
     OUTSIDE LABELS FIRST (specs/phonon2-d1-model-swap REQ-7 / B1, 2026-10-08):
     a shadow row carrying ``outside_label`` scores against THAT - an observed
@@ -79,6 +127,13 @@ def decision_label(outcome, payload: dict, d: dict) -> bool | None:
                 return bool(d.get("chosen")) == bool(ol)
             return str(d.get("chosen")) == str(ol)
         if d.get("brain_choice") is not None:
+            # NOT SCOREABLE (2): a control-label answer the reference can
+            # never be. Counted by the caller, never scored as wrong.
+            if str(d.get("chosen")) in CONTROL_LABELS:
+                return None
+            # NOT SCOREABLE (1): the reference was truncated off the menu.
+            if not _reference_on_menu(d):
+                return None
             return str(d.get("chosen")) == str(d["brain_choice"])
         if d.get("brain_bool") is not None:
             return bool(d.get("chosen")) == bool(d["brain_bool"])

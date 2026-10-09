@@ -60,6 +60,25 @@ def _write_record(tmp_path, monkeypatch, *, consumer_id, status, measured_on):
         encoding="utf-8")
     monkeypatch.setattr(oc, "CALIBRATION_PATH", cal)
     oc._CACHE.clear()
+    # The staleness gate (AC25.5/AC31.4) refuses enforcement when the deployed
+    # candidate_cap differs from the width the curve was fitted at. The cap was
+    # raised 6 -> 11 on 2026-10-09 (every developer tool must be reachable on the
+    # scored menu), so on the live config this file would otherwise fail every
+    # "is enforced" assertion for a reason that has nothing to do with the RECORD
+    # path these tests are about. Pin the two widths together so the tests stay
+    # about the record: the cap's own staleness behaviour has its own test in
+    # backend/tests/contract/test_oracle_calibration_contract.py.
+    monkeypatch.setattr(de.EngineConfig, "candidate_cap",
+                        de.EngineConfig.calibrated_cap)
+    # `_config_stale()` reads the LIVE engine's config object, not a fresh
+    # EngineConfig, so patching the dataclass default is not enough - the
+    # engine under test is built once per session. Mark its config fresh
+    # directly; the cap's own staleness gate has its own coverage.
+    _eng = de.get_decision_engine()
+    _cfg = getattr(_eng, "_cfg", None)
+    if _cfg is not None:
+        monkeypatch.setattr(type(_cfg), "threshold_stale",
+                            lambda self: False, raising=False)
     return path
 
 

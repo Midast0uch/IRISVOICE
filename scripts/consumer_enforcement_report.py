@@ -90,6 +90,7 @@ from backend.agent.oracle_calibration import binary_consumers  # noqa: E402
 from scripts.calibrate_decision_threshold import (  # noqa: E402
     _auroc,
     _ece_brier,
+    _reference_on_menu,
     decision_label,
 )
 from scripts.fit_oracle_calibration import fit_consumer  # noqa: E402
@@ -131,6 +132,7 @@ def load_rows(
     """
     rows: List[Dict[str, Any]] = []
     skipped = {"unreadable": 0, "no_confidence": 0, "no_label": 0,
+               "unscoreable_control": 0, "unscoreable_offmenu": 0,
                "other_backend": 0, "duplicates": 0}
     if binary is None:
         binary = binary_consumers()
@@ -168,6 +170,16 @@ def load_rows(
             correct = decision_label(r["outcome"], payload, d)
             if correct is None:
                 skipped["no_label"] += 1
+                # Measured live 2026-10-09 (d1, 225 tool_choice rows): 10%
+                # chose a control label and 24% had the reference truncated
+                # off the menu. Both are the HARNESS's defect, not the
+                # engine's - counted SEPARATELY so a fix is visible in the
+                # skip ledger instead of hiding inside no_label.
+                if str(d.get("chosen") or "") in ("DELEGATE", "NONE",
+                                                 "delegate", "none"):
+                    skipped["unscoreable_control"] += 1
+                elif not _reference_on_menu(d):
+                    skipped["unscoreable_offmenu"] += 1
                 continue
             conf = float(conf)
             prob = None

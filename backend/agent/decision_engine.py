@@ -735,7 +735,24 @@ LEGACY_READOUT_MODE = "legacy_letters"
 # AC13.3: the candidate cap changes the RENDERED criteria block, so it belongs
 # inside the hash - tuning the cap re-identifies every choice consumer exactly
 # as editing its criteria text does.
-CANDIDATE_CAP_DEFAULT = 6
+#
+# RAISED 6 -> 11 (2026-10-09, measured live against data/memory.db). At 6 the
+# menu reserved two slots for DELEGATE/NONE and passed only FOUR real tools to
+# the model, so 224 of 225 d1 tool_choice rows scored the SAME six names
+# [read_file, edit_file, grep_files, run_command, DELEGATE, NONE] and
+# `write_file` - a PRIMARY tool in a coding agent - was structurally
+# UNREACHABLE. 53 of 225 rows (24%) recorded a reference the model was never
+# offered (list_directory x31, write_file x21, search x1); those rows are now
+# counted as unscoreable rather than scored wrong, but counting them is not a
+# substitute for being able to score them. 11 covers `_DEV_MENU_ORDER`'s nine
+# tools plus the two control labels, so every developer tool is reachable and
+# the truncation that produced the defect cannot recur at this width.
+#
+# The consequence is BY DESIGN (AC13.3): this changes criteria_hash, so every
+# choice consumer is re-identified and its threshold stops resolving. No
+# consumer is enforced today, so nothing flips - but any threshold fitted
+# under the cap of 6 is now correctly stale.
+CANDIDATE_CAP_DEFAULT = 11
 
 
 def criteria_hash(consumer_id: str,
@@ -1513,13 +1530,18 @@ class EngineConfig:
     # sit higher than display gates; calm narration anti-spamming sits lower.
     # Ordered: explicit per-consumer → decision-identity threshold (AC2.1).
     thresholds: Dict[str, float] = None  # set in __post_init__ below
-    # Bounded cost per decision. Ships at 6 — the menu width the 0.40
-    # accuracy/coverage curve was derived at (Decision C, REQ-25 AC25.7).
-    # Changing it marks the calibrated threshold STALE (AC25.5).
-    candidate_cap: int = 6
+    # Bounded cost per decision. Ships at CANDIDATE_CAP_DEFAULT (11, raised
+    # from 6 on 2026-09/10-2026 — see that constant for the measurement that
+    # forced it: at 6 only FOUR real tools reached the model and write_file
+    # was unreachable). Changing it marks the calibrated threshold STALE
+    # (AC25.5), which is the correct outcome: the curve was derived at the old
+    # width and says nothing about this one.
+    candidate_cap: int = CANDIDATE_CAP_DEFAULT
     # The menu width the current threshold curve was derived at (AC25.7).
     # A candidate_cap that differs from this marks the threshold STALE
     # (AC25.5): enforcement is refused until the curve is re-derived.
+    # Left at 6 deliberately — that is the width the fitted curve was measured
+    # at, so the mismatch with candidate_cap is what keeps enforcement refused.
     calibrated_cap: int = 6
 
     def __post_init__(self) -> None:
