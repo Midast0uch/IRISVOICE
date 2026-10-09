@@ -57,18 +57,20 @@ def emit_row(row: Optional[dict]) -> None:
 
 
 def register_consumer() -> None:
-    """Register the consumer's criteria (REQ-19 AC19.1). Idempotent."""
+    """Register the consumer's criteria (REQ-19 AC19.1, REQ-4). Idempotent.
+
+    The DECLARED type and criteria come from the declaration table
+    (`register_declared`); this site supplies only its own instruction and
+    labels. `needs_upgrade` also replaces a spec that predates REQ-4 (AC13.4).
+    """
     from backend.agent.decision_engine import (
-        ConsumerSpec,
         get_consumer_spec,
-        register_consumer_spec,
+        needs_upgrade,
+        register_declared,
     )
 
-    if get_consumer_spec(CONSUMER_ID) is None:
-        register_consumer_spec(ConsumerSpec(
-            consumer_id=CONSUMER_ID, task_name=CONSUMER_ID,
-            instruction=INSTRUCTION, labels=LABELS,
-        ))
+    if needs_upgrade(get_consumer_spec(CONSUMER_ID)):
+        register_declared(CONSUMER_ID, INSTRUCTION, LABELS)
 
 
 def record_assessment(statement: str, gate_verdict: str) -> Optional[dict]:

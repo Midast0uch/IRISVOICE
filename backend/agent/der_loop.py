@@ -1200,19 +1200,20 @@ class Reviewer:
                 return None
             # Register the consumer's criteria on first use (REQ-19: a consumer
             # with no criteria is refused, never scored under another head).
+            # REQ-4: the DECLARED type + criteria come from the declaration
+            # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
             try:
                 from backend.agent.decision_engine import (
-                    ConsumerSpec,
                     get_consumer_spec,
-                    register_consumer_spec,
+                    needs_upgrade,
+                    register_declared,
                 )
-                if get_consumer_spec(self.REVIEW_CONSUMER) is None:
-                    register_consumer_spec(ConsumerSpec(
-                        consumer_id=self.REVIEW_CONSUMER,
-                        task_name=self.REVIEW_CONSUMER,
-                        instruction=self.REVIEW_INSTRUCTION,
-                        labels=self.REVIEW_LABELS,
-                    ))
+                if needs_upgrade(get_consumer_spec(self.REVIEW_CONSUMER)):
+                    register_declared(
+                        self.REVIEW_CONSUMER,
+                        self.REVIEW_INSTRUCTION,
+                        self.REVIEW_LABELS,
+                    )
             except Exception:  # noqa: BLE001 — criteria are best-effort here
                 pass
 

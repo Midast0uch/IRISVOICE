@@ -138,17 +138,16 @@ class ModeDetector:
             if self._mode_engine is None:
                 return None
             from backend.agent.decision_engine import (
-                ConsumerSpec,
                 get_consumer_spec,
-                register_consumer_spec,
+                needs_upgrade,
+                register_declared,
             )
-            if get_consumer_spec(self.MODE_CONSUMER) is None:
-                register_consumer_spec(ConsumerSpec(
-                    consumer_id=self.MODE_CONSUMER,
-                    task_name=self.MODE_CONSUMER,
-                    instruction=self.MODE_INSTRUCTION,
-                    labels=self.MODE_LABELS,
-                ))
+            # REQ-4: the DECLARED type + criteria come from the declaration
+            # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
+            if needs_upgrade(get_consumer_spec(self.MODE_CONSUMER)):
+                register_declared(
+                    self.MODE_CONSUMER, self.MODE_INSTRUCTION, self.MODE_LABELS,
+                )
 
             ds = self._mode_engine.decide(
                 self.MODE_CONSUMER, list(self.MODE_LABELS),

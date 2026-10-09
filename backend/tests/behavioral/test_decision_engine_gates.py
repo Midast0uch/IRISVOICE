@@ -173,6 +173,11 @@ class TestCtDe7Registry:
             "use_thinking", "escalate_incomplete", "needs_action",
             # Session 364 (owner request): the DEPTH consumer.
             "depth_met",
+            # STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface
+            # AC9.1 sanctioned exceptions 2 and 3, the ONLY permitted additions):
+            # `depth_route` (five live call sites, never counted) and
+            # `call_closing` (REQ-10, permanently measurement-only).
+            "depth_route", "call_closing",
         )
         # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
         # (no production caller since 2026-10-02) and `has_gaps` (no live site)

@@ -20,7 +20,7 @@ def test_every_declared_consumer_has_a_job():
     unassigned = [c for c in de.CONSUMERS if de.oracle_job(c).name == "general"]
     assert not unassigned, f"consumers with no job (no input recipe): {unassigned}"
     for c in ("click_safety", "user_feedback", "event_family", "event_type:memory",
-              "depth_route", "browser_next"):
+              "depth_route", "call_closing"):
         assert de.oracle_job(c).name != "general", c
 
 

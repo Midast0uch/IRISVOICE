@@ -189,23 +189,21 @@ def _emit_row(row: Optional[dict]) -> None:
 
 
 def register_web_intent_consumer() -> bool:
-    """Register the web_intent consumer's criteria (REQ-15 AC15.3). Idempotent."""
+    """Register the web_intent consumer's criteria (REQ-15 AC15.3). Idempotent.
+
+    REQ-4: the DECLARED type + criteria come from the declaration table;
+    `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4)."""
     try:
         from backend.agent.decision_engine import (
-            ConsumerSpec,
             get_consumer_spec,
-            register_consumer_spec,
+            needs_upgrade,
+            register_declared,
         )
-        if get_consumer_spec(WEB_INTENT_CONSUMER) is not None:
+        if not needs_upgrade(get_consumer_spec(WEB_INTENT_CONSUMER)):
             return False
-        register_consumer_spec(ConsumerSpec(
-            consumer_id=WEB_INTENT_CONSUMER,
-            task_name=WEB_INTENT_CONSUMER,
-            instruction=(
-                "Does this request require fetching information from the web?"
-            ),
-            labels=("yes", "no"),
-        ))
+        register_declared(WEB_INTENT_CONSUMER, (
+            "Does this request require fetching information from the web?"
+        ), ("yes", "no"))
         return True
     except Exception as e:  # noqa: BLE001 — criteria are best-effort
         logger.debug("[web_intent] consumer spec unavailable: %s", e)

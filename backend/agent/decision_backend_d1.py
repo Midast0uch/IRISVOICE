@@ -57,7 +57,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from backend.agent.decision_engine import CandidateScore, DecisionScore
+from backend.agent.decision_engine import (
+    DECISION_TYPES,
+    CandidateScore,
+    DecisionScore,
+    declared_type,
+)
 
 logger = logging.getLogger("decision_backend_d1")
 
@@ -336,6 +341,26 @@ class D1Backend:
             f"{question}{_IM_END}\n{_IM_START}assistant\n"
         )
 
+    @classmethod
+    def _render_score(cls, state: Any, instruction: str,
+                      levels: Sequence[str]) -> str:
+        """The SCORE template: an ORDERED level answer, lowest first (AC4.5).
+
+        Schema-only in this spec - no consumer is promoted to `score` yet - but
+        the type must exist in the renderer (AC4.5) so an ordered-level question
+        has a home instead of being forced into a `choice`. The readout pools
+        over the level NAME tokens exactly as `choice` does, in the declared
+        order."""
+        lines = "\n".join(f"{_LETTERS[i]} {lv}" for i, lv in enumerate(levels))
+        question = (
+            f"{instruction}\n\nLevels, lowest first:\n{lines}\n\n"
+            "Reply with the level code only."
+        )
+        return (
+            f"{_BOS}{_IM_START}user\n{cls._state_block(state)}\nQUESTION:\n"
+            f"{question}{_IM_END}\n{_IM_START}assistant\n"
+        )
+
     @staticmethod
     def _spec_instruction(consumer_id: str, fallback: str) -> str:
         """The consumer's REGISTERED instruction (ConsumerSpec) when one
@@ -412,11 +437,33 @@ class D1Backend:
             # model was calibrated on), everything else the choice template +
             # letter readout. The DecisionScore envelope is identical either
             # way, so the engine's noul() unwrapping is unchanged.
-            _is_noul = (
-                len(opts) == 2
-                and {o.strip().lower() for o in opts} <= _YES_NO_LOWER
-            )
-            if _is_noul:
+            #
+            # REQ-4 (AC4.3): the type is DECLARED on the consumer, never
+            # inferred. The `len(opts) == 2 and opts <= {yes,no}` heuristic that
+            # used to live here is DELETED - it misreads a genuine two-option
+            # choice, and a consumer with no declared type must score NOTHING
+            # (AC1.6) rather than borrow a shape. `declared_type` resolves
+            # through the registry that `ensure_consumer_spec` just populated.
+            dtype = declared_type(consumer_id)
+            if dtype not in DECISION_TYPES:
+                logger.info(
+                    "decision_backend_d1: refusing consumer=%s - no declared "
+                    "decision type (AC1.6: an undeclared consumer scores "
+                    "nothing and borrows no shape)",
+                    consumer_id,
+                )
+                return None
+            if dtype == "noul":
+                # A noul consumer's options ARE the true/false pair. A caller
+                # that passes anything else is a declaration mismatch: refuse
+                # (fail-closed) rather than silently render a letter menu.
+                if not {o.strip().lower() for o in opts} <= _YES_NO_LOWER:
+                    logger.info(
+                        "decision_backend_d1: consumer=%s is declared noul but "
+                        "its options are not the yes/no pair - refusing",
+                        consumer_id,
+                    )
+                    return None
                 instruction = instruction or self._spec_instruction(
                     consumer_id, "Is this statement true?"
                 )
@@ -431,7 +478,14 @@ class D1Backend:
                 instruction = instruction or self._spec_instruction(
                     consumer_id, f"Choose the best option for {consumer_id}."
                 )
-                prompt = self._render(state, instruction, opts)
+                # AC4.5: `score` is an ORDERED level answer. Schema-only in this
+                # spec - no consumer is promoted to it yet - but the type exists
+                # in the renderer so a level question has a home rather than
+                # being forced into a `choice`.
+                if dtype == "score":
+                    prompt = self._render_score(state, instruction, opts)
+                else:
+                    prompt = self._render(state, instruction, opts)
                 readout_keys = [_LETTERS[i] for i in range(len(opts))]
                 names = list(opts)
             t0 = self._clock()

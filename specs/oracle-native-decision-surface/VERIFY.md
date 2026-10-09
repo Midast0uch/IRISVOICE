@@ -209,7 +209,128 @@ outside the app's control):
 
 ## Wave 1 — Declared types and real criteria (gate TG-1)
 
-_pending._
+Pure declaration change. The letter readout still serves; nothing scores
+differently.
+
+### What landed
+
+- **T1.1** `ConsumerSpec` gains `decision_type` (one of `noul` / `choice` /
+  `score`); `criteria` stops being a `bool` and carries the typed block
+  (AC4.2). `""` means UNDECLARED.
+- **T1.2/T1.3** A new `CONSUMER_DECLARATIONS` table in `decision_engine.py` is
+  the single source of truth for every fixed consumer's type and criteria.
+  Register sites (`surface_shadow`, `click_safety_shadow`, `event_oracle`,
+  `der_loop`, `agent_kernel`, `tool_decision`, `mode_detector`, `explorer`) now
+  call `register_declared(...)` and no longer construct a bare `ConsumerSpec`,
+  so the type can never drift from the declaration.
+- **T1.4** A consumer with no declared type scores NOTHING: the d1 backend
+  refuses before any HTTP call (`test_undeclared_consumer_scores_nothing`).
+  `ensure_consumer_spec` registers it UNDECLARED rather than inventing a shape.
+- **T1.5** `score` exists in the schema (`DECISION_TYPES`) and in the renderer
+  (`D1Backend._render_score`). No consumer is promoted to it (Open Question 3).
+- **T1.6** The `len(opts) == 2 and opts <= {yes,no}` heuristic at
+  `decision_backend_d1.py:376-379` is DELETED (AC4.3); the backend dispatches on
+  `declared_type()`.
+- **T1.8** `browser_next` and `web_depth` removed from `CONSUMER_JOBS`
+  (19 → 17; verified zero call sites).
+- **T1.9** `depth_route` registered as a declared consumer (AC9.1 ex. 2).
+- **T1.10** `call_closing` declared: noul, own job `judge_call`
+  (`goal`, `call`, `result` @ 96), own `CONSUMER_JOBS` entry (AC10.1/AC10.7).
+- **T1.11** `REFUSED_CONSUMERS = {"call_closing"}` (AC6.6 tier C). `decides()`
+  returns None for a refused consumer **before** the owner switch is even read,
+  and `threshold_for()` refuses too - so it is excluded from `oracle_acts()`,
+  from every `enforced=` argument, and from threshold resolution.
+- **T1.12** `test_node_executor_never_consumes_call_closing` - the fence that
+  matters. It asserts `node_executor.py` never references `call_closing`, and a
+  companion test pins the closing rule itself so the label cannot silently
+  change meaning.
+- **T1.13** The changed-file exclusion is a declaration
+  (`CALL_CLOSING_CHANGED_FILE_EXCLUDED`) plus the tested predicate
+  `call_closing_is_candidate(claimed_step_done=..., batch_changed=...)`.
+- **T1.14** REQ-11 recorded: a "positive call" consumer is deliberately NOT
+  built. `NodeResult.helped` is the Brain-helper takeover reason
+  (`node_executor.py:208`), not a usefulness signal; a later verification exists
+  only for changing calls and lands at L2; `repeats` is partial; coverage is per
+  step. Recording parity rows under a name promising usefulness is exactly the
+  pseudo-evidence the bar exists to reject.
+
+### Three findings this wave produced
+
+1. **`click_safety` is a 3-option CHOICE, not a noul.** REQ-5's prose calls it a
+   "yes/no safety question", but the consumer as wired passes
+   `("safe","unsafe","unsure")` (`click_safety_shadow.py:25`). Declared from the
+   CODE as `choice` with those three criteria; declaring it noul would misread
+   its own readout. Its rules → judge → escalation ladder is untouched (AC5.2).
+2. **AC10.7 requires a 9th `ORACLE_JOBS` entry that AC9.1's exception list does
+   not name.** AC9.1 says `ORACLE_JOBS` (8 jobs) keeps its members and lists four
+   sanctioned exceptions; AC10.7 says `call_closing` gets "its own job in
+   `ORACLE_JOBS`". The RIPPLE map lists `ORACLE_JOBS` as touched only for the
+   `guard` image declaration. Reported, not silently reconciled: the specific
+   clause (AC10.7) is implemented and `judge_call` is the 9th job; **AC9.1's
+   exception list should have had a fifth item.** Nothing existing was removed
+   or renamed.
+3. **A new module would have been a new orphan.** The AC10.2/AC10.5 rule was
+   first written as `backend/agent/call_closing_shadow.py`; `validate_orphans.py`
+   skips `tests/` when looking for importers, so a module whose only importer is
+   its own test IS an orphan and would have violated AC9.6. The rule moved into
+   `decision_engine.py` (imported everywhere) and the module was deleted.
+
+### Verification
+
+- **AC8.1** Contract suite (6 named files + the 3 new test files):
+  **103 passed, 1 pre-existing failure**
+  (`TestCtDe6EventShapes::test_chat_message_payload_pinned`, the stale AST pin
+  already on HEAD). Widened sweep (decision-engine unit, tool-decision unit,
+  event-oracle, oracle-enforcement, oracle-phase, bar-record, calibration,
+  dev-menu): **188 passed, 4 pre-existing failures** - verified identical on
+  HEAD by stashing the wave's source changes, so no Wave 1 regression.
+- **AC8.2** Row counts: `evidence/wave0_consumer_report_before.json` (171) vs
+  `evidence/wave1_consumer_report_after.json` (214). **The growth is live
+  traffic, not this wave**: the backend kept serving during the Wave 0 eval runs
+  and the diffs are exactly the consumers those turns touched (`tool_choice`
+  +15, `review_verdict` +11, `depth_met` +5, `narration` +4, `web_intent` +4,
+  `escalate_incomplete` +2, `recovery_strategy` +1, `user_feedback` +1 = +43).
+  `depth_route` and `call_closing` now appear with **0 rows** - they are declared
+  and reported for the first time (T1.9's whole point), not new data. No consumer
+  changed status; `flipped` is empty; every consumer is still `shadow`. **This
+  wave claims no calibration effect and changed no count.**
+- **AC8.3** Live eval, coding trio {c02, c10, c15}, **3/3 PASS, STANDARDS: no
+  regression**:
+
+  | task | reply_s | baseline reply_s |
+  |---|---|---|
+  | c02_add_slugify | 15 | 25.4 |
+  | c10_create_module | 12 | 11.7 |
+  | c15_iterate_until_green | 24 | 136.9 |
+
+  A first run taken immediately after the backend restart reported two `reply_s`
+  standards regressions (c10 40.7s, c15 114.0s). That run was COLD - the backend
+  had just loaded d1 and the first turns pay model/TTS warmup - and the re-run
+  with the machine warm (the condition the Wave 0 baseline was taken under)
+  shows no regression. Wave 1 changes no scoring path, so there is no mechanism
+  for a latency regression: the only additions on the hot path are one dict
+  lookup (`declared_type`) and one `needs_upgrade` check per consult.
+
+- **REQ-9** `validate_orphans.py`: `call_closing_shadow` is gone from the
+  new-orphan list. The 10 remaining "NEW since baseline" modules
+  (`tts_worker`, `porcupine_detector`, `brain_author`, `event_export`,
+  `run_journal`, `diag_spawn`, `diag_current`, `ab_spawn`,
+  `benchmark_websearch_memory`, `benchmark_vision_search_efficiency`) are
+  unrelated to this spec - the tracked baseline is stale from an earlier
+  session. Phase-domain flags untouched (`IRIS_ORACLE_PHASE`,
+  `IRIS_ORACLE_PHASE_EXIT`).
+
+
+### TG-1 verdict
+
+- Every consumer has a declared type and criteria → **PASS**
+- The enumeration tests pass with only the intended additions
+  (`+depth_route`, `+call_closing`) → **PASS**
+- No row count moved because of this wave → **PASS**
+- The two dead job assignments and the undeclared producer are resolved → **PASS**
+- No new orphan; no standards regression → **PASS**
+
+**TG-1 GREEN.**
 
 ## Wave 2 — Native readout (gate TG-2)
 

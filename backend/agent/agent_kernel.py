@@ -7773,23 +7773,20 @@ class AgentKernel:
         self._narration_scored_key = _nkey
         try:
             from backend.agent.decision_engine import (
-                ConsumerSpec,
                 get_consumer_spec,
-                register_consumer_spec,
+                needs_upgrade,
+                register_declared,
             )
             from backend.agent.decision_engine import get_decision_engine
 
             options = ("speak_all", "speak_first_only", "stay_silent")
-            if get_consumer_spec("narration") is None:
-                register_consumer_spec(ConsumerSpec(
-                    consumer_id="narration",
-                    task_name="narration",
-                    instruction=(
-                        "How much of this plan's narration should be spoken "
-                        "aloud: every beat, only the first, or nothing?"
-                    ),
-                    labels=options,
-                ))
+            # REQ-4: the DECLARED type + criteria come from the declaration
+            # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
+            if needs_upgrade(get_consumer_spec("narration")):
+                register_declared("narration", (
+                    "How much of this plan's narration should be spoken "
+                    "aloud: every beat, only the first, or nothing?"
+                ), options)
             eng = get_decision_engine()
             if eng is None:
                 return

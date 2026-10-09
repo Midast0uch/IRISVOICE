@@ -107,26 +107,26 @@ def register_surface_consumers() -> int:
 
     A consumer with no criteria is REFUSED by the engine rather than scored
     under another consumer's head, so this must run before any shadow scoring.
+
+    REQ-4: the DECLARED type and criteria come from the declaration table
+    (`register_declared`), never from this site. `needs_upgrade` replaces a
+    spec that predates REQ-4 (AC13.4) - the old ``is None`` check would have let
+    a warm registry keep its pre-REQ-4 shape forever.
     """
     try:
         from backend.agent.decision_engine import (
-            ConsumerSpec,
             get_consumer_spec,
-            register_consumer_spec,
+            needs_upgrade,
+            register_declared,
         )
     except Exception as e:  # noqa: BLE001 — criteria are best-effort
         logger.warning("[surface] consumer specs unavailable: %s", e)
         return 0
     added = 0
     for cid, instruction in SURFACE_CONSUMERS.items():
-        if get_consumer_spec(cid) is not None:
+        if not needs_upgrade(get_consumer_spec(cid)):
             continue
-        register_consumer_spec(ConsumerSpec(
-            consumer_id=cid,
-            task_name=cid,
-            instruction=instruction,
-            labels=(_TRUE_LABEL, _FALSE_LABEL),
-        ))
+        register_declared(cid, instruction, (_TRUE_LABEL, _FALSE_LABEL))
         added += 1
     return added
 

@@ -69,6 +69,10 @@ class TestConsumerSetIsPinned:
             # Session 364 (owner request): the DEPTH consumer, scored at the
             # run-grade chokepoint against the task's success criteria.
             "depth_met",
+            # STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface
+            # AC9.1 sanctioned exceptions 2 and 3, the ONLY permitted additions):
+            # `depth_route` and `call_closing`. Nothing removed.
+            "depth_route", "call_closing",
         }, (
             "the consumer set changed — cross-spec lock with "
             "specs/tool-decision-engine REQ-11/13/14/15/17/29"

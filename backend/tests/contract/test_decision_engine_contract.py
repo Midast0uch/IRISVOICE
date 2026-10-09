@@ -169,6 +169,14 @@ class TestCtDe1Shapes:
             # whether it is done to the DEPTH the success criteria require -
             # the "the Brain settles for half work" complaint, made measurable.
             "depth_met",
+            # STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface
+            # AC9.1 sanctioned exceptions 2 and 3, the ONLY permitted additions):
+            # `depth_route` had five live kernel call sites and a writer but was
+            # absent from CONSUMERS, so its rows were never reported (T1.9); and
+            # `call_closing` is the new per-call closing question (REQ-10), which
+            # is permanently MEASUREMENT-ONLY (REFUSED_CONSUMERS). Nothing else
+            # changed and nothing was removed.
+            "depth_route", "call_closing",
         )
 
     def test_meta_channel_keys_on_engine_decision(self):

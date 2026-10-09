@@ -172,22 +172,41 @@ def family_labels(family: str) -> List[str]:
     return [name for name, spec in ea.registered_labels().items() if spec.family == family]
 
 
-def _register(consumer_id: str, instruction: str, labels: Sequence[str]) -> None:
+def family_criteria(family: str) -> Dict[str, str]:
+    """``name -> description`` for one family's labels (REQ-4 AC4.2).
+
+    The criteria belong to the FAMILY's decision point, which is what an
+    ``event_type:<family>`` consumer inherits (AC13.5)."""
+    from backend.memory import event_alphabet as ea
+
+    return {
+        name: (getattr(spec, "description", "") or name)
+        for name, spec in ea.registered_labels().items()
+        if getattr(spec, "family", None) == family
+    }
+
+
+def _register(consumer_id: str, instruction: str, labels: Sequence[str],
+              criteria: Optional[Dict[str, str]] = None) -> None:
     """Register fixed-label criteria; replace when the label set moved (a Layer-2 data
-    edit adds a label to a family). Registering is not enforcing."""
+    edit adds a label to a family), when the instruction moved, or when the spec
+    predates REQ-4 (AC13.4). Registering is not enforcing.
+
+    REQ-4: the DECISION TYPE comes from the declaration table
+    (`register_declared`). An ``event_type:<family>`` consumer INHERITS its
+    family's declaration and criteria (AC13.5), so it is never untyped; the
+    ``criteria`` argument carries that family's label descriptions."""
     from backend.agent.decision_engine import (
-        ConsumerSpec,
         get_consumer_spec,
-        register_consumer_spec,
+        needs_upgrade,
+        register_declared,
     )
 
     labels = tuple(labels)
     spec = get_consumer_spec(consumer_id)
-    if spec is None or spec.labels != labels or spec.instruction != instruction:
-        register_consumer_spec(ConsumerSpec(
-            consumer_id=consumer_id, task_name=consumer_id,
-            instruction=instruction, labels=labels,
-        ))
+    if (needs_upgrade(spec) or spec.labels != labels
+            or spec.instruction != instruction):
+        register_declared(consumer_id, instruction, labels, criteria=criteria)
 
 
 def register_consumers() -> List[str]:
@@ -197,7 +216,10 @@ def register_consumers() -> List[str]:
     _register(EVENT_FAMILY, FAMILY_INSTRUCTION, FAMILY_ORDER)
     ids = [USER_FEEDBACK, EVENT_FAMILY]
     for fam in FAMILY_ORDER:
-        _register(type_consumer_id(fam), TYPE_INSTRUCTION, family_labels(fam))
+        # AC13.5: a dynamic consumer inherits its family's TYPE (from the
+        # declaration table via `event_family`) and this family's criteria.
+        _register(type_consumer_id(fam), TYPE_INSTRUCTION, family_labels(fam),
+                  criteria=family_criteria(fam))
         ids.append(type_consumer_id(fam))
     return ids
 

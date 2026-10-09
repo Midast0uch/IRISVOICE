@@ -2789,27 +2789,22 @@ class ToolDecisionBox:
             # often the continuation decision runs.
             try:
                 from backend.agent.decision_engine import (
-                    ConsumerSpec,
                     get_consumer_spec,
-                    register_consumer_spec,
+                    needs_upgrade,
+                    register_declared,
                 )
 
-                if get_consumer_spec("depth_route") is None:
-                    register_consumer_spec(ConsumerSpec(
-                        consumer_id="depth_route",
-                        task_name="depth_route",
-                        instruction=(
-                            "The loop is deciding how to continue. What should "
-                            "it do next: cover a required fact that is still "
-                            "open, run the bounded bonus pass over the ceiling "
-                            "facts, push for more depth because the work is only "
-                            "superficially complete, pursue the next step the "
-                            "Brain named, or finalize and answer?"
-                        ),
-                        labels=tuple(
-                            list(self._DEPTH_ROUTES) + [self._DE_DELEGATE]
-                        ),
-                    ))
+                # REQ-4: the DECLARED type + criteria come from the declaration
+                # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
+                if needs_upgrade(get_consumer_spec("depth_route")):
+                    register_declared("depth_route", (
+                        "The loop is deciding how to continue. What should "
+                        "it do next: cover a required fact that is still "
+                        "open, run the bounded bonus pass over the ceiling "
+                        "facts, push for more depth because the work is only "
+                        "superficially complete, pursue the next step the "
+                        "Brain named, or finalize and answer?"
+                    ), tuple(list(self._DEPTH_ROUTES) + [self._DE_DELEGATE]))
             except Exception:  # noqa: BLE001 — criteria are best-effort
                 pass
             frame = {

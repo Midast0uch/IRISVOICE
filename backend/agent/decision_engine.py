@@ -115,6 +115,19 @@ CONSUMERS: Tuple[str, ...] = (
     # NOTE: this grows the pinned consumer set; the CT-DE-7 enumerations and the
     # surface-observer tests are updated in the SAME change.
     "depth_met",
+    # REQ-4/T1.9 (specs/oracle-native-decision-surface): `depth_route` HAS live
+    # call sites (`_der_note_depth_route` at five kernel sites plus the writer in
+    # tool_decision.depth_route) but was NOT in CONSUMERS, so its rows were never
+    # reported and it could never be calibrated. It is producing data nobody
+    # counts. Registered here as a declared consumer (AC9.1 sanctioned exception
+    # 2); the CT-DE-7 enumerations are updated in the same change.
+    "depth_route",
+    # REQ-10/T1.10: `call_closing` - "is this the closing call of this step?".
+    # It does NOT reuse `done` (which asks whether the TASK is finished at the
+    # turn layer). The name is a SAFETY REQUIREMENT: never a loop-control verb,
+    # never `step_satisfied`, never `done_at_call`. It is MEASUREMENT-ONLY
+    # permanently (AC10.0) - see REFUSED_CONSUMERS below.
+    "call_closing",
 )
 
 
@@ -155,6 +168,13 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               ("goal",), 96),
     OracleJob("classify_event", "which event family/type is this?",
               ("goal",), 64),
+    # REQ-10 (AC10.3/AC10.7): `call_closing`'s own job. The state carries the
+    # GOAL, the CALL and the CALL'S RESULT - the three things the closing
+    # question is about. It is a new job rather than a reuse of `judge_step`
+    # because the fields differ; AC9.1's exception list did not name this
+    # addition (the spec text and AC10.7 disagree) and the wave notes record it.
+    OracleJob("judge_call", "was this call the closing call of the step?",
+              ("goal", "call", "result"), 96),
     OracleJob("general", "a consumer not yet assigned to a job",
               ("goal",), 128),
 )}
@@ -162,10 +182,15 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
 CONSUMER_JOBS: Dict[str, str] = {
     "mode": "interpret", "web_intent": "interpret", "user_feedback": "interpret",
     "tool_choice": "route", "recovery_strategy": "route",
-    "depth_route": "route", "browser_next": "route", "web_depth": "route",
+    # T1.8 (AC9.1 sanctioned exception 1): `browser_next` and `web_depth` had job
+    # assignments and NO call site anywhere in the backend - the same class as
+    # `on_track` and `retry_same`, both deleted for exactly that reason. 19 -> 17.
+    "depth_route": "route",
     "click_safety": "guard", "needs_action": "guard", "use_thinking": "guard",
     "review_verdict": "judge_step",
     "escalate_incomplete": "judge_step",
+    # REQ-10: the per-call closing question has its own job (AC10.7).
+    "call_closing": "judge_call",
     "done": "judge_goal", "depth_met": "judge_goal", "sufficient": "judge_goal",
     "presentation": "shape", "narration": "shape",
     "event_family": "classify_event",
@@ -189,33 +214,211 @@ def oracle_job(consumer_id: str) -> OracleJob:
 
 _TOOL_TASK_INSTRUCTION = "Which tool should handle this request?"
 
+# ── REQ-4: the DECLARED decision type (AC4.1/AC4.2/AC4.4) ───────────────────
+# d1's native API answers TYPED questions, and the shapes have different
+# readouts: `noul` (P(statement true)), `choice` (pick one of the named
+# options), `score` (an ordered level). The type is therefore a property of the
+# DECISION POINT and is DECLARED, never inferred - `len(options) == 2`
+# misreads a genuine two-option choice, and a generic fallback is exactly how
+# `review_verdict` ended up asking an under-specified question the incumbent
+# passed 96% of the time.
+DECISION_TYPES: Tuple[str, ...] = ("noul", "choice", "score")
+
+
+@dataclass(frozen=True)
+class ConsumerDeclaration:
+    """One consumer's declared shape: its decision type and its criteria.
+
+    `criteria` by type (AC4.2):
+      * `noul`   - a mapping naming each side, e.g. ``{"true": ..., "false": ...}``
+      * `choice` - ``name -> description`` for every option
+      * `score`  - an ordered tuple of level descriptions, lowest first
+    """
+
+    decision_type: str                      # one of DECISION_TYPES
+    criteria: Any = None
+
+
+# THE declaration table: one entry per fixed consumer, the single source of
+# truth for "what shape is this decision point". Register sites supply only
+# their own instruction and label set (`register_declared`). A consumer absent
+# from this table registers UNDECLARED and the engine REFUSES to score it
+# (AC1.6) - it does not inherit another consumer's shape and it does not get a
+# generic fallback.
+CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
+    # ── choice over a caller-supplied menu ──────────────────────────────────
+    # The names come from the menu built upstream (the tool schemas); there is
+    # no static name set to describe, so the mapping is empty by design.
+    "tool_choice": ConsumerDeclaration("choice", {}),
+    "recovery_strategy": ConsumerDeclaration("choice", {}),
+    "presentation": ConsumerDeclaration("choice", {
+        "plain_text": "Answer in prose only, with no rendered card",
+        "prism_card": "Render a prism card carrying the structured result",
+        "card_plus_summary": "Render a card and a short prose summary beside it",
+    }),
+    "narration": ConsumerDeclaration("choice", {
+        "speak_all": "Speak every beat of the plan aloud",
+        "speak_first_only": "Speak only the first beat, then stay quiet",
+        "stay_silent": "Speak nothing for this plan",
+    }),
+    # REQ-13/T4.3 (B3): the QUALITY bar must be in the descriptions, or the
+    # incumbent passes everything (it said pass 96% of the time). `refine` has
+    # to be reachable on vague / incomplete / wrong-tool steps, not only on
+    # outright conflicts.
+    "review_verdict": ConsumerDeclaration("choice", {
+        "pass": "The step did its part: the change is present, correct and testable",
+        "refine": ("The step is vague, incomplete or uses the wrong tool - it "
+                   "needs another pass before it is trusted"),
+        "veto": "The step must not run: it is unsafe, off-goal or harmful",
+    }),
+    "mode": ConsumerDeclaration("choice", {
+        "spec": "Write or update a specification",
+        "research": "Gather information before acting",
+        "implement": "Change code or files to satisfy a request",
+        "debug": "Diagnose and fix a failure",
+        "test": "Write or run tests",
+        "review": "Inspect existing work and report on it",
+    }),
+    "depth_route": ConsumerDeclaration("choice", {
+        "cover_open_fact": "Cover a required fact that is still open",
+        "bonus_ceiling": "Run the bounded bonus pass over the ceiling facts",
+        "deepen": "Push for more depth - the work is only superficially complete",
+        "next_step": "Pursue the next step the Brain named",
+        "finalize": "Finalize and answer",
+        "DELEGATE": "Below the Oracle's pay grade - hand back to the incumbent",
+    }),
+    # ── noul: a statement answered with P(true) ─────────────────────────────
+    # `sufficient`/`done`/`depth_met` are documented noul (oracle.md AC14.6),
+    # and d1 was TRAINED on yes/no questions in this shape (V1 probe:
+    # 98.8%/96.5% polarity-correct).
+    "done": ConsumerDeclaration("noul", {
+        "true": "The task is finished: every required fact is covered",
+        "false": "The task still needs work",
+    }),
+    "sufficient": ConsumerDeclaration("noul", {
+        "true": "The objective is covered by the work done so far",
+        "false": "The objective is not yet covered",
+    }),
+    "depth_met": ConsumerDeclaration("noul", {
+        "true": "Done to the depth the success criteria require",
+        "false": "Only superficially complete",
+    }),
+    "escalate_incomplete": ConsumerDeclaration("noul", {
+        "true": "Too incomplete to proceed without more work",
+        "false": "Complete enough to proceed",
+    }),
+    "needs_action": ConsumerDeclaration("noul", {
+        "true": "This goal requires calling a tool",
+        "false": "This goal needs no tool call",
+    }),
+    "use_thinking": ConsumerDeclaration("noul", {
+        "true": "This request needs extended step-by-step reasoning",
+        "false": "This request does not need extended reasoning",
+    }),
+    "web_intent": ConsumerDeclaration("noul", {
+        "true": "This request requires fetching information from the web",
+        "false": "This request does not require the web",
+    }),
+    # NOTE (declared from the CODE, not the spec's prose): click_safety's real
+    # label set is ("safe", "unsafe", "unsure") - three options, so it is a
+    # CHOICE. REQ-5 describes the question as a "yes/no safety question about
+    # one named action", but the consumer as wired passes three labels; a noul
+    # declaration would misread its own readout. Its rules -> judge ->
+    # escalation ladder is untouched (AC5.2). Recorded in the Wave 1 notes.
+    "click_safety": ConsumerDeclaration("choice", {
+        "safe": "Safe to take without asking the user",
+        "unsafe": "Unsafe - the user must approve first",
+        "unsure": "Cannot tell - ask the user",
+    }),
+    # REQ-10 (AC10.1): the per-call closing question. A statement, so a noul.
+    "call_closing": ConsumerDeclaration("noul", {
+        "true": "This call was the step's closing call",
+        "false": "This call was not the step's closing call",
+    }),
+    # ── choice over a family's own labels ───────────────────────────────────
+    "user_feedback": ConsumerDeclaration("choice", {}),
+    "event_family": ConsumerDeclaration("choice", {}),
+}
+
+
+def _declaration(consumer_id: str) -> Optional[ConsumerDeclaration]:
+    """The declaration for *consumer_id*, with the family-inheritance rule.
+
+    AC13.5: a dynamically created `event_type:<family>` consumer INHERITS its
+    family's declaration (`event_family`), never a generic fallback. An unknown
+    family therefore has no declaration and creates no scorable consumer.
+    """
+    decl = CONSUMER_DECLARATIONS.get(consumer_id)
+    if decl is None and str(consumer_id).startswith("event_type:"):
+        decl = CONSUMER_DECLARATIONS.get("event_family")
+    return decl
+
+
+def declared_type(consumer_id: str) -> str:
+    """The DECLARED decision type, or "" when the consumer is undeclared."""
+    decl = _declaration(consumer_id)
+    return decl.decision_type if decl is not None else ""
+
+
+def declared_criteria(consumer_id: str) -> Any:
+    """The declared criteria block, or None when the consumer is undeclared."""
+    decl = _declaration(consumer_id)
+    return decl.criteria if decl is not None else None
+
+
+def is_declared(consumer_id: str) -> bool:
+    """True when the consumer declares a usable decision type (AC1.6)."""
+    return declared_type(consumer_id) in DECISION_TYPES
+
+
+def needs_upgrade(spec: Optional["ConsumerSpec"]) -> bool:
+    """True when *spec* is absent or predates REQ-4 (AC13.4).
+
+    The register functions are IDEMPOTENT, so an already-registered consumer
+    would otherwise keep its pre-REQ-4 shape forever: the change would appear to
+    work in tests (fresh registry) and never take effect in production (warm
+    registry). Every register site checks this instead of ``is None``.
+    """
+    return spec is None or not getattr(spec, "decision_type", "")
+
 
 @dataclass(frozen=True)
 class ConsumerSpec:
-    """One consumer's own scoring criteria (REQ-19 AC19.1).
+    """One consumer's own scoring criteria (REQ-19 AC19.1, REQ-4).
 
     ``labels`` empty means the caller supplies the option set (menu-shaped
     consumers such as ``tool_choice``); a non-empty tuple is a FIXED label set
-    (the bool consumers). ``criteria=False`` registers a consumer WITHOUT
-    criteria — the engine refuses to score it rather than borrowing another
-    consumer's head (REQ-19 edge case).
+    (the bool consumers).
+
+    ``decision_type`` is REQUIRED for scoring: "" means UNDECLARED, and the
+    engine refuses to score such a consumer rather than borrowing another
+    consumer's head or a generic shape (REQ-4 AC4.1, AC1.6).
+
+    ``criteria`` carries the typed criteria block (REQ-4 AC4.2). It used to be
+    a ``bool`` flag - a flag is not a criteria, and that was the structural
+    reason the named-criteria shape was unreachable: there was nowhere to put a
+    description.
     """
 
     consumer_id: str
     task_name: str
     instruction: str
+    decision_type: str = ""                 # "" = undeclared -> refused (AC1.6)
     exclusive: bool = True
     labels: Tuple[str, ...] = ()
-    criteria: bool = True
+    criteria: Any = None                    # typed by decision_type (AC4.2)
 
 
 CONSUMER_TASKS: Dict[str, ConsumerSpec] = {
-    # Pinned to the measured bench shape (AC22.1 / AC19.4) — do not edit.
+    # Pinned to the measured bench shape (AC22.1 / AC19.4) - do not edit.
+    # REQ-4: typed as a choice; the names come from the menu built upstream.
     "tool_choice": ConsumerSpec(
         consumer_id="tool_choice",
         task_name="tool",
         instruction=_TOOL_TASK_INSTRUCTION,
+        decision_type="choice",
         exclusive=True,
+        criteria=CONSUMER_DECLARATIONS["tool_choice"].criteria,
     ),
 }
 
@@ -254,16 +457,27 @@ def ensure_consumer_spec(
     shows it fail-closed ("no threshold for the active backend") until a
     threshold is calibrated for it, and the bar still requires 100 rows,
     precision >= 0.90 and ECE <= 0.05 before a flip.
+
+    REQ-4 (AC1.6): a consumer with NO declared decision type is registered
+    UNDECLARED and the engine REFUSES to score it. It does not inherit another
+    consumer's shape and it does not borrow a generic one - a generic fallback
+    is how `review_verdict` ended up asking an under-specified question the
+    incumbent passed 96% of the time.
     """
     spec = CONSUMER_TASKS.get(consumer_id)
-    if spec is not None:
+    if spec is not None and not needs_upgrade(spec):
         return spec
+    decl = _declaration(consumer_id)
+    if decl is not None:
+        return register_declared(
+            consumer_id, instruction or AUTO_INSTRUCTION,
+        )
     labels = tuple(o for o in options if isinstance(o, str) and o)
     if not labels:
         return None
     logger.info(
         "decision_engine: auto-registered consumer=%s labels=%d "
-        "(no declared criteria; measuring in shadow)",
+        "(UNDECLARED - no decision type, so it scores nothing; AC1.6)",
         consumer_id,
         len(labels),
     )
@@ -271,8 +485,42 @@ def ensure_consumer_spec(
         consumer_id=consumer_id,
         task_name=consumer_id,
         instruction=instruction or AUTO_INSTRUCTION,
-        # Menu-shaped: the caller's own options supply the labels.
+        # UNDECLARED. The labels are recorded for observability only; the
+        # engine refuses to score this consumer until a type is declared.
+        decision_type="",
         labels=(),
+    ))
+
+
+def register_declared(
+    consumer_id: str,
+    instruction: str,
+    labels: Sequence[str] = (),
+    criteria: Any = None,
+) -> ConsumerSpec:
+    """Register a consumer with its DECLARED type and criteria (REQ-4).
+
+    The declaration table is the single source of truth for the type, so a
+    register site supplies only its own instruction and label set. A consumer
+    with no declaration registers UNDECLARED and is refused by the engine
+    (AC1.6). Every register site uses this instead of constructing a bare
+    ``ConsumerSpec`` so the type can never drift from the declaration.
+
+    ``criteria`` overrides the table's block only where the criteria are
+    DATA-driven rather than static - the one case today is an
+    ``event_type:<family>`` consumer, whose criteria describe its family's
+    labels (AC13.5).
+    """
+    decl = _declaration(consumer_id)
+    if criteria is None and decl is not None:
+        criteria = decl.criteria
+    return register_consumer_spec(ConsumerSpec(
+        consumer_id=consumer_id,
+        task_name=consumer_id,
+        instruction=instruction,
+        decision_type=decl.decision_type if decl is not None else "",
+        criteria=criteria,
+        labels=tuple(labels),
     ))
 
 
@@ -598,6 +846,52 @@ def _log_enforcement_once() -> None:
     )
 
 
+# ── AC6.6 tier C: REFUSED OUTRIGHT ──────────────────────────────────────────
+# Never enforced, never sampled, never resolved to a threshold. This is a
+# REFUSAL, not a default: no flag, config value or later wave may enable one.
+#
+# `call_closing` is here BY DESIGN (REQ-10 AC10.0 fence 1). The owner's fear -
+# "the agent stops its work early thinking it's done and not adhering to the
+# goal contract" - is NOT hypothetical: `done` already has a live enforcement
+# path (agent_kernel.py:20962 passes `enforced=_done_dec` and :20970 writes the
+# Oracle's answer into `data["done"]`, the bit the loop reads). So a
+# naming convention is not a defence. Three fences stand instead: this refusal,
+# a contract test that `node_executor` never reads the answer (T1.12), and the
+# existing goal-contract veto at agent_kernel.py:20983-20989.
+REFUSED_CONSUMERS: frozenset = frozenset({"call_closing"})
+
+
+# ── REQ-10: `call_closing`'s candidate rule ─────────────────────────────────
+# Asked ONLY about calls that CLAIMED to close the step (AC10.2), and NEVER
+# about a call that changed a file (AC10.5). Both are DECLARATIONS, not per-run
+# judgements, so they live beside the refusal list rather than at a call site
+# someone can quietly flip. The consult itself lands in Wave 5.
+CALL_CLOSING_CONSUMER = "call_closing"
+CALL_CLOSING_CHANGED_FILE_EXCLUDED = True
+
+
+def call_closing_is_candidate(*, claimed_step_done: bool,
+                              batch_changed: bool) -> bool:
+    """Should ``call_closing`` be asked about this call? (AC10.2, AC10.5)
+
+    Asked ONLY about calls where the model claimed ``step_done`` (or wrote a
+    status line) - never about every call. Most calls make no such claim, so the
+    GPU cost is bounded by construction rather than by hope, and the
+    premature-close risk is measured exactly where it lives.
+
+    A call that changed a file is EXCLUDED: ``node_executor.py:629`` already
+    forbids such a call from closing the step - the rule added 2026-10-02 after
+    a small model set ``step_done`` on its own edit and the step closed with a
+    buggy method nobody ran - so its claim is POLICY, not judgement (AC10.5).
+    Asking d1 about it would teach a rule the system already enforces and make
+    the measurement meaningless. Excluded rows are COUNTED, never dropped.
+    """
+    if batch_changed:
+        return False
+    return bool(claimed_step_done)
+
+
+
 def decides(consumer_id: str) -> Optional[float]:
     """THE chokepoint: the calibrated threshold when *consumer_id* may decide.
 
@@ -606,7 +900,12 @@ def decides(consumer_id: str) -> Optional[float]:
     engine, and the configuration is not stale. With the default configuration
     NOTHING decides. A site that gets None keeps its rule / Brain path. Never
     raises (a fault is "does not decide").
+
+    REQ-10 AC10.0 fence 1: a REFUSED consumer never decides, whatever the
+    owner's switch or the bar record says. This is a refusal, not a default.
     """
+    if consumer_id in REFUSED_CONSUMERS:
+        return None
     try:
         _log_enforcement_once()
         return _enforcement(consumer_id)[0]
@@ -698,6 +997,8 @@ class EngineConfig:
         ENFORCEMENT: the consumer stays shadow rather than enforcing on an
         unknown curve.
         """
+        if consumer_id in REFUSED_CONSUMERS:
+            return None  # AC6.6 tier C: never resolved to a threshold
         if self.threshold_stale():
             return None
         if consumer_id in (self.thresholds or {}):
