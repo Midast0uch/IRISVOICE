@@ -196,6 +196,12 @@ class NodeContext:
     # run side by side with its siblings (no side effect, no exclusive
     # resource). None = every batch runs in order.
     parallel_ok: Optional[Callable[[str, dict], bool]] = None
+    # REQ-10 (specs/oracle-native-decision-surface): a closing-claim MEASUREMENT
+    # hook the kernel installs. The loop only ever WRITES to it: a claim is
+    # recorded after the claiming call's result is known, and each exit REPORTS
+    # its label (the label IS the exit - the loop never reads anything back, so
+    # the closing rule below stays the sole judge). None = no measurement.
+    close_probe: Optional[Any] = None
 
 
 @dataclass
@@ -449,6 +455,16 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     last_command_failed: Optional[bool] = None
     deadline = time.monotonic() + ctx.budget_s
     text = ""
+    # REQ-10/REQ-14 (Wave 5): the closing-claim measurement hook. The loop
+    # RECORDS claims and REPORTS its exits; it never reads anything back -
+    # the label IS the exit (AC10.4/AC14.2), so the closing rule below stays
+    # the sole judge of the loop (the AC10.0 fence bans even the consumer's
+    # name from this file).
+    _probe = getattr(ctx, "close_probe", None)
+
+    def _resolve_claims(label: str) -> None:
+        if _probe is not None:
+            _probe.resolve(label)
     try:
         while True:
             remaining = deadline - time.monotonic()
@@ -481,6 +497,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 # The model judges its own step (it knows whether failing tests
                 # were the goal or the problem); the failing last command is
                 # still stated in the step result for the verifier and the turn.
+                # A pending claim is UNTESTED here (AC14.2): the loop closed
+                # through the model's own status, not the closing rule.
+                _resolve_claims("untested")
                 ok, reason, summary = _status(text or "")
                 if not ok and _hand_over(f"step reported failure: {reason}"[:120]):
                     messages.append({"role": "assistant", "content": text or ""})
@@ -492,12 +511,17 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 return NodeResult(ok, summary, calls, reason if not ok else "",
                                   last_command_failed=bool(last_command_failed), helped=helped)
             messages.append({"role": "assistant", "content": text or None, "tool_calls": tool_calls})
+            # A new batch executing means every still-pending claim was NOT
+            # the closing call (AC14.2: "another loop iteration follows").
+            _resolve_claims("premature")
             batch_failed = False
             batch_results: List[str] = []
             batch_done = False
             batch_changed = False
             batch_summaries: List[str] = []
             pending_shot = ""
+            _batch_claimed = False
+            _batch_last: Optional[tuple] = None
             prefetched = _prefetch_siblings(ctx, tool_calls, allowed)
             for tc in tool_calls:
                 fn = tc.get("function") or {}
@@ -507,7 +531,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     params = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
                 except (ValueError, TypeError):
                     params = None
+                _claimed_close = False
                 if isinstance(params, dict):
+                    _claimed_close = params.get("step_done") is True
                     if params.pop("step_done", False) is True:
                         batch_done = True
                     _sum = params.pop("step_summary", None)
@@ -520,6 +546,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                 ctx.conv_id, name, _target(params or {}), repeats)
                     if repeats >= _MAX_REPEATS and not _hand_over(
                             f"stuck repeating {name} {_target(params or {})}".strip()):
+                        # AC14.2: a repeat hand-over never adjudicates a claim.
+                        _resolve_claims("untested")
                         return NodeResult(False, text or "", calls,
                                           f"stuck repeating {name} {_target(params or {})}".strip(),
                                           last_command_failed=bool(last_command_failed),
@@ -583,6 +611,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                 ctx.conv_id, name, _target(params or {}), repeats)
                     if repeats >= _MAX_REPEATS and not _hand_over(
                             f"stuck repeating {name} {_target(params or {})}".strip()):
+                        # AC14.2: a repeat hand-over never adjudicates a claim.
+                        _resolve_claims("untested")
                         return NodeResult(False, text or "", calls,
                                           f"stuck repeating {name} {_target(params or {})}".strip(),
                                           last_command_failed=bool(last_command_failed),
@@ -608,6 +638,22 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
                     "content": content,
                 })
+                # REQ-10 AC10.2/AC10.3: a claim is measured AFTER the claiming
+                # call's own result is known, from THIS call's scope. A
+                # repeat-skipped call leaves no record of its own (it never
+                # executed), and the candidate rule (in the probe) excludes a
+                # file-changing claim by policy (AC10.5).
+                if _claimed_close and _probe is not None:
+                    _batch_last = (len(calls) - 1, name, _target(params or {}), content)
+                    _batch_claimed = True
+                    _probe.claimed(
+                        len(calls) - 1,
+                        f"{name} {_target(params or {})}",
+                        content,
+                        file_changed=(name in _CHANGE_TOOLS and not failed),
+                    )
+                elif not _claimed_close and _probe is not None:
+                    _batch_last = (len(calls) - 1, name, _target(params or {}), content)
             if pending_shot:
                 # After the tool messages (a tool message carries text only on
                 # most APIs), as the user turn the model reads next.
@@ -626,6 +672,15 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             # step_done on its own edit, the edit "succeeded" as a call, and
             # the step closed with a buggy method nobody ran. A step that
             # changed a file looks at the effect first - one more call.
+            # REQ-10 AC10.2: a STATUS line in the ANSWER is a batch-level
+            # claim - it belongs to the batch's last executed call (the one
+            # whose result the claim followed). Skipped when any call already
+            # claimed individually.
+            if (_probe is not None and not _batch_claimed
+                    and _STATUS.search(text or "") and _batch_last is not None):
+                _ord, _nm, _tg, _ex = _batch_last
+                _probe.claimed(_ord, f"{_nm} {_tg}", _ex,
+                               file_changed=batch_changed)
             if not batch_failed and not batch_changed and (batch_done or _STATUS.search(text or "")):
                 ok, _reason, summary = _status(text or "")
                 if batch_done:
@@ -635,6 +690,10 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     logger.info("[run_node] conv=%s done in the tool answer: %d call(s), "
                                 "last_cmd_failed=%s", ctx.conv_id, len(calls),
                                 bool(last_command_failed))
+                    # AC14.2: the closing rule ACCEPTED this batch's claim -
+                    # correct. (A rejected claim below is premature: the rule
+                    # judged it and the loop continued.)
+                    _resolve_claims("correct")
                     # Each call keeps its own head: the answer sits near the
                     # top of a result (186 stored searches: the fact at char
                     # <= 2,144), and one head+tail window over three joined
@@ -649,6 +708,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                              + "\n\n".join(_blocks)).strip(),
                                       calls, last_command_failed=bool(last_command_failed),
                                       helped=helped)
+                _resolve_claims("premature")
             if len(calls) >= ctx.max_calls:
                 break
         # Calls or time spent with work still requested: the node closes and
@@ -662,6 +722,10 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             "missing>`.")})
         text, _think, _ = ctx.generate(role, messages, tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
+        # AC14.2: a call-limit or time-budget break never adjudicated a claim
+        # (the forced STATUS is the same model grading itself with no fresh
+        # evidence) - UNTESTED, excluded from the fit and counted.
+        _resolve_claims("untested")
         ok, reason, summary = _status(text or "")
         ok = ok and bool(_STATUS.search(text or ""))
         logger.info("[run_node] conv=%s closed (%s): %d call(s), success=%s",
@@ -670,5 +734,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                           "" if ok else (reason or why),
                           last_command_failed=bool(last_command_failed), helped=helped)
     except Exception as exc:  # noqa: BLE001 — a broken node is a failed step, not a crashed turn
+        # AC14.2: an exception never adjudicated a claim - UNTESTED.
+        _resolve_claims("untested")
         logger.warning("[run_node] conv=%s failed: %s", ctx.conv_id, exc)
         return NodeResult(False, text or "", calls, f"{type(exc).__name__}: {exc}", helped=helped)

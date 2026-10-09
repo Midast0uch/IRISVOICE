@@ -164,10 +164,22 @@ def score_surface_bool(
         return None
 
 
+def _scope_now() -> Dict[str, str]:
+    """REQ-6 AC6.3a: the row's scope (turn/step/node ids), bound AS VALUES at
+    submit time - the shadow lane's own thread context would say nothing."""
+    try:
+        from backend.agent.decision_engine import scope_now
+
+        return scope_now()
+    except Exception:  # noqa: BLE001 - scope is best-effort, never fatal
+        return {}
+
+
 def shadow_row(
     consumer_id: str,
     noul: Optional[Any],
     brain_bool: Optional[bool],
+    scope: Optional[Dict[str, str]] = None,
 ) -> Optional[dict]:
     """The CT-DEI-6-shaped row for a surface judgment, or None.
 
@@ -178,7 +190,7 @@ def shadow_row(
     if noul is None:
         return None
     p = float(noul.probability)
-    return {
+    row = {
         "consumer_id": consumer_id,
         "chosen": bool(noul.true(0.5)),
         # Confidence in the CHOSEN answer, raw P(true) beside it (see
@@ -189,6 +201,9 @@ def shadow_row(
         "brain_bool": brain_bool,
         "shadow": True,
     }
+    if scope:
+        row.update(scope)
+    return row
 
 
 def surface_bool(
@@ -231,16 +246,20 @@ def surface_bool(
     the questions).
     """
     if defer and not enforced:
+        _scope = _scope_now()
         try:
             value = bool(brain_bool_fn())
         except Exception as e:  # noqa: BLE001 — fail safe, never raise
             logger.warning("[surface] %s legacy decider failed: %r", consumer_id, e)
-            _submit_shadow(consumer_id, statement, engine, None, frame, criteria_version)
+            _submit_shadow(consumer_id, statement, engine, None, frame, criteria_version,
+                           _scope)
             return False, None
-        _submit_shadow(consumer_id, statement, engine, value, frame, criteria_version)
+        _submit_shadow(consumer_id, statement, engine, value, frame, criteria_version,
+                       _scope)
         return value, None
 
     noul = score_surface_bool(consumer_id, statement, engine=engine, frame=frame)
+    _scope = _scope_now()
 
     if acts is not None:
         _engine_decides = bool(enforced and noul is not None and acts(
@@ -252,27 +271,32 @@ def surface_bool(
         _cut = threshold
     if _engine_decides:
         value = bool(noul.true(_cut))
-        return value, shadow_row(consumer_id, noul, brain_bool=value)
+        return value, shadow_row(consumer_id, noul, brain_bool=value,
+                                 scope=_scope)
 
     try:
         value = bool(brain_bool_fn())
     except Exception as e:  # noqa: BLE001 — fail safe, never raise
         logger.warning("[surface] %s legacy decider failed: %r", consumer_id, e)
-        return False, shadow_row(consumer_id, noul, brain_bool=None)
-    return value, shadow_row(consumer_id, noul, brain_bool=value)
+        return False, shadow_row(consumer_id, noul, brain_bool=None,
+                                 scope=_scope)
+    return value, shadow_row(consumer_id, noul, brain_bool=value, scope=_scope)
 
 
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,
                    brain_bool: Optional[bool], frame: Optional[dict],
-                   criteria_version: Optional[str] = None) -> None:
+                   criteria_version: Optional[str] = None,
+                   scope: Optional[Dict[str, str]] = None) -> None:
     """Score + emit one shadow row on the ``oracle_shadow`` lane. Values are
-    bound now (the statement, the frame and the legacy answer), so the row pairs
-    what THIS call saw. Never raises; a full lane is counted by the lane."""
+    bound now (the statement, the frame, the legacy answer, the scope ids), so
+    the row pairs what THIS call saw. Never raises; a full lane is counted by
+    the lane."""
     _frame = dict(frame) if frame else None
+    _scope = dict(scope) if scope else _scope_now()
 
     def _job() -> None:
         noul = score_surface_bool(consumer_id, statement, engine=engine, frame=_frame)
-        row = shadow_row(consumer_id, noul, brain_bool=brain_bool)
+        row = shadow_row(consumer_id, noul, brain_bool=brain_bool, scope=_scope)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
         emit_row(row)

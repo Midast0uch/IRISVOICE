@@ -407,9 +407,35 @@ def _goal_needs_action(goal: str) -> bool:
     # not deciding, the score runs on the lane (off the reply path).
     try:
         from backend.agent import surface_shadow as _ss
-        from backend.agent.decision_engine import decides, oracle_acts
+        from backend.agent.decision_engine import (
+            decides,
+            oracle_acts,
+            register_turn_pending,
+            sampled_consult_ok,
+            sampled_row,
+            scope_now,
+        )
 
         _dec = decides("needs_action") is not None
+        _scope = scope_now()
+        # REQ-6 AC6.2 (Wave 5): the sampled rung - a bounded, deterministic
+        # share of consults let the engine's answer drive (labelled by the
+        # turn's outcome); the lexical incumbent keeps the rest.
+        if not _dec and sampled_consult_ok(
+                "needs_action", "|".join((
+                    _scope.get("turn_id", ""), _scope.get("step_id", ""),
+                    (goal or "")[:80]))):
+            _noul = _ss.score_surface_bool(
+                "needs_action", goal, engine=_ss.AUTO_ENGINE)
+            if _noul is None:
+                return _lexical  # incumbent fallback (AC6.2)
+            _decision = bool(_noul.true(0.5))
+            register_turn_pending(_scope, sampled_row(
+                "needs_action", _decision,
+                max(float(_noul.probability), 1.0 - float(_noul.probability)),
+                probability=round(float(_noul.probability), 4),
+                engine_latency_ms=_noul.engine_latency_ms))
+            return _decision
         _value, _row = _ss.surface_bool(
             "needs_action", goal,
             brain_bool_fn=lambda: _lexical,
@@ -2617,13 +2643,42 @@ class ToolDecisionBox:
                 # confidence reached the raw 0.40 threshold, with no enforced
                 # check. Not deciding: the score is a calibration row, so it
                 # runs on the lane and the counters' path answers now.
-                from backend.agent.decision_engine import decides, oracle_acts
+                from backend.agent.decision_engine import (
+                    decides,
+                    oracle_acts,
+                    register_turn_pending,
+                    sampled_consult_ok,
+                    scope_now,
+                )
 
-                if decides("recovery_strategy") is None:
+                _scope = scope_now()
+                # REQ-6 AC6.2 (Wave 5): sampled consults take the engine's
+                # answer on a bounded, deterministic fraction (outcome-
+                # labelled at turn end); AC17.2's retry_same stay shadow-only
+                # regardless.
+                _sampled = decides("recovery_strategy") is None and sampled_consult_ok(
+                    "recovery_strategy", "|".join((
+                        _scope.get("turn_id", ""), _scope.get("step_id", ""),
+                        failed_tool or "")))
+                if decides("recovery_strategy") is None and not _sampled:
                     self._shadow_triage(eng, _opts, frame, failed_tool, _thr)
                     ds = None
                 else:
                     ds = eng.decide("recovery_strategy", _opts, frame)
+                if _sampled and ds is not None:
+                    register_turn_pending(_scope, {
+                        "consumer_id": "recovery_strategy",
+                        "engine": getattr(eng, "model_id", None) or "decision-engine",
+                        "job": "route",
+                        "chosen": ds.chosen,
+                        "confidence": round(float(ds.confidence), 4),
+                        "candidates": [
+                            {"name": c.name, "prob": round(c.prob, 4)}
+                            for c in (ds.distribution or ())
+                        ],
+                        "route": "sampled",
+                        "engine_latency_ms": ds.engine_latency_ms,
+                    })
                 if ds is not None:
                     # The shadow PAIR: what the engine said vs what ran.
                     _row = {
@@ -2644,12 +2699,15 @@ class ToolDecisionBox:
                 # AC17.2: `retry_same` is SHADOW-ONLY. A confident retry_same
                 # is recorded and then discarded — the counters own the
                 # retry-vs-graft call, so the engine can never route a repeat
-                # that the counters would have escalated.
+                # that the counters would have escalated. A SAMPLED consult
+                # (AC6.2) acts on the answer directly - the bounded fraction,
+                # not a fitted curve, is its guard.
                 if (ds is not None and ds.chosen != self._DE_DELEGATE
                         and ds.chosen != "retry_same"
-                        and oracle_acts("recovery_strategy", ds.confidence)):
+                        and (_sampled
+                             or oracle_acts("recovery_strategy", ds.confidence))):
                     self._recovery_strategy = ds.chosen
-                    if _row is not None:
+                    if _row is not None and not _sampled:
                         # The engine and the counters agree on the outcome.
                         _row["counter_choice"] = ds.chosen
                         # The parity reference under the name the ledger passes
@@ -2669,7 +2727,7 @@ class ToolDecisionBox:
                 )
 
         self._recovery_strategy = ""
-        if _row is not None:
+        if _row is not None and not locals().get("_sampled"):
             # AC17.2: the counters' decision stands (delegate = the Brain
             # plans), whatever the engine picked.
             _row["counter_choice"] = "delegate"

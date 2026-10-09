@@ -1676,6 +1676,11 @@ class AgentKernel:
             from backend.agent import event_oracle as _eo_rows
 
             _eo_rows.set_row_sink(_shadow_sink)
+            # REQ-14 (Wave 5): resolved OUTCOME-labelled rows (the deferred
+            # registry) land on the SAME single-writer sink.
+            from backend.agent import decision_engine as _de_rows
+
+            _de_rows.set_outcome_sink(_shadow_sink)
             logger.info(
                 "[AgentKernel] shadow row sink installed "
                 "(monitor + surface + web_intent)"
@@ -7254,6 +7259,18 @@ class AgentKernel:
                 "turn_id": _turn_id or "", "grade": _grade,
                 "reasons": list(_reasons or []),
             }
+            # Wave 5 (REQ-6 AC6.3 + REQ-14 AC14.4): the OUTCOME join. Sampled
+            # consults are labelled by THIS turn's grade; any deferred closing
+            # claim still pending at turn end sweeps to `abandoned` (counted,
+            # never a fabricated negative). Runs once per turn (the grade
+            # dedup above guarantees it).
+            try:
+                from backend.agent import decision_engine as _de_oc
+
+                _de_oc.resolve_turn_pending(_turn_id or "", _grade == "pass")
+                _de_oc.sweep_turn_pending(_turn_id or "")
+            except Exception:  # noqa: BLE001 - a label never blocks the turn
+                pass
             # REQ-7 AC7.2: log the counters the contract introduced, naming
             # the reader for each (AC7.4): seeded/mapped/re-added feed T4;
             # covered/blocked feed T5/T9 + grade; amendments feed T7/T8;
@@ -8657,6 +8674,14 @@ class AgentKernel:
         # 13 sites read it; nothing assigned it, so all of them got None and a
         # rendered card never joined its live turn (HANDOFF 6 finding).
         self._current_turn_id = turn_id
+        # REQ-6 AC6.3a (T5.0): the Oracle row scope. Consult sites read it as
+        # values at submit time; rows of this turn join on the turn id.
+        try:
+            from backend.agent.decision_engine import set_scope as _de_set_scope
+
+            _de_set_scope(turn_id=turn_id)
+        except Exception:  # noqa: BLE001 - scope is best-effort
+            pass
         # Taxonomy events of this turn share one episode id (same as Wave E's task id).
         self._event_episode_id = f"{session_id}:{task_id}"
         metrics = TurnMetrics(turn_id=task_id)
@@ -17630,6 +17655,31 @@ Respond with a JSON object:
             ))
 
         try:
+            # REQ-10/REQ-14 (Wave 5, AC14.3): one node's id per EXECUTION -
+            # run_step retries, so a step can execute twice; the superseded
+            # execution's claims are UNTESTED (the final execution is the
+            # truth). The scope rides a contextvar on THIS node thread; the
+            # close-claim probe only ever gets written TO (the closing rule
+            # stays the sole judge of the loop - AC10.0's fences).
+            from backend.agent import decision_engine as _de
+
+            _key = (str(_turn_id or ""), str(getattr(item, "step_id", "") or ""))
+            _exec_counts = getattr(self, "_der_node_exec_counts", None)
+            if _exec_counts is None:
+                _exec_counts = self._der_node_exec_counts = {}
+            _exec_n = _exec_counts.get(_key, 0) + 1
+            _exec_counts[_key] = _exec_n
+            _exec_id = f"{_key[1]}#{_exec_n}" if _key[1] else ""
+            _de.set_scope(turn_id=_turn_id, step_id=_key[1] or None,
+                          node_exec_id=_exec_id or None)
+            _close_probe = _de.CloseClaimProbe(
+                turn_id=_turn_id or "", step_id=_key[1], node_exec_id=_exec_id,
+                goal=goal)
+            if _exec_n > 1:
+                _close_probe.supersede_prior(f"{_key[1]}#{_exec_n - 1}")
+        except Exception:  # noqa: BLE001 - measurement never blocks a node
+            _close_probe = None
+        try:
             result = run_node(goal, NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
@@ -17641,6 +17691,7 @@ Respond with a JSON object:
             parent_goal=str(getattr(item, "parent_description", "") or ""),
             review_note=str(getattr(item, "review_feedback", "") or ""),
             parallel_ok=_node_call_parallel_ok if _DER_PARALLEL else None,  # one off switch
+            close_probe=_close_probe,
         ))
         finally:
             for _c in _held:

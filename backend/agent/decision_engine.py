@@ -43,6 +43,7 @@ write set is the return value, counters, and log lines. CT-DE-5 enforces it.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -50,6 +51,7 @@ import re
 import sys
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
@@ -1012,6 +1014,427 @@ def call_closing_is_candidate(*, claimed_step_done: bool,
     return bool(claimed_step_done)
 
 
+# ── REQ-6 AC6.3a (T5.0): the row SCOPE — turn_id / step_id / node_exec_id ──
+# The join key was never missing from the turn (198 turn_id uses in
+# agent_kernel; the gateway passes it at turn entry) - it simply never reached
+# the row payload. The scope rides a contextvar set where the ids exist (turn
+# entry for the loop task; node entry for the node thread) and is read AT
+# ROW-BUILD / SUBMIT TIME as VALUES: a shadow lane scores later on a worker
+# thread whose context says nothing. `job_input()` never sees it - the state
+# is the model's input recipe and a scope id is not an input.
+_SCOPE: "contextvars.ContextVar" = contextvars.ContextVar(
+    "oracle_scope", default=None)
+
+_SCOPE_KEYS = ("turn_id", "step_id", "node_exec_id")
+
+
+def set_scope(**ids) -> "contextvars.Token":
+    """Bind the current scope (a contextvar; per task/thread)."""
+    return _SCOPE.set({k: str(v) for k, v in ids.items()
+                       if v is not None and str(v) != ""})
+
+
+def scope_now() -> Dict[str, str]:
+    """The current scope as plain VALUES ({} when unset) - safe to bind into
+    a deferred closure; a lane thread's own context is never read."""
+    s = _SCOPE.get()
+    return {k: v for k, v in (s or {}).items() if k in _SCOPE_KEYS and v}
+
+
+# ── REQ-10/REQ-14 (T5.7/T5.12): the deferred OUTCOME label ──────────────────
+# A deferred row is SCORED first (on the ``oracle_shadow`` lane, AC10.6) and
+# REGISTERED pending; its label arrives when its scope closes - one loop
+# iteration later for a closing claim (AC10.4) - and only then is it WRITTEN.
+# A batch is a transport unit, never a LABEL unit (AC14.1): every row keeps
+# its own scope key (turn_id, step_id, node_exec_id, call_ordinal), resolves
+# at its own time, carries its own label.
+OUTCOME_CORRECT = "correct"
+OUTCOME_PREMATURE = "premature"
+OUTCOME_UNTESTED = "untested"
+OUTCOME_ABANDONED = "abandoned"
+
+_PENDING_LOCK = threading.Lock()
+# node_exec_id -> {ordinal: {"scope": dict, "row": Optional[dict],
+#                            "label": Optional[str]}}
+_PENDING: "OrderedDict[str, Dict[int, dict]]" = OrderedDict()
+_PENDING_NODE_CAP = 512  # node executions held at once; drop-oldest counts
+_PENDING_DROPPED = 0     # cap overflows (counted, AC14.4)
+_PENDING_UNSCORED = 0    # resolved but never scored (engine away; counted)
+
+
+def deferred_counters() -> Dict[str, int]:
+    """The pending-registry counters (AC14.4: counted, never silent)."""
+    with _PENDING_LOCK:
+        return {
+            "pending_nodes": len(_PENDING),
+            "pending_rows": sum(len(v) for v in _PENDING.values()),
+            "dropped_overflow": _PENDING_DROPPED,
+            "unscored_dropped": _PENDING_UNSCORED,
+        }
+
+
+def _emit_outcome_row(scope: Dict[str, str], row: Dict[str, Any],
+                      label: str) -> None:
+    """Stamp the resolved label and hand the row to the installed sink.
+
+    AC14.2 shape: ``outcome_label`` always; ``label_source = "outcome"`` (the
+    report's split metric, T5.10); `outside_label` carries the CLAIM'S truth
+    ("yes"/"no" for a closing claim) so `decision_label`'s name-comparison
+    judges the engine's answer against reality - not against itself.
+    "untested"/"abandoned" leave it ABSENT, so the fit excludes the row and
+    counts it instead of scoring it (a PENDING row counted as a negative
+    would be a fabricated observation, AC14.4).
+    """
+    out = dict(row)
+    out.update(scope)
+    out["outcome_label"] = label
+    out["label_source"] = "outcome"
+    if label == OUTCOME_CORRECT:
+        out["outside_label"] = "yes"
+    elif label == OUTCOME_PREMATURE:
+        out["outside_label"] = "no"
+    sink = _OUTCOME_SINK
+    if callable(sink):
+        try:
+            sink(out)
+        except Exception as e:  # noqa: BLE001 - an observer never blocks
+            logger.debug("decision_engine: outcome sink failed (%r)", e)
+    else:
+        logger.info(
+            "decision_engine: outcome row consumer=%s label=%s (no sink)",
+            out.get("consumer_id"), label)
+
+
+_OUTCOME_SINK: Optional[Callable[[dict], None]] = None
+
+
+def set_outcome_sink(sink: Optional[Callable[[dict], None]]) -> None:
+    """Install the process-wide sink for resolved outcome rows (the kernel's
+    single-writer shadow sink). None = log only, never silently dropped."""
+    global _OUTCOME_SINK
+    _OUTCOME_SINK = sink
+
+
+def _register_close_claim(node_exec_id: str, ordinal: int,
+                          scope: Dict[str, str]) -> None:
+    global _PENDING_DROPPED
+    with _PENDING_LOCK:
+        node = _PENDING.setdefault(node_exec_id, OrderedDict())
+        _PENDING.move_to_end(node_exec_id)
+        node[ordinal] = {"scope": dict(scope), "row": None, "label": None}
+        while len(_PENDING) > _PENDING_NODE_CAP:
+            _PENDING.popitem(last=False)
+            _PENDING_DROPPED += 1
+
+
+def _attach_close_score(node_exec_id: str, ordinal: int,
+                        row: Optional[Dict[str, Any]]) -> None:
+    """The lane's score lands. If the claim is already labelled, emit now."""
+    global _PENDING_UNSCORED
+    if not row:
+        with _PENDING_LOCK:
+            node = _PENDING.get(node_exec_id) or {}
+            ent = node.get(ordinal)
+            labelled = bool(ent and ent.get("label"))
+        if labelled:
+            # Resolved BEFORE the engine answered (engine unavailable / lane
+            # dropped the job): the label exists but there is no score to
+            # carry it - dropped and COUNTED, never fabricated (AC14.4).
+            with _PENDING_LOCK:
+                _PENDING_UNSCORED += 1
+                node = _PENDING.get(node_exec_id)
+                if node is not None:
+                    node.pop(ordinal, None)
+                    if not node:
+                        _PENDING.pop(node_exec_id, None)
+        return
+    with _PENDING_LOCK:
+        node = _PENDING.get(node_exec_id)
+        ent = node.get(ordinal) if node is not None else None
+        if ent is None:
+            return
+        ent["row"] = row
+        label = ent.get("label")
+        scope = dict(ent["scope"])
+        if label:
+            node.pop(ordinal, None)
+            if not node:
+                _PENDING.pop(node_exec_id, None)
+    if label:
+        _emit_outcome_row(scope, row, label)
+
+
+def resolve_pending(node_exec_id: str, label: str) -> int:
+    """Label every still-pending claim of one node execution (AC14.2).
+
+    Emits at once where the score already landed; entries awaiting a score
+    stay pending and emit from the lane when it arrives. Idempotent: calling
+    twice resolves nothing the second time. Returns how many claims this call
+    labelled (fixture harness asserts on it, AC14.6).
+    """
+    with _PENDING_LOCK:
+        node = _PENDING.get(node_exec_id)
+        if not node:
+            return 0
+        ready = []
+        waiting = 0
+        for ordinal, ent in node.items():
+            if ent.get("label"):
+                continue
+            ent["label"] = label
+            if ent.get("row") is not None:
+                ready.append((ordinal, dict(ent["scope"]), ent["row"]))
+            else:
+                waiting += 1
+        for ordinal, _scope, _row in ready:
+            node.pop(ordinal, None)
+        if not node:
+            _PENDING.pop(node_exec_id, None)
+        n = len(ready) + waiting
+    for _ordinal, _scope, _row in ready:
+        _emit_outcome_row(_scope, _row, label)
+    return n
+
+
+def sweep_turn_pending(turn_id: str) -> int:
+    """AC14.4: mark this turn's still-pending claims ABANDONED at turn end -
+    a distinct, counted value, never a fabricated negative."""
+    if not turn_id:
+        return 0
+    abandoned = 0
+    with _PENDING_LOCK:
+        hits = [
+            (nid, dict(node)) for nid, node in _PENDING.items()
+            if any(str(e.get("scope", {}).get("turn_id") or "") == str(turn_id)
+                   for e in node.values())
+        ]
+    for nid, node in hits:
+        if node:
+            abandoned += resolve_pending(nid, OUTCOME_ABANDONED)
+    return abandoned
+
+
+class CloseClaimProbe:
+    """REQ-10: the node loop's closing-claim measurement hook.
+
+    MEASUREMENT-ONLY, permanently - the consumer is tier C
+    (``REFUSED_CONSUMERS``): the score is never read back into the loop, which
+    is why ``node_executor`` only ever TOUCHES this probe and never reads from
+    it. The kernel installs it on ``NodeContext``; the loop only RECORDS claims
+    and REPORTS its own exits, and the label IS the exit (AC10.4/AC14.2).
+    """
+
+    def __init__(self, *, turn_id: str = "", step_id: str = "",
+                 node_exec_id: str = "", goal: str = "") -> None:
+        self._scope = {
+            "consumer_id": CALL_CLOSING_CONSUMER,
+            "turn_id": str(turn_id or ""),
+            "step_id": str(step_id or ""),
+            "node_exec_id": str(node_exec_id or ""),
+        }
+        self._node_exec_id = self._scope["node_exec_id"]
+        self._goal = str(goal or "")
+
+    def supersede_prior(self, prior_exec_id: str) -> None:
+        """AC14.3: a retried step's earlier execution NEVER adjudicated its
+        claims - the final execution is the truth, so the superseded one's
+        rows are UNTESTED (and counted)."""
+        if prior_exec_id and prior_exec_id != self._node_exec_id:
+            resolve_pending(prior_exec_id, OUTCOME_UNTESTED)
+
+    def claimed(self, call_ordinal: int, call_desc: str, result_excerpt: str,
+                *, file_changed: bool) -> None:
+        """AC10.2/AC10.5: only candidate closings are asked, and a file-
+        changing call is never a candidate (excluded rows are counted).
+        Never raises; the reply path never waits (AC10.6)."""
+        global _CALL_CLOSING_EXCLUDED
+        try:
+            if not call_closing_is_candidate(
+                    claimed_step_done=True, batch_changed=file_changed):
+                _CALL_CLOSING_EXCLUDED += 1
+                return
+            ordinal = int(call_ordinal)
+            _register_close_claim(
+                self._node_exec_id, ordinal,
+                {**self._scope, "call_ordinal": ordinal})
+            engine = get_decision_engine()
+            if engine is None:
+                return  # row registered; it will count as unscored at sweep
+            frame = {
+                # the judge_call job fields - the question's three subjects
+                # (AC10.3): the goal, the call, the call's result.
+                "goal": self._goal[:400],
+                "call": str(call_desc)[:200],
+                "result": str(result_excerpt)[:400],
+            }
+            try:
+                register_declared(
+                    CALL_CLOSING_CONSUMER,
+                    "Is this call the closing call of this step?",
+                    ("yes", "no"),
+                )
+            except Exception:  # noqa: BLE001 - registration is best-effort
+                pass
+
+            def _attach(row: Optional[Dict[str, Any]],
+                        _nid=self._node_exec_id, _ord=ordinal) -> None:
+                _attach_close_score(_nid, _ord, row)
+
+            engine.shadow(CALL_CLOSING_CONSUMER, ["yes", "no"], frame,
+                          sink=_attach)
+        except Exception as e:  # noqa: BLE001 - a shadow never raises
+            logger.debug("decision_engine: close-claim consult failed (%r)", e)
+
+    def resolve(self, label: str) -> int:
+        """Report THIS execution's exit label - the loop's only contact with
+        the measurement, and it is one-directional (never reads back)."""
+        try:
+            return resolve_pending(self._node_exec_id, label)
+        except Exception:  # noqa: BLE001
+            return 0
+
+
+_CALL_CLOSING_EXCLUDED = 0
+
+
+def call_closing_counters() -> Dict[str, int]:
+    """The candidate-gate counter (AC10.5: excluded rows are counted)."""
+    return {"excluded_changed_file": _CALL_CLOSING_EXCLUDED}
+
+
+# ── REQ-6 (T5.1-T5.4): the SAMPLED rung ─────────────────────────────────────
+# shadow measures agreement; enforced requires the full bar; nothing in
+# between can EVER produce evidence that d1 is better than the incumbent
+# (oracle.md S0.7 - the label ceiling). The missing rung DECIDES on a bounded
+# fraction, and the row is labelled by the turn's OUTCOME (AC6.3), never by
+# the incumbent.
+#
+# AC6.6 two gates, both must pass, NO defaults (AC6.6b):
+#   Gate 1 REVERSIBILITY: a wrong answer must be cheap and reversible.
+#   Gate 2 GROUND TRUTH: an outcome signal must exist to label the row.
+# The tier table is the structural admission; `call_closing` is tier C
+# (REFUSED, never sampleable); done/sufficient/depth_met/tool_choice are
+# JOIN-only (labelled by outcome, never sampled); consumers with no ground
+# truth are observation-only (mode/narration/presentation/event_*).
+TIER_SAMPLABLE: frozenset = frozenset({
+    "needs_action", "recovery_strategy", "escalate_incomplete",
+})
+# AC6.6: refuse-direction ONLY - sampled, but the engine may only ever tighten
+# (refuse/veto where the incumbent allowed), never loosen. Wired at the
+# incumbent's own refuse junction.
+TIER_REFUSE_ONLY: frozenset = frozenset({"click_safety", "review_verdict"})
+TIER_JOIN_ONLY: frozenset = frozenset({
+    "done", "sufficient", "depth_met", "tool_choice",
+})
+
+# AC6.4: the fraction is a NAMED CONSTANT with a stated default and a kill
+# switch. It is never raised on a measurement that lacks outcome labels - the
+# report's label-width per consumer (label_source == "outcome") is the
+# evidence any raise must show.
+SAMPLE_FRACTION = 0.05
+_SAMPLE_KILL = "IRIS_ORACLE_SAMPLE"        # "0" kills sampling outright
+_SAMPLE_FRACTION_ENV = "IRIS_ORACLE_SAMPLE_FRACTION"
+
+
+def sampled_consult_ok(consumer_id: str, scope_key: str) -> bool:
+    """AC6.2: may this consumer's answer substitute for the incumbent on THIS
+    consult? Bounded (a deterministic hash of the consult's scope against
+    SAMPLE_FRACTION), reversible-gated (the tier table), kill-switched, and
+    never available to a REFUSED or untiered consumer. Deterministic per
+    scope: the same consult re-asked answers the same way, so retries do not
+    double-sample."""
+    if consumer_id in REFUSED_CONSUMERS or consumer_id not in (
+            TIER_SAMPLABLE | TIER_REFUSE_ONLY):
+        return False
+    if os.environ.get(_SAMPLE_KILL, "1") == "0":
+        return False
+    try:
+        frac = float(os.environ.get(_SAMPLE_FRACTION_ENV, SAMPLE_FRACTION))
+    except (TypeError, ValueError):
+        frac = SAMPLE_FRACTION
+    frac = min(1.0, max(0.0, frac))
+    if frac <= 0.0:
+        return False
+    import hashlib
+
+    digest = hashlib.sha256(
+        f"{consumer_id}|{scope_key}".encode("utf-8")).digest()
+    return (int.from_bytes(digest[:8], "big") / float(2 ** 64)) < frac
+
+
+# Turn-scoped outcome join (AC6.3/AC6.3b): a sampled row knows its SCORE at
+# consult time; its LABEL arrives at turn end, joined on turn_id from the
+# signals turn end already computes (DER_DAG S6 - run grade / task done /
+# contract met). Adjudicated values: "turn_ok" / "turn_fail"; the
+# label-integrity metric counts BOTH as adjudicated (only UNTESTED and
+# abandoned are non-adjudicated - AC14.5).
+OUTCOME_TURN_OK = "turn_ok"
+OUTCOME_TURN_FAIL = "turn_fail"
+
+_TURN_PENDING: "OrderedDict[str, Dict[str, dict]]" = OrderedDict()
+_TURN_PENDING_CAP = 256  # turns held at once
+
+
+def register_turn_pending(scope: Dict[str, str], row: Dict[str, Any]) -> None:
+    """A sampled consult's row, awaiting its turn outcome. Bounded; the
+    oldest turn is dropped (counted by the sweep at ITS end - a dropped turn
+    is exactly a turn that never resolved)."""
+    tid = str(scope.get("turn_id") or "")
+    if not tid:
+        return
+    with _PENDING_LOCK:
+        turns = _TURN_PENDING
+        turns.setdefault(tid, {})[id(row)] = {"scope": dict(scope), "row": dict(row)}
+        turns.move_to_end(tid)
+        while len(turns) > _TURN_PENDING_CAP:
+            turns.popitem(last=False)
+
+
+def resolve_turn_pending(turn_id: str, ok: bool) -> int:
+    """AC6.3: label this turn's sampled rows by the turn's OUTCOME and emit
+    them (join on turn_id). Returns the count labelled."""
+    tid = str(turn_id or "")
+    if not tid:
+        return 0
+    with _PENDING_LOCK:
+        rows = _TURN_PENDING.pop(tid, None) or {}
+        entries = list(rows.values())
+    label = OUTCOME_TURN_OK if ok else OUTCOME_TURN_FAIL
+    for ent in entries:
+        row = dict(ent["row"])
+        row.update(ent["scope"])
+        row["outcome_label"] = label
+        row["label_source"] = "outcome"
+        # AC6.3: the label is the TURN'S outcome. It only joins a NAMED or
+        # BOOL decision when the comparison is meaningful: a noul row's
+        # chosen is a bool, so "turn_ok" maps to "the engine's answer was
+        # borne out"; a choice row's answer is a NAME with no boolean reading,
+        # so it carries the outcome_label alone (counted by the integrity
+        # metric, never rank-scored against an incommensurable reference).
+        if isinstance(row.get("chosen"), bool):
+            row["outside_label"] = bool(ok)
+        _emit_outcome_row({}, row, label)
+    return len(entries)
+
+
+def sampled_row(consumer_id: str, chosen: Any, confidence: float,
+                **extra) -> Dict[str, Any]:
+    """The ONE row shape of a sampled consult (AC6.3): the engine's answer,
+    its confidence, route="sampled" (the ledger marks incumbent-labelled rows
+    as shadow) - labelled by the turn outcome via ``register_turn_pending``,
+    never by the incumbent."""
+    row: Dict[str, Any] = {
+        "consumer_id": consumer_id,
+        "engine": str(getattr(get_decision_engine(), "model_id", "") or ""),
+        "job": oracle_job(consumer_id).name,
+        "chosen": chosen,
+        "confidence": round(float(confidence), 4),
+        "route": "sampled",
+    }
+    row.update(extra)
+    return row
+
+
 
 def decides(consumer_id: str) -> Optional[float]:
     """THE chokepoint: the calibrated threshold when *consumer_id* may decide.
@@ -1846,6 +2269,9 @@ class DecisionEngine:
         _ref = dict(reference or {})
         _opts = list(options)
         _frame = dict(frame or {})
+        # AC6.3a (T5.0): the scope is read NOW, on the caller's thread - the
+        # lane's worker would see its own (empty) context.
+        _scope = scope_now()
 
         def _job() -> None:
             ds = self.decide(consumer_id, _opts, _frame, instruction)
@@ -1864,6 +2290,8 @@ class DecisionEngine:
                 "engine_latency_ms": ds.engine_latency_ms,
                 "shadow": True,
             }
+            if _scope:
+                row.update(_scope)
             row.update(_ref)
             sink(row)
 

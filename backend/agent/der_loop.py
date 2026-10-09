@@ -582,18 +582,48 @@ class DirectorQueue:
         # on the lane (measured 326 ms/turn inline).
         try:
             from backend.agent import surface_shadow as _ss
-            from backend.agent.decision_engine import decides, oracle_acts
+            from backend.agent.decision_engine import (
+                decides,
+                oracle_acts,
+                register_turn_pending,
+                sampled_consult_ok,
+                sampled_row,
+                scope_now,
+            )
 
             _dec = decides("escalate_incomplete") is not None
-            _value, _row = _ss.surface_bool(
-                "escalate_incomplete", tool_result_summary,
-                brain_bool_fn=lambda: _lexical_incomplete,
-                engine=_ss.AUTO_ENGINE,
-                enforced=_dec, defer=True,  # defer is ignored once enforced
-                acts=lambda c: oracle_acts("escalate_incomplete", c),
-            )
-            _ss.emit_row(_row)
-            _incomplete = bool(_value)
+            _scope = scope_now()
+            # REQ-6 AC6.2 (Wave 5): the sampled rung decides on a bounded,
+            # deterministic fraction of consults; the incumbent owns the rest.
+            _sampled = not _dec and sampled_consult_ok(
+                "escalate_incomplete",
+                "|".join((_scope.get("turn_id", ""),
+                          _scope.get("step_id", ""),
+                          tool_result_summary[:80])))
+            if _sampled:
+                _noul = _ss.score_surface_bool(
+                    "escalate_incomplete", tool_result_summary,
+                    engine=_ss.AUTO_ENGINE)
+                if _noul is None:
+                    _incomplete = _lexical_incomplete  # incumbent fallback
+                else:
+                    _incomplete = bool(_noul.true(0.5))
+                    register_turn_pending(_scope, sampled_row(
+                        "escalate_incomplete", _incomplete,
+                        max(float(_noul.probability),
+                            1.0 - float(_noul.probability)),
+                        probability=round(float(_noul.probability), 4),
+                        engine_latency_ms=_noul.engine_latency_ms))
+            else:
+                _value, _row = _ss.surface_bool(
+                    "escalate_incomplete", tool_result_summary,
+                    brain_bool_fn=lambda: _lexical_incomplete,
+                    engine=_ss.AUTO_ENGINE,
+                    enforced=_dec, defer=True,  # defer is ignored once enforced
+                    acts=lambda c: oracle_acts("escalate_incomplete", c),
+                )
+                _ss.emit_row(_row)
+                _incomplete = bool(_value)
         except Exception:  # noqa: BLE001 — the keyword list is the fallback
             _incomplete = _lexical_incomplete
         if _incomplete:
@@ -1245,6 +1275,8 @@ class Reviewer:
     def _review_row(self, engine, goal: str, brain_verdict) -> Optional[dict]:
         """One engine score of a review, as a shadow PAIR row (or None)."""
         try:
+            from backend.agent.decision_engine import scope_now
+
             ds = engine.decide(
                 self.REVIEW_CONSUMER, list(self.REVIEW_LABELS), {"goal": goal}
             )
@@ -1279,6 +1311,9 @@ class Reviewer:
                 ),
                 "shadow": True,
             }
+            # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
+            # values here, on the review's own task).
+            row.update(scope_now())
             return row
         except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
             logger.debug("[Reviewer] shadow verdict failed: %r", _e)

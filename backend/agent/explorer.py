@@ -251,6 +251,8 @@ def _score_web_intent(
             return None
         verdict = bool(noul.true(0.5))
         if keyword is not None:
+            from backend.agent.decision_engine import scope_now as _scope_now
+
             _emit_row({
                 "consumer_id": WEB_INTENT_CONSUMER,
                 "engine": getattr(engine, "model_id", None) or "decision-engine",
@@ -266,6 +268,8 @@ def _score_web_intent(
                 "probability": round(float(noul.probability), 4),
                 "engine_latency_ms": getattr(noul, "engine_latency_ms", None),
                 "shadow": True,
+                # REQ-6 AC6.3a (T5.0): the scope ids ride the row.
+                **_scope_now(),
             })
         return noul
     except Exception as e:  # noqa: BLE001 — fall back to the keywords
@@ -434,6 +438,8 @@ def _engine_tool_choice(
         ds = engine.decide(TOOL_CHOICE_CONSUMER, menu, frame)
         if ds is None:
             return None, None
+        from backend.agent.decision_engine import scope_now as _scope_now
+
         row: Dict[str, Any] = {
             "consumer_id": TOOL_CHOICE_CONSUMER,
             "engine": getattr(engine, "model_id", None) or "decision-engine",
@@ -448,6 +454,7 @@ def _engine_tool_choice(
             "source": "propose",
             "shadow": True,
             "brain_choice": None,
+            **_scope_now(),  # REQ-6 AC6.3a (T5.0)
         }
         if (ds.chosen in (_PROPOSE_DELEGATE, _PROPOSE_NONE)
                 or not oracle_acts(TOOL_CHOICE_CONSUMER, ds.confidence)):

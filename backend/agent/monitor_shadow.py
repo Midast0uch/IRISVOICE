@@ -150,10 +150,22 @@ def _default_engine():
         return None
 
 
+def _scope_now() -> Dict[str, str]:
+    """REQ-6 AC6.3a: the row's scope (turn/step/node ids), bound AS VALUES at
+    submit time - this lane's own thread context would say nothing."""
+    try:
+        from backend.agent.decision_engine import scope_now
+
+        return scope_now()
+    except Exception:  # noqa: BLE001 - scope is best-effort, never fatal
+        return {}
+
+
 def shadow_row(
     consumer_id: str,
     noul: Optional[Any],
     brain_bool: Optional[bool],
+    scope: Optional[Dict[str, str]] = None,
 ) -> Optional[dict]:
     """The CT-DEI-6-shaped row for a monitor judgment, or None.
 
@@ -164,7 +176,7 @@ def shadow_row(
     if noul is None:
         return None
     p = float(noul.probability)
-    return {
+    row = {
         "consumer_id": consumer_id,
         "chosen": bool(noul.true(0.5)),
         # CONFIDENCE IN THE CHOSEN ANSWER, not P(true) (2026-10-05). The row's
@@ -179,6 +191,9 @@ def shadow_row(
         "brain_bool": brain_bool,
         "shadow": True,
     }
+    if scope:
+        row.update(scope)
+    return row
 
 
 def monitor_bool(
@@ -222,17 +237,21 @@ def monitor_bool(
     on the answer path.
     """
     if defer and not enforced:
+        _scope = _scope_now()
         try:
             value = bool(brain_bool_fn())
         except Exception as e:  # noqa: BLE001 — fail closed, never raise
             logger.warning("[monitor] %s brain bool failed: %r", consumer_id, e)
-            _submit_shadow(consumer_id, statement, engine, None, criteria_version)
+            _submit_shadow(consumer_id, statement, engine, None, criteria_version,
+                           _scope)
             return False, "", None
         text = "" if value else _safe_text(brain_text_fn)
-        _submit_shadow(consumer_id, statement, engine, value, criteria_version)
+        _submit_shadow(consumer_id, statement, engine, value, criteria_version,
+                       _scope)
         return value, text, None
 
     noul = score_monitor_bool(consumer_id, statement, engine=engine)
+    _scope = _scope_now()
 
     if acts is not None:
         _engine_decides = bool(enforced and noul is not None and acts(
@@ -246,27 +265,34 @@ def monitor_bool(
     if _engine_decides:
         value = bool(noul.true(_cut))
         text = "" if value else _safe_text(brain_text_fn)
-        row = shadow_row(consumer_id, noul, brain_bool=value)
+        row = shadow_row(consumer_id, noul, brain_bool=value, scope=_scope)
         return value, text, row
 
     try:
         value = bool(brain_bool_fn())
     except Exception as e:  # noqa: BLE001 — fail closed, never raise
         logger.warning("[monitor] %s brain bool failed: %r", consumer_id, e)
-        return False, "", shadow_row(consumer_id, noul, brain_bool=None)
+        return False, "", shadow_row(consumer_id, noul, brain_bool=None,
+                                     scope=_scope)
     text = "" if value else _safe_text(brain_text_fn)
-    return value, text, shadow_row(consumer_id, noul, brain_bool=value)
+    return value, text, shadow_row(consumer_id, noul, brain_bool=value,
+                                   scope=_scope)
 
 
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,
                    brain_bool: Optional[bool],
-                   criteria_version: Optional[str] = None) -> None:
+                   criteria_version: Optional[str] = None,
+                   scope: Optional[Dict[str, str]] = None) -> None:
     """Score + emit one shadow row on the ``oracle_shadow`` lane. Values are
-    bound now (the statement and the Brain's answer), so the row pairs what
-    THIS turn saw. Never raises; a full lane is counted by the lane."""
+    bound now (the statement, the Brain's answer, the scope ids), so the row
+    pairs what THIS turn saw. Never raises; a full lane is counted by the
+    lane."""
+    _scope = dict(scope) if scope else _scope_now()
+
     def _job() -> None:
         noul = score_monitor_bool(consumer_id, statement, engine=engine)
-        row = shadow_row(consumer_id, noul, brain_bool=brain_bool)
+        row = shadow_row(consumer_id, noul, brain_bool=brain_bool,
+                         scope=_scope)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
         emit_row(row)

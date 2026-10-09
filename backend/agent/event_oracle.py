@@ -284,6 +284,14 @@ def _row(consumer_id: str, ds: Any, reference: Optional[str]) -> dict:
     }
     if reference is not None:
         row["brain_choice"] = reference
+    try:
+        # REQ-6 AC6.3a (T5.0): the scope ids ride the row when the caller's
+        # context carries them (bound as values here).
+        from backend.agent.decision_engine import scope_now
+
+        row.update(scope_now())
+    except Exception:  # noqa: BLE001 - scope is best-effort
+        pass
     return row
 
 

@@ -55,6 +55,14 @@ MIN_AUROC = 0.65
 MIN_ROWS_ABOVE = 50
 MIN_WILSON_LB = 0.85
 
+# REQ-6 AC6.1 (oracle-native-decision-surface): the SAMPLED rung's stated
+# floor. `sampled` is reported between `shadow` and `enforced` ONLY when the
+# consumer is sampling-eligible by the AC6.6 tier table (the caller passes it)
+# AND at least one OUTCOME-labelled row exists - never inferred from a partial
+# measurement. A consumer with zero outcome rows has only parity evidence and
+# is reported shadow, however many incumbent-labelled rows it owns.
+SAMPLED_MIN_OUTCOME_ROWS = 1
+
 
 @dataclass(frozen=True)
 class ConsumerBar:
@@ -62,7 +70,7 @@ class ConsumerBar:
     rows: int
     precision: float
     ece: Optional[float]
-    status: str          # "enforced" | "shadow"
+    status: str          # "enforced" | "shadow" | "sampled" (AC6.1, Wave 5)
     gap: str = ""        # why it is NOT enforced ("" when enforced)
     config: Dict[str, Any] = field(default_factory=dict)
 
@@ -80,11 +88,18 @@ def derive_status(
     min_precision: float = MIN_PRECISION,
     max_ece: float = MAX_ECE,
     honest: Optional[Dict[str, Any]] = None,
+    sampling_eligible: bool = False,
+    outcome_rows: int = 0,
 ) -> Tuple[str, str]:
     """``(status, gap)`` for one consumer's measurements.
 
-    Returns ``("enforced", "")`` only when EVERY clause holds. Otherwise
-    ``("shadow", <the first missing clause>)`` — the gap is recorded, never
+    Returns ``("enforced", "")`` only when EVERY clause holds. AC6.1: a
+    consumer that fails the enforcement bar but is sampling-eligible (tier
+    table, caller-passed) AND has at least one OUTCOME-labelled row is
+    ``sampled`` - the rung between shadow and enforced, producing the only
+    evidence that can break the label ceiling. Zero outcome rows is a partial
+    measurement of the rung and stays ``shadow``. Otherwise
+    ``("shadow", <the first missing clause>)`` - the gap is recorded, never
     rounded up into a flip (AC22.4: no enforcement below the bar).
 
     ``honest`` is the out-of-fold measurement (``fit_consumer`` in
@@ -95,7 +110,23 @@ def derive_status(
     enough to flip a consumer.
     """
     if honest is not None:
-        return _derive_hardened(honest, min_rows, min_precision, max_ece)
+        status, gap = _derive_hardened(honest, min_rows, min_precision, max_ece)
+    else:
+        status, gap = _derive_legacy(rows, precision, ece,
+                                     min_rows, min_precision, max_ece)
+    if status == "enforced":
+        return status, gap
+    if sampling_eligible and outcome_rows >= SAMPLED_MIN_OUTCOME_ROWS:
+        return "sampled", f"enforcement bar unmet ({gap}); rung live"
+    return status, gap
+
+
+def _derive_legacy(
+    rows: int, precision: float, ece: Optional[float],
+    min_rows: int, min_precision: float, max_ece: float,
+) -> Tuple[str, str]:
+    """The three pre-hardening clauses (extracted verbatim; the legacy shape
+    is pinned by contract tests)."""
     if rows < min_rows:
         return "shadow", f"rows {rows} < {min_rows}"
     if precision < min_precision:
@@ -162,7 +193,11 @@ def build_bar(
     precision = float(measured.get("precision") or 0.0)
     ece_raw = measured.get("ece")
     ece = None if ece_raw is None else float(ece_raw)
-    status, gap = derive_status(rows, precision, ece, honest=measured.get("honest"))
+    status, gap = derive_status(
+        rows, precision, ece, honest=measured.get("honest"),
+        sampling_eligible=bool(measured.get("sampling_eligible")),
+        outcome_rows=int(measured.get("outcome_rows") or 0),
+    )
     return ConsumerBar(
         consumer_id=consumer_id, rows=rows, precision=round(precision, 4),
         ece=None if ece is None else round(ece, 4), status=status, gap=gap,

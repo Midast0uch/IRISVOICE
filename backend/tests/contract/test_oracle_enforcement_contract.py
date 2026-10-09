@@ -74,6 +74,10 @@ class _Chokepoint:
         self.asked: list = []
         self.stale = False
         monkeypatch.delenv("IRIS_DECISION_ENFORCE", raising=False)
+        # Wave 5 (REQ-6): the SAMPLED rung is a second, bounded act channel
+        # with its own gate (test_sampled_rung_contract.py). This fixture pins
+        # the enforcement CHOKEPOINT, so sampling must not leak into it.
+        monkeypatch.setenv("IRIS_ORACLE_SAMPLE", "0")
         # REQ-2 Wave 3: the identity function now takes (consumer_id,
         # candidate_cap); this fake answers for ANY consumer, so the tmp
         # record/calibration (keyed by BACKEND) keep pinning the chokepoint's

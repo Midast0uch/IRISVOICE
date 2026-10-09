@@ -1,0 +1,948 @@
+{
+  "config": {
+    "engine_id": "d1-3b-ad-q4_k_m",
+    "backend_id": "d1-3b-ad-q4_k_m|native",
+    "backend_identity_source": "declared d1 variant",
+    "readout_mode": "native",
+    "candidate_cap": 6,
+    "calibrated_cap": 6
+  },
+  "bar": {
+    "min_rows": 100,
+    "min_precision": 0.9,
+    "max_ece": 0.05,
+    "min_minority": 0.05,
+    "min_auroc": 0.65,
+    "min_rows_above": 50,
+    "min_wilson_lb": 0.85
+  },
+  "skipped": {
+    "unreadable": 0,
+    "no_confidence": 0,
+    "no_label": 38,
+    "other_backend": 19781,
+    "duplicates": 111
+  },
+  "n_consumers": 21,
+  "flipped": [],
+  "consumers": {
+    "call_closing": {
+      "rows": 7,
+      "rows_raw": 7,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 7,
+        "rows_raw": 7,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 7,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.3237,
+      "brier": 0.1126,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 7,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "outcome": 7
+      },
+      "label_integrity": 1.0,
+      "outcome_rows": 7,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "depth_met": {
+      "rows": 48,
+      "rows_raw": 48,
+      "honest": {
+        "method": "isotonic",
+        "knots": [
+          [
+            0.64005,
+            0.479167
+          ]
+        ],
+        "threshold": null,
+        "rows_distinct": 48,
+        "rows_raw": 48,
+        "rows_above": 0,
+        "oof": {
+          "ece": 0.0004,
+          "brier": 0.25,
+          "auroc": 0.4739,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 23,
+          "wrong": 25
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.1646,
+      "brier": 0.2994,
+      "auroc": 0.4487,
+      "threshold": null,
+      "shadow_rows": 48,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 48
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "depth_route": {
+      "rows": 7,
+      "rows_raw": 7,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 7,
+        "rows_raw": 7,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 3,
+          "wrong": 4
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4058,
+      "brier": 0.4429,
+      "auroc": 0.2083,
+      "threshold": null,
+      "shadow_rows": 7,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 7
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "done": {
+      "rows": 7,
+      "rows_raw": 7,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 7,
+        "rows_raw": 7,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 4,
+          "wrong": 3
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.0843,
+      "brier": 0.2591,
+      "auroc": 0.4167,
+      "threshold": null,
+      "shadow_rows": 7,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 7
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "escalate_incomplete": {
+      "rows": 2,
+      "rows_raw": 2,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 2,
+        "rows_raw": 2,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 1,
+          "wrong": 1
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4047,
+      "brier": 0.2015,
+      "auroc": 1.0,
+      "threshold": null,
+      "shadow_rows": 2,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 2
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_family": {
+      "rows": 15,
+      "rows_raw": 31,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 15,
+        "rows_raw": 31,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 13
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2561,
+      "brier": 0.2231,
+      "auroc": 0.3077,
+      "threshold": null,
+      "shadow_rows": 15,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 15
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:control": {
+      "rows": 2,
+      "rows_raw": 5,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 2,
+        "rows_raw": 5,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 2
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2273,
+      "brier": 0.0519,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 2,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 2
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:delivery": {
+      "rows": 7,
+      "rows_raw": 12,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 7,
+        "rows_raw": 12,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 5
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2966,
+      "brier": 0.2809,
+      "auroc": 0.6,
+      "threshold": null,
+      "shadow_rows": 7,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 7
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:knowledge": {
+      "rows": 2,
+      "rows_raw": 2,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 2,
+        "rows_raw": 2,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.1819,
+      "brier": 0.0662,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 2,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 2
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "event_type:memory": {
+      "rows": 8,
+      "rows_raw": 14,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 8,
+        "rows_raw": 14,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 2,
+          "wrong": 6
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4314,
+      "brier": 0.3391,
+      "auroc": 0.5833,
+      "threshold": null,
+      "shadow_rows": 8,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 8
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "mode": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "narration": {
+      "rows": 32,
+      "rows_raw": 42,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 32,
+        "rows_raw": 42,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 14,
+          "wrong": 18
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2843,
+      "brier": 0.3084,
+      "auroc": 0.5933,
+      "threshold": null,
+      "shadow_rows": 32,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 32
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "needs_action": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "presentation": {
+      "rows": 4,
+      "rows_raw": 48,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 4,
+        "rows_raw": 48,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 4
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.4881,
+      "brier": 0.2503,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 4,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 4
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "recovery_strategy": {
+      "rows": 1,
+      "rows_raw": 1,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 1,
+        "rows_raw": 1,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 1
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.5789,
+      "brier": 0.3351,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 1,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 1
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "review_verdict": {
+      "rows": 124,
+      "rows_raw": 125,
+      "honest": {
+        "method": "isotonic",
+        "knots": [
+          [
+            0.638549,
+            0.330645
+          ]
+        ],
+        "threshold": null,
+        "rows_distinct": 124,
+        "rows_raw": 125,
+        "rows_above": 0,
+        "oof": {
+          "ece": 0.0,
+          "brier": 0.2214,
+          "auroc": 0.488,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 41,
+          "wrong": 83
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.3079,
+      "brier": 0.3518,
+      "auroc": 0.4656,
+      "threshold": null,
+      "shadow_rows": 124,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 124
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "sufficient": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "tool_choice": {
+      "rows": 182,
+      "rows_raw": 198,
+      "honest": {
+        "method": "isotonic",
+        "knots": [
+          [
+            0.375765,
+            0.173913
+          ],
+          [
+            0.613879,
+            0.25641
+          ],
+          [
+            0.885767,
+            0.37037
+          ],
+          [
+            0.947782,
+            0.455882
+          ],
+          [
+            0.987016,
+            0.64
+          ]
+        ],
+        "threshold": null,
+        "rows_distinct": 182,
+        "rows_raw": 198,
+        "rows_above": 0,
+        "oof": {
+          "ece": 0.0626,
+          "brier": 0.2273,
+          "auroc": 0.6167,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 71,
+          "wrong": 111
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.41,
+      "brier": 0.4062,
+      "auroc": 0.6419,
+      "threshold": null,
+      "shadow_rows": 182,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 182
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "use_thinking": {
+      "rows": 0,
+      "rows_raw": 0,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 0,
+        "rows_raw": 0,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 0,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": null,
+      "brier": null,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 0,
+      "engines": [],
+      "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "user_feedback": {
+      "rows": 11,
+      "rows_raw": 11,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 11,
+        "rows_raw": 11,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 11,
+          "wrong": 0
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.2368,
+      "brier": 0.0727,
+      "auroc": null,
+      "threshold": null,
+      "shadow_rows": 11,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 11
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    },
+    "web_intent": {
+      "rows": 39,
+      "rows_raw": 49,
+      "honest": {
+        "method": "isotonic",
+        "knots": [],
+        "threshold": null,
+        "rows_distinct": 39,
+        "rows_raw": 49,
+        "rows_above": 0,
+        "oof": {
+          "ece": null,
+          "brier": null,
+          "auroc": null,
+          "precision_at_t": null,
+          "wilson_lb": null
+        },
+        "classes": {
+          "correct": 33,
+          "wrong": 6
+        },
+        "fitted_at": "2026-10-09T13:18:36+00:00",
+        "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
+      },
+      "rows_above_threshold": 0,
+      "precision": 0.0,
+      "ece": 0.0685,
+      "brier": 0.1089,
+      "auroc": 0.7576,
+      "threshold": null,
+      "shadow_rows": 39,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "incumbent": 39
+      },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
+      "status": "shadow",
+      "gap": "no threshold for the active backend (fail-closed)"
+    }
+  }
+}

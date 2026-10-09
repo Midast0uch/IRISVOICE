@@ -722,7 +722,138 @@ benchmarks/d1_native_schema_probe.json refreshed).
 
 ## Wave 5 — The sampled rung (gate TG-5)
 
-_pending._
+**T5.0 (AC6.3a) scope on every row.** `decision_engine.scope_now/set_scope` -
+a contextvar bound where the ids exist (turn entry at `agent_kernel.py`'s
+`self._current_turn_id =` site; node entry at `_der_run_node`, which also
+mints `node_exec_id = f"{step_id}#{attempt}"` and marks a RETRIED step's prior
+execution's claims UNTESTED, AC14.3). Every row writer stamps the scope AS
+VALUES at submit time (a lane thread's own context says nothing):
+`DecisionEngine.shadow`, `monitor_shadow.shadow_row`, `surface_shadow.
+shadow_row`, `click_safety_shadow.record_assessment`, `event_oracle._row`,
+`explorer` web_intent/tool_choice rows, `der_loop._review_row`; the
+tool_bridge meta whitelist gained `turn_id, step_id, node_exec_id,
+call_ordinal, outcome_label` (off the list they would drop in transit - the
+whitelist comment's own warning).
+
+**AC6.3a-1 (THE RIDGE) - fix (a) chosen.** `record_decision`'s write-time
+shadow dedup key gained `(turn_id, step_id)`: distinct turns stay distinct so
+the outcome join has something to attach to (the old key would silently cap
+every JOIN at the surviving biased subset). Store effect, measured on the
+gate runs: `duplicates` skipped at read went 64 -> 90 -> 111 across the
+wave's before/after reports while liveeval traffic increased identical-input
+flow - the write-side collapse of identical tuples ACROSS turns no longer
+happens (those rows now land). No in-store growth guard regression:
+`other_backend` still 19781, the ledger is not re-written.
+Test: `test_dedup_scopes_by_scope_so_turns_stay_distinct`.
+
+**T5.7/T5.8/T5.12 (REQ-10/REQ-14) call_closing measured, deferred, labelled.**
+`decision_engine.CloseClaimProbe` is installed by `_der_run_node` as
+`NodeContext.close_probe`. The loop's only contact is ONE-DIRECTIONAL:
+`probe.claimed(...)` after a claiming call's result (AC10.3), `probe.resolve(
+label)` at each exit. AC14.2's six exits drive the label - closing rule
+accepted -> `correct`; another batch follows -> `premature`; call-limit /
+time-budget / exception / repeat-handover / no-calls-self-judged exits ->
+`untested` (the last two are stated in code as never-adjudicated, not
+premature). Claims are asked only of candidates (AC10.2, claimed `step_done`
+or a batch status line attributed to the batch's last executed call) and a
+file-changing call's claim is excluded and COUNTED (AC10.5,
+`call_closing_counters`). The score runs through `engine.shadow` on the
+`oracle_shadow` lane (AC10.6); the ROW registers PENDING and is written on
+resolution (AC14.4 sweeper: `sweep_turn_pending` at turn end marks leftovers
+`abandoned`). LANE/ORDER race SOLVED at the registry: label-first or
+score-first both emit exactly once (`test_resolution_before_the_score_still_
+emits`). `outside_label` carries the CLAIM's truth ("yes"/"no") so the shared
+`decision_label` name-comparison scores engine-vs-reality (a bool here would
+read any non-empty answer as True - caught on the first live rows and fixed
+in the same wave; the 4 earliest dev rows predate the stamp and are noted).
+
+**T5.13 fixture harness** - `backend/tests/behavioral/test_call_closing_labels.py`,
+11 cases: one per AC14.2 exit, plus retry-supersede, abandoned sweep, the
+changed-file exclusion, and out-of-order resolution. The mapping is PROVEN,
+not only observed live.
+
+**T5.1-T5.4 (AC6.1/2/4, AC6.6) the sampled rung.** `derive_status` returns
+`sampled` ONLY under stated conditions: tier-eligible (the caller passes the
+AC6.6 table) + >= 1 outcome-labelled row; zero outcome rows is a partial
+measurement and stays `shadow`; the hardened bar still wins where met
+(`test_sampled_requires_eligibility_and_outcome_rows`,
+`test_the_full_bar_still_wins_over_sampled`). `TIER_SAMPLABLE` =
+needs_action/recovery_strategy/escalate_incomplete; `TIER_REFUSE_ONLY` =
+click_safety/review_verdict; `call_closing` stays tier C (REFUSED); no tier,
+no sampling (AC6.6b). `SAMPLE_FRACTION = 0.05` named constant, env override,
+`IRIS_ORACLE_SAMPLE=0` kill switch; the hit is a deterministic scope hash
+(same consult, same answer - retries never double-sample). Sampled ACTING:
+needs_action (tool_decision) and escalate_incomplete (der_loop) take the
+engine's bool inline on a hit; recovery_strategy takes the engine's pick
+(`retry_same` stays shadow-only, AC17.2 preserved); click_safety may only
+TIGHTEN (incumbent-safe + sampled + engine unsure/unsafe -> re-route to the
+ask path; never loosen). Every sampled consult registers a turn-pending row
+(`route="sampled"`); `resolve_turn_pending` runs at the turn's run-grade
+(deduped once per turn) and labels by the turn outcome (AC6.3b signals). A
+choice consumer's name has no boolean reading: its row carries the outcome
+label alone and is never rank-scored against it.
+
+**T5.14 label integrity.** `consumer_enforcement_report.py`: rows carry
+turn/step/outcome fields; per-consumer `label_integrity` =
+adjudicated / (adjudicated + untested + abandoned), `outcome_rows`, and the
+existing `label_sources` split; printed per consumer. The REPORT/status side
+of AC6.1: a tier-eligible consumer with outcome rows shows `sampled` even
+with no enforcement threshold.
+
+**T5.11 (`done` 0 rows).** Measured, not assumed: under the native readout the
+done monitor DOES land rows - 5 distinct under `done/v2` post-Wave-2 (41 raw
+d1 rows carried it in the window). The audit's "0 rows" premise predates the
+Wave-2 readout; the lane path is live. The monitor rows now also carry scope.
+
+**T5.5 zero-row consumers.** needs_action/recovery_strategy/escalate_
+incomplete are WIRED at their live sites (sampled rung). `sufficient` and
+`use_thinking` have live consult + sink code paths
+(`agent_kernel.py:15361-monitor`, `:3562-surface`) that simply did not run
+during the measured traffic (their gate text never fires on coding turns) -
+they are live-wired and idle, not dead; the audit's "never consulted" verdict
+is corrected to "consult site exists; no qualifying call occurred".
+`mode` stays DROP per AC6.6 (Gate 2). Measured after: `call_closing` 7
+OUTCOME-labelled rows from unattended eval traffic (T5.6/T5.10 PROOF - the
+first consumer whose label is not the incumbent); escalate_incomplete 2,
+recovery_strategy 1, the others 0-but-live.
+
+**Contract suite (AC8.1)** - the Wave 3/4 file set + the two new files
+(`test_sampled_rung_contract.py`, `test_call_closing_labels.py`): **495
+passed, 9 PRE-EXISTING failures** (the exact proven set from Waves 3/4 -
+CT-DE-6 AST pin, 3x TestScoring FakeOnnxBackend, test_missing_db_unverified,
+consumer_parity ModuleNotFoundError, 2x test_calibrate_threshold gliner shape,
+mode_routing shadow). SAME-COMMIT TEST SEAM NOTE (the test rule said out
+loud): the two chokepoint fixtures (`test_oracle_enforcement_contract.py`,
+`test_consumer_tasks.py`) now set `IRIS_ORACLE_SAMPLE=0` - they pin the
+ENFORCEMENT chokepoint, and the Wave-5 sampled rung is a second, bounded act
+channel with its own contract file; without the isolation a deterministic 5%
+sample hash on their fixed scope reads as a chokepoint act (found as
+`test_not_deciding_keeps_the_incumbent_and_scores_off_the_calling_thread
+[needs_action]` failing). Assertions unchanged.
+
+**Live eval (AC8.3 + AC10.9/T5.9).** Backend down for tests, booted for the
+trio (d1 warm, reasoning on inceptionlabs): c02 52s cold-trio / 43s warm,
+c10 9s, c15 54s - **3/3 PASS, STANDARDS: no regression**
+(evals/results/20261009-090030.json). The reply/DAG path is unchanged in
+construction: the claim consult runs on the lane (visible in the boot log:
+`Oracle decide consumer=call_closing ... phase_wait_ms=0` AFTER the node
+closed), and the sampled act happens only on the bounded share. The reply_s
+drift vs Wave 4 (43s vs 14-19s) is content, not the wave: this run's turn
+did MORE work (the continuation gate admitted a 4th step; measured in the
+timeline) and the standards band still holds. Noted, because the same number
+with a regression hidden would not do.
+
+### TG-5 verdict
+
+- outcome-labelled rows accumulate UNATTENDED -> **PASS** (call_closing 7
+  rows, label_source=outcome, full scope keys, from harness-only traffic)
+- the sampled fraction is bounded and reversible -> **PASS** (named constant
+  0.05, kill switch, deterministic scope hash, tier table, incumbent
+  fallback, tests)
+- the bar's own clauses still decide promotion -> **PASS** (nothing enforced;
+  sampled is a REPORTED rung; hardened bar untouched)
+
+**TG-5 GREEN.**
 
 ## Wave 6 — Per-job batching (gate TG-6)
 

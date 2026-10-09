@@ -86,6 +86,13 @@ _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     # shadow_row already emitted it and this whitelist dropped it, so no ledger
     # row ever carried it.
     "probability",
+    # REQ-6 AC6.3a (specs/oracle-native-decision-surface, T5.0): the row's
+    # SCOPE - the join key an outcome label attaches to. Off this list the
+    # join silently has nothing to attach to and the sampled rung is unearnable.
+    "turn_id", "step_id", "node_exec_id", "call_ordinal",
+    # REQ-14 (AC14.2/AC14.4): the deferred label's value - correct/premature/
+    # untested/abandoned - which the label-integrity metric (AC14.5) counts.
+    "outcome_label",
 )
 
 # T4.4 (specs/phonon2-d1-model-swap REQ-12 AC12.1, B6): write-time shadow-row
@@ -2643,6 +2650,15 @@ class AgentToolBridge:
         outcome tuple a faithful input proxy (same input -> same tuple); a
         repeat is counted and dropped, never written. Bounded LRU, so the
         guard itself cannot grow without limit.
+
+        AC6.3a-1 (specs/oracle-native-decision-surface REQ-6, Wave 5 - THE
+        RIDGE): the key now also carries the row's SCOPE (turn_id, step_id).
+        Without it, two turns that score identically collapse to one row and
+        the outcome join (AC6.3) has nothing to attach to - the survivors
+        would be a BIASED SUBSET of turns (only the uniquely-scoring ones),
+        which would make the label-ceiling measurement a lie. The cost is a
+        larger store (distinct turns stay distinct); the wave reports it.
+        Scope-less rows (older writers) keep the old collapse behaviour.
         """
         try:
             if kind == "shadow":
@@ -2654,6 +2670,8 @@ class AgentToolBridge:
                     str(decision_meta.get("brain_choice")
                         if decision_meta.get("brain_choice") is not None
                         else decision_meta.get("brain_bool")),
+                    str(decision_meta.get("turn_id") or ""),
+                    str(decision_meta.get("step_id") or ""),
                 )
                 with _SHADOW_DEDUP_LOCK:
                     if key in _SHADOW_DEDUP:

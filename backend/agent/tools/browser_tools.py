@@ -490,13 +490,48 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
     except Exception as exc:  # noqa: BLE001
         logger.debug("[browser_tools] click_safety screenshot skipped: %s", exc)
         _shot = None
-    try:
-        from backend.agent import click_safety_shadow
+    from backend.agent import click_safety_shadow
+    # REQ-6 AC6.2/AC6.6 (Wave 5): REFUSE-DIRECTION sampling - on a bounded,
+    # deterministic share of incumbent-SAFE verdicts the engine is asked
+    # INLINE; it may only ever TIGHTEN (unsafe/unsure re-routes to the ask
+    # below), never loosen. That consult's row is deferred and labelled by the
+    # turn outcome, never by parity - so it replaces the parity submit, not
+    # adds to it.
+    _sampled = False
+    if verdict == click_safety.SAFE:
+        try:
+            from backend.agent.decision_engine import (
+                register_turn_pending,
+                sampled_consult_ok,
+                sampled_row,
+                scope_now,
+            )
 
-        click_safety_shadow.submit_assessment(
-            f'{ctx.get("goal") or ""} | {what}', verdict, _shot)
-    except Exception as exc:  # noqa: BLE001 - the shadow never blocks an action
-        logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
+            _scope_for_sample = scope_now()
+            _sampled = sampled_consult_ok(
+                "click_safety",
+                "|".join((_scope_for_sample.get("turn_id", ""),
+                          str(mark.get("role") or ""), what[:80])))
+            if _sampled:
+                _row = await asyncio.to_thread(
+                    click_safety_shadow.record_assessment,
+                    f'{ctx.get("goal") or ""} | {what}', verdict, _shot,
+                    _scope_for_sample, True,
+                )
+                if _row is not None:
+                    register_turn_pending(_scope_for_sample, sampled_row(
+                        "click_safety", _row["chosen"], _row["confidence"],
+                        engine_latency_ms=_row.get("engine_latency_ms")))
+                    if _row.get("chosen") in ("unsafe", "unsure"):
+                        verdict = click_safety.UNSURE  # falls through to ask
+        except Exception as exc:  # noqa: BLE001 - a shadow never blocks
+            logger.debug("[browser_tools] sampled refuse check skipped: %s", exc)
+    if not _sampled:
+        try:
+            click_safety_shadow.submit_assessment(
+                f'{ctx.get("goal") or ""} | {what}', verdict, _shot)
+        except Exception as exc:  # noqa: BLE001 - the shadow never blocks an action
+            logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
     if verdict == click_safety.SAFE:
         return None
     # Taxonomy SAFETY: the verdict becomes an event (no element text: it is untrusted).

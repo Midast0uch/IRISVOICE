@@ -74,6 +74,9 @@ class _Chokepoint:
         self.asked: list = []
         self.stale = False
         monkeypatch.delenv("IRIS_DECISION_ENFORCE", raising=False)
+        # Wave 5 (REQ-6): sampling off so this fixture pins the chokepoint
+        # alone (see test_oracle_enforcement_contract.py).
+        monkeypatch.setenv("IRIS_ORACLE_SAMPLE", "0")
         # REQ-2 Wave 3: the identity function now takes (consumer_id,
         # candidate_cap); the fake answers for ANY consumer (see the contract
         # sibling test_oracle_enforcement_contract.py).

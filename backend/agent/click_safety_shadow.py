@@ -73,8 +73,22 @@ def register_consumer() -> None:
         register_declared(CONSUMER_ID, INSTRUCTION, LABELS)
 
 
+def _scope_now() -> Dict[str, str]:
+    """REQ-6 AC6.3a: the row's scope (turn/step/node ids), bound AS VALUES at
+    submit time - this module's lane runs the score later on a worker thread
+    whose own context says nothing."""
+    try:
+        from backend.agent.decision_engine import scope_now
+
+        return scope_now()
+    except Exception:  # noqa: BLE001 - scope is best-effort, never fatal
+        return {}
+
+
 def record_assessment(statement: str, gate_verdict: str,
-                      screenshot: Optional[bytes] = None) -> Optional[dict]:
+                      screenshot: Optional[bytes] = None,
+                      scope: Optional[Dict[str, str]] = None,
+                      defer_outcome: bool = False) -> Optional[dict]:
     """Score ``statement`` in shadow and emit ONE row paired with the gate's verdict.
 
     Blocking (the model call); run it on the lane. Returns the row, or None when
@@ -110,6 +124,13 @@ def record_assessment(statement: str, gate_verdict: str,
             "brain_choice": gate_verdict,
             "shadow": True,
         }
+        if scope:
+            row.update(scope)
+        # REQ-6 AC6.2/AC6.6: a SAMPLED consult's row is labelled by the turn's
+        # outcome (registered by the caller), not paired with the incumbent -
+        # skipping the parity emit here is what makes the row OUTCOME-labelled.
+        if defer_outcome:
+            return row
         emit_row(row)
         return row
     except Exception as e:  # noqa: BLE001 - a shadow never raises
@@ -123,9 +144,10 @@ def submit_assessment(statement: str, gate_verdict: str,
     try:
         from backend.utils.durability_queue import lane
 
+        _scope = _scope_now()  # bound NOW; the lane's context is empty
         return bool(lane("click_safety_shadow").submit(
             "click_safety_row", record_assessment, statement, gate_verdict,
-            screenshot,
+            screenshot, _scope,
         ))
     except Exception as e:  # noqa: BLE001
         logger.debug("[click_safety] lane submit failed: %r", e)

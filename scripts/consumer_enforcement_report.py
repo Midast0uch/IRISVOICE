@@ -204,6 +204,14 @@ def load_rows(
                     or ("outside" if d.get("outside_label") is not None
                         else "incumbent")
                 ),
+                # REQ-6/REQ-14 (Wave 5): the row's scope join key and its
+                # deferred OUTCOME label ("correct"/"premature"/"untested"/
+                # "abandoned" for closing claims, "turn_ok"/"turn_fail" for
+                # sampled consults). Absent on incumbent-labelled rows.
+                "turn_id": str(d.get("turn_id") or ""),
+                "step_id": str(d.get("step_id") or ""),
+                "outcome_label": d.get("outcome_label"),
+                "outside_label": d.get("outside_label"),
             }
             seen[key] = row
             rows.append(row)
@@ -289,6 +297,9 @@ def measure(
     The full row count travels next to it as the evidence volume, so neither
     number hides the other.
     """
+    from backend.agent.decision_engine import TIER_REFUSE_ONLY, TIER_SAMPLABLE
+
+    _tiers = TIER_SAMPLABLE | TIER_REFUSE_ONLY
     by_consumer: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in rows:
         by_consumer[r["consumer_id"]].append(r)
@@ -335,8 +346,42 @@ def measure(
                 for src in sorted({str(r.get("label_source", "incumbent"))
                                    for r in grp})
             },
+            # REQ-14 AC14.5 (T5.14): LABEL INTEGRITY per consumer - the share
+            # of outcome-scoped rows that were ADJUDICATED. A row is
+            # adjudicated when it carries an outside_label (correct AND
+            # premature/incorrect both adjudicate a claim); untested and
+            # abandoned rows count against integrity, never as negatives.
+            # None when the consumer has no outcome-scoped rows at all.
+            "label_integrity": _label_integrity(grp),
+            # REQ-6 (T5.1/AC6.1): how many rows carry an outcome label - the
+            # evidence the sampled rung is live.
+            "outcome_rows": sum(
+                1 for r in grp if r.get("label_source") == "outcome"),
+            # AC6.6: eligibility is structural (the tier table), not per-run.
+            "sampling_eligible": str(cid) in _tiers,
         }
     return measured
+
+
+def _label_integrity(grp: List[Dict[str, Any]]) -> Optional[float]:
+    """AC14.5's ratio for one consumer's rows (None when no outcome rows).
+
+    label_integrity = adjudicated / (adjudicated + untested + abandoned)
+    """
+    adjudicated = untested = abandoned = 0
+    for r in grp:
+        ol = r.get("outcome_label")
+        if ol is None and r.get("label_source") != "outcome":
+            continue
+        if r.get("outside_label") is not None or ol in (
+                "correct", "premature", "turn_ok", "turn_fail"):
+            adjudicated += 1
+        elif ol == "untested":
+            untested += 1
+        elif ol == "abandoned":
+            abandoned += 1
+    total = adjudicated + untested + abandoned
+    return None if total == 0 else round(adjudicated / total, 4)
 
 
 def bar_rows(measured: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -355,6 +400,10 @@ def bar_rows(measured: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             # persist a flip the report would refuse. No backend threshold = no
             # honest block: the legacy clauses then fail on the missing ECE.
             "honest": None if m["threshold"] is None else m.get("honest"),
+            # REQ-6 AC6.1: the sampled rung's stated inputs, so the PERSISTED
+            # record shows "sampled" exactly when the report does.
+            "outcome_rows": int(m.get("outcome_rows") or 0),
+            "sampling_eligible": bool(m.get("sampling_eligible")),
         }
         for cid, m in measured.items()
     }
@@ -366,14 +415,26 @@ def build_report(
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Per-consumer status against TG-7's bar, with the gap named."""
+    from backend.agent.decision_engine import TIER_REFUSE_ONLY, TIER_SAMPLABLE
+
+    tiers = TIER_SAMPLABLE | TIER_REFUSE_ONLY
     consumers = {}
     for cid, m in sorted(measured.items()):
         if m["threshold"] is None:
-            status = "shadow"
-            gap = "no threshold for the active backend (fail-closed)"
+            # AC6.1: the sampled rung does not need an enforcement threshold -
+            # a tier-eligible consumer WITH outcome-labelled rows is "sampled"
+            # here even though no curve exists yet.
+            if cid in tiers and int(m.get("outcome_rows") or 0) > 0:
+                status, gap = ("sampled",
+                               "no enforcement threshold; sampling rung live")
+            else:
+                status = "shadow"
+                gap = "no threshold for the active backend (fail-closed)"
         else:
             status, gap = derive_status(
                 m["rows"], m["precision"], m["ece"], honest=m.get("honest"),
+                sampling_eligible=cid in tiers,
+                outcome_rows=int(m.get("outcome_rows") or 0),
             )
         consumers[cid] = {**m, "status": status, "gap": gap}
     return {
@@ -431,6 +492,10 @@ def _print_report(rep: Dict[str, Any]) -> None:
               f"above={h.get('rows_above')} precision@t={o.get('precision_at_t')} "
               f"wilson_lb={o.get('wilson_lb')}")
         print(f"  engines={m['engines']}")
+        if m.get("label_integrity") is not None:
+            print(f"  label_integrity={m['label_integrity']} "
+                  f"(adjudicated share of outcome-scoped rows, REQ-14 AC14.5)"
+                  f"  outcome_rows={m.get('outcome_rows', 0)}")
         print(f"  status={m['status']}"
               + (f"  gap: {m['gap']}" if m["gap"] else "  (flip allowed)"))
     print("\nWOULD EARN THE BAR: " + (", ".join(rep["flipped"]) or "(none)")
