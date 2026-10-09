@@ -164,17 +164,21 @@ comparisons are like-for-like.
 | c02_add_slugify | coding | **PASS** | 25.4 | 57.4 | 7 passed |
 | c10_create_module | coding | **PASS** | 11.7 | 13.7 | 8 passed |
 | c15_iterate_until_green | coding | **PASS** | 136.9 | 169.0 | 10 passed |
-| r04_kilimanjaro | research | **not returned** | — | — | browser task; no scored result within ~12 min in this environment |
+| r04_kilimanjaro | research | **FAIL** | — | 600 (timeout) | web timed out; error or empty reply |
 
 **Coding baseline: 3/3 PASS.** These three run the full DER loop — the path
 the Oracle actually consults — so they are the meaningful regression signal.
 
-`r04_kilimanjaro` is a browser research task (the personal-mode path). Its turn
-ran (`conv-970`/`conv-971` nodes completed, TTS synthesised 17.4 s of audio)
-but the harness did not return a scored result inside the window; recorded as
-not-returned rather than as a pass or a fail. It is not a Wave 0 regression:
-this wave changes no behaviour on that path (the `_extract_logprobs` helper is
-only reached on the d1 scoring path, and the new test is additive).
+`r04_kilimanjaro` **failed on a 600 s web timeout** (`web timed out; error or
+empty reply; missing: ['kilimanjaro', '5.89\d']`). This is environmental: the
+research path needs web/browser egress, which this sandbox does not provide
+(the browser host logged repeated `loop blocked > 2 s` at boot). The turn
+itself ran (`conv-970`/`conv-971` nodes completed) and it is **not a Wave 0
+regression** — this wave changes no behaviour on that path.
+
+**Therefore the fixed wave-to-wave baseline set is the CODING trio
+{c02, c10, c15}.** Research tasks cannot be scored here and are excluded from
+the comparison rather than recorded as recurring failures.
 
 **Two environment hazards recorded for every later wave** (both silent, both
 outside the app's control):

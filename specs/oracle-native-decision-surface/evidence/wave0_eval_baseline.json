@@ -1,0 +1,51 @@
+{
+  "recorded_at": "2026-10-08T20:23:16",
+  "models": [],
+  "summary": {
+    "research": {
+      "passed": 0,
+      "total": 1
+    }
+  },
+  "results": [
+    {
+      "id": "r04_kilimanjaro",
+      "group": "research",
+      "passed": false,
+      "seconds": 600.5,
+      "reply_s": null,
+      "notes": [
+        "timed out",
+        "error or empty reply",
+        "missing: ['kilimanjaro', '\\\\b5[,. ]?89\\\\d\\\\b']"
+      ],
+      "conversation_id": "conv-971",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "",
+      "event_counts": {
+        "chat_typing": 3,
+        "turn.start": 1,
+        "listening_state": 7,
+        "audio_envelope": 307,
+        "chat_heartbeat": 2,
+        "crawler_started": 1,
+        "crawler_page_fetched": 5,
+        "crawler_complete": 1,
+        "context:usage": 2,
+        "task:learning": 1,
+        "turn.part": 1,
+        "inference_event": 1,
+        "turn.end": 1,
+        "audio_level": 100,
+        "tts_word": 43,
+        "system_status": 317,
+        "ping": 10
+      },
+      "shell_syntax_errors": 0
+    }
+  ]
+}
