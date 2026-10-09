@@ -1687,7 +1687,10 @@ ORACLE_PHASE_DOMAIN = "decision.oracle_cpu"
 # backend anyway (a stuck ORT run must not hang process teardown).
 _SHUTDOWN_DRAIN_S = 30.0
 _ORACLE_RUNS_LOCK = threading.Lock()
-_oracle_runs_in_flight = 0   # model runs executing now, process-wide (one CPU)
+# REQ-7 AC7.3 (Wave 6): counted as QUESTIONS, not runs - a batched run of n
+# questions contributes n while it flies. (The name passed through unchanged
+# below; the semantic is the load function's.)
+_oracle_questions_in_flight = 0  # questions executing now, process-wide
 _oracle_intra_op = 0         # the loaded session's intra-op thread count
 
 
@@ -1706,15 +1709,18 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _oracle_load_fraction() -> float:
-    """Load fed to the Oracle's phase domain: runs in flight / run capacity.
+    """Load fed to the Oracle's phase domain: QUESTIONS in flight / capacity.
 
-    Capacity = logical cores / intra-op threads per run (8 / 4 = 2 here): how
-    many runs the CPU can host without sharing cores. It is a PARAMETER of the
-    mechanism (it slows the cadence through the amplitude), never a ceiling.
+    REQ-7 AC7.3 (Wave 6): the signal counts QUESTIONS, not runs. A three-
+    question batch occupies three times the work for ONE admission; counting
+    questions keeps admission fair by the work performed ("a three-consumer
+    job is admitted a third as often"). Capacity = logical cores / intra-op
+    threads per run (8 / 4 = 2 here). It is a PARAMETER of the mechanism
+    (it slows the cadence through the amplitude), never a ceiling.
     """
     cores = os.cpu_count() or 1
     intra = _oracle_intra_op or max(1, cores // 2)
-    return min(1.0, _oracle_runs_in_flight / max(1, cores // max(1, intra)))
+    return min(1.0, _oracle_questions_in_flight / max(1, cores // max(1, intra)))
 
 
 def _oracle_domain() -> Any:
@@ -2145,6 +2151,200 @@ class DecisionEngine:
         finally:
             self._lock.release()
 
+    # -- REQ-7 (Wave 6): one run, one STATE, that state's questions --------
+
+    # AC7.4: the METHOD is configurable and measured, never assumed. The cap
+    # bounds run width; the degenerate single-question case runs unbatched
+    # through decide() (one state, one question IS one pass). Each row records
+    # its grouping (`grouping` on the row) so two groupings stay comparable.
+    BATCH_CAP = int(os.environ.get("IRIS_ORACLE_BATCH_CAP", "8") or 8)
+
+    def decide_many(
+        self,
+        consults: Sequence[Tuple[str, Sequence[str], Dict[str, Any]]],
+        instruction: Optional[str] = None,
+    ) -> List[Optional["DecisionScore"]]:
+        """Score a JOB's questions in one pass (AC7.1/AC7.2).
+
+        Each consult is ``(consumer_id, options, frame)``. Grouping is the
+        SPEC's rule, not a heuristic: only consults of the SAME job sharing
+        the SAME rendered state share a pass (AC7.1 - different fields are a
+        different state; two jobs never merge). Cap per REQ-7 AC7.4
+        (``BATCH_CAP``); a 1-question group runs one pass over one question,
+        the degenerate case the rule already ships.
+        """
+        try:
+            rendered: List[Optional[OracleState]] = []
+            for cid, options, frame in consults:
+                if not [o for o in options if isinstance(o, str) and o]:
+                    rendered.append(None)
+                    continue
+                rendered.append(job_input(cid, frame))
+            # consult index -> (group index, position within the group)
+            order: List[Optional[tuple]] = []
+            group_members: List[List[tuple]] = []
+            group_state: List[str] = []
+            g_index: Dict[tuple, int] = {}
+            for i, st in enumerate(rendered):
+                if st is None:
+                    order.append(None)
+                    continue
+                key = (st.job, st.text)
+                if key not in g_index:
+                    g_index[key] = len(group_members)
+                    group_members.append([])
+                    group_state.append(st.text)
+                g = g_index[key]
+                cid, options, _frame = consults[i]
+                opts = [o for o in options if isinstance(o, str) and o][
+                    : self._cfg.candidate_cap]
+                order.append((g, len(group_members[g])))
+                group_members[g].append((cid, opts))
+            out: List[Optional[DecisionScore]] = [None] * len(consults)
+            for g, members in enumerate(group_members):
+                got: List[Optional[DecisionScore]] = []
+                for start in range(0, len(members), self.BATCH_CAP):
+                    chunk = members[start:start + self.BATCH_CAP]
+                    got.extend(self._decide_batch_group(
+                        group_state[g],
+                        [(c, o, instruction) for c, o in chunk]))
+                for li, ds in enumerate(got):
+                    for i, p in enumerate(order):
+                        if p == (g, li):
+                            out[i] = ds
+                            break
+            return out
+        except Exception as e:  # noqa: BLE001 - fail closed, never raises
+            logger.warning("decision_engine decide_many failed: %r", e)
+            return [None] * len(consults)
+
+    def _decide_batch_group(
+        self,
+        state_text: str,
+        consults: Sequence[Tuple[str, List[str], Optional[str]]],
+    ) -> List[Optional["DecisionScore"]]:
+        """ONE admitted pass for one group (the phase domain admits the JOB;
+        the load counts the QUESTIONS - AC7.3). Lock path and phase path both
+        land here; one question degenerates to the classical decide shape."""
+        _note_inline_shadow(consults[0][0])  # same the single path does
+        global _oracle_questions_in_flight
+        if _oracle_phase_enabled():
+            _dom = _oracle_domain()
+            _tok = None
+            try:
+                _osc = f"{_oracle_session_id()}:job:{oracle_job(consults[0][0]).name}"
+                if _oracle_phase_exit_enabled():
+                    _tok = _dom.enter(_osc)  # the dial's participant = the JOB
+                else:
+                    _dom.acquire(_osc)
+            except Exception as e:  # noqa: BLE001 - a gate fault admits
+                logger.warning("decision_engine: phase gate failed open (%r)", e)
+            if not self._enter_run():
+                if _tok is not None:
+                    _dom.exit(_tok)
+                return [None] * len(consults)
+            try:
+                with _ORACLE_RUNS_LOCK:
+                    _oracle_questions_in_flight += len(consults)
+                try:
+                    return self._run_inference(
+                        lambda: self._backend.decide_batch(state_text, consults),
+                        concurrent=True)
+                finally:
+                    with _ORACLE_RUNS_LOCK:
+                        _oracle_questions_in_flight -= len(consults)
+            finally:
+                self._exit_run()
+        t_start = self._clock()
+        if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
+            self.counters.lock_timeouts += 1
+            return [None] * len(consults)
+        try:
+            if not self._load():
+                return [None] * len(consults)
+            backend = self._backend
+            t0 = self._clock()
+            with _ORACLE_RUNS_LOCK:
+                _oracle_questions_in_flight += len(consults)
+            try:
+                out = self._run_inference(
+                    lambda: backend.decide_batch(state_text, consults))
+            finally:
+                with _ORACLE_RUNS_LOCK:
+                    _oracle_questions_in_flight -= len(consults)
+                el = int((self._clock() - t0) * 1000)
+                self.counters.decisions += sum(1 for ds in out if ds is not None)
+                logger.info(
+                    "%s decide_batch questions=%d latency_ms=%d backend=%s",
+                    ENGINE_NAME, len(consults), el, self.model_id,
+                )
+            _ = t_start
+            return out
+        except Exception as e:
+            logger.warning("decision_engine batch scoring failed: %r", e)
+            return [None] * len(consults)
+        finally:
+            self._lock.release()
+
+    def shadow_many(
+        self,
+        consults: Sequence[Tuple[str, Sequence[str], Dict[str, Any],
+                                 Optional[Dict[str, Any]]]],
+        *,
+        sink: Callable[[dict], None],
+        instruction: Optional[str] = None,
+    ) -> bool:
+        """A batched SHADOW consult: one lane job, ONE forward pass, and ONE
+        ROW PER QUESTION - a batch is a transport unit, never a label unit
+        (AC14.1). Every row keeps its own scope and reference; the row records
+        the grouping that produced it (AC7.4) so two groupings stay
+        comparable. Returns False when the lane refused it."""
+        _items = [
+            (cid, list(options), dict(frame or {}), dict(ref or {}), scope_now())
+            for cid, options, frame, ref in consults
+        ]
+
+        def _job() -> None:
+            out = self.decide_many(
+                [(cid, options, frame) for cid, options, frame, _r, _s in _items],
+                instruction,
+            )
+            for (cid, options, frame, ref, scope), ds in zip(_items, out):
+                if ds is None:
+                    continue  # no score: never fabricate a row
+                row = {
+                    "consumer_id": cid,
+                    "engine": self.model_id or ENGINE_NAME,
+                    "job": oracle_job(cid).name,
+                    "chosen": ds.chosen,
+                    "confidence": round(float(ds.confidence), 4),
+                    "candidates": [
+                        {"name": c.name, "prob": round(float(c.prob), 4)}
+                        for c in (ds.distribution or ())
+                    ],
+                    "engine_latency_ms": ds.engine_latency_ms,
+                    "shadow": True,
+                    "grouping": f"job_batch:{len(_items)}",
+                }
+                if scope:
+                    row.update(scope)
+                if ref:
+                    row.update(ref)
+                sink(row)
+
+        try:
+            from backend.utils.durability_queue import lane
+
+            ok = lane("oracle_shadow").submit(
+                f"shadow_batch:{len(_items)}", _job)
+            if not ok:
+                logger.warning(
+                    "%s shadow batch dropped (lane full)", ENGINE_NAME)
+            return ok
+        except Exception as e:  # noqa: BLE001 - a shadow never raises
+            logger.warning("%s shadow_many submit failed: %r", ENGINE_NAME, e)
+            return False
+
     # -- phase path (IRIS_ORACLE_PHASE) -------------------------------------
 
     def _enter_run(self) -> bool:
@@ -2184,7 +2384,7 @@ class DecisionEngine:
         """`decide` under the Caducean phase model: no engine lock, one question
         per run, runs overlap. Returns None only when the engine is unavailable
         or scoring fails - never because another decision held a lock."""
-        global _oracle_runs_in_flight, _oracle_intra_op
+        global _oracle_questions_in_flight, _oracle_intra_op
         t_start = self._clock()
         _dom = _tok = None
         try:
@@ -2212,7 +2412,7 @@ class DecisionEngine:
                 _oracle_intra_op = intra
             t0 = self._clock()
             with _ORACLE_RUNS_LOCK:
-                _oracle_runs_in_flight += 1
+                _oracle_questions_in_flight += 1
             try:
                 ds = self._run_inference(
                     lambda: backend.decide(
@@ -2222,7 +2422,7 @@ class DecisionEngine:
                 )
             finally:
                 with _ORACLE_RUNS_LOCK:
-                    _oracle_runs_in_flight -= 1
+                    _oracle_questions_in_flight -= 1
             scoring_ms = int((self._clock() - t0) * 1000)
             if ds is None:
                 return None

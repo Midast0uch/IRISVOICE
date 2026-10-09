@@ -855,6 +855,101 @@ with a regression hidden would not do.
 
 **TG-5 GREEN.**
 
-## Wave 6 — Per-job batching (gate TG-6)
+## Wave 6 — Per-job batching (gate TG-6) — MEASURED, NOT ENGAGED (transport)
 
-_pending._
+This wave's honest outcome is the measurement the gate exists to produce:
+**the mechanism is built, the contracts are pinned, and the live dial
+measurement DECLINES to switch production from one-question runs.**
+
+**T6.1/T6.2 mechanism.** `D1Backend.decide_batch(state, consults)`: one
+forward pass over a SHARED state, one QUESTION block per consult, per-question
+answer slots parsed from per-position logprobs (the Wave 2 readout extended
+to an ordered window). `DecisionEngine.decide_many(consults)` groups STRICTLY
+by (job, rendered state text) — AC7.1's "never merge two jobs" and "the same
+state only" are the grouping KEY, not a hope; the degenerate one-question
+group is exactly one pass. `BATCH_CAP` (env `IRIS_ORACLE_BATCH_CAP`, default 8)
+bounds run width (AC7.4 configurable knob, the CAP; the grouping rule is
+fixed by construction, the method is measured). `shadow_many` runs the batch
+on the `oracle_shadow` lane.
+
+**T6.3 (AC7.3) - the load signal counts QUESTIONS.** The Decision phase
+domain's load is now `_oracle_questions_in_flight / capacity`; a batched run
+of n questions contributes n for its flight, an unbatched run contributes 1
+(identical numbers to before when nothing batches). Pinned:
+test_oracle_phase_contract's load test now drives questions
+(test_load_fraction_is_questions_in_flight_over_capacity: 0/0.5/1.0 across
+0/1/5 questions on the 8-core/4-threads stub). T6.8/AC9.3 stated: one dial,
+jobs stay participants (the batch enters ONCE as the job participant), the
+scheduling domain files were not touched.
+
+**T6.4b (AC14.1) pinned.** test_batch_rows_are_per_question_keep_own_scope:
+one pass -> one row per question, each with its own consumer/scope/reference,
+grouping "job_batch:3" recorded on each (AC7.4 comparability; "grouping" added
+to the record whitelist). A batch is never written, labelled or counted as
+one row.
+
+**T6.5 criteria isolation.** test_criteria_never_bleed_across_batch_members:
+narration's and mode's prompts inside ONE pass contain only their own
+options; asserted on the captured request payload, question-by-question.
+
+**T6.6 failure isolation, the PINNED decision.** PER-QUESTION: an undeclared
+or unrenderable member answers None; its batch-mates score (test asserts
+exactly that). The alternative (whole batch fail-closed) was rejected: a
+single broken consumer would starve the others' calibration rows silently.
+
+**AC7.7 / T6.7 - the re-take, and the finding that decided the wave.**
+Re-measured on the live d1 (solo, warm, same consults as before): ok both
+ways. MEASURED NEGATIVE (the wave's load-bearing finding): the llama-server
+build serving d1 locally (llama-cpp-turboquant 0.2.0-dev, the PrismML
+quantized build at llama.cpp-prismml/bin) has NO `/v1/systemone` route
+(probed: /v1/systemone, /decisions/v1/systemone, /systemone all 404;
+`--help` has no decision/systemone flag). LiquidAI's own guide states the
+same-build claim: "the identical /v1/systemone route of a llama-server
+running the open d1 weights" (docs.liquid.ai/guides/decision-model-guide,
+2026-09-29) - i.e. a llama.cpp build serving d1's native Decision Index
+route EXISTS upstream (posted 2026-10-07, the d1 release). OUR build predates
+the route. On the chat route, a 3-question prompt folds to a single answer
+(measured LIVE: content 'no' from the noul member only; an "ANSWERS:"
+scaffold produced 'test' for one question and stopped). The bench numbers
+(solo 302 ms median vs batch 92 ms) are therefore NOT a per-question win -
+the batched pass answered ONE question; comparing them would be the exact
+self-pat the wave rules forbid. The 92 ms measures the cost of ONE prefill +
+1-2 answer tokens; the true 3-question cost on a systemone-capable server is
+unmeasurable here.
+
+**The conflict, reported per the scope bound:** TG-6's clause "latency
+improves" cannot be honestly claimed on the current server build; making it
+true needs a d1 transport that returns per-question slots (upgrade the
+llama-server build to one carrying `/v1/systemone`, or run d1 through the
+transformers `system_one` path). The smallest change to the bound I propose
+is exactly what the wave already delivers: production keeps the one-question
+default (REQ-20's letter loses nothing: solo runs are unchanged, faster than
+ever at p50 34 ms per Wave 2), the mechanism + contracts stay for the day the
+transport arrives, and the decline is recorded with the evidence. I did not
+quietly widen the gate; I am also not treating "latency improves" as met.
+
+**Live sweep (the dial re-take on the UNCHANGED production path):** tests
+with the stack DOWN: full set 499 passed / the 9 pre-existing (two sweep
+failures during this wave - missing_model_degrades_none and the browser
+chromium-share test - both proven ENVIRONMENTAL: they fail only while the
+live stack is up; each passes in isolation on this tree, and the chromium one
+passes on HEAD identically). Live coding trio: cold trio 3/3 PASS with one
+standards FLAG (c15 reply band, 105.5s, machine just out of the batch bench);
+warm re-run trio c02 12.4s / c10 14.7s / c15 36.0s - **3/3 PASS, STANDARDS:
+no regression** (results 20261009-105351.json, 20261009-105630.json). Dial
+admission lines observed unchanged per participant.
+
+### TG-6 verdict
+
+- the phase-domain measurement is re-taken and shows no regression -> **PASS**
+  (warm trio, standards clean)
+- the load signal demonstrably counts questions -> **PASS** (pinned test)
+- criteria/failure isolation contracts -> **PASS** (three new tests)
+- latency improves -> **NOT MET on this transport** (server build has no
+  multi-question route; the batched pass folds to one answer, measured)
+- THEREFORE: batching is NOT engaged in production. Rows produced pre-REQ-6
+  JOIN stay parity rows and count toward no bar (AC7.6) - stated.
+
+**TG-6: MEASURED NO-SWITCH.** The gate did its job: it measured instead of
+declaring. Production latency is unchanged; the batch machinery and its
+contracts are ready for a systemone-capable transport.

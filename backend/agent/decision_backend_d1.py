@@ -421,7 +421,12 @@ class D1Backend:
     @staticmethod
     def _state_block(state: Any) -> str:
         """json_only style: a string renders as itself; anything else as
-        indented JSON (prompt.py state_block)."""
+        indented JSON (prompt.py state_block). ``None`` renders EMPTY - the
+        batch renderer (REQ-7) places the shared state once and renders each
+        question against it, so per-question calls pass None and must not
+        emit a literal "null"."""
+        if state is None:
+            return ""
         if isinstance(state, str):
             return f"{state}\n\n"
         return json.dumps(state, ensure_ascii=False, indent=2, default=str) + "\n\n"
@@ -712,3 +717,146 @@ class D1Backend:
         except Exception as e:  # scoring failure must never escape
             logger.warning("decision_backend_d1 scoring failed: %r", e)
             return None
+
+    # ── REQ-7 (Wave 6): ONE pass, one STATE, that state's questions ────────
+    def _plan_batch_question(
+        self, consumer_id: str, options: Sequence[str], instruction: Optional[str],
+    ) -> Optional[Tuple[str, Dict[str, Tuple], List[str], int, List[str]]]:
+        """The per-question render + readout plan, or None when THIS question
+        cannot be rendered (the batch's PER-QUESTION isolation, AC7.5: a
+        malformed consumer fails ITSELF, never a neighbour). Mirrors the
+        dispatch in decide(): declared type only, noul normalises yes-first."""
+        opts = [o for o in options if isinstance(o, str) and o]
+        if not opts:
+            return None
+        dtype = declared_type(consumer_id)
+        if dtype not in DECISION_TYPES:
+            logger.info(
+                "decision_backend_d1: batch member consumer=%s undeclared - "
+                "it answers nothing (its batch-mates still score)", consumer_id)
+            return None
+        if dtype == "noul":
+            if not {o.strip().lower() for o in opts} <= _YES_NO_LOWER:
+                return None
+            instruction = instruction or self._spec_instruction(
+                consumer_id, "Is this statement true?")
+            text = self._question_noul(None, instruction)
+            names = [o.strip().lower() for o in opts]
+            if names[0] != "yes":
+                names = ["no", "yes"]
+            readout = {k: (tuple(ids),)
+                       for k, ids in self._ensure_yes_no_ids().items()}
+            return text, readout, names, 1, opts
+        instruction = instruction or self._spec_instruction(
+            consumer_id, f"Choose the best option for {consumer_id}.")
+        # AC7.5: the criteria block comes from THIS consumer's declaration
+        # only - nothing of a batch-mate's criteria may appear here.
+        if dtype == "score":
+            text = self._question_score(None, instruction, opts)
+        else:
+            text = self._question_choice(
+                None, instruction, declared_criteria(consumer_id), opts)
+        got = self._name_readout(opts)
+        if got is None:
+            return None
+        readout, width = got
+        return text, readout, list(opts), width, opts
+
+    def decide_batch(
+        self,
+        state: Any,
+        consults: Sequence[Tuple[str, Sequence[str], Optional[str]]],
+    ) -> List[Optional[DecisionScore]]:
+        """REQ-7 (AC7.1/AC7.2): ONE forward pass over ONE shared state,
+        answering each question at its OWN answer slot (per-position readout).
+        The state text is applied once (the budget cap it carries is applied
+        by the ENGINE, which rendered it). Aligned with `consults`, None where
+        a member could not be rendered or scored. Never raises.
+        """
+        try:
+            if not self._loaded and not self.load():
+                return [None] * len(consults)
+            ok, why = self._serves_d1()
+            if not ok:
+                logger.info(
+                    "decision_backend_d1: refusing batch (%s)", why)
+                return [None] * len(consults)
+            try:
+                from backend.agent.decision_engine import ensure_consumer_spec
+
+                for consumer_id, opts, instruction in consults:
+                    ensure_consumer_spec(consumer_id, list(opts), instruction)
+            except Exception:
+                pass
+            plans = [self._plan_batch_question(cid, opts, instruction)
+                     for cid, opts, instruction in consults]
+            live = [p for p in plans if p is not None]
+            if not live:
+                return [None] * len(consults)
+            # One prompt: the shared state block, then each question. The
+            # completion produces the answers in question order; each
+            # question's readout window is its own positions.
+            body = self._state_block(state) + "\n".join(
+                p[0] for p in live).rstrip() + "\n"
+            total_width = sum(p[3] for p in live)
+            t0 = self._clock()
+            r = _pooled().post(
+                f"http://127.0.0.1:{_server_port()}/v1/chat/completions",
+                json={
+                    "messages": [{
+                        "role": "user",
+                        "content": self._message_content(body, ()),
+                    }],
+                    "max_tokens": max(1, int(total_width)),
+                    "temperature": 0.0,
+                    "n_probs": _N_PROBS,
+                },
+                timeout=_TIMEOUT_S,
+            )
+            r.raise_for_status()
+            positions = _extract_logprobs_all(r.json())
+            out: List[Optional[DecisionScore]] = [None] * len(consults)
+            pos = 0  # the running answer-slot offset across live questions
+            with_idx = [(i, p) for i, p in enumerate(plans)
+                        if p is not None]
+            latency_ms = int((self._clock() - t0) * 1000)
+            self._latency_ms = latency_ms
+            for i, (text, readout, names, width, _opts) in with_idx:
+                cid = consults[i][0]
+                window = positions[pos:pos + width]
+                pos += width
+                scores: List[float] = []
+                for key in names:
+                    plan = (readout or {}).get(key, ())
+                    vals: List[float] = []
+                    for wi, accepted in enumerate(plan):
+                        if wi >= len(window):
+                            vals = []
+                            break
+                        present = [window[wi][t] for t in accepted
+                                   if t in window[wi]]
+                        if not present:
+                            vals = []
+                            break
+                        vals.append(max(present))
+                    scores.append(
+                        sum(vals) / len(vals) if vals else float("-inf"))
+                m = max(scores)
+                exps = [math.exp(s - m) if s > float("-inf") else 0.0
+                        for s in scores]
+                tot = sum(exps)
+                if tot <= 0:
+                    continue
+                probs = [e / tot for e in exps]
+                dist = tuple(
+                    CandidateScore(name=names[j], logprob=scores[j],
+                                   prob=probs[j])
+                    for j in range(len(names)))
+                best = max(dist, key=lambda c: c.prob)
+                out[i] = DecisionScore(
+                    consumer_id=cid, chosen=best.name, confidence=best.prob,
+                    distribution=dist, engine_latency_ms=latency_ms)
+            return out
+        except Exception as e:  # scoring failure must never escape
+            logger.warning("decision_backend_d1 batch failed: %r", e)
+            return [None] * len(consults)

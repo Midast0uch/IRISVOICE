@@ -242,21 +242,25 @@ class TestOverlap:
         assert all(out.get(i) is not None for i in range(n))
         assert backend.max_running == n
 
-    def test_load_fraction_is_runs_in_flight_over_capacity(self, monkeypatch):
+    def test_load_fraction_is_questions_in_flight_over_capacity(self, monkeypatch):
+        """AC7.3 (Wave 6): the load signal counts QUESTIONS, not runs - the
+        formula (fraction = in-flight / capacity, clamped) is unchanged; what
+        one "in flight" MEANS changed the moment a run can carry three
+        questions."""
         monkeypatch.setattr(de.os, "cpu_count", lambda: 8)
         monkeypatch.setattr(de, "_oracle_intra_op", 4)
-        monkeypatch.setattr(de, "_oracle_runs_in_flight", 0)
+        monkeypatch.setattr(de, "_oracle_questions_in_flight", 0)
         assert de._oracle_load_fraction() == 0.0
-        monkeypatch.setattr(de, "_oracle_runs_in_flight", 1)
+        monkeypatch.setattr(de, "_oracle_questions_in_flight", 1)
         assert de._oracle_load_fraction() == pytest.approx(0.5)
-        monkeypatch.setattr(de, "_oracle_runs_in_flight", 5)
+        monkeypatch.setattr(de, "_oracle_questions_in_flight", 5)
         assert de._oracle_load_fraction() == 1.0  # clamped load, not a refusal
 
     def test_in_flight_counter_returns_to_zero(self):
         eng = _engine(_Backend())
         for i in range(5):
             eng.decide(f"c{i}", ["a", "b"], {"goal": "g"})
-        assert de._oracle_runs_in_flight == 0
+        assert de._oracle_questions_in_flight == 0
 
     def test_decision_counters_are_exact_under_concurrency(self):
         eng = _engine(_Backend())

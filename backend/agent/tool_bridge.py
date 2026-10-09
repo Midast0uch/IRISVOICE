@@ -93,6 +93,11 @@ _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     # REQ-14 (AC14.2/AC14.4): the deferred label's value - correct/premature/
     # untested/abandoned - which the label-integrity metric (AC14.5) counts.
     "outcome_label",
+    # REQ-7 AC7.4 (Wave 6): which grouping produced the row ("job_batch:n" for
+    # a batched pass, absent for the unbatched path) - two groupings stay
+    # comparable afterwards, or a batch's cheaper rows would silently mix with
+    # the solo-measured ones.
+    "grouping",
 )
 
 # T4.4 (specs/phonon2-d1-model-swap REQ-12 AC12.1, B6): write-time shadow-row

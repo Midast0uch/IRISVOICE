@@ -1,0 +1,8 @@
+Wave 6 (AC7.7) transport evidence, 2026-10-09, local llama-server build
+llama.cpp-prismml/bin/llama-server.exe (llama-cpp-turboquant fork,
+0.2.0-dev (adfffbe41)) hosting d1-3b on :8082.
+
+NOT THE MULTI-QUESTION ROUTE (all 404, measured):
+  /v1/systemone, /decisions/v1/systemone, /systemone, /v1/system_one, /v1/d1
+`llama-s
+…[mcm-pruned 1610 chars]
