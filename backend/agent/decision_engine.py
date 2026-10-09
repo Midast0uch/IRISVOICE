@@ -151,6 +151,30 @@ class OracleJob:
     question: str                 # the kind of question (documentation)
     fields: Tuple[str, ...]       # frame fields read, in order ("goal" = the text)
     budget_ids: int               # text token budget (label structure is extra)
+    # REQ-5 AC5.1: the frame keys holding IMAGE BYTES this job's consumers may
+    # read. Empty = a text-only job; a frame can carry an image for another
+    # reason and a text consumer still never receives one.
+    image_fields: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class OracleState:
+    """The ONE structured input a job builds and the backend reads whole
+    (REQ-3: `job_input()` returns this; the backend stops reading a goal
+    string out of a raw frame - AC3.1/AC3.2).
+
+    It is structured rather than a string because the field-presence contract
+    (AC3.5) must assert which DECLARED fields the state carries, a row needs
+    to know which fields were present, and an image must reach only the jobs
+    that declare it (AC5.1). The budget still travels with the text and is
+    applied by the BACKEND, logged when it trims (AC3.4).
+    """
+
+    job: str                     # the job that built it
+    fields: Tuple[str, ...]      # the job's DECLARED fields, in order
+    text: str                    # the rendered field text
+    budget_ids: int              # the job's text budget
+    images: Tuple[bytes, ...] = ()  # declared images only (REQ-5 AC5.1)
 
 
 ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
@@ -159,7 +183,11 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     OracleJob("route", "which of these next actions? (the menu carries the content)",
               ("coverage", "open_facts", "depth_met", "grade", "goal"), 64),
     OracleJob("guard", "is this action safe to take without asking?",
-              ("goal",), 64),
+              # REQ-5 AC5.2 (AC9.1 sanctioned exception 4): `guard` is the
+              # first IMAGE job - click_safety's question is visual by
+              # construction and its frame carries the session-scoped
+              # screenshot under "screenshot" (AC5.3).
+              ("goal",), 64, image_fields=("screenshot",)),
     OracleJob("judge_step", "did this step do its part?",
               ("goal",), 96),
     OracleJob("judge_goal", "is the objective met, deep and sufficient?",
@@ -570,11 +598,13 @@ def _fmt_field(value: Any) -> str:
     return str(value)
 
 
-def job_input(consumer_id: str, frame: Dict[str, Any]) -> Dict[str, Any]:
-    """The frame the backend scores: the job's fields rendered in order into the
-    text, plus the job's text budget. A frame holding only ``goal`` renders to
-    the same text as before, so those consumers keep their calibrated input
-    (except where the budget now cuts a longer text)."""
+def job_input(consumer_id: str, frame: Dict[str, Any]) -> OracleState:
+    """The structured state the backend scores (REQ-3 AC3.1): the job's
+    declared fields rendered in order into the text, the job's text budget,
+    and the job's DECLARED images only (AC5.1 - a text consumer never receives
+    an image, whatever else the frame carries; a frame holding only ``goal``
+    renders to the same text as before, so text consumers keep their
+    calibrated input, except where the budget cuts a longer text)."""
     job = oracle_job(consumer_id)
     parts = []
     for f in job.fields:
@@ -582,8 +612,15 @@ def job_input(consumer_id: str, frame: Dict[str, Any]) -> Dict[str, Any]:
         if v is None or v == "" or v == [] or v == ():
             continue
         parts.append(str(v) if f == "goal" else f"{f}: {_fmt_field(v)}")
-    return {"goal": "\n".join(parts), "_max_text_ids": job.budget_ids,
-            "_job": job.name}
+    images = tuple(
+        bytes(v) for f in job.image_fields
+        for v in [(frame or {}).get(f)]
+        if isinstance(v, (bytes, bytearray)) and v
+    )
+    return OracleState(
+        job=job.name, fields=tuple(job.fields), text="\n".join(parts),
+        budget_ids=job.budget_ids, images=images,
+    )
 
 
 @dataclass(frozen=True)
@@ -1641,11 +1678,12 @@ class DecisionEngine:
         ]
         if not opts:
             return None
-        # THE input rule (Oracle jobs): the engine builds what the model reads.
-        frame = job_input(consumer_id, frame)
+        # THE input rule (Oracle jobs): the engine builds what the model
+        # reads - ONE structured OracleState (REQ-3), never the raw frame.
+        state = job_input(consumer_id, frame)
         _note_inline_shadow(consumer_id)
         if _oracle_phase_enabled():
-            return self._decide_phase(consumer_id, opts, frame, instruction)
+            return self._decide_phase(consumer_id, opts, state, instruction)
         t_start = self._clock()  # REQ-26: lock-wait separated from compute
         if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
             self.counters.lock_timeouts += 1
@@ -1660,7 +1698,7 @@ class DecisionEngine:
             # thread, never on the caller's step thread.
             ds = self._run_inference(
                 lambda: backend.decide(
-                    consumer_id, opts, frame, instruction=instruction
+                    consumer_id, opts, state, instruction=instruction
                 )
             )
             scoring_ms = int((self._clock() - t0) * 1000)

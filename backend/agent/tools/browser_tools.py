@@ -481,9 +481,20 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
 
     verdict, reason = await click_safety.assess(ctx.get("goal") or "", action, mark, page_url, text)
     try:
+        # REQ-5 (AC5.2/AC5.3): the click_safety shadow's state gains the
+        # SESSION-SCOPED screenshot - the picture of the page this verdict is
+        # about (never the desktop capture, and pinned NOW because the shadow
+        # lane runs later, after the page may have moved). A capture failure
+        # costs the row its image, never the gate.
+        _shot = await session.screenshot()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[browser_tools] click_safety screenshot skipped: %s", exc)
+        _shot = None
+    try:
         from backend.agent import click_safety_shadow
 
-        click_safety_shadow.submit_assessment(f'{ctx.get("goal") or ""} | {what}', verdict)
+        click_safety_shadow.submit_assessment(
+            f'{ctx.get("goal") or ""} | {what}', verdict, _shot)
     except Exception as exc:  # noqa: BLE001 - the shadow never blocks an action
         logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
     if verdict == click_safety.SAFE:

@@ -73,11 +73,19 @@ def register_consumer() -> None:
         register_declared(CONSUMER_ID, INSTRUCTION, LABELS)
 
 
-def record_assessment(statement: str, gate_verdict: str) -> Optional[dict]:
+def record_assessment(statement: str, gate_verdict: str,
+                      screenshot: Optional[bytes] = None) -> Optional[dict]:
     """Score ``statement`` in shadow and emit ONE row paired with the gate's verdict.
 
     Blocking (the model call); run it on the lane. Returns the row, or None when
     there is no engine / no answer. Never raises.
+
+    REQ-5 (AC5.1/AC5.3): ``screenshot`` is the SESSION-SCOPED browser capture
+    (never the desktop) the call site took at assess time. ``guard`` is the one
+    job that declares an image, so only this consumer's state carries it; the
+    lane runs LATER and the session may have moved, so the bytes are pinned at
+    submit time rather than re-captured here (a late frame would mislabel the
+    row).
     """
     try:
         engine = ENGINE
@@ -88,7 +96,10 @@ def record_assessment(statement: str, gate_verdict: str) -> Optional[dict]:
         if engine is None:
             return None
         register_consumer()
-        ds = engine.decide(CONSUMER_ID, list(LABELS), {"goal": statement[:400]})
+        frame: Dict[str, Any] = {"goal": statement[:400]}
+        if isinstance(screenshot, (bytes, bytearray)) and screenshot:
+            frame["screenshot"] = bytes(screenshot)
+        ds = engine.decide(CONSUMER_ID, list(LABELS), frame)
         if ds is None:
             return None
         row: Dict[str, Any] = {
@@ -106,13 +117,15 @@ def record_assessment(statement: str, gate_verdict: str) -> Optional[dict]:
         return None
 
 
-def submit_assessment(statement: str, gate_verdict: str) -> bool:
+def submit_assessment(statement: str, gate_verdict: str,
+                      screenshot: Optional[bytes] = None) -> bool:
     """Queue ``record_assessment`` on its ordered lane; never blocks the click."""
     try:
         from backend.utils.durability_queue import lane
 
         return bool(lane("click_safety_shadow").submit(
             "click_safety_row", record_assessment, statement, gate_verdict,
+            screenshot,
         ))
     except Exception as e:  # noqa: BLE001
         logger.debug("[click_safety] lane submit failed: %r", e)

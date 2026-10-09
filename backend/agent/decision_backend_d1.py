@@ -56,6 +56,7 @@ not bf16). It keys backend_thresholds; GLiNER-era rows and curves become
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import math
@@ -69,6 +70,7 @@ from backend.agent.decision_engine import (
     DECISION_TYPES,
     CandidateScore,
     DecisionScore,
+    OracleState,
     declared_criteria,
     declared_type,
 )
@@ -485,6 +487,28 @@ class D1Backend:
         return fallback
 
     # ── the contract ─────────────────────────────────────────────────────
+    @staticmethod
+    def _message_content(text: str,
+                         images: Sequence[bytes] = ()) -> List[Dict[str, Any]]:
+        """The user message content parts (REQ-5 AC5.1).
+
+        TEXT FIRST, images after: measured on this server build (Wave 0
+        probe) an image-FIRST content order returns HTTP 200 with NO
+        logprobs - the readout would score nothing and the consumer would
+        silently fail closed. Every image is the PNG bytes of the DECLARED
+        image field; a text-only state sends the text part alone.
+        """
+        parts: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+        for img in images or ():
+            parts.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,"
+                           + base64.b64encode(bytes(img)).decode("ascii"),
+                },
+            })
+        return parts
+
     def decide(
         self,
         consumer_id: str,
@@ -521,16 +545,26 @@ class D1Backend:
                 ensure_consumer_spec(consumer_id, opts, instruction)
             except Exception:
                 pass
-            # THE JOB TEXT + BUDGET (decision_engine.job_input): the engine
-            # renders the job's fields into ONE text and attaches the job's
-            # token budget — the backend APPLIES it. Found live 2026-10-08:
-            # rendering the raw frame ignored the budget, a long goal/step
-            # turned into 800-1500 tokens of prefill through the 3B, and the
-            # measured p50 was 630 ms (owner: "incredibly slow"). The budget
-            # is a CAP: ~4 chars per token is conservative for English, and
-            # a trimmed state is logged, never silent.
-            state = str((frame or {}).get("goal", ""))
-            budget = (frame or {}).get("_max_text_ids")
+            # THE STATE (REQ-3 AC3.1/AC3.2): the engine hands over ONE
+            # structured OracleState - the rendered field text, the job's text
+            # budget and the job's DECLARED images. This backend stops reading
+            # `frame["goal"]` out of a raw frame; the budget is APPLIED here
+            # (AC3.4). Found live 2026-10-08: rendering the raw frame ignored
+            # the budget, a long goal/step turned into 800-1500 tokens of
+            # prefill through the 3B, and the measured p50 was 630 ms (owner:
+            # "incredibly slow"). The budget is a CAP: ~4 chars per token is
+            # conservative for English, and a trimmed state is logged, never
+            # silent. A direct seam caller (a test) may still hand over the
+            # pre-render dict; it is read exactly as before (goal text +
+            # budget, no images).
+            images: Tuple[bytes, ...] = ()
+            if isinstance(frame, OracleState):
+                state = frame.text
+                budget = frame.budget_ids
+                images = frame.images
+            else:
+                state = str((frame or {}).get("goal", ""))
+                budget = (frame or {}).get("_max_text_ids")
             if budget:
                 cap = max(64, int(budget)) * 4
                 if len(state) > cap:
@@ -620,7 +654,7 @@ class D1Backend:
                 json={
                     "messages": [{
                         "role": "user",
-                        "content": [{"type": "text", "text": text}],
+                        "content": self._message_content(text, images),
                     }],
                     "max_tokens": max(1, int(width)),
                     "temperature": 0.0,

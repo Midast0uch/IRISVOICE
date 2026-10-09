@@ -32,7 +32,8 @@ def test_reference_fields_never_reach_the_model():
     frame = {"goal": "fix the parser", "incumbent_route": "finalize",
              "brain_choice": "finalize", "brain_bool": True, "coverage": 0.5,
              "open_facts": ["tests pass"]}
-    text = de.job_input("depth_route", frame)["goal"]
+    state = de.job_input("depth_route", frame)
+    text = state.text
     for leaked in ("finalize", "brain_", "incumbent", "True"):
         assert leaked not in text, f"the reference leaked into the input: {leaked}"
     # ...while the route's own state now DOES reach it (it was dropped before).
@@ -41,7 +42,56 @@ def test_reference_fields_never_reach_the_model():
 
 def test_goal_only_frame_renders_unchanged():
     """Consumers that only ever passed `goal` keep their calibrated text."""
-    assert de.job_input("tool_choice", {"goal": "read the readme"})["goal"] == "read the readme"
+    assert de.job_input("tool_choice", {"goal": "read the readme"}).text == "read the readme"
+
+
+# ── Wave 4 (REQ-3/REQ-5): the state is STRUCTURED, and images are declared ──
+
+
+def test_job_input_returns_a_structured_state_with_the_job_attached():
+    """AC3.1/AC3.5: one OracleState per consult - the job's declared fields in
+    order, the declared budget, and the images the job declared."""
+    state = de.job_input("tool_choice", {"goal": "g"})
+    assert isinstance(state, de.OracleState)
+    assert state.job == "route"
+    # AC3.2: route declares coverage/open_facts/depth_met/grade/goal - all
+    # five are ON the state (their values render into the text when present).
+    assert state.fields == ("coverage", "open_facts", "depth_met", "grade", "goal")
+    assert state.budget_ids == de.ORACLE_JOBS["route"].budget_ids
+    assert state.images == ()
+
+
+def test_every_declared_field_is_on_the_state_no_reference_field_is():
+    """AC3.2/AC3.3/AC3.5: per job, the state carries exactly the declared
+    fields in the declared order, and NO job declares a reference field - a
+    row whose input carries its own answer measures nothing (oracle.md S19)."""
+    for cid in (*de.CONSUMERS, "event_type:memory"):
+        job = de.oracle_job(cid)
+        state = de.job_input(cid, {})
+        assert state.fields == tuple(job.fields), (cid, state.fields)
+        assert state.job == job.name
+    for job in de.ORACLE_JOBS.values():
+        for f in job.fields:
+            assert not f.startswith("brain_") and f != "incumbent_route", (
+                f"job {job.name} declares the reference field {f}"
+            )
+
+
+def test_images_reach_only_the_jobs_that_declare_them():
+    """AC5.1: a consumer whose job declares no image NEVER receives one -
+    even when the frame carries a screenshot for another reason - and the
+    `guard` job's declared screenshot reaches its consumers' state."""
+    shot = b"\x89PNG\r\n\x1a\n-fake"
+    guarded = de.job_input("click_safety", {"goal": "g", "screenshot": shot})
+    assert guarded.images == (shot,), "click_safety (guard) lost its image"
+    text_only = de.job_input("mode", {"goal": "g", "screenshot": shot})
+    assert text_only.images == (), (
+        "a text consumer received an image - it would pay vision tokens it "
+        "never calibrated for")
+    # Non-bytes or absent image fields carry nothing; the state is still built.
+    assert de.job_input("click_safety", {"goal": "g"}).images == ()
+    assert de.job_input(
+        "click_safety", {"goal": "g", "screenshot": "not-bytes"}).images == ()
 
 
 def test_backend_cuts_text_at_the_job_budget():

@@ -264,3 +264,46 @@ async def test_the_task_goal_reaches_the_gate_on_the_host_loop(gate, monkeypatch
     finally:
         click_safety.ACT_CONTEXT.reset(token)
     assert seen == ["find the pricing page"]
+
+
+# ── Wave 4 (REQ-5 AC5.2/AC5.3): the state's image, the row sink unchanged ───
+
+
+async def test_the_session_screenshot_reaches_the_oracle_state(gate, monkeypatch):
+    """AC5.2/AC5.3: click_safety is the first image consumer; its consult
+    carries the SESSION's screenshot (never the desktop) pinned at gate time,
+    and the shadow row keeps its exact sink shape."""
+    frames: list = []
+
+    class _ImgEngine:
+        def decide(self, consumer_id, options, frame):
+            frames.append(dict(frame))
+            return SimpleNamespace(chosen="safe", confidence=0.9, engine_latency_ms=1)
+
+    shot = b"\x89PNG-row-test"
+    monkeypatch.setattr(click_safety_shadow, "ENGINE", _ImgEngine())
+    session = gate.install(_link("Pricing", "/pricing"))
+
+    async def _shot(target_selector=None):
+        return shot
+
+    session.screenshot = _shot  # the session-scoped capture (AC5.3)
+    res = await browser_tools.browser_act(gate.conv, "click", 1)
+    assert res["success"] is True
+    (row,) = _rows(gate)
+    assert frames and frames[0].get("screenshot") == shot, (
+        "the session screenshot did not reach the Oracle's frame")
+    # The row sink is unchanged (AC5.2): the standard shadow keys, the gate's
+    # verdict as reference, nothing about the image on the row itself.
+    assert row["consumer_id"] == "click_safety" and row["brain_choice"] == "safe"
+    assert row["shadow"] is True and "image" not in row and "screenshot" not in row
+
+
+async def test_a_missing_screenshot_still_writes_the_row(gate):
+    """The capture is best-effort: a session without one costs the row its
+    image, never its existence (the rules -> judge -> escalation ladder and
+    the sink are unchanged, AC5.2)."""
+    gate.install(_link("Pricing", "/pricing"))  # _Session has no screenshot()
+    res = await browser_tools.browser_act(gate.conv, "click", 1)
+    assert res["success"] is True
+    assert len(_rows(gate)) == 1

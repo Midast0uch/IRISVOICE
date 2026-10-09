@@ -135,6 +135,28 @@ def test_undeclared_consumer_is_refused_before_scoring(monkeypatch):
     assert b.decide("never_declared", ["a", "b"], {"goal": "x"}) is None
 
 
+# ── REQ-5 (AC5.1): the state's images become content parts, text FIRST ──────
+
+def test_images_become_image_parts_after_the_text():
+    """Measured hazard (Wave 0 probe): an image-FIRST content order got HTTP
+    200 with NO logprobs on this server build, so the readout would score
+    nothing and the consumer would silently fail closed. Text first, always.
+    """
+    parts = D1Backend._message_content("the question", [b"\x89PNGfake"])
+    assert parts[0] == {"type": "text", "text": "the question"}
+    assert len(parts) == 2 and parts[1]["type"] == "image_url"
+    url = parts[1]["image_url"]["url"]
+    assert url.startswith("data:image/png;base64,")
+    import base64 as _b64
+
+    assert _b64.b64decode(url.split(",", 1)[1]) == b"\x89PNGfake"
+
+
+def test_a_text_only_state_sends_one_text_part():
+    parts = D1Backend._message_content("the question")
+    assert parts == [{"type": "text", "text": "the question"}]
+
+
 def test_every_declared_consumer_has_a_scorable_shape():
     """Every consumer in CONSUMERS declares a type AND either yes/no labels
     (noul) or named options (choice)."""

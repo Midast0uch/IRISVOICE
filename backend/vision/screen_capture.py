@@ -7,6 +7,7 @@ import hashlib
 import io
 import os
 import time
+from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any
 
 import numpy as np
@@ -37,6 +38,31 @@ def _save_screenshot_to_disk(png_bytes: bytes) -> Optional[str]:
         return path
     except Exception:
         return None  # never break a capture on a write failure
+
+
+@dataclass(frozen=True)
+class CapturedFrame:
+    """One capture with its GEOMETRY (REQ-5 AC5.4/AC5.5,
+    specs/oracle-native-decision-surface AC13.1).
+
+    Any consumer that maps an image-space point back to a screen pixel
+    depends on BOTH numbers, measured not guessed:
+
+        screen_x = origin[0] + image_x / scale
+        screen_y = origin[1] + image_y / scale
+
+    ``scale`` is image px per SCREEN px (1.0 when no downscale ran, <
+    1.0 when the image was resized to ``max_width``). ``origin`` is the
+    captured monitor/region's (left, top) in screen pixels - physical pixels
+    are what mss returns, and NO display-scaling (DPR) assumption is made
+    (AC5.5). ``capture_base64`` keeps its historical 2-tuple for its existing
+    callers; this dataclass is the additive shape (AC13.1).
+    """
+
+    b64: str
+    is_new: bool
+    scale: float
+    origin: Tuple[int, int]
 
 
 class ScreenCapture:
@@ -72,6 +98,8 @@ class ScreenCapture:
         self._last_hash: Optional[str] = None
         self._last_b64: Optional[str] = None
         self._last_capture_time: float = 0
+        self._last_scale: float = 1.0     # geometry of the cached frame (AC5.4)
+        self._last_origin: Tuple[int, int] = (0, 0)
         self._cache_ttl: float = 0.5  # seconds
 
         ScreenCapture._initialized = True
@@ -108,6 +136,25 @@ class ScreenCapture:
             Tuple of (base64_string, is_new_capture)
             is_new_capture is False if the cached version was returned
         """
+        frame = self.capture_frame(
+            monitor_index=monitor_index, force=force, region=region)
+        return frame.b64, frame.is_new
+
+    def capture_frame(
+        self,
+        monitor_index: int = 0,
+        force: bool = False,
+        region: Optional[Tuple[int, int, int, int]] = None,
+    ) -> CapturedFrame:
+        """Capture and return the frame WITH its geometry (AC5.4).
+
+        Same capture/cache/downscale behaviour as ``capture_base64`` - the
+        scale factor between image pixels and screen pixels is MEASURED at
+        resize time and returned (it used to be computed at the resize and
+        dropped), along with the captured region's screen origin. Both are
+        what a future image-point -> screen-pixel mapper needs (AC5.5: no DPR
+        assumption; mss pixels are physical).
+        """
         self._ensure_deps()
 
         # Check cache
@@ -117,7 +164,8 @@ class ScreenCapture:
             and self._last_b64
             and (now - self._last_capture_time) < self._cache_ttl
         ):
-            return self._last_b64, False
+            return CapturedFrame(
+                self._last_b64, False, self._last_scale, self._last_origin)
 
         # Capture
         if region:
@@ -130,7 +178,9 @@ class ScreenCapture:
         else:
             monitor = self._mss.monitors[monitor_index]
 
+        origin = (int(monitor["left"]), int(monitor["top"]))
         raw = self._mss.grab(monitor)
+        scale = 1.0
 
         if self._pil_available:
             from PIL import Image
@@ -142,6 +192,7 @@ class ScreenCapture:
                 ratio = self.max_width / img.width
                 new_h = int(img.height * ratio)
                 img = img.resize((self.max_width, new_h), Image.LANCZOS)
+                scale = ratio  # measured: image px per screen px (AC5.4)
 
             # Encode to PNG bytes
             buf = io.BytesIO()
@@ -161,7 +212,7 @@ class ScreenCapture:
 
         if img_hash == self._last_hash and self._last_b64:
             self._last_capture_time = now
-            return self._last_b64, False
+            return CapturedFrame(self._last_b64, False, scale, origin)
 
         b64 = base64.b64encode(png_bytes).decode("utf-8")
 
@@ -169,8 +220,10 @@ class ScreenCapture:
         self._last_hash = img_hash
         self._last_b64 = b64
         self._last_capture_time = now
+        self._last_scale = scale
+        self._last_origin = origin
 
-        return b64, True
+        return CapturedFrame(b64, True, scale, origin)
 
     def capture_pil(
         self,

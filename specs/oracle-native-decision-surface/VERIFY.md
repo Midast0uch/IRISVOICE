@@ -609,7 +609,116 @@ matches the Wave 1/2 cold-boot artifact; the warm re-run is the claim.
 
 ## Wave 4 — State honoured, and images (gate TG-4)
 
-_pending._
+**T4.1/T4.2 the state is a structured value.** New `OracleState(job, fields,
+text, budget_ids, images)` (frozen) in `decision_engine.py`; `job_input()`
+returns it. Rendering is BYTE-IDENTICAL for the frame shapes consumers always
+used ("a frame holding only `goal` renders to the same text as before" -
+pinned by `test_goal_only_frame_renders_unchanged`). The engine's `decide()`
+passes the state (never the raw frame) on BOTH the lock path and the phase
+path.
+
+**T4.3 the backend reads the state, not `frame["goal"]`** (AC3.2).
+`decision_backend_d1.decide` now reads `state.text` / `state.budget_ids` /
+`state.images`; only a direct seam caller (a test) still hands in the
+pre-render dict, read exactly as before (goal text + budget, no images).
+`route` declares `("coverage","open_facts","depth_met","grade","goal")`; the
+new contract test asserts all five are ON the state
+(`test_job_input_returns_a_structured_state_with_the_job_attached`).
+
+**T4.4 reference fields never enter the state** (AC3.3) - pinned per job:
+no job declares a reference field (`test_every_declared_field_is_on_the_state_-
+no_reference_field_is`), and the pre-existing text-level test stays
+(`test_reference_fields_never_reach_the_model`).
+
+**T4.5 the budget still caps, in the backend, logged** (AC3.4): the cap
+arithmetic and the log line are unchanged (`test_backend_cuts_text_at_the_job_
+budget` still green); a live trim was observed in the gate boot's log
+("state trimmed to the job budget (256 chars ~ 64 ids) consumer=user_feedback").
+
+**T4.6 per-job field-presence contract** (AC3.5): see T4.3/T4.4 tests.
+
+**T4.7 frame gains images, declared-only** (AC5.1): `OracleJob.image_fields`
+(default `()`); only `guard` declares `("screenshot",)`. A text consumer's
+state NEVER carries an image even when the frame does
+(`test_images_reach_only_the_jobs_that_declare_them` - both directions, plus
+non-bytes/absent variants). The backend emits image parts TEXT-FIRST -
+`_message_content` is the pinned seam
+(`test_images_become_image_parts_after_the_text`): the Wave 0 hazard
+(image-first returns 200 with NO logprobs on this server build) cannot come
+back silently.
+
+**T4.8 click_safety is the first image consumer** (AC5.2/AC5.3):
+`browser_tools._gate_action` takes the SESSION's screenshot
+(`session.screenshot()`, never the desktop capture) at gate time and pins the
+bytes into the shadow consult - the lane runs later and the page may have
+moved, so capturing there would mislabel the row. A capture failure costs the
+row its image, never its existence. The rules -> judge -> escalation ladder
+and the row sink are untouched; the row's shape is unchanged
+(`test_the_session_screenshot_reaches_the_oracle_state`,
+`test_a_missing_screenshot_still_writes_the_row`).
+
+**T4.9 the scale factor is available** (AC5.4/AC5.5/AC13.1):
+`vision/screen_capture.py` gains the additive `CapturedFrame(b64, is_new,
+scale, origin)` + `capture_frame()`; the `scale` (image px per screen px,
+1.0 without resize) is MEASURED at resize time where it used to be computed
+and dropped, and `origin` is the captured monitor/region's screen (left, top)
+- no DPR assumption anywhere. `capture_base64` keeps its exact 2-tuple and
+now delegates. Tests: resize -> scale 0.5 + origin (100, 50); no resize ->
+1.0; region capture -> region origin; 2-tuple preserved; the TTL cache hit
+carries the geometry (`test_vision_capture.py::TestCaptureFrameGeometry`).
+
+**Contract suite (AC8.1)** - the Wave 3 file set + the new/expanded files
+(test_oracle_jobs_contract, test_d1_native_readout_contract,
+test_click_safety_contract, unit/test_vision_capture) + the behavioral sweep
+(16 files incl. decision-engine behavioral, tool-decision behavioral,
+mode-routing, search-routing, bounded-wait, browser-control): **470 passed,
+9 PRE-EXISTING failures** - 6 already proven on HEAD at Wave 3's gate (stale
+CT-DE-6 AST pin; 3x TestScoring stale FakeOnnxBackend;
+test_missing_db_unverified; consumer_parity ModuleNotFoundError) and 3 newly
+added to the sweep and baseline-proven on HEAD via `git stash push`:
+`test_calibrate_threshold::TestDeployedConfigReported` (x2 - pins the retired
+gliner curve shape) and `test_mode_routing::test_inference_is_shadowed_not_
+replaced`. Zero failures attributable to this wave.
+
+**Row counts (AC8.2)** - evidence/wave4_consumer_report_after.json vs
+wave3_consumer_report_before.json: `other_backend` UNCHANGED at 19781;
+growth is exactly the live-eval traffic of the gate runs (tool_choice +28,
+review_verdict +22, depth_met +8, web_intent +7, user_feedback +2,
+event_type:delivery +1, depth_route +1); duplicates 64 -> 90 and no_label
+27 -> 35, same class of accumulation. All consumers shadow; flipped empty.
+
+**Live eval (AC8.3)** - fixed coding trio: c02 33s cold / **14s warm re-run**,
+c10 8s, c15 39s - **3/3 PASS, STANDARDS: no regression**
+(evals/results/20261009-042848.json). The native image probe is still 3/3 on
+BOTH content orders (`probe_d1_image_grounding.py --mode native`,
+benchmarks/d1_native_schema_probe.json refreshed).
+
+**Environment findings during this wave (recorded, not spec changes):**
+1. The first trio run FAILED 3/3 with `E_PROVIDER_AUTH` - environmental, not
+   the wave: `data/iris_config.json`'s `role_bindings.reasoning` had flipped
+   to `cerebras` (whose key is stale -> 401 "Wrong API Key") at ~03:24,
+   between boots. The green Wave 3 boot had the same config bound to
+   `inceptionlabs` and logged 174 absorbed 401s elsewhere with zero planning
+   failures. Rebound to inceptionlabs through the live WS `set_role_binding`
+   path (persists the config) and the trio went 3/3. What wrote the cerebras
+   binding was not chased - flagged as its own investigation.
+2. Running the WHOLE `backend/tests/contract` directory while the backend is
+   up aborts on `test_one_writer_contract` (it takes the real app store's
+   write path; pytest-timeout aborts the process). The wave gate set is the
+   named files, run with the backend DOWN; live runs after. The
+   backend/tests/behavioral/test_oracle_phase_identity.py file does not
+   collect (imports the deleted decision_backend_onnx module - pre-existing
+   since the model-swap spec).
+
+### TG-4 verdict
+
+- Field-presence contract green per job -> **PASS**
+- click_safety still refuses and escalates correctly with an image in its
+  state (contract tests + row sink unchanged) -> **PASS**
+- The scale factor is available to any future mapper, measured not guessed ->
+  **PASS**
+
+**TG-4 GREEN.**
 
 ## Wave 5 — The sampled rung (gate TG-5)
 
