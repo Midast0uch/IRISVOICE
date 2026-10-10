@@ -96,25 +96,11 @@ def narration_timer_reset(monkeypatch):
 
 
 class TestCtDe6EventShapes:
-    def test_chat_message_payload_pinned(self):
-        """iris_gateway chat_message payload keys are the pinned set."""
-        src = Path("backend/iris_gateway.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        found = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Dict):
-                keys = [
-                    k.value
-                    for k in node.keys
-                    if isinstance(k, ast.Constant)
-                ]
-                if {"role", "content", "spoken", "turn_id"} <= set(keys):
-                    found = set(keys)
-                    break
-        assert found is not None, "chat_message payload not found in source"
-        assert found == {
-            "role", "content", "spoken", "thinking", "timestamp", "turn_id",
-        }
+    # test_chat_message_payload_pinned REMOVED 2026-10-10: it pinned the
+    # chat_message courier's payload dict in iris_gateway.py, and that
+    # courier was RETIRED 2026-10-06 (the text_message path sends only
+    # turn.end; the frontend and the eval harness both moved with it —
+    # commit c6c10700). A payload that no longer exists has no shape to pin.
 
     def test_document_render_data_keys_pinned(self):
         """The auto-render DOCUMENT_RENDER emit still carries its known keys."""

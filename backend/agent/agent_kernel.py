@@ -1635,6 +1635,11 @@ class AgentKernel:
                     f"[AgentKernel] ModeDetector engine unavailable: "
                     f"{_md_eng_err}"
                 )
+            # ROW PATH FIX (2026-10-10): the lane-written row goes to the
+            # kernel's single writer directly — the expose-and-forward path
+            # lost every row in a one-turn conversation (see
+            # mode_detector._shadow_mode_async).
+            self._mode_detector.set_row_sink(self._shadow_row_sink)
             logger.info("[AgentKernel] ModeDetector initialized (DER)")
         except Exception as _md_err:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
@@ -7866,7 +7871,13 @@ class AgentKernel:
             eng.shadow(
                 "narration", list(options), frame,
                 sink=self._shadow_row_sink,
-                reference={"brain_choice": "speak_all" if beats else "stay_silent"},
+                reference={
+                    "brain_choice": "speak_all" if beats else "stay_silent",
+                    # FRAME SHAPE CHANGE (2026-10-10): the shape job now renders
+                    # steps/beats_authored/beats_admitted - the numbers that
+                    # determine the reference. Before, d1 saw only the goal.
+                    "criteria_version": "narration/shape-v2",
+                },
             )
         except Exception as _e:  # noqa: BLE001 — a shadow never blocks a turn
             logger.debug("[AgentKernel] narration shadow failed: %r", _e)
@@ -16473,6 +16484,12 @@ Respond with a JSON object:
                 if live_surface == "card"
                 else None
             ),
+            # FRAME SHAPE CHANGE (2026-10-10): the shape job now renders the
+            # frame's summary fields (content_chars, has_structure, ...) -
+            # before this, presentation rendered an EMPTY state (the job
+            # declared only `goal`, which this frame never carried). Rows
+            # before/after the change are different frames; never blend them.
+            "criteria_version": "presentation/shape-v2",
         }
         bridge = getattr(self, "_tool_bridge", None)
         recorder = getattr(bridge, "record_decision", None)

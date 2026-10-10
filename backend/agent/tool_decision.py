@@ -1210,6 +1210,12 @@ class ToolDecisionBox:
                 "vision_candidates": frame["vision_candidates"],
                 "stage_detail": getattr(ds, "stage_detail", None),
                 "cached": cached_hit,
+                # FRAME SHAPE CHANGE (2026-10-10): the route job now renders
+                # task_class/previous_chosen/previous_outcome/step_index/
+                # needs_vision/vision_candidates from this frame (before, the
+                # job declared only goal + last_result, so the renderer dropped
+                # them). Same stamp family as the shadow path's tc-frame-v3.
+                "criteria_version": "tc-frame-v3",
                 # REQ-6 AC6.4: the full distribution rides the row, so the
                 # reliability curve reads the whole menu, not just the winner.
                 "distribution": [
@@ -1668,6 +1674,13 @@ class ToolDecisionBox:
                         "candidates": candidates, "session_id": session_id,
                         "conversation_id": conversation_id,
                         "threshold": threshold, "async_": False,
+                        # FIXED 2026-10-10: `last_result` was MISSING here, so
+                        # the async re-invocation (the ONLY mode both live call
+                        # sites use) scored every row with last_result=None -
+                        # the entire tc-frame-v2 cohort measured the BLIND
+                        # frame while stamped as enriched. A parameter dropped
+                        # at an async boundary; the stamp said v2 regardless.
+                        "last_result": last_result,
                     },
                     daemon=True, name="shadow-tool-choice",
                 ).start()
@@ -1733,13 +1746,16 @@ class ToolDecisionBox:
                 "conversation_id": conversation_id or None,
                 "source": "respond_direct",
                 "shadow": True,
-                # criteria_version (session 364's mechanism): the frame gained
-                # `last_result` on 2026-10-10, and the frame is NOT inside
-                # criteria_hash - so without this stamp the rows measured under
-                # the blind frame would mix with rows measured under the
-                # enriched one and poison the curve. Scope comparisons to one
-                # version; never blend them.
-                "criteria_version": "tc-frame-v2",
+                # criteria_version (session 364's mechanism): the frame is NOT
+                # inside criteria_hash - without this stamp rows measured under
+                # different frames would mix and poison the curve. Scope
+                # comparisons to one version; never blend them.
+                # v3 (2026-10-10): every tc-frame-v2 row was scored BLIND -
+                # the async wrapper dropped `last_result` before the sync
+                # re-invocation, so v2 measured the OLD frame under the NEW
+                # stamp. v3 is the first stamp where the frame genuinely
+                # carries the previous result.
+                "criteria_version": "tc-frame-v3",
             }
             self._record_shadow_row(row, session_id=session_id)
             return row
@@ -2710,6 +2726,10 @@ class ToolDecisionBox:
                         "retry_same_offered": "retry_same" in self._RECOVERY_STRATEGIES,
                         "failed_tool": failed_tool or None,
                         "shadow": True,
+                        # FRAME SHAPE CHANGE (2026-10-10): the route job now
+                        # renders ruled_out and error_snippet from this
+                        # frame's evidence. First stamp; no earlier cohort.
+                        "criteria_version": "recovery/route-v2",
                     }
                 # AC17.2: `retry_same` is SHADOW-ONLY. A confident retry_same
                 # is recorded and then discarded — the counters own the
@@ -2774,6 +2794,8 @@ class ToolDecisionBox:
                 "retry_same_offered": "retry_same" in self._RECOVERY_STRATEGIES,
                 "failed_tool": failed_tool or None,
                 "shadow": True,
+                # FRAME SHAPE CHANGE (2026-10-10): see the inline row above.
+                "criteria_version": "recovery/route-v2",
                 # AC17.2: the counters' decision stands (delegate = the Brain
                 # plans), whatever the engine picked.
                 "counter_choice": "delegate",
@@ -2916,7 +2938,10 @@ class ToolDecisionBox:
                 "brain_choice": incumbent_route,
                 # v2 (2026-10-01): the Oracle job input now renders coverage,
                 # open facts, depth_met and grade - before, only `goal` was read.
-                "criteria_version": "depth_route/v2",
+                # v3 (2026-10-10): the route job now also renders pushes_used
+                # and incumbent_route (frame/job mismatch fix). Bump on every
+                # frame shape change; never blend cohorts.
+                "criteria_version": "depth_route/v3",
                 "shadow": True,
             }
             self._record_shadow_row(row, session_id=session_id)

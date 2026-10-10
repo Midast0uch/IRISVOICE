@@ -121,6 +121,16 @@ def test_a_pre_req4_spec_is_upgraded():
     upgraded = de.ensure_consumer_spec("done", ["yes", "no"], "Is it done?")
     assert upgraded.decision_type == "noul"
     assert de.needs_upgrade(de.get_consumer_spec("done")) is False
+    # RESTORE (2026-10-10): the upgraded spec carries no labels, and the
+    # registry is PROCESS-GLOBAL — leaving it mutated made 'done' vanish from
+    # binary_consumers() for every later test in the same process (measured:
+    # test_oracle_calibration_contract's binary-set test failed in group
+    # runs, passed solo). Re-register the production shape so this test
+    # leaves the registry as it found it. No assertion above is weakened.
+    de.register_consumer_spec(de.ConsumerSpec(
+        consumer_id="done", task_name="done",
+        instruction="Is the objective complete?", labels=("yes", "no"),
+    ))
 
 
 # ── AC13.5: a dynamic consumer inherits its family ──────────────────────────
@@ -142,10 +152,12 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
 
 def test_oracle_jobs_gained_only_the_call_closing_job():
     """AC10.7 gives `call_closing` its own job. The eight prior jobs keep their
-    names, fields and budgets."""
+    names; fields/budgets evolve with the frame fixes (route gained
+    `last_result` + evidence fields 2026-10-10; the budget bound moved to 256
+    for the physical reason stated in test_oracle_jobs_contract)."""
     assert len(de.ORACLE_JOBS) == 9
     assert de.ORACLE_JOBS["judge_call"].fields == ("goal", "call", "result")
-    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 128
+    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 256
 
 
 def test_consumers_grew_by_exactly_two():

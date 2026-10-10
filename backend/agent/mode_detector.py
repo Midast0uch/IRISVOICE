@@ -111,6 +111,7 @@ class ModeDetector:
         # engine is wired — `detect()` then behaves exactly as it did before
         # (hand-set keyword confidence), so no call site changes.
         self._mode_engine = None
+        self._row_sink = None
         self.last_mode_shadow: Optional[dict] = None
 
     def set_mode_engine(self, engine) -> None:
@@ -118,6 +119,12 @@ class ModeDetector:
         module singleton is never adopted implicitly (a shadow must not be
         able to load a 651MB model as a side effect of detecting a mode)."""
         self._mode_engine = engine
+
+    def set_row_sink(self, sink) -> None:
+        """Wire the ledger row sink (2026-10-10; see _shadow_mode_async). The
+        kernel installs its single-writer sink; None keeps the old
+        expose-and-forward behaviour for tests and standalone use."""
+        self._row_sink = sink
 
     def _engine_mode_shadow(
         self, task_lower: str, keyword_mode: "AgentMode"
@@ -198,16 +205,35 @@ class ModeDetector:
             return None
 
     def _shadow_mode_async(self, task_lower: str, keyword_mode: "AgentMode") -> None:
-        """Score the mode on the ``oracle_shadow`` lane and expose the row from
-        there (``last_mode_shadow``; the kernel forwards it once). The reply never
-        waits: measured 446 ms per turn when this ran inline. Never raises."""
+        """Score the mode on the ``oracle_shadow`` lane and write the row from
+        there. The reply never waits: measured 446 ms per turn when this ran
+        inline. Never raises.
+
+        ROW PATH FIX (2026-10-10): the lane job used to only EXPOSE the row on
+        ``last_mode_shadow`` for a later kernel forward — but the kernel's
+        ``_forward_consumer_rows`` runs immediately after ``detect()``, BEFORE
+        the lane job, so in a one-turn conversation (every eval task) the row
+        was never written. Measured: 1,109 gliner rows end 2026-10-06 (the
+        day the consult moved to the lane), zero since. The lane job now hands
+        the row to the installed sink directly — the same single-writer path
+        review_verdict uses. ``last_mode_shadow`` is still set when NO sink is
+        installed (tests, standalone use), preserving the old exposure.
+        """
         if self._mode_engine is None:
             return
 
         def _job() -> None:
             row = self._engine_mode_shadow(task_lower, keyword_mode)
-            if row is not None:
-                self.last_mode_shadow = row
+            if row is None:
+                return
+            sink = self._row_sink
+            if callable(sink):
+                try:
+                    sink(row)
+                    return
+                except Exception as e:  # noqa: BLE001 — a shadow never blocks
+                    logger.debug("[mode_detector] row sink failed: %r", e)
+            self.last_mode_shadow = row
 
         try:
             from backend.utils.durability_queue import lane

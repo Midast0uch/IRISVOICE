@@ -25,7 +25,11 @@ def test_every_declared_consumer_has_a_job():
 
 
 def test_budgets_respect_the_owner_maximum():
-    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 128
+    # 256, not 128 (2026-10-10): the route job's enriched frame physically
+    # requires it - goal[:200] plus a ~600-char last_result snippet must both
+    # fit, and at 128 the budget trim cuts the tail (the evidence the frame
+    # fix exists to deliver). Widened for a physical reason, stated here.
+    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 256
 
 
 def test_reference_fields_never_reach_the_model():
@@ -54,9 +58,13 @@ def test_job_input_returns_a_structured_state_with_the_job_attached():
     state = de.job_input("tool_choice", {"goal": "g"})
     assert isinstance(state, de.OracleState)
     assert state.job == "route"
-    # AC3.2: route declares coverage/open_facts/depth_met/grade/goal - all
-    # five are ON the state (their values render into the text when present).
-    assert state.fields == ("coverage", "open_facts", "depth_met", "grade", "goal")
+    # AC3.2: the state carries the job's declared fields in order. The route
+    # tuple grew twice: `last_result` (2026-10-10, the blind-frame fix) and
+    # the resolve-frame evidence fields (2026-10-10, the frame/job mismatch
+    # fix). Pinned to the live declaration so a silent field change fails.
+    assert state.fields == de.ORACLE_JOBS["route"].fields
+    assert state.fields[:6] == (
+        "coverage", "open_facts", "depth_met", "grade", "goal", "last_result")
     assert state.budget_ids == de.ORACLE_JOBS["route"].budget_ids
     assert state.images == ()
 

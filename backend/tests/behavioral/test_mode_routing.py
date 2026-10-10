@@ -81,10 +81,18 @@ class TestSlashOverridesWin:
             "the engine's pick replaced the keyword mode — T19 is shadow"
         )
         assert result.trigger == "inference"
-        # and the disagreement is recorded for parity
+        # The consult moved to the oracle_shadow lane (2026-10-05, measured
+        # 446 ms/turn inline), so the row lands asynchronously: flush before
+        # asserting it. Same assertion, same purpose as before the move.
+        from backend.utils.durability_queue import lane
+
+        lane("oracle_shadow").flush(10.0)
+        # and the disagreement is recorded for parity. The row's pair keys
+        # are chosen/brain_choice (renamed from engine_mode/keyword_mode on
+        # 2026-09-27 — the ledger whitelist passes only these).
         assert d.last_mode_shadow is not None
-        assert d.last_mode_shadow["engine_mode"] == "research"
-        assert d.last_mode_shadow["keyword_mode"] == "implement"
+        assert d.last_mode_shadow["chosen"] == "research"
+        assert d.last_mode_shadow["brain_choice"] == "implement"
         assert d.last_mode_shadow["shadow"] is True
 
     def test_no_engine_leaves_routing_untouched(self):

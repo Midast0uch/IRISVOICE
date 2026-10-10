@@ -197,8 +197,25 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               # nearly filled the cap. The budget is a CAP, not a floor, so the
               # other route consumers (depth_route, recovery_strategy) are
               # unaffected beyond headroom.
+              # FRAME/JOB MISMATCH FIX (2026-10-10): the route consumers'
+              # frames carry evidence the job never declared, so the renderer
+              # dropped it: tool_choice's resolve frame carries task_class,
+              # previous_chosen/outcome, step_index and the vision fields;
+              # recovery_strategy's carries ruled_out and error_snippet (the
+              # single most predictive signal for a recovery choice);
+              # depth_route's carries pushes_used. The fields are now the
+              # UNION; absent keys render as nothing, so each consumer renders
+              # what its frame carries. Budget 256 still caps the render
+              # (goal 200 + last_result 600 chars fit).
+              # `incumbent_route` is deliberately NOT declared: it is
+              # depth_route's REFERENCE, and a row whose input carries its
+              # own answer measures nothing (test_reference_fields_never_
+              # reach_the_model, oracle.md S19).
               ("coverage", "open_facts", "depth_met", "grade", "goal",
-               "last_result"), 256),
+               "last_result", "task_class", "previous_chosen",
+               "previous_outcome", "step_index", "needs_vision",
+               "vision_candidates", "ruled_out", "error_snippet",
+               "pushes_used"), 256),
     OracleJob("guard", "is this action safe to take without asking?",
               # REQ-5 AC5.2 (AC9.1 sanctioned exception 4): `guard` is the
               # first IMAGE job - click_safety's question is visual by
@@ -209,8 +226,21 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               ("goal",), 96),
     OracleJob("judge_goal", "is the objective met, deep and sufficient?",
               ("goal", "open_facts", "evidence"), 128),
+    # FRAME/JOB MISMATCH FIX (2026-10-10): the shape job declared ONLY `goal`,
+    # but its consumers' frames carry OTHER keys — the renderer drops every
+    # undeclared key, so `presentation` (whose frame has NO goal at all)
+    # rendered an EMPTY state: d1 answered with zero evidence (measured 0/5
+    # parity). `narration`'s frame carried beats_authored/beats_admitted — the
+    # numbers that literally determine its reference (speak_all iff beats) —
+    # and d1 never saw them. The job's fields are now the UNION of what its
+    # consumers' frames carry; the renderer skips absent keys, so each consumer
+    # renders what it has (a frame holding only goal renders as before).
+    # Budget 96 -> 128: narration renders goal[:300] plus four short fields.
     OracleJob("shape", "how should this answer be delivered?",
-              ("goal",), 96),
+              ("goal", "content_chars", "has_structure",
+               "card_already_rendered", "zone", "mode",
+               "steps", "beats_authored", "beats_admitted", "multi_segment"),
+              128),
     OracleJob("classify_event", "which event family/type is this?",
               ("goal",), 64),
     # REQ-10 (AC10.3/AC10.7): `call_closing`'s own job. The state carries the

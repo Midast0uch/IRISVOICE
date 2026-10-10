@@ -78,55 +78,13 @@ class TestNoEnforceBelowBar:
         assert cfg.threshold_for("narration") is None
 
 
-# ── REQ-19 AC19.4 (T25): tool_choice is unchanged by the Task refactor ─────
-
-
-class TestToolChoiceUnchangedByTaskRefactor:
-    def test_tool_choice_unchanged_by_task_refactor(self):
-        """AC19.4: the Task used for `tool_choice` is byte-identical to the
-        measured bench shape, and the frame's option descriptions are NOT
-        rendered into it — the 0.40 threshold is only valid for the exact
-        distribution it was measured on."""
-        from backend.agent.decision_backend_onnx import (
-            _TASK_INSTRUCTION,
-            build_task,
-        )
-
-        opts = ["read_file", "list_directory", "NONE", "DELEGATE"]
-        task = build_task("tool_choice", opts)
-
-        assert task.name == "tool"
-        assert task.instruction == _TASK_INSTRUCTION
-        assert task.exclusive is True
-        assert list(task.labels) == opts
-        assert all(v is None for v in task.labels.values()), (
-            "descriptions leaked into the tool_choice Task — the threshold "
-            "curve no longer applies"
-        )
-
-        # The refactor must not have changed what `decide` produces either:
-        # one exclusive Task, menu-wide softmax over exactly these labels.
-        from backend.agent.decision_backend_onnx import GlinerOnnx
-
-        class _Runner:
-            def __init__(self):
-                self.seen = None
-
-            def logits(self, text, tasks):
-                self.seen = tasks
-                return {t.name: {l: float(i) for i, l in enumerate(t.labels)}
-                        for t in tasks}
-
-        runner = _Runner()
-        backend = GlinerOnnx(model_dir="unused")
-        backend._runner = runner
-        ds = backend.decide("tool_choice", opts, {"goal": "read the readme"})
-
-        assert ds is not None
-        assert len(runner.seen) == 1
-        assert runner.seen[0].instruction == _TASK_INSTRUCTION
-        assert {c.name for c in ds.distribution} == set(opts)
-        assert abs(sum(c.prob for c in ds.distribution) - 1.0) < 1e-9
+# ── REQ-19 AC19.4 (T25): REMOVED 2026-10-10 ─────────────────────────────────
+# TestToolChoiceUnchangedByTaskRefactor pinned the RETIRED gliner ONNX
+# backend's Task shape (decision_backend_onnx) — the module was deleted at
+# the d1 swap (phonon2-d1-model-swap), so the test could only ever fail with
+# ModuleNotFoundError. The live equivalent guard for d1 is
+# test_oracle_frame_evidence_contract.py (the frame contract) plus
+# test_d1_native_readout_contract.py (the readout contract).
 
 
 # ── REQ-31 AC31.5/AC31.6 + REQ-29 AC29.6 (T52) ─────────────────────────────
