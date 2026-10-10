@@ -48,14 +48,17 @@ class _FakeClient:
 
 
 def _backend(monkeypatch, positions, missing=()):
-    """A live-ish d1: token table primed, server check stubbed, POST faked."""
-    tbl = {"alpha": [10], "beta": [11], "yes": [20], "no": [21],
-           "speak_all": [30], "stay_silent": [31],
-           "spec": [32], "research": [33]}
+    """A live-ish d1: letter-code tokenizer stubbed, server check stubbed,
+    POST faked. The code ids match the positions the fake server returns."""
+    codes = {"A": 10, "B": 11, "C": 12, "D": 13, "E": 14}
     b = D1Backend()
     b._loaded = True
     monkeypatch.setattr(b, "_serves_d1", lambda force=False: (True, ""))
-    monkeypatch.setattr(b, "_name_tokens", lambda name: tbl[name])
+
+    def _single(form):
+        return codes.get(form)
+
+    monkeypatch.setattr(b, "_single_token_id", _single)
     monkeypatch.setattr(b, "_ensure_yes_no_ids", lambda: {"yes": (20,), "no": (21,)})
     client = _FakeClient(positions)
     monkeypatch.setattr(d1mod, "_pooled", lambda: client)
@@ -76,22 +79,22 @@ def test_batch_answers_each_question_at_its_own_slot(monkeypatch):
     assert a.consumer_id == "mode" and a.chosen == "alpha"
     assert n.consumer_id == "done" and n.chosen == "no"  # -0.05 on 'no' wins
     payload = client.payloads[0]
-    text = payload["messages"][0]["content"][0]["text"]
+    text = payload["prompt"]
     assert text.count("QUESTION:") == 2, "one state, two questions"
-    assert payload["max_tokens"] == 2  # one position per question
+    assert payload["n_predict"] == 2  # one position per question
 
 
 def test_criteria_never_bleed_across_batch_members(monkeypatch):
     """AC7.5: consumer A's criteria words NEVER appear in consumer B's
     question within one pass."""
-    b, client = _backend(monkeypatch, [{30: -0.1, 31: -1.0},
-                                       {32: -0.1, 33: -1.0}])
+    b, client = _backend(monkeypatch, [{10: -0.1, 11: -1.0},
+                                       {10: -0.1, 11: -1.0}])
     out = b.decide_batch("shared", [
         ("narration", ["speak_all", "stay_silent"], None),
         ("mode", ["spec", "research"], None),
     ])
     assert all(x is not None for x in out)
-    text: str = client.payloads[0]["messages"][0]["content"][0]["text"]
+    text: str = client.payloads[0]["prompt"]
     q1, q2 = text.split("QUESTION:")[1:]
     # narration's declared criteria names its OWN options; the mode question
     # must not contain them, and vice versa.

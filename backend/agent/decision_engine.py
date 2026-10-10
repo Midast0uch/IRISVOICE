@@ -773,9 +773,17 @@ class EngineCounters:
 # A calibrated threshold cannot survive a change of readout or of criteria: the
 # curve was measured on ONE input shape, so re-using it under another is the
 # silent-flip mistake this key exists to prevent.
-CURRENT_READOUT_MODE = "native"
+# "letters" (2026-10-10): the REFERENCE readout restored — d1's trained shape
+# (LiquidAI/d1-3B prompt.py: coded options, letter-token readout, manual
+# im_start prompt over /completion). Measured live against our own server:
+# confidence spreads 0.47-0.99 with the case, where the retired "native"
+# name-token readout sat flat at 0.90-0.96 (OOF AUROC 0.476). Keep in sync
+# with decision_backend_d1._READOUT_TAG.
+CURRENT_READOUT_MODE = "letters"
 # The RETIRED letter mode, recorded so historical rows address a real, nameable
-# identity rather than silently matching the native one (T3.1).
+# identity rather than silently matching the current one (T3.1). The Wave-2
+# "native" name-token era needs no constant: its rows carry the bare model id
+# (no readout tag) and separate through the engine field by construction.
 LEGACY_READOUT_MODE = "legacy_letters"
 # AC13.3: the candidate cap changes the RENDERED criteria block, so it belongs
 # inside the hash - tuning the cap re-identifies every choice consumer exactly
@@ -2053,8 +2061,11 @@ class DecisionEngine:
                     self._load_attempted = False
                 return False
             self._backend = backend
-            self.model_id = getattr(backend, "backend_id", None) or getattr(
-                backend, "model_id", None
+            # model_id FIRST: a backend may tag it with the readout (d1's
+            # "+letters") so rows and thresholds address the distribution
+            # they were measured on; backend_id is the bare variant fallback.
+            self.model_id = getattr(backend, "model_id", None) or getattr(
+                backend, "backend_id", None
             )
             self._cfg.backend_id = self.model_id  # AC25.8: active identity
             logger.info(

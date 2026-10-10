@@ -11,34 +11,47 @@ One question per run; no batching (REQ-20 retired 2026-09-26 — the guard
 test test_batch_single_encode.py must stay green); never writes text; never
 calls a hosted provider.
 
-HOW d1 SCORES (REQ-1, AC1.1-AC1.4): d1 is a typed DECISION model, not a chat
-model. Its published API is `system_one(state, questions, images=None)`: a state
-is read once and typed questions are answered over it in ONE forward pass with
-zero output tokens, each answer a typed value with calibrated probabilities.
-LiquidAI's native Decision Index shapes are served over
-`/v1/chat/completions`:
+HOW d1 SCORES (the REFERENCE readout, restored 2026-10-10): d1 is a typed
+DECISION model, not a chat model. Its published API is `system_one(state,
+questions, images=None)`: a state is read once and typed questions are
+answered over it in ONE forward pass with zero output tokens, each answer a
+typed value with calibrated probabilities. The reference implementation
+(LiquidAI/d1-3B prompt.py + runner.py) builds the prompt MANUALLY and reads
+the answer from the logits at the ONE answer slot:
+
+    <|startoftext|><|im_start|>user
+    {state}
 
     QUESTION:
     {instruction}
 
     Options:
-    {name}: {description}
+    A {option text or description}
+    B {option text or description}
     ...
 
-    Reply with the option name only.
+    Reply with the option code only.<|im_end|>
+    <|im_start|>assistant
 
-...then ONE completion token with logprobs; each option scores its NAME token
-(max-pool), softmax across options (prompt.py readout). The hand-rolled
-BOS/im_start `/completion` prompt and the A/B/C LETTER menu are RETIRED from
-scoring (AC1.4): the letter shape collapses to a constant answer when the
-question text varies while reporting high confidence, and d1 is trained on
-NAMED options. A failure to score returns None and the consumer fails closed.
+...then ONE completion token with logprobs; each option scores its CODE
+token (max-pooled with the space-prefixed form), softmax across options
+(prompt.py readout). MEASURED LIVE 2026-10-10 against our own llama-server
+and GGUF (logs/_probe_d1_reference.py, _probe_d1_styles.py): this shape
+answers 5/5 varied tool questions and 4/4 noul questions with confidence
+that SPREADS 0.47-0.99 with the difficulty of the case — while the Wave-2
+NAME-token readout sat flat at 0.90-0.96 on right and wrong alike (one
+isotonic knot, OOF AUROC 0.476 on 116 web_intent rows). The Wave-2 claim
+that "the letter shape collapses to a constant answer" came from the probe
+era of the bytes[0]-as-id defect (see _extract_logprobs) and does not
+reproduce under the correct reference format. A failure to score returns
+None and the consumer fails closed.
 
 The DECISION TYPE comes from the consumer's declaration (`declared_type`), never
-from inference (AC4.3): `noul` renders the yes/no template and pools over the
-yes/no forms; `choice` renders the criteria block and pools over the NAME
-tokens; `score` renders ordered levels. An UNDECLARED consumer scores nothing
-(AC1.6).
+from inference (AC4.3): `noul` renders the yes/no template (with the
+declaration's Yes:/No: criteria lines) and pools over the
+yes/no forms; `choice` renders the coded options block and pools over the
+CODE tokens; `score` renders ordered levels and pools over the digit
+tokens. An UNDECLARED consumer scores nothing (AC1.6).
 
 SERVING (borrow-only, specs/vision-single-server): the shared llama-server
 (LocalModelManager.PORT, default 8082) must ALREADY host the d1 GGUF —
@@ -107,6 +120,53 @@ _TIMEOUT_S = float(os.environ.get("IRIS_D1_TIMEOUT_S", "20"))
 _YES_FORMS = ("yes", "Yes", "YES")
 _NO_FORMS = ("no", "No", "NO")
 _YES_NO_LOWER = frozenset({"yes", "no"})
+
+# ── THE REFERENCE READOUT (LiquidAI/d1-3B prompt.py, ported 2026-10-10) ──────
+# d1 is post-trained (RLCD) on the Decision Index shape: each option renders
+# as a single-token LETTER CODE beside its text, the model replies with the
+# code, and the answer is a softmax over the CODE tokens at the answer slot.
+# The prompt is built MANUALLY (im_start markup, no chat template, no system
+# turn) exactly as the reference's prefix_text/suffix_text do.
+#
+# WHY WE SWITCHED BACK (measured live, 2026-10-10, logs/_probe_d1_reference.py
+# and _probe_d1_styles.py against OUR OWN llama-server and GGUF): the
+# NAME-token readout shipped in Wave 2 reads a distribution the model was
+# never trained to calibrate — its confidence sat at 0.90-0.96 on right and
+# wrong answers alike (one isotonic knot, OOF AUROC 0.476 across 116
+# web_intent rows). The letter readout on the SAME server spreads 0.47-0.99
+# with the question (0.47 on a genuine edit-vs-write ambiguity, 0.93-0.97 on
+# clear cases, P(yes) 0.01-0.99 on noul) and answered 5/5 tool questions and
+# 4/4 noul questions correctly. The Wave-2 finding that "the letter shape
+# collapses to a constant answer" came from the probe era of the
+# bytes[0]-as-id defect (see _extract_logprobs) and does NOT reproduce under
+# the correct reference format.
+_IM_START = "<|im_start|>"
+_IM_END = "<|im_end|>"
+_BOS = "<|startoftext|>"
+# The readout tag rides the row's engine field (see model_id) so this readout
+# change re-identifies the backend: rows scored under the retired name
+# readout never blend with letter-readout rows (fail-closed, AC25.8). Keep in
+# sync with decision_engine.CURRENT_READOUT_MODE.
+_READOUT_TAG = "letters"
+
+
+def _option_codes(names: Sequence[str]) -> List[str]:
+    """Reference prompt.py option_codes: native letters when the labels
+    already are letters, else A..Z, else 00.. — one rule for every
+    cardinality."""
+    labs = [str(x).strip() for x in names]
+    if labs and all(len(k) == 1 and k.isalpha() for k in labs):
+        return labs
+    if len(labs) <= 26:
+        return [chr(ord("A") + i) for i in range(len(labs))]
+    return [f"{i:02d}" for i in range(len(labs))]
+
+
+# The reference's fallback pool, bounded: single-token codes past A..Z.
+_CODE_FALLBACK_POOL = (
+    [chr(c) for c in range(ord("A"), ord("Z") + 1)]
+    + [f"{i:02d}" for i in range(100)]
+)
 
 
 # POOLED keep-alive client (owner: "incredibly slow", found 2026-10-08): a
@@ -204,7 +264,6 @@ class D1Backend:
         self._served_id: Optional[str] = None
         self._checked_at = 0.0
         self._yesno_ids: Optional[Dict[str, List[int]]] = None
-        self._name_ids: Dict[str, List[int]] = {}
         self._lock = threading.Lock()
         self._clock = time.monotonic
         self._latency_ms: Optional[int] = None
@@ -221,8 +280,13 @@ class D1Backend:
         return base.lower()
 
     @property
-    def model_id(self) -> str:  # engine reads this as a fallback name
-        return self.backend_id
+    def model_id(self) -> str:
+        """The row-level engine identity: the served variant PLUS the readout
+        tag. The report scopes rows by this string, so a readout change
+        re-identifies the backend and rows scored under the retired name
+        readout fail closed into other_backend instead of blending (AC25.8:
+        a threshold belongs to the distribution it was measured on)."""
+        return f"{self.backend_id}+{_READOUT_TAG}"
 
     @property
     def model_hash(self) -> Optional[str]:
@@ -329,95 +393,68 @@ class D1Backend:
         self._yesno_ids = ids
         return ids
 
-    def _name_tokens(self, name: str) -> List[int]:
-        """The option NAME's token ids, in the BARE form.
+    def _single_token_id(self, form: str) -> Optional[int]:
+        """The id when *form* is EXACTLY one token, else None (reference
+        _ids: only single-token forms enter a readout group)."""
+        try:
+            r = _pooled().post(
+                f"http://127.0.0.1:{_server_port()}/tokenize",
+                json={"content": form, "add_special": False},
+                timeout=5.0,
+            )
+            toks = r.json().get("tokens", [])
+            ids = [t["id"] if isinstance(t, dict) else int(t) for t in toks]
+            return ids[0] if len(ids) == 1 else None
+        except Exception:  # noqa: BLE001 - a failed lookup is a missing id
+            return None
 
-        Measured live 2026-10-08: the criteria block renders each name at the
-        start of a line, so d1 emits the BARE form (`pass`, id 9358) - the
-        space-prefixed form (` pass`) is not in the answer-slot distribution at
-        all. The bare form IS the readout. Cached per name.
-        """
-        cached = self._name_ids.get(name)
-        if cached is None:
-            try:
-                r = _pooled().post(
-                    f"http://127.0.0.1:{_server_port()}/tokenize",
-                    json={"content": name, "add_special": False},
-                    timeout=5.0,
-                )
-                toks = r.json().get("tokens", [])
-                cached = [t["id"] if isinstance(t, dict) else int(t) for t in toks]
-            except Exception:  # noqa: BLE001 - a failed lookup is a missing id
-                cached = []
-            self._name_ids[name] = cached
-        return list(cached)
-
-    def _name_readout(
+    def _letter_readout(
         self, names: Sequence[str]
     ) -> Optional[Tuple[Dict[str, Tuple[Tuple[int, ...], ...]], int]]:
-        """``(name -> per-position acceptable token ids, positions needed)`` -
-        the CHOICE readout (AC1.2), or None when the options cannot be
-        separated.
+        """``(name -> ((accepted token ids,),), positions needed)`` — the
+        reference CHOICE readout (prompt.py readout_ids + aliases).
 
-        The answer slot holds ONE token, so the fast path reads each name's
-        FIRST token. Two options can share that token (`speak_all` and
-        `speak_first_only` both begin `speak`; `unsafe` and `unsure` both begin
-        `uns`): a max-pool would then hand them EQUAL probability - a coin flip
-        reported as a calibrated probability. When that happens the readout
-        widens to the FULL name sequence and matches it across positions, so the
-        options separate again and no consumer loses its scoring (REQ-9 AC9.5).
-
-        Returns None only when two options are truly inseparable (identical
-        token sequences) or a name has no tokenizer form at all.
+        Every option gets a distinct single-token letter code (A..Z, then
+        the bounded fallback pool); each code's group max-pools the bare form
+        with its space-prefixed form (``A`` and `` A``), exactly as the
+        reference does. One position: the answer slot. Returns None when no
+        distinct single-token code exists for some option — the consumer
+        fails closed rather than scoring a coin flip (AC1.4).
         """
-        firsts: Dict[str, int] = {}
-        for name in names:
-            toks = self._name_tokens(name)
-            if not toks:
+        codes = _option_codes(names)
+        groups: List[Tuple[int, ...]] = []
+        used: set = set()
+        for code in codes:
+            tid = self._single_token_id(code)
+            if tid is None or tid in used:
+                tid = None
+                for raw in _CODE_FALLBACK_POOL:
+                    cand = self._single_token_id(raw)
+                    if cand is not None and cand not in used:
+                        tid = cand
+                        code = raw
+                        break
+            if tid is None:
                 logger.warning(
-                    "decision_backend_d1: option %r has no tokenizer form - the "
-                    "native readout cannot score it", name,
+                    "decision_backend_d1: no distinct single-token code for "
+                    "%r options - refusing to score", len(names),
                 )
                 return None
-            firsts[name] = toks[0]
+            used.add(tid)
+            group = [tid]
+            space = self._single_token_id(f" {code}")
+            if space is not None and space != tid:
+                group.append(space)
+            groups.append(tuple(group))
+        return {n: (groups[i],) for i, n in enumerate(names)}, 1
 
-        seen: Dict[int, str] = {}
-        collide = False
-        for name, tid in firsts.items():
-            other = seen.get(tid)
-            if other is not None and other != name:
-                collide = True
-                logger.info(
-                    "decision_backend_d1: options %r and %r share first token id "
-                    "%d - reading the full NAME sequence instead (AC1.2)",
-                    other, name, tid,
-                )
-            seen[tid] = name
-        if not collide:
-            return {n: ((t,),) for n, t in firsts.items()}, 1
+    @staticmethod
+    def _decision_prompt(text: str) -> str:
+        """The reference prompt wrapper (prompt.py prefix_text + suffix_text):
+        manual im_start markup, no chat template, no system turn, explicit
+        BOS. The server's /completion route takes it verbatim."""
+        return f"{_BOS}{_IM_START}user\n{text}{_IM_END}\n{_IM_START}assistant\n"
 
-        seqs = {n: self._name_tokens(n) for n in names}
-        used: Dict[Tuple[int, ...], str] = {}
-        for name, seq in seqs.items():
-            key = tuple(seq)
-            other = used.get(key)
-            if other is not None and other != name:
-                logger.warning(
-                    "decision_backend_d1: options %r and %r have IDENTICAL token "
-                    "sequences - the native readout cannot separate them; "
-                    "refusing to score (AC1.4)", other, name,
-                )
-                return None
-            used[key] = name
-        return {n: tuple((t,) for t in seq) for n, seq in seqs.items()}, \
-            max(len(s) for s in seqs.values())
-
-    # ── prompt rendering (LiquidAI/d1-3B native Decision Index shapes) ────
-    #
-    # REQ-1 (AC1.1-AC1.4): the native named-criteria shapes, transported over
-    # /v1/chat/completions. The renderers return the QUESTION TEXT; the chat
-    # template is applied by the server, so the hand-rolled BOS/im_start prompt
-    # of the retired /completion path is gone.
     @staticmethod
     def _state_block(state: Any) -> str:
         """json_only style: a string renders as itself; anything else as
@@ -434,30 +471,45 @@ class D1Backend:
     @classmethod
     def _question_choice(cls, state: Any, instruction: str,
                          criteria: Any, names: Sequence[str]) -> str:
-        """The native CHOICE question (AC1.2).
+        """The reference CHOICE question (prompt.py question_block, desc style).
 
-        The criteria block is a mapping of ``name -> description`` and the
-        answer IS the name - d1 is trained on named options, not on A/B/C
-        letters. A name with no declared description renders as the bare name.
+        Each option renders as ``{code} {text}`` where text is the declared
+        description, or the label with underscores as spaces when none is
+        declared; the model replies with the CODE and the readout scores the
+        code tokens. The name: description pairing of the retired Wave-2
+        shape is gone — the code carries the answer, the text carries the
+        meaning, exactly as d1 was trained.
         """
+        codes = _option_codes(names)
         lines = []
-        for n in names:
+        for i, n in enumerate(names):
             desc = ""
             if isinstance(criteria, dict):
                 desc = str(criteria.get(n) or "")
-            lines.append(f"{n}: {desc}".rstrip() if desc else str(n))
+            text = desc or str(n).replace("_", " ")
+            lines.append(f"{codes[i]} {text}")
         return (
-            f"{cls._state_block(state)}\nQUESTION:\n{instruction}\n\n"
+            f"{cls._state_block(state)}QUESTION:\n{instruction}\n\n"
             f"Options:\n" + "\n".join(lines) + "\n\n"
-            "Reply with the option name only."
+            "Reply with the option code only."
         )
 
     @classmethod
-    def _question_noul(cls, state: Any, instruction: str) -> str:
-        """The NOUL template: d1's native calibrated shape for yes/no questions.
-        V1 probe: 98.8% / 96.5% polarity-correct on this exact shape."""
+    def _question_noul(cls, state: Any, instruction: str,
+                       criteria: Any = None) -> str:
+        """The reference NOUL template (prompt.py question_block): d1's native
+        calibrated shape for yes/no questions. V1 probe: 98.8% / 96.5%
+        polarity-correct on this shape. When the consumer's declaration
+        carries true/false descriptions they render as the reference's
+        Yes:/No: lines — extra evidence the model was trained to read."""
+        extra = ""
+        if isinstance(criteria, dict):
+            t = criteria.get("true")
+            f = criteria.get("false")
+            if t or f:
+                extra = f"\nYes: {t or ''}\nNo: {f or ''}"
         return (
-            f"{cls._state_block(state)}\nQUESTION:\n{instruction}\n\n"
+            f"{cls._state_block(state)}QUESTION:\n{instruction}{extra}\n\n"
             "Reply with yes or no only."
         )
 
@@ -492,28 +544,6 @@ class D1Backend:
         return fallback
 
     # ── the contract ─────────────────────────────────────────────────────
-    @staticmethod
-    def _message_content(text: str,
-                         images: Sequence[bytes] = ()) -> List[Dict[str, Any]]:
-        """The user message content parts (REQ-5 AC5.1).
-
-        TEXT FIRST, images after: measured on this server build (Wave 0
-        probe) an image-FIRST content order returns HTTP 200 with NO
-        logprobs - the readout would score nothing and the consumer would
-        silently fail closed. Every image is the PNG bytes of the DECLARED
-        image field; a text-only state sends the text part alone.
-        """
-        parts: List[Dict[str, Any]] = [{"type": "text", "text": text}]
-        for img in images or ():
-            parts.append({
-                "type": "image_url",
-                "image_url": {
-                    "url": "data:image/png;base64,"
-                           + base64.b64encode(bytes(img)).decode("ascii"),
-                },
-            })
-        return parts
-
     def decide(
         self,
         consumer_id: str,
@@ -614,7 +644,8 @@ class D1Backend:
                 instruction = instruction or self._spec_instruction(
                     consumer_id, "Is this statement true?"
                 )
-                text = self._question_noul(state, instruction)
+                text = self._question_noul(
+                    state, instruction, declared_criteria(consumer_id))
                 # The yes/no readout max-pools over the FORMS (yes/Yes/YES) at
                 # the single answer slot - the alternatives live in position 0.
                 readout = {
@@ -636,35 +667,40 @@ class D1Backend:
                 # being forced into a `choice`.
                 if dtype == "score":
                     text = self._question_score(state, instruction, opts)
+                    # The score readout is the digit tokens 0..N-1 — the
+                    # reference's single-token level codes.
+                    got = self._letter_readout(
+                        [str(i) for i in range(len(opts))])
                 else:
                     text = self._question_choice(
                         state, instruction, declared_criteria(consumer_id), opts,
                     )
-                # AC1.2: the readout pools over the NAME tokens. A consumer
-                # whose option names cannot be separated at the answer slot
-                # widens to the full name sequence; one that is truly
-                # inseparable fails closed here, with the pair named in the log.
-                got = self._name_readout(opts)
+                    got = self._letter_readout(opts)
                 if got is None:
                     return None
                 readout, width = got
                 names = list(opts)
-            # REQ-1 (AC1.1): ONE forward pass over /v1/chat/completions with the
-            # image-capable message shape. The retired /completion letter path is
-            # GONE (AC1.4) - a failure to score returns None and the consumer
-            # fails closed, exactly as before.
+            # THE REFERENCE TRANSPORT (prompt.py prefix/suffix): ONE forward
+            # pass over /completion with the manually-built im_start prompt —
+            # no chat template, no system turn. The answer slot is position 0;
+            # temperature 1.0 is the raw distribution (measured 2026-10-10:
+            # this server build returns identical logprobs at 0.0 and 1.0, so
+            # 1.0 is the semantically safe contract for any future build).
             t0 = self._clock()
+            payload: Dict[str, Any] = {
+                "prompt": self._decision_prompt(text),
+                "n_predict": max(1, int(width)),
+                "temperature": 1.0,
+                "n_probs": _N_PROBS,
+            }
+            if images:
+                payload["image_data"] = [
+                    {"data": base64.b64encode(img).decode("ascii"), "id": i}
+                    for i, img in enumerate(images)
+                ]
             r = _pooled().post(
-                f"http://127.0.0.1:{_server_port()}/v1/chat/completions",
-                json={
-                    "messages": [{
-                        "role": "user",
-                        "content": self._message_content(text, images),
-                    }],
-                    "max_tokens": max(1, int(width)),
-                    "temperature": 0.0,
-                    "n_probs": _N_PROBS,
-                },
+                f"http://127.0.0.1:{_server_port()}/completion",
+                json=payload,
                 timeout=_TIMEOUT_S,
             )
             r.raise_for_status()
@@ -740,7 +776,8 @@ class D1Backend:
                 return None
             instruction = instruction or self._spec_instruction(
                 consumer_id, "Is this statement true?")
-            text = self._question_noul(None, instruction)
+            text = self._question_noul(
+                None, instruction, declared_criteria(consumer_id))
             names = [o.strip().lower() for o in opts]
             if names[0] != "yes":
                 names = ["no", "yes"]
@@ -753,10 +790,11 @@ class D1Backend:
         # only - nothing of a batch-mate's criteria may appear here.
         if dtype == "score":
             text = self._question_score(None, instruction, opts)
+            got = self._letter_readout([str(i) for i in range(len(opts))])
         else:
             text = self._question_choice(
                 None, instruction, declared_criteria(consumer_id), opts)
-        got = self._name_readout(opts)
+            got = self._letter_readout(opts)
         if got is None:
             return None
         readout, width = got
@@ -795,20 +833,18 @@ class D1Backend:
                 return [None] * len(consults)
             # One prompt: the shared state block, then each question. The
             # completion produces the answers in question order; each
-            # question's readout window is its own positions.
+            # question's readout window is its own positions. The reference
+            # transport wraps the joined body in the manual im_start prompt.
             body = self._state_block(state) + "\n".join(
                 p[0] for p in live).rstrip() + "\n"
             total_width = sum(p[3] for p in live)
             t0 = self._clock()
             r = _pooled().post(
-                f"http://127.0.0.1:{_server_port()}/v1/chat/completions",
+                f"http://127.0.0.1:{_server_port()}/completion",
                 json={
-                    "messages": [{
-                        "role": "user",
-                        "content": self._message_content(body, ()),
-                    }],
-                    "max_tokens": max(1, int(total_width)),
-                    "temperature": 0.0,
+                    "prompt": self._decision_prompt(body),
+                    "n_predict": max(1, int(total_width)),
+                    "temperature": 1.0,
                     "n_probs": _N_PROBS,
                 },
                 timeout=_TIMEOUT_S,

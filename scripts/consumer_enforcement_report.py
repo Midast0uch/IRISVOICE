@@ -262,11 +262,14 @@ def thresholds_by_consumer(
         else:
             # Wave 5 (specs/phonon2-d1-model-swap): the declared backend is
             # d1 on the shared llama-server — constructing it loads nothing
-            # and touches no server; the identity is variant-derived from
-            # the served GGUF filename.
+            # and touches no server. The identity is what the ROWS carry:
+            # model_id (the readout-tagged id, e.g. 'd1-3b-ad-q4_k_m+letters')
+            # so an offline report scopes to the same string the live engine
+            # writes; backend_id is the bare variant fallback.
             from backend.agent.decision_backend_d1 import D1Backend
 
-            backend_id = D1Backend().backend_id
+            _declared = D1Backend()
+            backend_id = _declared.model_id or _declared.backend_id
             identity_source = "declared d1 variant"
     except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
         pass

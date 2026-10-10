@@ -1,164 +1,187 @@
-"""REQ-1 (specs/oracle-native-decision-surface): the native readout.
+"""The d1 readout — the REFERENCE implementation, restored (2026-10-10).
 
-The A/B/C letter menu is RETIRED from scoring (AC1.4). A `choice` renders
-LiquidAI's criteria block and pools over the option NAME tokens (AC1.2); a
-`noul` renders the yes/no instruction and pools over the yes/no forms (AC1.3);
-the transport is `/v1/chat/completions` (AC1.1); and a failure to score returns
-None so the consumer fails closed, exactly as before.
+WHY THIS FILE EXISTS
 
-These tests are OFFLINE and deterministic: the tokenizer is stubbed, so the
-readout's behaviour is pinned without a live server.
+d1 is a post-trained decision model: its calibrated distribution lives in the
+LETTER-CODE tokens of its trained prompt shape (LiquidAI/d1-3B prompt.py):
+options render as ``A {text}``, the model replies with the code, and the
+readout max-pools each code with its space-prefixed form at the ONE answer
+slot. The Wave-2 change that retired letters in favour of option-NAME tokens
+read a distribution the model was never trained to calibrate: measured live
+on our own llama-server and GGUF (2026-10-10, logs/_probe_d1_reference.py,
+_probe_d1_styles.py), the name readout's confidence sat flat at 0.90-0.96 on
+right and wrong answers alike (one isotonic knot, OOF AUROC 0.476 across 116
+web_intent rows), while the reference letter readout on the SAME server
+answered 5/5 varied tool questions and 4/4 noul questions with confidence
+spreading 0.47-0.99 with the difficulty of the case. The Wave-2 "letters
+collapse to a constant answer" finding came from the probe era of the
+bytes[0]-as-id defect (see _extract_logprobs) and does not reproduce under
+the correct format.
+
+Pinned here: the renderers (coded options, yes/no criteria lines), the
+manual im_start prompt, the /completion transport, the letter readout
+(distinct single-token codes, space-form pooling, fail-closed), the readout
+tag on the row-level engine identity, and the fail-closed refusal of an
+undeclared consumer. OFFLINE and deterministic: the tokenizer is stubbed.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from backend.agent.decision_backend_d1 import D1Backend, _option_codes
 from backend.agent import decision_engine as de
-from backend.agent.decision_backend_d1 import (
-    D1Backend,
-    _extract_logprobs,
-    _extract_logprobs_all,
-)
 
 _BACKEND_SRC = Path("backend/agent/decision_backend_d1.py")
 
 
-# ── AC1.2/AC1.3: the renderers ──────────────────────────────────────────────
+# ── the renderers ───────────────────────────────────────────────────────────
 
-def test_choice_renders_the_named_criteria_block():
-    """The answer IS the name; the block is `name: description`."""
+def test_choice_renders_coded_options_with_descriptions():
+    """Each option renders as `{code} {text}`; the code carries the answer,
+    the declared description carries the meaning (prompt.py _option_line,
+    desc style)."""
     crit = {"pass": "The step did its part", "veto": "Must not run"}
-    out = D1Backend._question_choice("a state", "Did it work?", crit, ["pass", "veto"])
-    assert "pass: The step did its part" in out
-    assert "veto: Must not run" in out
-    assert "Reply with the option name only." in out
-    assert "Reply with the option code only." not in out
+    out = D1Backend._question_choice("a state", "Did it work?", crit,
+                                     ["pass", "veto"])
+    assert "A The step did its part" in out
+    assert "B Must not run" in out
+    assert "Reply with the option code only." in out
+    assert "QUESTION:\nDid it work?" in out
 
 
-def test_choice_renders_a_bare_name_when_no_description_is_declared():
-    out = D1Backend._question_choice("s", "q", {}, ["alpha", "beta"])
-    assert "alpha" in out and "beta" in out
+def test_choice_renders_the_label_as_text_when_no_description():
+    """No declared description: the label with underscores as spaces is the
+    text (prompt.py: `desc or label.replace("_", " ")`)."""
+    out = D1Backend._question_choice("s", "q", {}, ["read_file", "edit_file"])
+    assert "A read file" in out
+    assert "B edit file" in out
 
 
-def test_noul_renders_the_yes_no_instruction():
-    out = D1Backend._question_noul("a state", "Is the task finished?")
-    assert "Is the task finished?" in out
+def test_noul_renders_the_yes_no_criteria_lines():
+    """The declaration's true/false descriptions render as the reference's
+    Yes:/No: lines — evidence the model was trained to read."""
+    crit = {"true": "The task is finished", "false": "The task needs work"}
+    out = D1Backend._question_noul("a state", "Is it done?", crit)
+    assert "Is it done?" in out
+    assert "Yes: The task is finished" in out
+    assert "No: The task needs work" in out
     assert "Reply with yes or no only." in out
 
 
-# ── AC1.4: the letter path is GONE ──────────────────────────────────────────
+def test_noul_without_criteria_renders_the_bare_instruction():
+    out = D1Backend._question_noul("a state", "Is it done?", None)
+    assert "Yes:" not in out and "No:" not in out
+    assert "Reply with yes or no only." in out
 
-def test_the_letter_menu_is_retired_from_scoring():
+
+def test_state_block_matches_the_reference_newlines():
+    """prompt.py state_block: a string renders as itself + TWO newlines, and
+    QUESTION: follows directly (the retired shape added a third)."""
+    out = D1Backend._question_noul("a state", "Is it done?")
+    assert "a state\n\nQUESTION:\nIs it done?" in out
+
+
+# ── the prompt wrapper and the transport ────────────────────────────────────
+
+def test_the_prompt_is_the_manual_im_start_shape():
+    """prompt.py prefix_text + suffix_text: BOS, user turn, im_end, assistant
+    header — no chat template, no system turn."""
+    got = D1Backend._decision_prompt("body text")
+    assert got == ("<|startoftext|><|im_start|>user\nbody text"
+                   "<|im_end|>\n<|im_start|>assistant\n")
+
+
+def test_the_transport_is_raw_completion():
     src = _BACKEND_SRC.read_text(encoding="utf-8")
-    assert "_LETTERS" not in src, "the A/B/C letter readout must be retired (AC1.4)"
-    assert "Reply with the option code only." not in src
-    # No request is posted to the retired /completion route. (The route is named
-    # in the docstring, which records WHY it was retired - prose is not a call.)
-    assert "/completion\"" not in src and "/completion'" not in src
-    assert "{_server_port()}/completion" not in src
+    assert "{_server_port()}/completion" in src
+    # No POST to the chat route (the bare string stays in _extract_logprobs's
+    # docstring, which documents BOTH llama.cpp response shapes it parses).
+    assert "{_server_port()}/v1/chat/completions" not in src, (
+        "the chat-completions transport applies the server's chat template - "
+        "the reference builds its own markup")
 
 
-def test_the_transport_is_chat_completions():
+def test_images_ride_the_completion_image_data_field():
+    """The declared images become /completion image_data entries (base64),
+    never content parts of a chat message."""
     src = _BACKEND_SRC.read_text(encoding="utf-8")
-    assert "/v1/chat/completions" in src
+    assert '"image_data"' in src
+    assert "_message_content" not in src, "the chat content-parts builder is gone"
 
 
-# ── AC0.3: per-position parsing (both shapes) ───────────────────────────────
+# ── the letter readout ──────────────────────────────────────────────────────
 
-def test_per_position_parse_reads_both_shapes():
-    completion = {"completion_probabilities": [
-        {"top_logprobs": [{"id": 10, "logprob": -1.0}]},
-        {"top_logprobs": [{"id": 11, "logprob": -2.0}]},
-    ]}
-    chat = {"choices": [{"logprobs": {"content": [
-        {"top_logprobs": [{"id": 10, "logprob": -1.0, "bytes": [116]}]},
-        {"top_logprobs": [{"id": 11, "logprob": -2.0, "bytes": [116]}]},
-    ]}}]}
-    assert _extract_logprobs_all(completion) == [{10: -1.0}, {11: -2.0}]
-    assert _extract_logprobs_all(chat) == [{10: -1.0}, {11: -2.0}]
-    # Position 0 is what the answer-slot helper returns.
-    assert _extract_logprobs(chat) == {10: -1.0}
+def test_option_codes_follow_the_reference_rule():
+    assert _option_codes(["A", "B"]) == ["A", "B"]  # native letters
+    assert _option_codes(["read_file", "edit_file"]) == ["A", "B"]
+    assert _option_codes([f"t{i}" for i in range(27)]) == [
+        f"{i:02d}" for i in range(27)]
 
 
-# ── AC1.2: the readout, and the collision widening ──────────────────────────
-
-def _backend_with_tokens(monkeypatch, table):
+def _backend_with_tokenizer(monkeypatch, table):
+    """Stub /tokenize: `table` maps form -> token id (None = multi-token)."""
     b = D1Backend()
-    b._name_ids = dict(table)          # prime the cache: no HTTP in the test
+    seen: dict = {}
+
+    def fake_single(form):
+        if form in table:
+            return table[form]
+        seen.setdefault(form, 0)
+        seen[form] += 1
+        return 1000 + len(seen)  # distinct single tokens for unknown forms
+
+    monkeypatch.setattr(b, "_single_token_id", fake_single)
     return b
 
 
-def test_readout_reads_the_first_token_when_names_are_separable(monkeypatch):
-    b = _backend_with_tokens(monkeypatch, {"pass": [10], "veto": [11]})
-    got = b._name_readout(["pass", "veto"])
+def test_letter_readout_pools_the_code_with_its_space_form(monkeypatch):
+    b = _backend_with_tokenizer(monkeypatch, {"A": 10, " A": 11,
+                                              "B": 12, " B": 13})
+    got = b._letter_readout(["read_file", "edit_file"])
     assert got is not None
     plan, width = got
-    assert width == 1
-    assert plan == {"pass": ((10,),), "veto": ((11,),)}
+    assert width == 1, "the answer slot is ONE position"
+    assert plan["read_file"] == ((10, 11),)
+    assert plan["edit_file"] == ((12, 13),)
 
 
-def test_readout_widens_when_two_names_share_their_first_token(monkeypatch):
-    """`speak_all` and `speak_first_only` both begin `speak`: a first-token
-    max-pool would hand them EQUAL probability. The readout must widen to the
-    full name sequence instead, so no consumer loses its scoring (AC9.5)."""
-    b = _backend_with_tokens(monkeypatch, {
-        "speak_all": [6575, 40387],
-        "speak_first_only": [6575, 95350],
-        "stay_silent": [5275],
-    })
-    got = b._name_readout(["speak_all", "speak_first_only", "stay_silent"])
+def test_letter_readout_falls_back_when_codes_collide(monkeypatch):
+    """Two options whose codes tokenize to the SAME id: the fallback pool
+    must separate them (reference aliases)."""
+    b = _backend_with_tokenizer(monkeypatch, {"A": 10, " A": 10,
+                                              "B": 10, " B": 10})
+    got = b._letter_readout(["alpha", "beta"])
     assert got is not None
-    plan, width = got
-    assert width == 2, "the readout must widen past the colliding first token"
-    assert plan["speak_all"] == ((6575,), (40387,))
-    assert plan["speak_first_only"] == ((6575,), (95350,))
+    plan, _ = got
+    ids = {plan["alpha"][0][0], plan["beta"][0][0]}
+    assert len(ids) == 2, "colliding codes must be separated by the pool"
 
 
-def test_readout_refuses_when_two_names_are_identical(monkeypatch):
-    """Truly inseparable options cannot be scored: a coin flip reported as a
-    calibrated probability is worse than no row (AC1.4)."""
-    b = _backend_with_tokens(monkeypatch, {"alpha": [5], "beta": [5]})
-    assert b._name_readout(["alpha", "beta"]) is None
+def test_letter_readout_fails_closed_when_no_code_exists(monkeypatch):
+    b = D1Backend()
+
+    def always_none(form):
+        return None
+
+    monkeypatch.setattr(b, "_single_token_id", always_none)
+    assert b._letter_readout(["alpha", "beta"]) is None
 
 
-def test_readout_refuses_a_name_with_no_tokenizer_form(monkeypatch):
-    b = _backend_with_tokens(monkeypatch, {"alpha": [], "beta": [5]})
-    assert b._name_readout(["alpha", "beta"]) is None
+# ── the row-level identity carries the readout ─────────────────────────────
+
+def test_model_id_carries_the_readout_tag():
+    """The report scopes rows by this string: a readout change must
+    re-identify the backend so old rows fail closed into other_backend
+    instead of blending (AC25.8)."""
+    b = D1Backend()
+    assert b.model_id == f"{b.backend_id}+letters"
+    assert de.CURRENT_READOUT_MODE == "letters"
 
 
-# ── AC1.6: an undeclared consumer still scores nothing ──────────────────────
+# ── AC1.6: an undeclared consumer still scores nothing ─────────────────────
 
 def test_undeclared_consumer_is_refused_before_scoring(monkeypatch):
     b = D1Backend()
     b._loaded = True
     monkeypatch.setattr(b, "_serves_d1", lambda force=False: (True, ""))
     assert b.decide("never_declared", ["a", "b"], {"goal": "x"}) is None
-
-
-# ── REQ-5 (AC5.1): the state's images become content parts, text FIRST ──────
-
-def test_images_become_image_parts_after_the_text():
-    """Measured hazard (Wave 0 probe): an image-FIRST content order got HTTP
-    200 with NO logprobs on this server build, so the readout would score
-    nothing and the consumer would silently fail closed. Text first, always.
-    """
-    parts = D1Backend._message_content("the question", [b"\x89PNGfake"])
-    assert parts[0] == {"type": "text", "text": "the question"}
-    assert len(parts) == 2 and parts[1]["type"] == "image_url"
-    url = parts[1]["image_url"]["url"]
-    assert url.startswith("data:image/png;base64,")
-    import base64 as _b64
-
-    assert _b64.b64decode(url.split(",", 1)[1]) == b"\x89PNGfake"
-
-
-def test_a_text_only_state_sends_one_text_part():
-    parts = D1Backend._message_content("the question")
-    assert parts == [{"type": "text", "text": "the question"}]
-
-
-def test_every_declared_consumer_has_a_scorable_shape():
-    """Every consumer in CONSUMERS declares a type AND either yes/no labels
-    (noul) or named options (choice)."""
-    for cid in de.CONSUMERS:
-        assert de.is_declared(cid), cid
