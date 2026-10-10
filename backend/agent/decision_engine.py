@@ -177,6 +177,15 @@ class OracleState:
     text: str                    # the rendered field text
     budget_ids: int              # the job's text budget
     images: Tuple[bytes, ...] = ()  # declared images only (REQ-5 AC5.1)
+    # DYNAMIC-MENU CRITERIA (2026-10-10): a choice consumer whose option set
+    # varies per turn (tool_choice) cannot declare its option descriptions in
+    # the static declaration table, so the call site supplies them per
+    # consult via the frame key `option_criteria` and they travel here —
+    # rendered into the OPTION LINES by the backend, never into the state
+    # text (the reference puts the description beside the code: "A Read a
+    # file's contents"). Measured live: descriptions in the option lines
+    # answer 5/5 varied tool questions where bare names answer 5/6.
+    option_criteria: Tuple[Tuple[str, str], ...] = ()
 
 
 ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
@@ -664,9 +673,16 @@ def job_input(consumer_id: str, frame: Dict[str, Any]) -> OracleState:
         for v in [(frame or {}).get(f)]
         if isinstance(v, (bytes, bytearray)) and v
     )
+    # DYNAMIC-MENU CRITERIA: passed through untouched — never a state field
+    # (it is not in any job's declared fields, so it never renders into the
+    # text), never dropped (the backend renders it into the option lines).
+    _oc = (frame or {}).get("option_criteria")
+    option_criteria = tuple(
+        (str(k), str(v)) for k, v in dict(_oc or {}).items()) if _oc else ()
     return OracleState(
         job=job.name, fields=tuple(job.fields), text="\n".join(parts),
         budget_ids=job.budget_ids, images=images,
+        option_criteria=option_criteria,
     )
 
 

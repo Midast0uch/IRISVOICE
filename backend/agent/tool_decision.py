@@ -1643,6 +1643,7 @@ class ToolDecisionBox:
         threshold: Optional[float] = None,
         async_: bool = False,
         last_result: Optional[str] = None,
+        option_criteria: Optional[dict] = None,
     ) -> Optional[Dict[str, Any]]:
         """REQ-16 AC16.2 (T20): shadow-score a tool choice made OUTSIDE the box.
 
@@ -1681,6 +1682,10 @@ class ToolDecisionBox:
                         # frame while stamped as enriched. A parameter dropped
                         # at an async boundary; the stamp said v2 regardless.
                         "last_result": last_result,
+                        # Same boundary, same rule: every new parameter rides
+                        # the thread kwargs or the async path silently drops
+                        # it (the v2 lesson, applied by construction).
+                        "option_criteria": option_criteria,
                     },
                     daemon=True, name="shadow-tool-choice",
                 ).start()
@@ -1722,6 +1727,12 @@ class ToolDecisionBox:
                 # conversation. Declared on the `route` job; renders empty when
                 # a caller has nothing to pass (the first call of a turn).
                 "last_result": (last_result or "")[:600] or None,
+                # DYNAMIC-MENU CRITERIA (2026-10-10): the offered tools'
+                # descriptions, rendered by the backend into the option lines
+                # ("A Read a file's contents") - measured live: descriptions
+                # answer 5/5 varied tool questions where bare names answer
+                # 5/6. Never renders into the state text (not a job field).
+                "option_criteria": option_criteria or None,
             }
             ds = eng.decide("tool_choice", menu, frame)
             if ds is None:
@@ -1755,7 +1766,11 @@ class ToolDecisionBox:
                 # re-invocation, so v2 measured the OLD frame under the NEW
                 # stamp. v3 is the first stamp where the frame genuinely
                 # carries the previous result.
-                "criteria_version": "tc-frame-v3",
+                # v4 (2026-10-10): the option lines now carry the offered
+                # tools' DESCRIPTIONS (dynamic-menu criteria) - a different
+                # question again; measured 5/5 with descriptions vs 5/6
+                # bare names on the live probe.
+                "criteria_version": "tc-frame-v4",
             }
             self._record_shadow_row(row, session_id=session_id)
             return row

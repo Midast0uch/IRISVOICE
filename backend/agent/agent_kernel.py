@@ -4341,6 +4341,14 @@ class AgentKernel:
                             for t in (_tools or [])
                         ] or None,
                         last_result=_lr or None,
+                        # the offered tools' descriptions, rendered into the
+                        # option lines (measured: 5/5 with, 5/6 without)
+                        option_criteria={
+                            (t.get("function") or {}).get("name"):
+                            ((t.get("function") or {}).get("description") or "")
+                            for t in (_tools or [])
+                            if (t.get("function") or {}).get("name")
+                        } or None,
                         session_id=self.conversation_id or "voice",
                         conversation_id=self.conversation_id or "",
                         async_=True,
@@ -17698,9 +17706,20 @@ Respond with a JSON object:
                     _lr = f"{_p.get('description') or ''}: {_p.get('result') or ''}"
             except Exception:  # noqa: BLE001 — a shadow never needs context
                 _lr = ""
+            # The offered tools' descriptions, rendered into the option lines
+            # (measured: 5/5 with, 5/6 without).
+            _crit = {}
+            try:
+                for t in tools or []:
+                    _fn = t.get("function") or {}
+                    if _fn.get("name"):
+                        _crit[_fn["name"]] = _fn.get("description") or ""
+            except Exception:  # noqa: BLE001 — a shadow never needs context
+                _crit = {}
             box.record_shadow_tool_choice(
                 goal=goal, observed_tool=name, observed_params=params,
                 candidates=_offered, last_result=_lr or None,
+                option_criteria=_crit or None,
                 session_id=self.conversation_id or "voice",
                 conversation_id=self.conversation_id or "", async_=True,
             )

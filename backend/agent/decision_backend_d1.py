@@ -593,13 +593,22 @@ class D1Backend:
             # pre-render dict; it is read exactly as before (goal text +
             # budget, no images).
             images: Tuple[bytes, ...] = ()
+            dyn_criteria: Optional[Dict[str, str]] = None
             if isinstance(frame, OracleState):
                 state = frame.text
                 budget = frame.budget_ids
                 images = frame.images
+                # DYNAMIC-MENU CRITERIA: the call site's per-turn option
+                # descriptions (tool_choice's menu varies per consult). They
+                # override the static declaration for THIS question only.
+                if frame.option_criteria:
+                    dyn_criteria = dict(frame.option_criteria)
             else:
                 state = str((frame or {}).get("goal", ""))
                 budget = (frame or {}).get("_max_text_ids")
+                _oc = (frame or {}).get("option_criteria")
+                if isinstance(_oc, dict) and _oc:
+                    dyn_criteria = {str(k): str(v) for k, v in _oc.items()}
             if budget:
                 cap = max(64, int(budget)) * 4
                 if len(state) > cap:
@@ -673,7 +682,8 @@ class D1Backend:
                         [str(i) for i in range(len(opts))])
                 else:
                     text = self._question_choice(
-                        state, instruction, declared_criteria(consumer_id), opts,
+                        state, instruction,
+                        dyn_criteria or declared_criteria(consumer_id), opts,
                     )
                     got = self._letter_readout(opts)
                 if got is None:

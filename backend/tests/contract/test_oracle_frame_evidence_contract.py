@@ -115,9 +115,10 @@ def test_async_shadow_passes_last_result():
         "the blind frame")
 
 
-def test_sync_shadow_row_carries_frame_v3_stamp():
-    """The stamp separates the genuinely-enriched frame (v3) from the v2 rows
-    that measured the blind frame; never blend cohorts."""
+def test_sync_shadow_row_carries_the_frame_stamp():
+    """The stamp separates the genuinely-enriched frames from every earlier
+    cohort (v2 was accidentally blind; v3 added last_result; v4 adds the
+    option-line descriptions); never blend cohorts."""
     eng = _Engine()
     row = _box(eng).record_shadow_tool_choice(
         goal="fix the failing test in utils.py",
@@ -126,7 +127,7 @@ def test_sync_shadow_row_carries_frame_v3_stamp():
         last_result="pytest output",
     )
     assert row is not None
-    assert row["criteria_version"] == "tc-frame-v3"
+    assert row["criteria_version"] == "tc-frame-v4"
 
 
 # ── 2. the shape job must render its consumers' evidence ─────────────────
@@ -188,6 +189,73 @@ def test_route_frame_renders_tool_choice_history():
     })
     assert "task_class: coding" in state.text
     assert "previous_outcome: success" in state.text
+
+
+def test_dynamic_menu_criteria_travel_but_never_render_into_the_state():
+    """A dynamic menu's option descriptions (tool_choice's varies per turn)
+    ride the OracleState and NEVER render into the state text - the backend
+    puts them in the OPTION LINES, beside the codes (measured live: 5/5
+    tool questions with descriptions, 5/6 with bare names)."""
+    state = job_input("tool_choice", {
+        "goal": "fix the failing test",
+        "option_criteria": {
+            "read_file": "Read a file's contents",
+            "run_command": "Run a shell command",
+        },
+    })
+    assert "Read a file's contents" not in state.text, (
+        "option criteria leaked into the state text")
+    assert state.option_criteria == (
+        ("read_file", "Read a file's contents"),
+        ("run_command", "Run a shell command"),
+    )
+
+
+def test_dynamic_menu_criteria_render_into_the_option_lines():
+    """The backend renders the state's option_criteria beside the codes,
+    overriding the (empty) static declaration for this question only —
+    exactly as decide() passes them."""
+    from backend.agent.decision_backend_d1 import D1Backend
+    from backend.agent.decision_engine import OracleState
+
+    st = OracleState(job="route", fields=("goal",), text="fix the failing test",
+                     budget_ids=256,
+                     option_criteria=(("read_file", "Read a file's contents"),))
+    out = D1Backend._question_choice(
+        st, "Which tool should handle this step?",
+        dict(st.option_criteria) or None,
+        ["read_file", "edit_file"])
+    assert "A Read a file's contents" in out
+    assert "B edit file" in out  # no description: the label as text
+
+
+def test_async_shadow_passes_option_criteria():
+    """The v2 lesson, applied by construction: EVERY new parameter rides the
+    async thread kwargs or the async path silently drops it. The Thread call
+    carries target=record_shadow_tool_choice and kwargs={...}; the kwargs
+    Dict must contain both last_result and option_criteria."""
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[3] / "backend" / "agent"
+           / "tool_decision.py").read_text(encoding="utf-8")
+    found = False
+    for node in ast.walk(ast.parse(src)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "Thread"):
+            continue
+        target = next((k.value for k in node.keywords
+                      if k.arg == "target" and isinstance(k.value, ast.Attribute)
+                      and k.value.attr == "record_shadow_tool_choice"), None)
+        kw = next((k.value for k in node.keywords
+                   if k.arg == "kwargs" and isinstance(k.value, ast.Dict)), None)
+        if target is None or kw is None:
+            continue
+        keys = {k.value for k in kw.keys if isinstance(k, ast.Constant)}
+        assert {"last_result", "option_criteria"} <= keys, (
+            f"the async wrapper drops a parameter: {sorted(keys)}")
+        found = True
+    assert found, "the async shadow wrapper was not found"
 
 
 # ── 4. the mode lane job must WRITE the row, not only expose it ────────────
