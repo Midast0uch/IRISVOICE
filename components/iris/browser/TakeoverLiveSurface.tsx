@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useEffect, useRef, useState } from "react"
+import { getLiveRun } from "@/lib/liveBrowser"
 
 /**
  * TakeoverLiveSurface — the LIVE CDP screencast surface for a takeover
@@ -19,13 +20,15 @@ import React, { useEffect, useRef, useState } from "react"
  *     the CT-6b guard's source scan stays clean — the same convention the
  *     server-side takeover docstring uses for its transport token.)
  *   - It never talks to the backend directly: it emits `iris:takeover_input`
- *     and `iris:takeover_frame_ack` CustomEvents, which `useIRISWebSocket`
- *     forwards over the WS. So this component stays transport-agnostic and the
- *     one WS owner is unchanged.
+ *     CustomEvents, which `useIRISWebSocket` forwards over the WS (the WS
+ *     layer also acks the frames). So this component stays transport-agnostic
+ *     and the one WS owner is unchanged.
  *
- * REQ-16 AC3 (bounded, latest-wins): it keeps at most ONE frame in flight —
- * it acks each rendered frame and drops any frame that arrives before the
- * previous ack. REQ-16 edge: a frame with no `question_id` is dropped.
+ * REQ-16 AC3 (bounded, latest-wins): the WebSocket layer acks each frame on
+ * receipt (one in flight backend-side) and keeps the newest one in
+ * lib/liveBrowser, so this surface starts from the current page when it
+ * mounts late and renders the newest frame after that. REQ-16 edge: outside
+ * watch mode a frame with no `question_id` is dropped.
  */
 
 export interface TakeoverFrame {
@@ -44,11 +47,62 @@ interface Props {
   /** The active takeover's run id + question id (from the overlay state). */
   runId: string
   questionId?: string
-  /** Viewport size of the LIVE frame box in CSS px, for input scaling. */
-  width?: number
-  height?: number
+  /** Size of the LIVE frame box (CSS px, or a CSS length such as "100%").
+   * Input is scaled from the rendered box, so any size maps correctly. */
+  width?: number | string
+  height?: number | string
   className?: string
+  /** Watch mode: the agent drives and the user watches its live page, so
+   * frames with no question_id (no hand-over open) are shown too, matched by
+   * runId. Off: only a hand-over's frames (the original contract). */
+  watch?: boolean
+  /** Forward the user's pointer/keys to the page. The backend still gates
+   * input on an open grant; this only stops a watch-only view from sending. */
+  interactive?: boolean
+  /** Watch mode: the rect the frame image actually covers (letterbox bars
+   * excluded), in px from the browser card's padding-box origin - the overlay's
+   * own coordinate space - so the agent's cursor lands ON the page. null when
+   * it cannot be measured or the surface unmounts. */
+  onImageRect?: (rect: ImageRect | null) => void
 }
+
+export interface ImageRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** Where an object-fit: contain image of the source viewport sits in a box. With
+ * no source size the image is taken to fill the box. */
+export function containedRect(boxW: number, boxH: number, vw?: number, vh?: number): ImageRect {
+  if (!vw || !vh || boxW <= 0 || boxH <= 0) return { x: 0, y: 0, w: boxW, h: boxH }
+  const scale = Math.min(boxW / vw, boxH / vh)
+  const w = vw * scale
+  const h = vh * scale
+  return { x: (boxW - w) / 2, y: (boxH - h) / 2, w, h }
+}
+
+/** Offset of `el` from the browser card's padding-box origin (the nearest
+ * ancestor marked data-browser-card), by summing layout offsets. Layout offsets,
+ * not getBoundingClientRect: the wing view applies a 3D transform, and a
+ * projected rect would not share the overlay's coordinate space. */
+function offsetWithinCard(el: HTMLElement): { x: number; y: number } | null {
+  let x = 0
+  let y = 0
+  let n: HTMLElement | null = el
+  while (n && !n.hasAttribute("data-browser-card")) {
+    x += n.offsetLeft
+    y += n.offsetTop
+    n = n.offsetParent as HTMLElement | null
+  }
+  return n ? { x, y } : null
+}
+
+/** A box-size change smaller than this (px, per axis) is not worth resizing the
+ * agent's browser for. */
+const VIEWPORT_MIN_DELTA = 8
+const VIEWPORT_DEBOUNCE_MS = 400
 
 export function TakeoverLiveSurface({
   runId,
@@ -56,16 +110,19 @@ export function TakeoverLiveSurface({
   width = 640,
   height = 360,
   className,
+  watch = false,
+  interactive = true,
+  onImageRect,
 }: Props) {
-  const [frame, setFrame] = useState<TakeoverFrame | null>(null)
-  // REQ-16 AC3: at most ONE frame in flight. `inFlightRef` is set when a frame
-  // is rendered and cleared when it is acked; a frame arriving while one is in
-  // flight is DROPPED (latest-wins is enforced backend-side too).
-  const inFlightRef = useRef(false)
+  // Watch mode starts from the newest frame the WebSocket already received,
+  // so a panel opened mid-run shows the page at once.
+  const [frame, setFrame] = useState<TakeoverFrame | null>(() => {
+    return watch && runId ? getLiveRun(runId)?.frame ?? null : null
+  })
   const surfaceRef = useRef<HTMLDivElement | null>(null)
 
   const emitInput = (payload: Record<string, unknown>) => {
-    if (typeof window === "undefined") return
+    if (typeof window === "undefined" || !interactive) return
     window.dispatchEvent(
       new CustomEvent("iris:takeover_input", {
         detail: { run_id: runId, question_id: questionId, ...payload },
@@ -77,38 +134,103 @@ export function TakeoverLiveSurface({
     if (typeof window === "undefined") return
     const onFrame = (e: Event) => {
       const d = (e as CustomEvent<TakeoverFrame>).detail
-      // REQ-16 edge: a frame without an owner (question_id) is unattributable.
-      if (!d || !d.question_id) return
-      // Only frames for THIS takeover's run/question.
-      if (runId && d.run_id && d.run_id !== runId) return
-      if (questionId && d.question_id !== questionId) return
-      if (inFlightRef.current) return // bounded: one in flight
-      inFlightRef.current = true
+      if (!d) return
+      if (watch) {
+        // Watch mode: the run is the owner; any frame of THIS run is shown,
+        // whether or not a hand-over is open.
+        if (!runId || d.run_id !== runId) return
+      } else {
+        // REQ-16 edge: a frame without an owner (question_id) is unattributable.
+        if (!d.question_id) return
+        // Only frames for THIS takeover's run/question.
+        if (runId && d.run_id && d.run_id !== runId) return
+        if (questionId && d.question_id !== questionId) return
+      }
       setFrame(d)
     }
     window.addEventListener("iris:takeover_frame", onFrame)
     return () => window.removeEventListener("iris:takeover_frame", onFrame)
-  }, [runId, questionId])
+  }, [runId, questionId, watch])
 
-  // Ack every rendered frame so the backend releases the in-flight slot and
-  // Chromium keeps sending (REQ-13 AC2).
+  // Watch mode tells the backend the size of this box (CSS px) so the agent's
+  // browser viewport takes the panel's aspect and its frames fill the surface
+  // instead of sitting letterboxed. Once on mount, then only when the box moved
+  // by VIEWPORT_MIN_DELTA, debounced - a drag-resize must not resize the page
+  // on every pixel. useIRISWebSocket forwards the event.
   useEffect(() => {
-    if (!frame) return
-    if (typeof window === "undefined") return
-    window.dispatchEvent(
-      new CustomEvent("iris:takeover_frame_ack", {
-        detail: { run_id: runId, question_id: frame.question_id, frame_seq: frame.frame_seq },
-      })
-    )
-    inFlightRef.current = false
-  }, [frame, runId])
+    const el = surfaceRef.current
+    if (!watch || !runId || !el || typeof ResizeObserver === "undefined") return
+    let sent: { w: number; h: number } | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const send = (w: number, h: number) => {
+      sent = { w, h }
+      window.dispatchEvent(
+        new CustomEvent("iris:browser_viewport", { detail: { run_id: runId, width: w, height: h } })
+      )
+    }
+    const measure = () => {
+      const w = Math.round(el.offsetWidth)
+      const h = Math.round(el.offsetHeight)
+      if (w <= 0 || h <= 0) return
+      if (!sent) { send(w, h); return }
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        if (sent && Math.abs(w - sent.w) < VIEWPORT_MIN_DELTA && Math.abs(h - sent.h) < VIEWPORT_MIN_DELTA) return
+        send(w, h)
+      }, VIEWPORT_DEBOUNCE_MS)
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => {
+      ro.disconnect()
+      if (timer) clearTimeout(timer)
+    }
+  }, [watch, runId])
 
-  const toFraction = (e: React.PointerEvent) => {
+  // Report the area the image really covers, for the overlay's cursor.
+  const imgVw = frame?.viewport_w
+  const imgVh = frame?.viewport_h
+  const lastRectRef = useRef<ImageRect | null>(null)
+  useEffect(() => {
+    const el = surfaceRef.current
+    if (!onImageRect || !el) return
+    const report = () => {
+      const off = offsetWithinCard(el)
+      const c = containedRect(el.offsetWidth, el.offsetHeight, imgVw, imgVh)
+      const next = off ? { x: off.x + c.x, y: off.y + c.y, w: c.w, h: c.h } : null
+      const prev = lastRectRef.current
+      if (next && prev && next.x === prev.x && next.y === prev.y && next.w === prev.w && next.h === prev.h) return
+      lastRectRef.current = next
+      onImageRect(next)
+    }
+    report()
+    if (typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(report)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [onImageRect, imgVw, imgVh])
+  useEffect(() => () => {
+    lastRectRef.current = null
+    onImageRect?.(null)
+  }, [onImageRect])
+
+  // The frame is drawn object-fit: contain, so it is letterboxed inside the
+  // surface. The fraction must be of the IMAGE box, not the surface box, or a
+  // click lands offset by the bars.
+  const toFraction = (e: { clientX: number; clientY: number }) => {
     const el = surfaceRef.current
     if (!el) return { x: 0, y: 0 }
     const rect = el.getBoundingClientRect()
-    const x = (e.clientX - rect.left) / Math.max(1, rect.width)
-    const y = (e.clientY - rect.top) / Math.max(1, rect.height)
+    const iw = frame?.viewport_w || rect.width
+    const ih = frame?.viewport_h || rect.height
+    const scale = Math.min(rect.width / Math.max(1, iw), rect.height / Math.max(1, ih))
+    const dw = iw * scale
+    const dh = ih * scale
+    const left = rect.left + (rect.width - dw) / 2
+    const top = rect.top + (rect.height - dh) / 2
+    const x = (e.clientX - left) / Math.max(1, dw)
+    const y = (e.clientY - top) / Math.max(1, dh)
     return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) }
   }
 
@@ -119,22 +241,36 @@ export function TakeoverLiveSurface({
       // The ONLY interactive surface during a takeover. Pointer events are
       // auto HERE (the grant is open); the overlay root stays pointer-events
       // none so nothing else in the tree steals input.
-      style={{ position: "relative", width, height, pointerEvents: "auto", touchAction: "none" }}
-      tabIndex={0}
+      // A watch-only view lets the wheel and clicks fall through to nothing:
+      // the user sees the agent's page but does not steer it until they take
+      // control.
+      style={{
+        position: "relative", width, height,
+        touchAction: "none",
+        ...(interactive
+          ? ({ pointerEvents: "auto", cursor: "default" } as const)
+          : ({ pointerEvents: "none" } as const)),
+      }}
+      tabIndex={interactive ? 0 : -1}
       role="application"
-      aria-label="Live browser takeover surface"
+      aria-label={interactive ? "Live browser - you have control" : "Live browser - the agent's page"}
       onPointerDown={(e) => {
+        surfaceRef.current?.focus()
         const { x, y } = toFraction(e)
         emitInput({ kind: "pointer", x, y, button: e.button === 2 ? "right" : "left" })
       }}
       onWheel={(e) => {
-        const { x, y } = toFraction(e as unknown as React.PointerEvent)
+        const { x, y } = toFraction(e)
         emitInput({ kind: "wheel", x, y, dy: e.deltaY, dx: e.deltaX })
       }}
       onKeyDown={(e) => {
         // Page-level key only. Text entry is echoed char-by-char as `text`
         // events so the typed value is EPHEMERAL (REQ-14 AC4) — it is never
         // stored in this component.
+        if (!interactive) return
+        // The key belongs to the page, not to the app (Tab must not move app
+        // focus, Backspace must not navigate).
+        e.preventDefault()
         if (e.key.length === 1) {
           emitInput({ kind: "text", text: e.key })
         } else {

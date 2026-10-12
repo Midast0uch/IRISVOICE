@@ -1,53 +1,22 @@
 """Behavioral tests: mode routing (REQ-15 AC15.1, T19).
 
-Slash-command overrides are DETERMINISTIC and always win — the engine shadow
-never touches them. The engine's own mode pick is recorded, never applied,
-until AC15.4's measured bar is met.
+Slash-command overrides are DETERMINISTIC and always win. The `mode` Oracle
+consumer was REMOVED 2026-10-10 (owner): its incumbent is this free keyword
+classifier, so enforcing it could never pay, and its reference was the keyword
+list itself. The tests below pin the classifier that REMAINS; the shadow
+machinery tests (set_mode_engine / last_mode_shadow) were removed with the
+consumer — STALE-BY-SPEC.
 """
 
 from __future__ import annotations
 
-from backend.agent.decision_engine import (
-    CandidateScore,
-    DecisionScore,
-)
 from backend.agent.mode_detector import AgentMode, ModeDetector
-
-
-class _ModeEngine:
-    """Scores the `mode` consumer; its own pick DISAGREES with the keywords."""
-
-    def __init__(self, chosen="research"):
-        self._chosen = chosen
-        self.calls: list = []
-
-    def decide(self, consumer_id, options, frame):
-        self.calls.append((consumer_id, list(options)))
-        dist = {
-            o: (0.95 if o == self._chosen else 0.01) for o in options
-        }
-        return DecisionScore(
-            consumer_id=consumer_id, chosen=self._chosen, confidence=0.95,
-            distribution=tuple(
-                CandidateScore(n, -0.1, p) for n, p in dist.items()
-            ),
-            engine_latency_ms=2,
-        )
-
-
-def _detector(engine=None) -> ModeDetector:
-    d = ModeDetector()
-    if engine is not None:
-        d.set_mode_engine(engine)
-    return d
 
 
 class TestSlashOverridesWin:
     def test_slash_overrides_win(self):
-        """AC15.1: a slash command routes deterministically and the engine is
-        NEVER consulted on that branch."""
-        engine = _ModeEngine(chosen="research")
-        d = _detector(engine)
+        """AC15.1: a slash command routes deterministically."""
+        d = ModeDetector()
 
         for text, expected in [
             ("/spec design the ingest pipeline", AgentMode.SPEC),
@@ -64,43 +33,21 @@ class TestSlashOverridesWin:
             assert result.needs_clarification == (expected == AgentMode.IMPLEMENT
                                                   and text.startswith("/ask"))
 
-        assert engine.calls == [], (
-            "the engine was consulted on the deterministic slash branch"
-        )
-
-    def test_inference_is_shadowed_not_replaced(self):
-        """AC15.1: on the keyword branch the engine's own pick is RECORDED but
-        the keyword mode still decides."""
-        engine = _ModeEngine(chosen="research")
-        d = _detector(engine)
-
+    def test_inference_branch_is_keyword_decided(self):
+        """The keyword branch decides the mode on its own keywords ("write",
+        "code" -> IMPLEMENT). This was the shadow half of the old test; the
+        keyword half is the behavior that remains after the consumer removal."""
+        d = ModeDetector()
         result = d.detect("please write the code for the upload handler")
-
-        # the keyword branch decides IMPLEMENT ("write", "code")
-        assert result.mode == AgentMode.IMPLEMENT, (
-            "the engine's pick replaced the keyword mode — T19 is shadow"
-        )
+        assert result.mode == AgentMode.IMPLEMENT
         assert result.trigger == "inference"
-        # The consult moved to the oracle_shadow lane (2026-10-05, measured
-        # 446 ms/turn inline), so the row lands asynchronously: flush before
-        # asserting it. Same assertion, same purpose as before the move.
-        from backend.utils.durability_queue import lane
-
-        lane("oracle_shadow").flush(10.0)
-        # and the disagreement is recorded for parity. The row's pair keys
-        # are chosen/brain_choice (renamed from engine_mode/keyword_mode on
-        # 2026-09-27 — the ledger whitelist passes only these).
-        assert d.last_mode_shadow is not None
-        assert d.last_mode_shadow["chosen"] == "research"
-        assert d.last_mode_shadow["brain_choice"] == "implement"
-        assert d.last_mode_shadow["shadow"] is True
 
     def test_no_engine_leaves_routing_untouched(self):
-        """Edge case: engine unavailable → keyword branch unchanged, no row."""
-        d = _detector(None)
+        """Edge case: the keyword branch is the only decider (there is no
+        engine any more); the confidence is the rule's own."""
+        d = ModeDetector()
         result = d.detect("fix the broken collector")
         assert result.mode == AgentMode.DEBUG
         assert result.trigger == "inference"
-        assert d.last_mode_shadow is None
         assert result.confidence == d._infer_mode(
             "fix the broken collector")[1]

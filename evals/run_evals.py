@@ -200,7 +200,7 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
     async with websockets.connect(url, max_size=16 * 1024 * 1024, ping_interval=None) as ws:
         await ws.send(json.dumps({"type": "new_conversation",
                                   "payload": {"conversation_id": conv_id}}))
-        if task["group"] == "research":
+        if task["group"] in ("research", "browser"):
             await ws.send(json.dumps({"type": "set_web_mode", "payload": {"enabled": True}}))
 
         if task["path"] == "dev_cli":
@@ -558,7 +558,7 @@ def _summary(results: list) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRIS execution pass-rate harness")
-    ap.add_argument("--group", action="append", choices=["coding", "research"], default=[])
+    ap.add_argument("--group", action="append", choices=["coding", "research", "browser"], default=[])
     ap.add_argument("--task", action="append", default=[], help="task id (repeatable)")
     ap.add_argument("--record-baseline", action="store_true")
     ap.add_argument("--record-standard", action="store_true",

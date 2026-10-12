@@ -50,11 +50,37 @@ _HEAVY = """<!doctype html><html><head><title>Heavy</title>
 <video src="/clip.mp4" preload="auto"></video></body></html>"""
 
 
+_HUB = "<!doctype html><html><head><title>Hub</title></head><body><a href='/slow.html'>Go slow</a></body></html>"
+# Streams like a large article: the head and an info box arrive at once, the
+# body text only after _SLOW_GAP_S (Wikipedia's Grace Hopper page, live
+# 2026-10-11, was captured 2 s into its download - the info box only).
+_SLOW_HEAD = "<!doctype html><html><head><title>Slow</title></head><body><table><tr><td>info-box</td></tr></table>"
+_SLOW_TAIL = "<p>slow-tail-marker: the article text</p></body></html>"
+_SLOW_GAP_S = 3.5
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
     hits: list = []  # every request path the fixture server saw
 
     def do_GET(self):  # noqa: N802 — http.server API
         _Handler.hits.append(self.path)
+        if self.path.startswith("/slow.html"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()  # no Content-Length: the body streams until close
+            self.wfile.write(_SLOW_HEAD.encode("utf-8"))
+            self.wfile.flush()
+            time.sleep(_SLOW_GAP_S)
+            self.wfile.write(_SLOW_TAIL.encode("utf-8"))
+            return
+        if self.path.startswith("/hub.html"):
+            body = _HUB.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         page = _TWO if self.path.startswith("/two.html") else _HEAVY if self.path.startswith("/heavy.html") else _INDEX
         body = page.encode("utf-8")
         self.send_response(200)
@@ -323,6 +349,21 @@ async def test_page_changing_actions_publish_a_fresh_capture(site, allow_loopbac
     after_nav = events.of("CRAWLER_PAGE_FETCHED")[-1]
     assert after_nav["capture_page"] > after_dom["capture_page"] and after_nav["url"].endswith("/two.html")
     assert "Second page" in store.load(job, after_nav["capture_page"])["html"]
+
+
+async def test_a_navigating_click_captures_the_whole_new_page(site, allow_loopback, conv, tmp_captures):
+    """B3: the iframe shows the page the click opened, not its first few bytes.
+    The capture after a navigating click must hold the text that arrives late,
+    and none of the panel's frames may carry the agent's element numbers."""
+    events = _Events()
+    opened = await browser_tools.browser_open(conv, site + "/hub.html", events)
+    assert opened["success"], opened
+    await browser_tools.browser_act(conv, "click", _mark(opened, "link", "Go slow")["id"], None, events)
+    last = events.of("CRAWLER_PAGE_FETCHED")[-1]
+    assert last["url"].endswith("/slow.html")
+    html = capture_store.get_capture_store().load(last["job_id"], last["capture_page"])["html"]
+    assert "slow-tail-marker" in html, "the panel captured the page before it finished loading"
+    assert "data-iris-mark" not in html
 
 
 # ── the holder: bounded, LRU, guarded ──────────────────────────────────────

@@ -41,6 +41,7 @@
 import React, { useEffect, useRef, useCallback, useState } from "react"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { OrbCanvas } from "@/components/iris/orb/OrbCanvas"
+import type { ImageRect } from "@/components/iris/browser/TakeoverLiveSurface"
 
 // ── engine constants (mirror OrbCanvas.tsx so the cadence is identical) ───
 const SHELLS = [
@@ -388,6 +389,21 @@ export interface BrowserNavigationOverlayProps {
     url?: string
     reason?: string
   } | null
+  /**
+   * The agent's LIVE page is on screen under this overlay. The frames are the
+   * visual, so the resting loading/dispersing orb (and its scrim and sub-goal
+   * line) must not sit over the real page - it stayed stuck mid-frame while the
+   * page was already moving (live 2026-10-12). The cursor still glides on
+   * actions.
+   */
+  live?: boolean
+  /**
+   * Where the live image really sits, in px from this overlay's origin (the
+   * frame is object-fit: contain, so it is smaller than the box). When set, the
+   * cursor maps onto it instead of the whole box - the viewport fractions are of
+   * the PAGE, and mapping them onto the bars put the cursor off the page.
+   */
+  liveRect?: ImageRect | null
 }
 
 /**
@@ -467,6 +483,8 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   visionEscalated = false,
   visionSaccadic = false,
   takeover = null,
+  live = false,
+  liveRect = null,
 }: BrowserNavigationOverlayProps) {
   const prefersReducedMotion = useReducedMotion()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -496,8 +514,11 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   // `null` = the orb is at its resting centre; a point = it has travelled and
   // become the cursor. Held in state (not a ref) because position drives CSS,
   // not the canvas draw loop.
-  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
-  const [trail, setTrail] = useState<{ x: number; y: number; k: number }[]>([])
+  // `px` = x/y are overlay-box pixels (the live image's rect); otherwise they are
+  // box fractions below the panel chrome.
+  type CursorPt = { x: number; y: number; px?: boolean }
+  const [cursor, setCursor] = useState<CursorPt | null>(null)
+  const [trail, setTrail] = useState<(CursorPt & { k: number })[]>([])
   const lastStepRef = useRef<number>(0)
 
   // REQ-9: measured box (layout px) for letterbox-aware cursor mapping.
@@ -550,7 +571,10 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
     if (typeof visionX !== "number" || typeof visionY !== "number") return
     // REQ-9 AC1: aspect-correct the point through the source viewport before
     // it becomes a box fraction. Missing dims -> naive mapping (AC2).
-    const pt = mapPoint(visionX, visionY, visionViewportW, visionViewportH, boxSize.w, boxSize.h)
+    // Live view: the fractions are of the page, which fills liveRect exactly.
+    const pt: CursorPt = liveRect
+      ? { x: liveRect.x + visionX * liveRect.w, y: liveRect.y + visionY * liveRect.h, px: true }
+      : mapPoint(visionX, visionY, visionViewportW, visionViewportH, boxSize.w, boxSize.h)
     setCursor((prev) => {
       if (prev) {
         setTrail((t) => [{ ...prev, k: 1 }, ...t].slice(0, CURSOR_TRAIL_LEN))
@@ -637,7 +661,9 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   const hexPulseRef = useRef<{ start: number; strength: number }>({ start: 0, strength: 0 })
   const hexPrevShutterRef = useRef(0)
   const visionActionRef = useRef<string>(visionAction)
-  const cursorRef = useRef<{ x: number; y: number } | null>(null)
+  const cursorRef = useRef<{ x: number; y: number; px?: boolean } | null>(null)
+  const liveRef = useRef<boolean>(live)
+  liveRef.current = live
   const reducedRef = useRef<boolean>(!!prefersReducedMotion)
   visionActionRef.current = visionAction
   cursorRef.current = cursor
@@ -1597,7 +1623,12 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
 
       // The scrim eases on its own curve so the page fades back IN as soon as
       // crawling starts, independent of the shutter's brightness envelope.
-      let scrimTarget = SCRIM[st] ?? 0
+      // Over the live page there is no "orienting" moment to dim for: the
+      // frames are already the content.
+      // Live 2026-10-12: even the crawling dim (0.14) and the hex film read as
+      // a veil over the agent's real page - in live mode neither is drawn; the
+      // border effects and the cursor still show the agent working.
+      let scrimTarget = liveRef.current ? 0 : (SCRIM[st] ?? 0)
       if (terminal) {
         const held = now - (enteredRef.current || now)
         scrimTarget *= Math.max(0, 1 - held / SETTLE_MS)
@@ -1630,7 +1661,7 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
         drawEdgeWash(color, k, elapsed)
         // Mesh first, band second: the film is BEHIND the border lattice so the
         // signed-off band keeps its exact visual weight on top of it.
-        drawHexMesh(color, k, elapsed, now)
+        if (!liveRef.current) drawHexMesh(color, k, elapsed, now)
         drawHexScan(color, k, elapsed, now)
         if (terminal) drawSettle(color, k)
         else if (noticeNow) {
@@ -1678,7 +1709,11 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   // froze between the last page and completion, which is exactly when the
   // agent was doing its most interesting work.
   const isCursor = cursor !== null
-  const showOrb = state === "loading" || state === "dispersing" || isCursor
+  const showOrb = (!live && (state === "loading" || state === "dispersing")) || isCursor
+  // Position of a cursor point / afterimage inside the overlay box.
+  const pointStyle = (p: CursorPt) => p.px
+    ? { left: `${p.x}px`, top: `${p.y}px` }
+    : { left: `${p.x * 100}%`, top: `calc(${p.y * 100}% + ${chromeInset}px)` }
 
   // Surface speed, not angular speed. Holding the period constant while the
   // orb shrinks to CURSOR_SIZE makes it read as SLOWING DOWN, because the same
@@ -1738,8 +1773,7 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
           key={`${p.x}-${p.y}-${i}`}
           className="absolute rounded-full"
           style={{
-            left: `${p.x * 100}%`,
-            top: `calc(${p.y * 100}% + ${chromeInset}px)`,
+            ...pointStyle(p),
             transform: "translate(-50%, -50%)",
             width: CURSOR_SIZE * 0.34 * p.k,
             height: CURSOR_SIZE * 0.34 * p.k,
@@ -1815,10 +1849,7 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
             // taken of — not to the panel box, which includes the tab and
             // address bars. Resting: unchanged from the original centring.
             ...(isCursor
-              ? {
-                  left: `${cursor!.x * 100}%`,
-                  top: `calc(${cursor!.y * 100}% + ${chromeInset}px)`,
-                }
+              ? pointStyle(cursor!)
               : { top: `calc(50% + ${chromeInset / 2}px)` }),
             transform: "translate(-50%, -50%)",
             width: orbSize,
@@ -1879,7 +1910,7 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
       )}
 
       {/* ONE micro line, under the orb — the only text the overlay shows. */}
-      {showOrb && subGoalLine && (
+      {showOrb && !live && subGoalLine && (
         <div
           className="absolute left-1/2 whitespace-nowrap text-[10px] font-mono tracking-wide text-white/80 max-w-[80%] truncate rounded-full px-2.5 py-1"
           style={{

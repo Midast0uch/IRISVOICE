@@ -1275,6 +1275,18 @@ class InferenceRouter:
                     _gen_kwargs["thinking"] = _thinking
             except (TypeError, ValueError):
                 pass
+        # Per-call named tool_choice (2026-10-11): the Oracle's BINDING tool
+        # pick. Same rule: only a transport that names the keyword gets it, and
+        # the name goes out SANITIZED like the tool list it refers to.
+        _forced = kwargs.pop("tool_choice", None)
+        if _forced and normalized_tools:
+            import inspect as _inspect
+
+            try:
+                if "tool_choice" in _inspect.signature(transport.generate).parameters:
+                    _gen_kwargs["tool_choice"] = self._sanitize_tool_name(str(_forced))
+            except (TypeError, ValueError):
+                pass
         # Per-call hidden-reasoning budget (the planner: "low"). Same rule:
         # only a transport that names the keyword gets it.
         _effort = kwargs.pop("reasoning_effort", None)
@@ -1296,12 +1308,33 @@ class InferenceRouter:
         _t0 = _time.monotonic()
         _ok = False
         try:
-            result = transport.generate(
-                effective_model,
-                messages,
-                normalized_tools,
-                **_gen_kwargs,
-            )
+            try:
+                result = transport.generate(
+                    effective_model,
+                    messages,
+                    normalized_tools,
+                    **_gen_kwargs,
+                )
+            except Exception as _tc_exc:
+                # A provider that refuses a NAMED tool_choice must not cost the
+                # step: retry once with "auto" (logged - a refusal is a finding,
+                # the binding pick silently became soft on this provider).
+                # Only a REFUSAL retries (a 400/422 or an error naming the
+                # field) - never a timeout or a budget stop, which would double.
+                _why = str(_tc_exc)
+                if "tool_choice" not in _gen_kwargs or not (
+                        "400" in _why or "422" in _why or "tool_choice" in _why):
+                    raise
+                logger.warning(
+                    "[InferenceRouter] named tool_choice refused role=%s model=%s (%r) "
+                    "- retrying with auto", role, effective_model, _tc_exc)
+                _gen_kwargs.pop("tool_choice", None)
+                result = transport.generate(
+                    effective_model,
+                    messages,
+                    normalized_tools,
+                    **_gen_kwargs,
+                )
             _ok = True
         finally:
             logger.info("[InferenceRouter] call done role=%s model=%s %.2fs ok=%s",

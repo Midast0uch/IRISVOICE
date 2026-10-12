@@ -194,6 +194,13 @@ def install(monkeypatch):
 
 
 class TestChokepoint:
+    # SUBJECT SWITCH (2026-10-10, stale-by-spec): these tests pin the
+    # CHOKEPOINT mechanics, not the mode consumer; the subject was
+    # `mode` until the owner removed that consumer, after which
+    # _owner_allow_list() (which filters by the declared set) could
+    # never allow-list it. `sufficient` is a surviving declared
+    # consumer; no assertion is weakened by the switch.
+
     def test_default_configuration_decides_nothing(self, chokepoint):
         """Fails on the old code: IRIS_DECISION_ENFORCE defaulted to
         "tool_choice", so enforced_consumers() was {"tool_choice"} out of the
@@ -204,64 +211,64 @@ class TestChokepoint:
             assert de.oracle_acts(c, 1.0) is False, c
 
     def test_allow_listed_but_not_earned_does_not_decide(self, chokepoint):
-        chokepoint.enable(["mode"], earned=[])
-        assert de.decides("mode") is None
+        chokepoint.enable(["sufficient"], earned=[])
+        assert de.decides("sufficient") is None
         assert de.enforced_consumers() == frozenset()
 
     def test_earned_but_not_allow_listed_does_not_decide(self, chokepoint):
         """Fails on the old code: a bar record alone enforced (union)."""
-        chokepoint.enable(["mode"], allow=[])
-        assert de.decides("mode") is None
+        chokepoint.enable(["sufficient"], allow=[])
+        assert de.decides("sufficient") is None
         assert de.enforced_consumers() == frozenset()
 
     def test_allow_listed_earned_without_a_fitted_threshold_does_not_decide(self, chokepoint):
-        chokepoint.enable(["mode"], fitted=[])
-        assert de.decides("mode") is None
+        chokepoint.enable(["sufficient"], fitted=[])
+        assert de.decides("sufficient") is None
 
     def test_a_bar_earned_on_a_retired_engine_does_not_decide(self, chokepoint):
-        chokepoint.enable(["mode"], record_engine="LFM2-350M-Extract")
-        assert de.decides("mode") is None
+        chokepoint.enable(["sufficient"], record_engine="LFM2-350M-Extract")
+        assert de.decides("sufficient") is None
 
     def test_all_four_keys_decide_with_the_calibrated_threshold(self, chokepoint):
-        chokepoint.enable(["mode"], threshold=0.73)
-        assert de.decides("mode") == pytest.approx(0.73)
-        assert de.enforced_consumers() == frozenset({"mode"})
+        chokepoint.enable(["sufficient"], threshold=0.73)
+        assert de.decides("sufficient") == pytest.approx(0.73)
+        assert de.enforced_consumers() == frozenset({"sufficient"})
 
     def test_a_stale_configuration_decides_nothing(self, chokepoint):
-        chokepoint.enable(["mode", "done"])
+        chokepoint.enable(["sufficient", "done"])
         chokepoint.stale = True
-        assert de.decides("mode") is None
+        assert de.decides("sufficient") is None
         assert de.enforced_consumers() == frozenset()
 
     def test_enforced_consumers_is_the_intersection(self, chokepoint):
         chokepoint.enable(
-            ["mode", "done", "web_intent", "depth_met"],
-            allow=["mode", "done", "web_intent"],
-            earned=["mode", "web_intent", "depth_met"],
-            fitted=["mode", "web_intent", "done"],
+            ["sufficient", "done", "web_intent", "depth_met"],
+            allow=["sufficient", "done", "web_intent"],
+            earned=["sufficient", "web_intent", "depth_met"],
+            fitted=["sufficient", "web_intent", "done"],
         )
-        assert de.enforced_consumers() == frozenset({"mode", "web_intent"})
+        assert de.enforced_consumers() == frozenset({"sufficient", "web_intent"})
 
     def test_oracle_acts_uses_the_calibrated_confidence(self, chokepoint):
-        chokepoint.enable(["mode"], threshold=0.80)
-        assert de.oracle_acts("mode", 0.85) is True
-        assert de.oracle_acts("mode", 0.79) is False
+        chokepoint.enable(["sufficient"], threshold=0.80)
+        assert de.oracle_acts("sufficient", 0.85) is True
+        assert de.oracle_acts("sufficient", 0.79) is False
         assert de.oracle_acts("done", 0.99) is False  # not switched on
 
     def test_the_decision_is_logged_once_with_the_reason(self, chokepoint, caplog):
-        chokepoint.enable(["mode", "done"], earned=["mode"])
+        chokepoint.enable(["sufficient", "done"], earned=["sufficient"])
         with caplog.at_level(logging.INFO, logger="decision_engine"):
             for _ in range(4):
-                de.decides("mode")
+                de.decides("sufficient")
                 de.decides("done")
         lines = [r.getMessage() for r in caplog.records
                  if "enforcement:" in r.getMessage()]
         assert len(lines) == 1, lines
-        assert "mode@" in lines[0] and "done (not earned" in lines[0], lines[0]
+        assert "sufficient@" in lines[0] and "done (not earned" in lines[0], lines[0]
 
     def test_a_silent_default_is_logged_too(self, chokepoint, caplog):
         with caplog.at_level(logging.INFO, logger="decision_engine"):
-            de.decides("mode")
+            de.decides("sufficient")
         assert any("IRIS_DECISION_ENFORCE is empty" in r.getMessage()
                    for r in caplog.records)
 
@@ -331,14 +338,6 @@ def _drive_recovery_strategy(eng):
     return box.recovery_strategy(failed_tool="search", objective="OBJ-9")["strategy"]
 
 
-def _drive_mode(eng):
-    from backend.agent.mode_detector import ModeDetector
-
-    d = ModeDetector()
-    d.set_mode_engine(eng)
-    return d.detect("fix the broken collector").confidence
-
-
 def _drive_tool_choice(eng):
     brain = lambda prompt, **kw: SimpleNamespace(  # noqa: E731
         raw_text='{"kind": "reasoning", "tool": null, "params": {}, "rationale": "x"}')
@@ -346,12 +345,6 @@ def _drive_tool_choice(eng):
         "look into the cache layer", "", [{"name": "search", "parameters": {}}],
         brain, engine=eng)
     return out["kind"]
-
-
-def _mode_rule_confidence():
-    from backend.agent.mode_detector import ModeDetector
-
-    return ModeDetector()._infer_mode("fix the broken collector")[1]
 
 
 # consumer, driver, engine kwargs, value when the incumbent decides, value when
@@ -365,7 +358,8 @@ SITES = {
     "sufficient": ("sufficient", _drive_sufficient, {}, False, True, True),
     "recovery_strategy": ("recovery_strategy", _drive_recovery_strategy,
                           {"chosen": "decompose"}, "delegate", "decompose", True),
-    "mode": ("mode", _drive_mode, {"chosen": "debug"}, "RULE", 0.75, True),
+    # `mode` REMOVED from SITES (2026-10-10, owner): the consumer itself was
+    # removed — its incumbent is the free keyword rule. STALE-BY-SPEC.
     # tool_choice: nothing is scored at all while it does not decide.
     "tool_choice": ("tool_choice", _drive_tool_choice, {"chosen": "search"},
                     "reasoning", "tool", False),
@@ -374,8 +368,6 @@ SITES = {
 
 def _expected(site, which):
     _c, _d, _k, rule, oracle, _s = SITES[site]
-    if site == "mode":  # the observable is the confidence, not a verdict
-        return pytest.approx(0.75 if which == "oracle" else _mode_rule_confidence())
     return oracle if which == "oracle" else rule
 
 
@@ -677,20 +669,8 @@ def test_gate_acts_only_on_the_registered_question(
 
 # --------------------------------------------------------------------------
 # 4. mode keeps the keyword confidence unless it decides
+#    REMOVED 2026-10-10 (owner): the `mode` Oracle consumer itself was removed
+#    (its incumbent is the free keyword rule, so enforcing it could never pay).
+#    The keyword classifier keeps its own confidence, full stop — there is no
+#    engine probability to refuse any more. STALE-BY-SPEC.
 # --------------------------------------------------------------------------
-
-
-def test_mode_keeps_the_keyword_confidence_when_not_deciding(install):
-    """Fails on the old code: the engine probability overwrote the keyword
-    confidence although mode is not enforced (it feeds needs_clarification)."""
-    from backend.agent.mode_detector import ModeDetector
-
-    eng = install(_Eng(p=0.75, chosen="debug"))
-    d = ModeDetector()
-    d.set_mode_engine(eng)
-    got = d.detect("fix the broken collector")
-    assert got.confidence == pytest.approx(_mode_rule_confidence())
-    assert got.confidence != pytest.approx(0.75)
-    _flush()
-    assert d.last_mode_shadow is not None, "the row must still be exposed"
-    assert d.last_mode_shadow["consumer_id"] == "mode"

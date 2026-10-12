@@ -14,7 +14,7 @@ Gate 1 Step 1.2
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional, Tuple
+from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -102,146 +102,12 @@ class ModeDetector:
         "end-to-end", "entire", "whole",
     ]
 
-    MODE_CONSUMER = "mode"
-    MODE_LABELS = ("spec", "research", "implement", "debug", "test", "review")
-    MODE_INSTRUCTION = "Which operating mode should this task run in?"
-
     def __init__(self) -> None:
-        # REQ-15 (T19): the `mode` engine consumer, SHADOW. `None` means no
-        # engine is wired — `detect()` then behaves exactly as it did before
-        # (hand-set keyword confidence), so no call site changes.
-        self._mode_engine = None
-        self._row_sink = None
-        self.last_mode_shadow: Optional[dict] = None
-
-    def set_mode_engine(self, engine) -> None:
-        """Wire the shadow-scoring engine. None disables it explicitly — the
-        module singleton is never adopted implicitly (a shadow must not be
-        able to load a 651MB model as a side effect of detecting a mode)."""
-        self._mode_engine = engine
-
-    def set_row_sink(self, sink) -> None:
-        """Wire the ledger row sink (2026-10-10; see _shadow_mode_async). The
-        kernel installs its single-writer sink; None keeps the old
-        expose-and-forward behaviour for tests and standalone use."""
-        self._row_sink = sink
-
-    def _engine_mode_shadow(
-        self, task_lower: str, keyword_mode: "AgentMode"
-    ) -> Optional[dict]:
-        """Score the mode with the engine; return the shadow row (AC15.1/AC15.2).
-
-        SHADOW ONLY: the returned dict carries the engine's own pick AND the
-        keyword's pick, so parity is measurable — the loop still runs the
-        keyword mode. The CONFIDENCE reported on the inference branch becomes
-        the engine's measured probability for the keyword-chosen mode: pairing
-        a mode with a foreign confidence would be incoherent.
-
-        Returns None (no row, no confidence change) when no engine is wired,
-        the engine cannot answer, or the engine's option set does not include
-        the keyword mode. Never raises.
-        """
-        try:
-            if self._mode_engine is None:
-                return None
-            from backend.agent.decision_engine import (
-                get_consumer_spec,
-                needs_upgrade,
-                register_declared,
-            )
-            # REQ-4: the DECLARED type + criteria come from the declaration
-            # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
-            if needs_upgrade(get_consumer_spec(self.MODE_CONSUMER)):
-                register_declared(
-                    self.MODE_CONSUMER, self.MODE_INSTRUCTION, self.MODE_LABELS,
-                )
-
-            ds = self._mode_engine.decide(
-                self.MODE_CONSUMER, list(self.MODE_LABELS),
-                {"goal": task_lower[:400]},
-            )
-            if ds is None:
-                return None
-            dist = {c.name: float(c.prob) for c in (ds.distribution or ())}
-            if keyword_mode.value not in dist:
-                return None  # never pair a mode with a foreign confidence
-            return {
-                "consumer_id": self.MODE_CONSUMER,
-                # The canonical parity pair the report reads: the engine's pick,
-                # and the Brain's ACTUAL pick. `chosen`/`brain_choice` are the
-                # field names the single writer and the enforcement report both
-                # expect (2026-09-27). This row previously carried the same two
-                # facts under `engine_mode`/`keyword_mode`, which the ledger's
-                # meta whitelist does not pass, so the row landed with no parity
-                # reference and could never be scored.
-                "chosen": ds.chosen,
-                "brain_choice": keyword_mode.value,
-                # REQ-7 AC7.3 (Wave 3, phonon2-d1-model-swap): mode's OUTSIDE
-                # label is the OBSERVED mode (which tools actually ran) —
-                # knowable at TURN END, not here. external_reference's
-                # DIRECT/REACT is a DIFFERENT vocabulary (node execution mode),
-                # and writing it here would be a false label. The mechanism
-                # (decision_label reads outside_label first; the whitelist
-                # passes it) is live; the label itself arrives with the
-                # turn-end annotator — see VERIFY.md Wave 3, the join-key
-                # finding (the ledger holds no turn key today).
-                # ECE pairs a row's confidence with THAT ROW'S `chosen`, and this
-                # row's `chosen` is the ENGINE's pick. Reporting the probability
-                # of the KEYWORD mode here was incoherent: the engine is often
-                # right while giving its own pick only a modest probability, so
-                # every correct row read as under-confident and the calibration
-                # error came out at 0.268 against a 0.05 bar (measured
-                # 2026-09-27, 102 rows).
-                "confidence": round(dist.get(ds.chosen, dist[keyword_mode.value]), 4),
-                # The LIVE branch's number is unchanged: it reports the engine's
-                # probability for the mode that actually runs, as its docstring
-                # requires. Two callers, two coherent meanings.
-                "keyword_confidence": round(dist[keyword_mode.value], 4),
-                "engine_latency_ms": ds.engine_latency_ms,
-                "shadow": True,
-            }
-        except Exception as e:  # noqa: BLE001 — a shadow never breaks routing
-            logger.debug("[mode_detector] shadow failed: %r", e)
-            return None
-
-    def _shadow_mode_async(self, task_lower: str, keyword_mode: "AgentMode") -> None:
-        """Score the mode on the ``oracle_shadow`` lane and write the row from
-        there. The reply never waits: measured 446 ms per turn when this ran
-        inline. Never raises.
-
-        ROW PATH FIX (2026-10-10): the lane job used to only EXPOSE the row on
-        ``last_mode_shadow`` for a later kernel forward — but the kernel's
-        ``_forward_consumer_rows`` runs immediately after ``detect()``, BEFORE
-        the lane job, so in a one-turn conversation (every eval task) the row
-        was never written. Measured: 1,109 gliner rows end 2026-10-06 (the
-        day the consult moved to the lane), zero since. The lane job now hands
-        the row to the installed sink directly — the same single-writer path
-        review_verdict uses. ``last_mode_shadow`` is still set when NO sink is
-        installed (tests, standalone use), preserving the old exposure.
-        """
-        if self._mode_engine is None:
-            return
-
-        def _job() -> None:
-            row = self._engine_mode_shadow(task_lower, keyword_mode)
-            if row is None:
-                return
-            sink = self._row_sink
-            if callable(sink):
-                try:
-                    sink(row)
-                    return
-                except Exception as e:  # noqa: BLE001 — a shadow never blocks
-                    logger.debug("[mode_detector] row sink failed: %r", e)
-            self.last_mode_shadow = row
-
-        try:
-            from backend.utils.durability_queue import lane
-
-            if not lane("oracle_shadow").submit("shadow:mode", _job):
-                logger.warning("[mode_detector] mode shadow dropped (lane full)")
-        except Exception as e:  # noqa: BLE001 — a shadow never breaks routing
-            logger.warning("[mode_detector] mode shadow submit failed: %r", e)
+        # The `mode` Oracle consumer was REMOVED 2026-10-10 (owner): its
+        # incumbent is this free keyword rule, so enforcing it could never pay,
+        # and its reference was the keyword list itself. The classifier below
+        # is UNTOUCHED and remains the sole decider.
+        pass
 
     def detect(
         self,
@@ -278,35 +144,8 @@ class ModeDetector:
             # 2. Keyword inference
             mode, confidence = self._infer_mode(task_lower)
 
-            # REQ-15 AC15.2 (T19): on the INFERENCE branch the reported
-            # confidence may be the ENGINE's measured probability for the chosen
-            # mode, not the hand-set keyword float — a claim replaced by a
-            # measurement. The MODE stays keyword-decided (AC15.1 shadow: the
-            # engine's own pick is recorded, never applied, until AC15.4's
-            # measured bar is met). No engine → today's float, unchanged.
-            #
-            # Stage B (2026-10-05): the replacement happens ONLY through the
-            # enforcement chokepoint. It used to happen always, though `mode` is
-            # not enforced, so an unearned probability fed `needs_clarification`
-            # (confidence < 0.5 on a long task). Not deciding -> the keyword
-            # confidence stands and the score runs on the lane.
-            from backend.agent.decision_engine import decides, oracle_acts
-
-            if decides(self.MODE_CONSUMER) is None:
-                self._shadow_mode_async(task_lower, mode)
-            else:
-                _shadow = self._engine_mode_shadow(task_lower, mode)
-                if _shadow is not None:
-                    self.last_mode_shadow = _shadow
-                    # The row's `confidence` is the engine's probability for the
-                    # engine's PICK (what ECE is computed against); acting
-                    # needs the chosen answer's confidence on that scale.
-                    if oracle_acts(self.MODE_CONSUMER, _shadow["confidence"]):
-                        # The live confidence is the engine's probability for the
-                        # mode that RUNS (the keyword mode).
-                        confidence = _shadow.get(
-                            "keyword_confidence", _shadow["confidence"]
-                        )
+            # The `mode` Oracle consumer was REMOVED 2026-10-10 (owner): the
+            # keyword confidence stands, full stop. See the class docstring.
 
             # 3. Complexity detection
             complexity = self._detect_complexity(task_lower)

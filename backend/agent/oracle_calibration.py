@@ -130,7 +130,9 @@ def binary_consumers() -> frozenset:
 
         for mod, fn in (("monitor_shadow", "register_monitor_consumers"),
                         ("surface_shadow", "register_surface_consumers"),
-                        ("explorer", "register_web_intent_consumer")):
+                        ("explorer", "register_web_intent_consumer"),
+                        ("tool_approval_shadow",
+                         "register_tool_approval_consumer")):
             try:
                 m = __import__(f"backend.agent.{mod}", fromlist=[fn])
                 getattr(m, fn)()

@@ -242,6 +242,65 @@ def declare_default_node_metadata() -> int:
     return _declared
 
 
+# ── The Oracle's decision line per tool (2026-10-11) ────────────────────────
+# What the decision model reads beside each tool's option code ("A Read a
+# file's current text ..."). The tool `description` is written for the LLM
+# that fills the ARGUMENTS (long, about parameters); the decision model was
+# trained on short "when to choose" lines (the Decision Index criteria shape:
+# "billing: Charges, refunds, invoices"). Each line names WHEN the tool is the
+# right next action, including its precondition - the measured main error
+# (edit_file chosen where the model first reads the file, because an edit needs
+# the exact current text) is a precondition the old option text never stated.
+# A tool on the node menu without a line here fails
+# test_oracle_tool_hints_contract: a new tool must declare how it is chosen.
+ORACLE_HINTS: Dict[str, str] = {
+    # read / edit / write speak the words of the step facts line (node_executor.
+    # step_facts: "exists", "read in this step", "does not exist yet"), so the
+    # option the facts point to says so in the same words.
+    "read_file": "Read a file that exists but is not read in this step (named, or seen in the last result)",
+    "edit_file": "Change part of a file that was already read in this step",
+    "write_file": "Create a file that does not exist yet, or replace a whole file with new content",
+    "grep_files": "Search inside files for a word, name or pattern when the file is not known",
+    "glob_files": "Find files by name pattern (for example *.py or test_*.py)",
+    "list_directory": "List what is in a folder - when the files present are not known yet",
+    "create_directory": "Create a new folder",
+    "run_command": "Run a shell command: run the tests, run a program, or check something",
+    "git_status": "Show which files changed in the git repository",
+    "git_diff": "Show the exact changes made to files in the git repository",
+    "read_command_output": "Read more output from a command that is still running",
+    "stop_command": "Stop a command that is still running",
+    # Search READS the web to answer; the live browser ACTS on a site (click,
+    # type, log in, use its own search). The two lines say which is which so
+    # one request does not bounce between the paths.
+    "browser_open": "Open a web address in the live browser to act on a site (click, type, log in) - the first browser step",
+    "browser_observe": "List the clickable and typeable elements of the page open in the live browser",
+    "browser_act": "Click, type into or select an element on the page open in the live browser",
+    "browser_explore": "Read several pages linked from the open page that match the goal",
+    "search": "Search the web for pages about a question - to read and answer, not to act on a site",
+    "crawler_query": "Fetch and read the text of web pages for a question or a known address",
+    "open_url": "Show a web address to the user in the browser panel, without clicking or typing on it",
+    "screenshot_page": "Show the user a picture of a web page - the page open in the live browser, or an address",
+    "launch_app": "Start a desktop application for the user",
+    "open_file": "Open a file in the user's default desktop application",
+    "get_system_info": "Report facts about this computer (system, CPU, memory, disks)",
+    "recall_memory": "Look up what was said or learned in earlier conversations",
+    "create_artifact": "Hand the user a finished report, file or page with a title",
+    # The menu's two control labels (tool_decision._DE_DELEGATE / _DE_NONE).
+    "DELEGATE": "Not sure - let the model choose the tool",
+    "NONE": "No tool - the step is already done",
+}
+
+
+def oracle_hint(name: str, description: str = "") -> str:
+    """The decision line for ``name``; the first sentence of ``description``
+    (bounded) when the tool declares none - never empty for a named tool."""
+    hint = ORACLE_HINTS.get(name)
+    if hint:
+        return hint
+    first = (description or "").split(". ")[0].strip()
+    return first[:120] or name.replace("_", " ")
+
+
 def resolve_tool(name: str) -> Optional[ToolSpec]:
     """Normalize a tool name (alias-aware) to its canonical ToolSpec.
 
@@ -576,7 +635,9 @@ def register_builtin_tools() -> None:
             description=(
                 "Take a picture of a WEB PAGE and show it in the chat. Use when "
                 "the user wants to SEE a page ('show me that page', 'what does "
-                "it look like', 'screenshot that site'). Needs the page's URL. "
+                "it look like', 'screenshot that site'). With no URL it "
+                "photographs the page open in the live browser, exactly as the "
+                "agent left it (signed in, clicked through, scrolled). "
                 "This is for SHOWING a page, not for reading one — to get a "
                 "page's TEXT or to answer a question from it, use 'web_search' "
                 "or the crawler instead, which are far cheaper. For the user's "
@@ -585,7 +646,9 @@ def register_builtin_tools() -> None:
             parameters={
                 "url": {
                     "type": "string",
-                    "description": "Full http(s) URL of the page to photograph",
+                    "description": "Full http(s) URL of the page to photograph; "
+                                   "leave out for the page open in the live browser",
+                    "optional": True,
                 },
             },
             category="vision", executor="internal",

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "
 import { applyTurnMessage, endsForLostTurns, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
 import { legacyMessageForPart, legacyReplyForEnd } from "@/lib/turns/legacyBridge"
 import { applyDiffUndoResult } from "@/lib/diffs/undoStore"
+import { recordFrame as recordLiveFrame, setControl as setLiveControl, clearRun as clearLiveRun, clearAllRuns as clearAllLiveRuns, type LiveFrame } from "@/lib/liveBrowser"
 import type { TurnMessage } from "@/lib/turns/protocol"
 import type { DiffUndoResult } from "@/lib/diffs/api"
 // Side-effect import: the agent command store installs its window listeners
@@ -646,6 +647,16 @@ export function useIRISWebSocket(
             console.log("[IRIS WebSocket] Connected")
           }
           _emitSharedConn("connected")
+          // A (re)connect may be a NEW backend process: per-process state the
+          // page holds (the browser-surface cookie) must be re-minted.
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('iris:ws_connected'))
+          }
+          // Live browser views start over: a dead session's last frame (and
+          // its Take control button) must not stay on screen after a backend
+          // restart. request_state below makes the backend resend the latest
+          // frame of every session that is still live.
+          clearAllLiveRuns()
           reconnectAttemptsRef.current = 0     // reset backoff counter on success
           connectedAtRef.current = Date.now()  // Fix 2 — record connection time
           _sharedLastFrameAt = Date.now()  // liveness watchdog starts fresh
@@ -1698,6 +1709,9 @@ export function useIRISWebSocket(
       // idle/thinking and surface the summary + citations. Dispatched so the
       // useCrawl hook (and SSE fallback) can finalize crawl state.
       case "crawler_complete": {
+        // A closed browser session also ends here (close_entry): its live
+        // stream is gone.
+        clearLiveRun(String((message as Record<string, unknown>).job_id ?? payload.job_id ?? ''))
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:crawler_complete', {
             detail: message as unknown as CrawlerCompleteMsg
@@ -1754,11 +1768,31 @@ export function useIRISWebSocket(
 
       case "takeover_frame": {
         // REQ-16 (T16/T17): a live CDP screencast frame. It rides its OWN event
-        // (never the CRAWLER_VISION_ACTION shape) and is consumed by the
-        // takeover live surface, which renders it and acks it.
+        // (never the CRAWLER_VISION_ACTION shape). The store keeps the newest
+        // frame so a panel opened later shows the page at once, and the frame
+        // is acked HERE, on receipt: when only the panel acked, a closed panel
+        // never acked the first frame and the backend held every later one.
+        // Still one frame in flight (the backend frees the slot on this ack).
+        recordLiveFrame(message as LiveFrame)
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:takeover_frame', {
             detail: message
+          }))
+          const m = message as LiveFrame
+          window.dispatchEvent(new CustomEvent('iris:takeover_frame_ack', {
+            detail: { run_id: m.run_id, question_id: m.question_id, frame_seq: m.frame_seq }
+          }))
+        }
+        break
+      }
+
+      case "browser_control_state": {
+        // The backend's answer to "Take control" / "Hand back": who holds the
+        // agent's live page now.
+        setLiveControl(String(payload.run_id ?? ''), !!payload.control)
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:browser_control_state', {
+            detail: payload
           }))
         }
         break
@@ -2275,11 +2309,20 @@ export function useIRISWebSocket(
       if (!d) return
       sendMessage('takeover_frame_ack', d)
     }
+    // The live surface's box size (CSS px): the backend gives the agent's
+    // browser viewport the panel's aspect so frames fill the surface.
+    const onViewport = (e: Event) => {
+      const d = (e as CustomEvent<Record<string, unknown>>).detail
+      if (!d) return
+      sendMessage('browser_viewport', d)
+    }
     window.addEventListener('iris:takeover_input', onInput)
     window.addEventListener('iris:takeover_frame_ack', onAck)
+    window.addEventListener('iris:browser_viewport', onViewport)
     return () => {
       window.removeEventListener('iris:takeover_input', onInput)
       window.removeEventListener('iris:takeover_frame_ack', onAck)
+      window.removeEventListener('iris:browser_viewport', onViewport)
     }
   }, [sendMessage])
 

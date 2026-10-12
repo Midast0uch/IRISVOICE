@@ -119,6 +119,10 @@ _RE_EMOJI = re.compile(
     "]+",
     flags=re.UNICODE,
 )
+# How long a user's "Take control" of the agent's live browser lasts before the
+# grant expires and the agent may act again (a forgotten hand-back must not
+# stall the agent forever).
+_USER_CONTROL_MS = 600_000
 _RE_MD_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _RE_MD_BULLET = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
 _RE_MD_BOLD = re.compile(r"\*\*(.*?)\*\*")
@@ -341,17 +345,16 @@ class IRISGateway:
                     if _loop is None or not _loop.is_running():
                         return
                     _msg = {"type": "takeover_frame", **envelope}
-                    # The run happens inside ONE live conversation session. The
-                    # manager is created deep inside BrowserSession, which does
-                    # not know the WS session id, so we broadcast to the live
-                    # conversation sessions (this is a single-user desktop; the
-                    # takeover frame stream is bounded and only flows while a
-                    # grant is open).
-                    for _sid in list(self._conversation_sessions):
-                        asyncio.run_coroutine_threadsafe(
-                            self._ws_manager.broadcast_to_session(_sid, _msg),
-                            _loop,
-                        )
+                    # The manager is created deep inside BrowserSession, which
+                    # does not know the WS session id, so the frame goes to every
+                    # connected panel (a single-user desktop; the stream is
+                    # ack-paced, one frame in flight). It used to go to
+                    # `_conversation_sessions` - but that set holds the sessions
+                    # in VOICE conversation mode, so a typed chat never got a
+                    # single frame (live 2026-10-12: 0 frames in a browser run).
+                    asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.broadcast(_msg), _loop,
+                    )
                 except Exception:  # noqa: BLE001 — a frame must never break a run
                     pass
 
@@ -769,6 +772,15 @@ class IRISGateway:
                 # forever (pin_587a3e612558 item #1).
                 "question_response",
                 "notification_response",
+                # The live browser view (2026-10-12): these three handlers also
+                # LIVE in _handle_chat but were never routed - every takeover
+                # input and frame ack died as "Unknown message type", so the
+                # panel got ONE frame (no ack frees the in-flight slot) and no
+                # click ever reached the page. Same fault class as above.
+                "takeover_input",
+                "takeover_frame_ack",
+                "browser_control",
+                "browser_viewport",
             ]:
                 await self._handle_chat(session_id, client_id, message)
 
@@ -959,6 +971,16 @@ class IRISGateway:
 
             elif msg_type == "request_state":
                 await self._handle_request_state(session_id, client_id)
+                # A (re)connected panel: the live browser views start over. The
+                # ack of a frame in flight when the socket dropped is lost, so
+                # the stream would stall for good; the latest frame of each live
+                # session is sent again so the panel shows the page at once.
+                try:
+                    from backend.vision import cdp_takeover as _cdp
+
+                    _cdp.resend_latest_frames()
+                except Exception as _rs_err:  # noqa: BLE001 - a view, never the state
+                    self._logger.debug(f"[takeover] frame resend skipped: {_rs_err}")
 
             elif msg_type == "enable_vision":
                 await self._handle_enable_vision(session_id, client_id)
@@ -6677,11 +6699,53 @@ class IRISGateway:
                     button=payload.get("button"),
                     key=payload.get("key"),
                     text=payload.get("text"),
+                    dx=payload.get("dx"),
+                    dy=payload.get("dy"),
                 )
                 # NOTE: the value in `event.text` is forwarded, never logged.
                 await _cdp.deliver_input(_run_id, event)
             except Exception as _in_err:
                 self._logger.warning(f"[takeover] input failed: {_in_err}")
+
+        elif msg_type == "browser_viewport":
+            # The panel's live-view box changed size: the agent's page takes
+            # the panel's shape so the stream fills it (not a strip in bars).
+            try:
+                from backend.agent.tools import browser_tools as _bt
+
+                await _bt.fit_live_viewport(
+                    str(payload.get("run_id", "") or ""),
+                    payload.get("width"), payload.get("height"),
+                )
+            except Exception as _vp_err:
+                self._logger.warning(f"[takeover] browser_viewport failed: {_vp_err}")
+
+        elif msg_type == "browser_control":
+            # The user takes the agent's live page ("take") or hands it back
+            # ("release"). Taking opens the input grant (one writer: the
+            # agent's browser actions wait while it is open).
+            try:
+                from backend.vision import cdp_takeover as _cdp
+
+                _run_id = str(payload.get("run_id", "") or "")
+                _take = str(payload.get("action", "")) == "take"
+                _mgr = _cdp.get_active(_run_id)
+                if _mgr is not None:
+                    if _take:
+                        _mgr.open_grant(question_id="user", wall_kind="user_control",
+                                        max_ms=_USER_CONTROL_MS)
+                    else:
+                        _mgr.close_grant("handed_back")
+                self._logger.info(
+                    f"[takeover] browser_control run_id={_run_id} action="
+                    f"{'take' if _take else 'release'} found={_mgr is not None}")
+                await self._ws_manager.send_to_client(client_id, {
+                    "type": "browser_control_state",
+                    "payload": {"run_id": _run_id,
+                                "control": bool(_mgr is not None and _mgr.is_open())},
+                })
+            except Exception as _bc_err:
+                self._logger.warning(f"[takeover] browser_control failed: {_bc_err}")
 
         elif msg_type == "takeover_frame_ack":
             # REQ-13 AC2: the panel acknowledges a frame so Chromium keeps
@@ -9155,37 +9219,6 @@ class IRISGateway:
                 },
             )
 
-    async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
-        """
-        Handle get_vision_status message — resolves the vision hierarchy
-        (T16); pings the LFM2.5-VL server only when tier 1/2 cannot see.
-        """
-        try:
-            available = await self._resolve_vision_availability(session_id)
-            await self._ws_manager.send_to_client(
-                client_id,
-                {
-                    "type": "vision_status",
-                    "payload": {
-                        "status": "enabled" if available else "error",
-                        "vram_usage_mb": None,
-                        "load_progress_percent": None,
-                        "error_message": None
-                        if available
-                        else "No shared multimodal vision server available (specs/vision-single-server)",
-                        "model_name": "lfm2.5-vl-3b",
-                        "quantization_enabled": False,
-                        "is_available": available,
-                    },
-                },
-            )
-        except Exception as e:
-            self._logger.error(
-                f"[Session: {session_id}] Error getting vision status: {e}",
-                exc_info=True,
-            )
-            await self._send_error(client_id, f"Error getting vision status: {str(e)}")
-
     async def _handle_message_exported(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -11435,12 +11468,22 @@ class IRISGateway:
         nothing listening. Best-effort, never raises."""
         state = "cold"
         try:
-            from backend.tools.vision_provider import get_vision_provider
+            from backend.tools.vision_provider import (
+                get_vision_provider,
+                set_vision_lifecycle_callback,
+            )
 
+            # The chip's live transitions need a listener and a loop to hop to.
+            # Both were set only by the vision TOGGLE handler, so a user who
+            # never flipped it got the seed and nothing after (the callback had
+            # no other production caller). The panel asks for this seed on
+            # mount, so it is where the listener is bound. Idempotent.
+            self._ensure_vision_loop()
+            set_vision_lifecycle_callback(self._on_vision_lifecycle)
             if get_vision_provider().health_check():
                 state = "warm"
         except Exception:
-            pass
+            self._logger.debug("[Vision] lifecycle seed failed", exc_info=True)
         try:
             await self._ws_manager.send_to_client(
                 client_id,

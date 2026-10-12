@@ -98,6 +98,18 @@ _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     # comparable afterwards, or a batch's cheaper rows would silently mix with
     # the solo-measured ones.
     "grouping",
+    # THE REPLAY KEYS (2026-10-11): what the model READ (`state`, the rendered
+    # job text, bounded), what the incumbent actually did (`brain_params`, the
+    # identifying arguments only) and whether it worked (`brain_ok`). Without
+    # them no frame or menu change could be tested offline - every idea needed
+    # a full eval group, and no row could ever become fine-tuning data.
+    "state", "brain_params", "brain_ok", "action", "n_options",
+    # the offered menu's fingerprint (names + option text): rows measured on a
+    # different tool set are told apart, so an added or re-described tool
+    # never inherits another menu's evidence.
+    "menu_fp",
+    # an Oracle-decided pick: forced at the API (True) or a soft narrowing
+    "binding",
 )
 
 # T4.4 (specs/phonon2-d1-model-swap REQ-12 AC12.1, B6): write-time shadow-row
@@ -976,14 +988,18 @@ class AgentToolBridge:
                     "description": (
                         "Take a picture of a WEB PAGE and show it in the chat. Use when "
                         "the user wants to SEE a page ('show me that page', 'what does "
-                        "it look like', 'screenshot that site'). Needs the page's URL. "
+                        "it look like', 'screenshot that site'). With no URL it "
+                        "photographs the page open in the live browser, exactly as the "
+                        "agent left it (signed in, clicked through, scrolled). "
                         "This is for SHOWING a page, not for reading one — to get a "
                         "page's TEXT or to answer a question from it, use 'search' "
                         "or the crawler instead, which are far cheaper. For the user's "
                         "own DESKTOP rather than a web page, use 'take_screenshot'."
                     ),
                     "parameters": {
-                        "url": {"type": "string", "description": "Full http(s) URL of the page to photograph"}
+                        "url": {"type": "string", "optional": True,
+                                "description": "Full http(s) URL of the page to photograph; "
+                                               "leave out for the page open in the live browser"}
                     },
                     "category": "vision",
                 },
@@ -1493,14 +1509,20 @@ class AgentToolBridge:
         rather than in a "default" one they cannot see.
         """
         params = params or {}
+        # No url = the page open in the live browser (capture_page_screenshot
+        # reports when there is none).
         url = (params.get("url") or "").strip()
-        if not url:
-            return {"success": False, "error": "A url is required"}
 
         conversation_id = (
             params.get("conversation_id")
             or self._active_conversation_id.get(session_id)
             or "default"
+        )
+        # The live browser is keyed the way _execute_browser_tool keys it.
+        browser_key = (
+            params.get("conversation_id")
+            or self._active_conversation_id.get(session_id)
+            or session_id
         )
         try:
             from backend.agent.agent_kernel import get_agent_kernel
@@ -1515,6 +1537,7 @@ class AgentToolBridge:
                 kernel=kernel,
                 conversation_id=conversation_id,
                 turn_id=get_turn_id(),
+                browser_key=browser_key,
             )
         except Exception as exc:  # noqa: BLE001 — a picture never fails a turn
             logger.warning("[ToolBridge] screenshot_page failed: %s", exc)
@@ -4442,9 +4465,12 @@ class AgentToolBridge:
 
             _ws = get_websocket_manager()
             if _ws is not None and _ws.get_clients_for_session(session_id):
+                # tab_type "web": the panel renders a web tab through the
+                # proxy. "browser" is not a tab type it knows - it drew a blank
+                # tab that also hid the live browser view.
                 await _ws.broadcast_to_session(session_id, {
                     "type": "open_tab",
-                    "tab_type": "browser",
+                    "tab_type": "web",
                     "id": uuid.uuid4().hex,
                     "title": url,
                     "url": url,

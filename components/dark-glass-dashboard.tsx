@@ -40,6 +40,8 @@ const DeveloperWorkspace = lazy(() => import('@/components/workspace/DeveloperWo
 import { MonitorPage } from '@/components/dashboard/MonitorPage';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
 import { VisionLifecycleChip } from '@/components/iris/browser/VisionLifecycleChip';
+import { TakeoverLiveSurface, type ImageRect } from '@/components/iris/browser/TakeoverLiveSurface';
+import { useLiveBrowser } from '@/lib/liveBrowser';
 import { useBrowserNavOverlay, type NavOverlaySeed } from '@/hooks/useBrowserNavOverlay';
 import { useViewProtocol } from '@/hooks/useViewProtocol';
 import { useActiveFrameSrc, useBrowserSurfaceSession } from '@/hooks/useActiveFrameSrc';
@@ -720,7 +722,8 @@ export function DarkGlassDashboard({
   // through the fetch proxy (/api/browser/proxy?url=...) per REQ-2.
   // The browser-surface endpoints require a token cookie; mint it before any
   // frame loads or the first request races the cookie and is refused.
-  const surfaceReady = useBrowserSurfaceSession()
+  const surfaceEpoch = useBrowserSurfaceSession()
+  const surfaceReady = surfaceEpoch > 0
   const resolvedFrameSrc = useActiveFrameSrc({ tabs, activeTabId, browserUrl })
   const resolvedFrameSrcGated = surfaceReady ? resolvedFrameSrc : undefined
 
@@ -734,6 +737,10 @@ export function DarkGlassDashboard({
   // status + X-Proxy-Error header, and say what is actually wrong.
   const [browserReloadKey, setBrowserReloadKey] = useState(0)
   const [browserIssue, setBrowserIssue] = useState<null | { kind: 'web_off' | 'offline' | 'error'; detail: string }>(null)
+  // A re-minted cookie (backend restart) reloads the frame that was refused.
+  useEffect(() => {
+    if (surfaceEpoch > 1) setBrowserReloadKey(k => k + 1)
+  }, [surfaceEpoch])
 
   const activeFrameSrc = resolvedFrameSrcGated
     ? `${resolvedFrameSrcGated}${resolvedFrameSrcGated.includes('?') ? '&' : '?'}_r=${browserReloadKey}`
@@ -828,6 +835,34 @@ export function DarkGlassDashboard({
   // Pin mode: selecting a source pauses following; the LIVE pill resumes.
   const [pinnedSource, setPinnedSource] = useState<{ jobId: string; addr: number } | null>(null);
 
+  // ── The agent's live browser, in tandem with the saved copies ──────────
+  // While the agent's browser session is open, the backend streams its REAL
+  // page (CDP screencast). The panel shows that stream for the session's tab:
+  // scripts run, typed text and scroll are visible, nothing is a replay. The
+  // saved captures stay for pinned sources and past pages. `control` = the
+  // user holds the page (an open grant); the agent's browser actions wait.
+  // The store is fed by the WebSocket hook, so a dashboard opened mid-run
+  // knows the session at once.
+  //
+  // The panel follows the most recent activity, one run at a time: a tab whose
+  // provenance names a job shows THAT run live (if it is one) or its capture
+  // replay (a search's page); the live-reading tab with no job, or no tab at
+  // all, shows the latest run. Never over a pinned source.
+  const liveTab = tabs.find(t => t.id === activeTabId);
+  const liveTabJobId = liveTab?.type === 'web' ? liveTab.captureJobId : undefined;
+  const liveCandidate = useLiveBrowser(liveTabJobId);
+  const liveRun = !pinnedSource && liveCandidate && (
+    !liveTab
+    || (liveTab.id === LIVE_READING_TAB_ID && !liveTabJobId)
+    || !!liveTabJobId)
+    ? liveCandidate
+    : null;
+  // The live surface is on screen (the error card replaces it), and the rect its
+  // image covers, so the overlay hides its resting orb and aims its cursor at
+  // the page rather than at the letterbox bars.
+  const liveShown = !!liveRun && !browserIssue;
+  const [liveImageRect, setLiveImageRect] = useState<ImageRect | null>(null);
+
   useEffect(() => {
     for (const p of crawlState.pages) {
       if (!p.jobId) continue
@@ -920,6 +955,12 @@ export function DarkGlassDashboard({
     confirmCard,
     sendMessage,
   } = useNavigation();
+
+  // "Take control" / "Hand back" for the agent's live browser (liveRun above).
+  const setBrowserControl = useCallback((take: boolean) => {
+    if (!liveRun || !sendMessage) return
+    sendMessage('browser_control', { run_id: liveRun.runId, action: take ? 'take' : 'release' })
+  }, [liveRun, sendMessage]);
 
   // Local field-value store — single source of truth for reads AND writes within this component.
   // Initialized from the WS-supplied contextFieldValues and kept in sync via iris:initial_state.
@@ -1968,7 +2009,7 @@ export function DarkGlassDashboard({
                48px header) and drew a sharp-cornered rectangle inset by this
                panel's own p-4/md:px-10 padding — a separate box floating over
                the header instead of the card's own border coming alive. */}
-           <div className="relative w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
+           <div data-browser-card className="relative w-full h-full flex flex-col bg-black/40 rounded-2xl border border-white/5 overflow-hidden backdrop-blur-md">
 
              {/* REQ-16 (T46): particle-shutter navigation overlay. Traces THIS
                  card's rounded-2xl border and washes inward from it, so the
@@ -1999,6 +2040,10 @@ export function DarkGlassDashboard({
                 visionSaccadic={navOverlay.visionSaccadic}
                 // T19 (REQ-10 AC10.1): current takeover, if one is open.
                 takeover={navOverlay.takeover}
+                // The agent's real page is streamed under the overlay: no
+                // resting orb over it, and the cursor aims at the image.
+                live={liveShown}
+                liveRect={liveShown ? liveImageRect : null}
               />
 
              {/* ── Tab bar ─────────────────────────────────────────────────── */}
@@ -2075,6 +2120,10 @@ export function DarkGlassDashboard({
              {/* ── Tab content ──────────────────────────────────────────────── */}
              {(() => {
                const activeTab = tabs.find(t => t.id === activeTabId)
+               // The live stream belongs to ONE session (liveRun, chosen above
+               // for the active tab): shown for that run, never over another
+               // tab, a search's capture replay or a pinned source.
+               const showLiveView = !!liveRun
                if (activeTab?.type === 'dashboard' && activeTab.data) {
                  return (
                    // overflow-y-auto: the summary tab (DashboardRenderer —
@@ -2149,6 +2198,24 @@ export function DarkGlassDashboard({
                           capture
                         </span>
                       )}
+                      {showLiveView && liveRun && (
+                        <button
+                          onClick={() => setBrowserControl(!liveRun.control)}
+                          title={liveRun.control
+                            ? "Give the page back to the agent"
+                            : "Act in the agent's page yourself - the agent waits until you hand it back"}
+                          aria-pressed={liveRun.control}
+                          className="shrink-0 flex items-center gap-1 px-2 h-5 rounded text-[10px] font-mono transition-colors hover:brightness-125"
+                          style={{
+                            background: liveRun.control ? 'rgba(251,191,36,0.14)' : `${glowColor}18`,
+                            border: `1px solid ${liveRun.control ? 'rgba(251,191,36,0.4)' : `${glowColor}44`}`,
+                            color: liveRun.control ? '#fbbf24' : glowColor,
+                          }}
+                        >
+                          <span className="w-1 h-1 rounded-full" style={{ background: liveRun.control ? '#fbbf24' : glowColor }} />
+                          {liveRun.control ? 'Hand back' : 'Take control'}
+                        </button>
+                      )}
                       {/* REQ-15 AC3: when a source pin pauses live-following,
                           the LIVE pill resumes it. */}
                       {pinnedSource && (
@@ -2222,6 +2289,31 @@ export function DarkGlassDashboard({
                          <RotateCcw size={12} /> Reload
                        </button>
                      </div>
+                   ) : showLiveView && liveRun ? (
+                     /* The agent's REAL page, streamed live (CDP screencast):
+                        the user watches the agent work and, after "Take
+                        control" or during a CAPTCHA hand-over, acts in that
+                        same page. A pinned source falls back to its capture. */
+                     <TakeoverLiveSurface
+                       watch
+                       runId={liveRun.runId}
+                       interactive={liveRun.control || !!navOverlay.takeover}
+                       onImageRect={setLiveImageRect}
+                       width="100%"
+                       height="100%"
+                       className="flex-1 w-full min-h-0 bg-black"
+                     />
+                   ) : navOverlay.takeover ? (
+                     /* A hand-over with no live session in this panel: the
+                        replay iframe cannot serve here - its scripts never
+                        run, so a challenge in it can never be solved. */
+                     <TakeoverLiveSurface
+                       runId=""
+                       questionId={navOverlay.takeover.questionId}
+                       width="100%"
+                       height="100%"
+                       className="flex-1 w-full min-h-0 bg-black"
+                     />
                    ) : (
                      <iframe
                        ref={iframeRef}

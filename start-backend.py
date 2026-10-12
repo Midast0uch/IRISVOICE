@@ -85,32 +85,96 @@ except Exception as _fh_crash_exc:  # never let a diagnostic block startup
 #   2. Export the env var so any subprocess/importlib cache is also disabled.
 #   3. Purge any pre-existing __pycache__ so stale .pyc from before this guard
 #      can never be served on the next launch (self-healing).
+#
+# HASH-CHECKED BYTECODE (2026-10-12): with no cache at all, every boot compiled
+# all ~1,330 backend modules - the largest part of a 42 s pre-startup on this
+# 2-core machine. A CHECKED-HASH .pyc keeps the guard's promise more strictly
+# than "no cache": Python compares it with the SOURCE'S HASH on every import
+# and ignores it when the source differs, so stale bytecode can never run (an
+# mtime/size check is what the incident above slipped past). So:
+#   - import still never WRITES bytecode (sys.dont_write_bytecode);
+#   - the purge removes every .pyc that is NOT hash-checked;
+#   - a background job, started late so it never competes with startup,
+#     writes hash-checked .pyc for the next boot (compileall, one worker).
 sys.dont_write_bytecode = True
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+_PYC_ROOTS = ("backend", "scripts")
+
+
+def _is_checked_hash_pyc(path) -> bool:
+    """PEP 552 header: flags (bytes 4-8) == 0b11 means hash-based + checked."""
+    try:
+        with open(path, "rb") as fh:
+            header = fh.read(8)
+        return len(header) == 8 and int.from_bytes(header[4:8], "little") == 0b11
+    except OSError:
+        return False
+
+
 try:
-    import shutil as _shutil
     _purged = 0
     # SCOPED to the project's own Python. rglob from base_dir walked the WHOLE
     # repo — node_modules, .next (which balloons to multi-GB on this machine)
     # and models/ (18 GB of weights). That walk did not finish in 300s when
     # measured, so the backend sat at ~24 MB RSS burning 7s of CPU and never
     # reached uvicorn: it looked like a hang and was really a directory crawl.
-    # The guard's intent is unchanged — no IRIS .pyc is ever trusted or
-    # written — because every project module lives under these roots.
-    for _root in ("backend", "scripts"):
+    for _root in _PYC_ROOTS:
         _dir = Path(base_dir) / _root
         if not _dir.is_dir():
             continue
-        for _cache in _dir.rglob("__pycache__"):
-            try:
-                _shutil.rmtree(_cache, ignore_errors=True)
-                _purged += 1
-            except Exception:
-                pass
+        for _pyc in _dir.rglob("__pycache__/*.pyc"):
+            if not _is_checked_hash_pyc(_pyc):
+                try:
+                    _pyc.unlink()
+                    _purged += 1
+                except OSError:
+                    pass
     if _purged:
-        print(f"   Purged {_purged} stale __pycache__ dir(s) — bytecode cache disabled")
+        print(f"   Purged {_purged} non-hash-checked .pyc file(s)")
 except Exception:
     pass
+
+
+def _write_checked_hash_bytecode() -> None:
+    """Write hash-checked .pyc for the NEXT boot. Late and single-worker: it
+    must not take CPU from startup or from the first turns."""
+    import time as _t
+
+    _t.sleep(180.0)
+    try:
+        import importlib.util
+        import py_compile
+
+        _written = 0
+        for _root in _PYC_ROOTS:
+            for _src in (Path(base_dir) / _root).rglob("*.py"):
+                try:
+                    _pyc = Path(importlib.util.cache_from_source(str(_src)))
+                    _data = _src.read_bytes()
+                    if _pyc.exists() and _is_checked_hash_pyc(_pyc):
+                        with open(_pyc, "rb") as _fh:
+                            _fh.seek(8)
+                            if _fh.read(8) == importlib.util.source_hash(_data):
+                                continue  # current: nothing to do
+                    py_compile.compile(
+                        str(_src), cfile=str(_pyc), doraise=True,
+                        invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
+                    )
+                    _written += 1
+                    _t.sleep(0.005)  # one small file at a time; never hog a core
+                except Exception:  # a file that does not compile is imported from source
+                    continue
+        if _written:
+            print(f"   Bytecode warm-up: {_written} hash-checked .pyc written for the next boot")
+    except Exception as _pyc_exc:  # never let a cache warm-up hurt the backend
+        print(f"   Bytecode warm-up skipped: {_pyc_exc}")
+
+
+import threading as _pyc_threading
+
+_pyc_threading.Thread(
+    target=_write_checked_hash_bytecode, daemon=True, name="iris-pyc-warm",
+).start()
 
 # Add project root to Python path BEFORE any imports
 sys.path.insert(0, str(base_dir))

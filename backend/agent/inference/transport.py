@@ -495,6 +495,14 @@ _REASONING_RESEND_FLOOR = 1024
 _REASONING_EFFORT_PROVIDERS = frozenset({"inceptionlabs"})
 
 
+def _tool_choice_field(name: Optional[str]) -> Any:
+    """The OpenAI `tool_choice` value: "auto", or the named function the
+    model must call (the Oracle's binding tool pick)."""
+    if name:
+        return {"type": "function", "function": {"name": str(name)}}
+    return "auto"
+
+
 # C6 stall bound (2026-10-02): a hosted model call far past its normal time is
 # a provider stall, not work. Live run A3: mercury-2 node calls took 1-3 s, one
 # took 121 s (the read timeout was the node's 300 s). The FIRST attempt waits
@@ -731,6 +739,7 @@ class ApiHttpxTransport:
         num_ctx: Optional[int] = None,
         budget_check: Optional[Callable[[], None]] = None,
         reasoning_effort: Optional[str] = None,
+        tool_choice: Optional[str] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -775,7 +784,9 @@ class ApiHttpxTransport:
         }
         if tools:
             body["tools"] = tools
-            body["tool_choice"] = "auto"
+            # A named tool_choice (2026-10-11): the Oracle's binding pick - the
+            # model MUST call this tool (it still writes the arguments).
+            body["tool_choice"] = _tool_choice_field(tool_choice)
         if reasoning_effort and getattr(self, "_provider_id", "") in _REASONING_EFFORT_PROVIDERS:
             body["reasoning_effort"] = reasoning_effort
 
@@ -1235,6 +1246,7 @@ class OpenAICompatTransport:
         num_ctx: Optional[int] = None,
         budget_check: Optional[Callable[[], None]] = None,
         thinking: Optional[bool] = None,
+        tool_choice: Optional[str] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -1258,7 +1270,7 @@ class OpenAICompatTransport:
         }
         if tools:
             _body["tools"] = tools
-            _body["tool_choice"] = "auto"
+            _body["tool_choice"] = _tool_choice_field(tool_choice)
 
         # LM Studio extra_body for thinking template hints
         # (enable_thinking heuristic is delegated to the caller; we always

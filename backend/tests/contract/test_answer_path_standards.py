@@ -252,3 +252,82 @@ def test_s12_chain_row_is_bounded_and_stored_once():
     assert len(result) < _ffi._CHAIN_RESULT_CAP + 200, "S12: chain row not capped"
     assert "truncated" in result, "S12: a capped row must say it was truncated"
     assert not content, "S12: content duplicates result (every row stored twice)"
+
+
+# ── S79: the direct reply's context recall never sorts a whole session ──────
+# (stack dumps 2026-10-12: retrieve_context_chunks held a reply ~100 s cold -
+# idx_chunk_session + TEMP B-TREE read all 12,295 session_iris rows and their
+# embedding blobs; warm 0.08 s.)
+
+_CHUNK_RECALL = (
+    "SELECT id, content, embedding, timestamp, embedding_backend FROM context_chunks "
+    "WHERE session_id = ? AND zone IN (?,?) ORDER BY timestamp DESC LIMIT 200"
+)
+
+
+def test_s79_context_chunk_recall_walks_an_index_in_time_order(tmp_path):
+    from backend.memory.episodic import EpisodicStore
+
+    store = EpisodicStore(db_path=str(tmp_path / "memory.db"), biometric_key=b"\0" * 32)
+    store._init_schema()
+    conn = sqlite3.connect(str(tmp_path / "memory.db"))
+    try:
+        plan = _plan(conn, _CHUNK_RECALL, ("session_iris", "trusted", "tool"))
+    finally:
+        conn.close()
+    assert not any("TEMP B-TREE FOR ORDER BY" in p for p in plan), (
+        f"the recall sorts every row of the session again ({plan}) - ~100 s on a "
+        "cold disk for a 12k-row session")
+    assert any("idx_chunks_session_ts_zone" in p for p in plan), plan
+
+
+# ── S80: the retention cycle never holds the event loop ─────────────────────
+# (stack dumps 2026-10-12: 60 s after boot the cycle ran its store work ON the
+# loop for 16 s+; the chat's create-conversation call timed out at 8 s and the
+# turn ran in a local-only thread whose reply was lost.)
+
+class _SlowEpisodic:
+    class _Db:
+        def execute(self, *_a, **_k):
+            time.sleep(1.0)  # a cold store read, blocking
+
+            class _Cur:
+                def fetchall(self):
+                    return []
+            return _Cur()
+
+    db = _Db()
+
+    def get_stats(self):
+        return {"total_episodes": 0, "avg_score": 0}
+
+
+class _SlowMemory:
+    episodic = _SlowEpisodic()
+
+
+def test_s80_retention_cycle_runs_off_the_event_loop(monkeypatch):
+    import asyncio
+
+    from backend.memory import retention as _ret
+
+    monkeypatch.setattr(_ret, "app_flush", lambda *_a, **_k: None)
+    mgr = _ret.RetentionManager(_SlowMemory())
+    ticks: list = []
+
+    async def _ticker():
+        for _ in range(8):
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.1)
+
+    async def _main():
+        # The ticker runs FIRST: a cycle that never yields would otherwise
+        # finish before the first tick and no gap could be seen.
+        ticker = asyncio.create_task(_ticker())
+        await asyncio.sleep(0.15)
+        await mgr._run_retention_cycle()
+        await ticker
+
+    asyncio.run(_main())
+    gaps = [b - a for a, b in zip(ticks, ticks[1:])]
+    assert max(gaps) < 0.5, f"the loop stalled {max(gaps):.2f}s during the cycle"

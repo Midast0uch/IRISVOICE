@@ -94,7 +94,19 @@ class RetentionManager:
                 await asyncio.sleep(3600)  # Retry in 1 hour
     
     async def _run_retention_cycle(self) -> None:
-        """Execute one retention cycle."""
+        """Execute one retention cycle - on a THREAD.
+
+        The body is synchronous store work (a flush wait of up to 5 s, a SELECT
+        over `episodes`, a DELETE, the stats). It ran on the event loop: 60 s
+        after boot it held the loop 16 s+ (stack dumps 2026-10-12), every HTTP
+        request waited - the chat's "create conversation" call hit its 8 s
+        timeout, fell back to a local-only thread, and the turn's reply was
+        lost with it.
+        """
+        await asyncio.to_thread(self._retention_cycle_sync)
+
+    def _retention_cycle_sync(self) -> None:
+        """One retention cycle (blocking; called off the event loop)."""
         try:
             logger.info("[RetentionManager] Starting retention cycle")
             

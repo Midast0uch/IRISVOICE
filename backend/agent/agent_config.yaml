@@ -48,7 +48,10 @@ models:
       # AC25.5). That is the correct outcome: the curve was derived at width 6
       # and says nothing about width 11. No consumer is enforced today, so
       # nothing flips — the stale marker is doing its job.
-      candidate_cap: 11
+      # 11 -> 32 (2026-10-11): at 11 every browser tool fell off the menu
+      # outside developer mode (registry order puts the file tools first) -
+      # see decision_engine.CANDIDATE_CAP_DEFAULT.
+      candidate_cap: 32
       acquire_timeout_s: 2.0
       # THRESHOLDS ARE KEYED BY BACKEND IDENTITY (REQ-25 AC25.8).
       # A probability threshold is only meaningful for the distribution it was

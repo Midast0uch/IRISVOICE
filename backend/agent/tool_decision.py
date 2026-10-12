@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -646,6 +647,26 @@ def _classify_error(error: Optional[str], result: Any = None) -> str:
     if isinstance(result, dict) and "succeeded" in result and "failed" in result:
         return "partial_success"
     return "permanent"
+
+
+def _menu_fingerprint(menu: List[str], criteria: Optional[dict]) -> str:
+    """Short stable hash of the offered menu: names in order + option text."""
+    import hashlib
+
+    crit = criteria or {}
+    body = "\n".join(f"{n}={crit.get(n, '')}" for n in (menu or []))
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:10]
+
+
+def _render_state(consumer_id: str, frame: Dict[str, Any]) -> str:
+    """The state text the engine reads for this frame (the job's declared
+    fields, rendered exactly as decide() renders them). "" on any failure."""
+    try:
+        from backend.agent.decision_engine import job_input
+
+        return job_input(consumer_id, frame).text
+    except Exception:  # noqa: BLE001 - a replay key never blocks a row
+        return ""
 
 
 # ── ToolDecisionBox ─────────────────────────────────────────────────────────
@@ -1644,6 +1665,11 @@ class ToolDecisionBox:
         async_: bool = False,
         last_result: Optional[str] = None,
         option_criteria: Optional[dict] = None,
+        calls_this_step: Optional[str] = None,
+        done_when: Optional[str] = None,
+        source: str = "respond_direct",
+        brain_ok: Optional[bool] = None,
+        step_facts: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """REQ-16 AC16.2 (T20): shadow-score a tool choice made OUTSIDE the box.
 
@@ -1666,31 +1692,32 @@ class ToolDecisionBox:
         measurement instead of an independent one.
         """
         if async_:
+            # ON THE oracle_shadow LANE (2026-10-11), not a thread per row: one
+            # ordered writer, bounded (CLAUDE.md "lanes, never a thread per
+            # row"). Measured: the thread-per-row path had created ~3,149
+            # threads by the second silent backend death (pin_c8b80e249413).
+            _kw = {
+                "goal": goal, "observed_tool": observed_tool,
+                "observed_params": observed_params,
+                "candidates": candidates, "session_id": session_id,
+                "conversation_id": conversation_id,
+                "threshold": threshold, "async_": False,
+                "last_result": last_result,
+                "option_criteria": option_criteria,
+                "calls_this_step": calls_this_step,
+                "done_when": done_when,
+                "source": source,
+                "brain_ok": brain_ok,
+                "step_facts": step_facts,
+            }
             try:
-                threading.Thread(
-                    target=self.record_shadow_tool_choice,
-                    kwargs={
-                        "goal": goal, "observed_tool": observed_tool,
-                        "observed_params": observed_params,
-                        "candidates": candidates, "session_id": session_id,
-                        "conversation_id": conversation_id,
-                        "threshold": threshold, "async_": False,
-                        # FIXED 2026-10-10: `last_result` was MISSING here, so
-                        # the async re-invocation (the ONLY mode both live call
-                        # sites use) scored every row with last_result=None -
-                        # the entire tc-frame-v2 cohort measured the BLIND
-                        # frame while stamped as enriched. A parameter dropped
-                        # at an async boundary; the stamp said v2 regardless.
-                        "last_result": last_result,
-                        # Same boundary, same rule: every new parameter rides
-                        # the thread kwargs or the async path silently drops
-                        # it (the v2 lesson, applied by construction).
-                        "option_criteria": option_criteria,
-                    },
-                    daemon=True, name="shadow-tool-choice",
-                ).start()
+                from backend.utils.durability_queue import lane
+
+                if not lane("oracle_shadow").submit(
+                        "tool_choice", lambda: self.record_shadow_tool_choice(**_kw)):
+                    logger.warning("[TOOL_DECISION] shadow tool-choice row dropped (lane full)")
             except Exception as _e:  # noqa: BLE001 — an observer never blocks
-                logger.debug("[TOOL_DECISION] shadow thread failed: %r", _e)
+                logger.debug("[TOOL_DECISION] shadow lane submit failed: %r", _e)
             return None
         try:
             eng = self._engine()
@@ -1719,7 +1746,13 @@ class ToolDecisionBox:
             frame = {
                 "goal": (goal or "")[:200],
                 "n_candidates": len(menu),
-                "source": "respond_direct",
+                "source": source,
+                # tc-frame-v5: the step's criterion and its own calls so far
+                # (declared on the `route` job; empty on a step's first call).
+                "done_when": (done_when or "")[:200] or None,
+                "calls_this_step": (calls_this_step or "")[:400] or None,
+                # v7: the read/edit/write/run facts (node_executor.step_facts)
+                "step_facts": (step_facts or "")[:400] or None,
                 # THE INFORMATION GAP FIX (2026-10-10): the previous call's
                 # result is the single most predictive signal for the NEXT tool
                 # in a ReAct loop, and the shadow never carried it - measured
@@ -1753,9 +1786,19 @@ class ToolDecisionBox:
                 "engine_latency_ms": ds.engine_latency_ms,
                 # The shadow PAIR: the engine's pick vs the Brain's actual call.
                 "brain_choice": observed_tool,
-                "brain_params": observed_params or {},
+                # identifying arguments only (never a file body), bounded
+                "brain_params": {
+                    k: str(v)[:120] for k, v in (observed_params or {}).items()
+                    if k in ("path", "file_path", "command", "pattern", "query",
+                             "url", "element_id", "action")
+                },
+                # whether the incumbent's call worked (None = not known here)
+                "brain_ok": brain_ok,
+                # THE REPLAY KEY: exactly what d1 read, so a frame/menu change
+                # can be re-scored offline (bounded: the route budget is 1536).
+                "state": _render_state("tool_choice", frame)[:2000],
                 "conversation_id": conversation_id or None,
-                "source": "respond_direct",
+                "source": source,
                 "shadow": True,
                 # criteria_version (session 364's mechanism): the frame is NOT
                 # inside criteria_hash - without this stamp rows measured under
@@ -1770,13 +1813,169 @@ class ToolDecisionBox:
                 # tools' DESCRIPTIONS (dynamic-menu criteria) - a different
                 # question again; measured 5/5 with descriptions vs 5/6
                 # bare names on the live probe.
-                "criteria_version": "tc-frame-v4",
+                # v5 (2026-10-11): the step's own calls so far + its done-when,
+                # and last_result is THIS step's last call (the node path used
+                # to pass the previous STEP's result once per node, so every
+                # call of a step scored the same frame - 50.9% parity).
+                # v6 (2026-10-11): the option lines are the tools' DECISION
+                # lines (tool_registry.ORACLE_HINTS: when to choose, with the
+                # precondition), not the argument-oriented LLM descriptions.
+                # v7 (2026-10-11): + step_facts (files named: exists / read /
+                # changed in this step; last command result).
+                # v8: + files seen in the last result, + "read N times"
+                # (paging a long file).
+                "criteria_version": "tc-frame-v8",
+                # The MENU FINGERPRINT: the offered names + their option text.
+                # A tool added or re-described changes it, so evidence measured
+                # on another menu can be told apart (per-tool enforcement
+                # reads only rows of the menu it is asked to decide on).
+                "menu_fp": _menu_fingerprint(menu, option_criteria),
             }
             self._record_shadow_row(row, session_id=session_id)
             return row
         except Exception as _e:  # noqa: BLE001 — a shadow never raises
             logger.debug("[TOOL_DECISION] shadow tool-choice failed: %r", _e)
             return None
+
+    def choose_node_tool(
+        self,
+        *,
+        goal: str,
+        candidates: list,
+        scope_key: str,
+        last_result: Optional[str] = None,
+        option_criteria: Optional[dict] = None,
+        calls_this_step: Optional[str] = None,
+        done_when: Optional[str] = None,
+        step_facts: Optional[str] = None,
+    ) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """THE ORACLE DECIDES the node's next tool (2026-10-11), or None.
+
+        One question to d1 BEFORE the tool model's call, over the tools the
+        node offers, on the step's own pre-call state (the same `route` frame
+        the shadow measures). It acts only through the enforcement chokepoint:
+        ENFORCED when the owner allow-listed tool_choice and it earned the bar
+        (and the calibrated confidence clears its threshold), else SAMPLED on
+        the bounded, deterministic share of `sampled_consult_ok` (per-consumer
+        override IRIS_ORACLE_SAMPLE_FRACTION_TOOL_CHOICE). A control label
+        (DELEGATE/NONE) never acts - the model keeps the full menu.
+
+        Returns ``(tool, row)``: the caller FORCES that tool at the API (the
+        model still writes the arguments) and, once the call's outcome is
+        known, labels ``row`` with it and writes it (`label_decided_row`).
+        Never raises; None = the model decides.
+        """
+        try:
+            eng = self._engine()
+            if eng is None or not candidates:
+                return None
+            from backend.agent.decision_engine import (
+                decides,
+                oracle_acts,
+                sampled_consult_ok,
+            )
+
+            enforced = decides("tool_choice") is not None
+            sampled = (not enforced) and sampled_consult_ok("tool_choice", scope_key)
+            if not (enforced or sampled):
+                return None
+            registry = self._get_available_tools() or []
+            names = self._order_engine_names(
+                [n for n in candidates if n],
+                [n for n in self._vision_tool_names(registry) if n in candidates],
+                goal or "",
+            )
+            _cap = getattr(getattr(eng, "_cfg", None), "candidate_cap", 6)
+            menu = self._compose_engine_menu(
+                names, self._DE_DELEGATE, self._DE_NONE, _cap)
+            frame = {
+                "goal": (goal or "")[:200],
+                "done_when": (done_when or "")[:200] or None,
+                "calls_this_step": (calls_this_step or "")[:400] or None,
+                "step_facts": (step_facts or "")[:400] or None,
+                "last_result": (last_result or "")[:600] or None,
+                "option_criteria": option_criteria or None,
+            }
+            ds = eng.decide("tool_choice", menu, frame)
+            if ds is None or ds.chosen in (self._DE_DELEGATE, self._DE_NONE):
+                return None
+            if enforced and not oracle_acts("tool_choice", float(ds.confidence)):
+                return None
+            # AC6.6 Gate 1 (REVERSIBILITY), per PICK: a SAMPLED pick may only
+            # force a READ-ONLY tool - a wrong one costs one wasted read. A
+            # side-effect pick (edit/write/run, browser input) acts on
+            # a sample ONLY under IRIS_ORACLE_SAMPLE_SIDE_EFFECTS=1, the eval
+            # switch: eval tasks run in throw-away work folders, where every
+            # effect is reversible. Enforced (the full bar) decides any tool.
+            if sampled and os.environ.get("IRIS_ORACLE_SAMPLE_SIDE_EFFECTS", "") != "1":
+                try:
+                    from backend.agent.tool_registry import resolve_tool
+
+                    _spec = resolve_tool(ds.chosen)
+                    if _spec is None or _spec.permission_tier != "read_only":
+                        return None
+                except Exception:  # noqa: BLE001 - unknown tier: not reversible
+                    return None
+            row: Dict[str, Any] = {
+                "consumer_id": "tool_choice",
+                "engine": getattr(eng, "model_id", None) or "decision-engine",
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(c.prob, 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "engine_latency_ms": ds.engine_latency_ms,
+                "route": "enforced" if enforced else "sampled",
+                "source": "der_node",
+                # v2 (2026-10-11): + step_facts, binding picks forced at the API
+                "criteria_version": "tc-decide-v3",
+                "menu_fp": _menu_fingerprint(menu, option_criteria),
+                "state": _render_state("tool_choice", frame)[:2000],
+            }
+            logger.info(
+                "[TOOL_DECISION] Oracle decides tool=%s conf=%.3f route=%s latency_ms=%s",
+                ds.chosen, float(ds.confidence), row["route"], ds.engine_latency_ms)
+            return ds.chosen, row
+        except Exception as _e:  # noqa: BLE001 — the model decides on any failure
+            logger.debug("[TOOL_DECISION] choose_node_tool failed: %r", _e)
+            return None
+
+    def label_decided_row(self, row: Dict[str, Any], *, called: Optional[str],
+                          ok: Optional[bool], params: Optional[dict] = None,
+                          session_id: str = "") -> None:
+        """Label an Oracle-decided row with what happened and write it.
+
+        `outside_label` = the decided call WORKED (the model called the chosen
+        tool and it succeeded) - a correctness bool, read by decision_label as
+        bool(chosen) == outside_label. A step the model FINISHED instead of
+        calling the tool carries `outcome_label` "finished" and NO outside
+        label: it is counted, never scored (a step that was already done is
+        not evidence the pick was wrong). Never raises."""
+        try:
+            out = dict(row)
+            out["label_source"] = "outcome"
+            if called is None:
+                out["outcome_label"] = "finished"
+            else:
+                # "overridden": the model called a DIFFERENT tool than the
+                # narrowed menu offered (measured live 2026-10-11: the model
+                # knows every tool name from the transcript and the API does
+                # not refuse another name). Scored as not-held (the decision
+                # did not stand) but kept apart from a pick that ran and FAILED.
+                if called != row.get("chosen"):
+                    out["outcome_label"] = "overridden"
+                else:
+                    out["outcome_label"] = "ok" if ok else "failed"
+                out["outside_label"] = bool(called == row.get("chosen") and ok)
+                out["brain_params"] = {
+                    k: str(v)[:120] for k, v in (params or {}).items()
+                    if k in ("path", "file_path", "command", "pattern", "query",
+                             "url", "element_id", "action")
+                }
+            self._record_shadow_row(out, session_id=session_id)
+        except Exception as _e:  # noqa: BLE001 — a label never blocks a node
+            logger.debug("[TOOL_DECISION] decided row write failed: %r", _e)
 
     def _resolve_legacy(
         self,
@@ -2660,27 +2859,27 @@ class ToolDecisionBox:
                 # A refusal returns no Noul, so no row is written and the
                 # consumer can never reach the Wave 7 bar however often the
                 # triage runs. Registered on first use, mirroring the reviewer.
+                # FIXED 2026-10-11: this used to register a bare ConsumerSpec
+                # with NO decision_type (and only when the spec was absent).
+                # The backend's ensure_consumer_spec reads a typeless spec as
+                # pre-REQ-4 and RE-registers it with AUTO_INSTRUCTION - so d1
+                # never saw this question, only the generic "choose the best
+                # option for the goal". The declared path (type + criteria
+                # from the declaration table) keeps the authored question.
                 try:
                     from backend.agent.decision_engine import (
-                        ConsumerSpec,
                         get_consumer_spec,
-                        register_consumer_spec,
+                        needs_upgrade,
+                        register_declared,
                     )
 
-                    if get_consumer_spec("recovery_strategy") is None:
-                        register_consumer_spec(ConsumerSpec(
-                            consumer_id="recovery_strategy",
-                            task_name="recovery_strategy",
-                            instruction=(
-                                "A tool step failed. What should happen next: "
-                                "retry the same tool, try a different one, or "
-                                "escalate to a new plan?"
-                            ),
-                            labels=tuple(
-                                list(self._RECOVERY_STRATEGIES)
-                                + [self._DE_DELEGATE]
-                            ),
-                        ))
+                    if needs_upgrade(get_consumer_spec("recovery_strategy")):
+                        register_declared(
+                            "recovery_strategy",
+                            "A tool step failed. Which recovery should happen next?",
+                            tuple(list(self._RECOVERY_STRATEGIES)
+                                  + [self._DE_DELEGATE]),
+                        )
                 except Exception:  # noqa: BLE001 — criteria are best-effort
                     pass
                 _opts = list(self._RECOVERY_STRATEGIES) + [self._DE_DELEGATE]

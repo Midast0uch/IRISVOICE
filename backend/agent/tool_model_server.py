@@ -80,6 +80,30 @@ def _model_path() -> Optional[str]:
     return None
 
 
+def role_bound() -> bool:
+    """True when a configured role binding resolves to THIS server (a provider
+    whose endpoint is on TOOL_MODEL_PORT). Never raises; unknown = False.
+
+    The boot warm reads this (2026-10-11): with every role on hosted models
+    the server is dormant, and warming it anyway cost a GGUF load plus a model
+    directory scan on the hard disk while the TTS worker was still importing
+    (boot /health measured 237 s, TTS imports 169 s under that contention)."""
+    try:
+        import json
+
+        cfg_path = Path(__file__).resolve().parents[2] / "data" / "iris_config.json"
+        inference = json.loads(cfg_path.read_text(encoding="utf-8")).get("inference") or {}
+        providers = inference.get("providers") or {}
+        port = f":{TOOL_MODEL_PORT}"
+        for b in inference.get("role_bindings") or []:
+            inst = providers.get(str((b or {}).get("instance_id") or "")) or {}
+            if port in str(inst.get("endpoint") or inst.get("api_base_url") or ""):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 - unreadable config: do not warm
+        return False
+
+
 def _health_ok(timeout_s: float = 2.0) -> bool:
     try:
         import httpx

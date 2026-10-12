@@ -87,6 +87,7 @@ async def capture_page_screenshot(
     kernel: Any,
     conversation_id: str = "default",
     turn_id: Optional[str] = None,
+    browser_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Screenshot ``url`` and render it as an image card in the chat.
 
@@ -94,9 +95,23 @@ async def capture_page_screenshot(
     "bytes"}`` on success, ``{"success": False, "error": ...}`` otherwise. Never
     raises — a failed screenshot must cost the user a picture, never the turn.
     """
-    if not url or not str(url).strip():
-        return {"success": False, "error": "no url given"}
-    url = str(url).strip()
+    url = str(url or "").strip()
+    # The agent's own live page first (2026-10-12): after browsing to a page -
+    # clicks, a login, a scroll - the user wants THAT page. A fresh session at
+    # the URL lost all of it and paid a second browser open.
+    live_png: Optional[bytes] = None
+    try:
+        from backend.agent.tools import browser_tools as _bt
+
+        _key = browser_key or conversation_id
+        live_png = await _bt.live_page_screenshot(_key, url)
+        if live_png and not url:
+            entry = _bt._RT.sessions.get(_key)
+            url = str(getattr(getattr(entry, "session", None), "url", "") or "") if entry else ""
+    except Exception:  # noqa: BLE001 - fall back to opening the page
+        live_png = None
+    if not url:
+        return {"success": False, "error": "no url given and no page open in the browser"}
 
     # The egress guard owns which hosts may be reached. Going around it here
     # would make this tool a way to fetch anything the crawler is forbidden.
@@ -119,14 +134,17 @@ async def capture_page_screenshot(
         logger.warning("[screenshot_page] egress guard errored for %s: %s", url, exc)
         return {"success": False, "error": "could not verify that address"}
 
-    try:
-        # The session's Playwright objects live on the browser host loop.
-        from backend.vision.browser_host import get_browser_host
+    if live_png:
+        png, error = live_png, ""
+    else:
+        try:
+            # The session's Playwright objects live on the browser host loop.
+            from backend.vision.browser_host import get_browser_host
 
-        png, error = await get_browser_host().run(_capture_png(url))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[screenshot_page] capture failed url=%s: %s", url, exc)
-        return {"success": False, "error": "the page could not be captured"}
+            png, error = await get_browser_host().run(_capture_png(url))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[screenshot_page] capture failed url=%s: %s", url, exc)
+            return {"success": False, "error": "the page could not be captured"}
     if error:
         return {"success": False, "error": error}
 
@@ -156,42 +174,32 @@ async def capture_page_screenshot(
     if not store.store_blob(document_id, png, "image/png"):
         return {"success": False, "error": "the screenshot could not be stored"}
 
+    # The card goes through THE ONE DOOR (create_artifact, Standards S62). This
+    # tool used to write its own row and emit its own DOCUMENT_RENDER - a second
+    # door S62 closed: live 2026-10-12 the image was stored and served, but no
+    # card reached the chat and the reply could only quote a document id.
+    from urllib.parse import urlsplit
+
+    _host = urlsplit(url).netloc or url
     try:
-        store.store(
-            document_id=document_id,
-            conversation_id=conversation_id,
-            fmt="image",
+        made = kernel.create_artifact(
+            title=f"Screenshot - {_host}"[:60],
+            kind="image",
+            summary=f"Screenshot of {url}",
             content=image_url,
-            variants={},
-            alternatives=[],
-            trust="untrusted",  # a picture of the open web
-            turn_id=turn_id,
-            sources=[{"url": url, "title": url}],
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[screenshot_page] document row failed: %s", exc)
-
-    try:
-        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-        get_event_bus().emit(
-            IRISStreamEvent.DOCUMENT_RENDER,
-            data={
-                "format": "image",
-                "content": image_url,
-                "alternatives": [],
-                "trust": "untrusted",
-                "document_id": document_id,
-                "turn_id": turn_id,
-                "conversation_id": conversation_id,
-                "sources": [{"url": url, "title": url}],
-                "har_path": None,
-            },
             turn_id=turn_id,
             conversation_id=conversation_id,
+            extra={
+                "document_id": document_id,   # the blob is keyed by this id
+                "trust": "untrusted",         # a picture of the open web
+                "sources": [{"url": url, "title": url}],
+                "source_tool": "screenshot_page",
+            },
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("[screenshot_page] DOCUMENT_RENDER emit failed: %s", exc)
+        logger.warning("[screenshot_page] card failed: %s", exc)
+        made = {"success": False}
+    if not (isinstance(made, dict) and made.get("success")):
         return {
             "success": False,
             "error": "the screenshot was taken but could not be shown",
@@ -210,5 +218,6 @@ async def capture_page_screenshot(
         # The agent should TALK about the page, not re-describe the card. Saying
         # so here keeps it from narrating "I have displayed an image" as if that
         # were the answer.
-        "note": "The screenshot is now shown in the chat. Describe what it shows.",
+        "note": ("The screenshot is now shown in the chat as a card. Describe what "
+                 "it shows; do not mention the document id."),
     }

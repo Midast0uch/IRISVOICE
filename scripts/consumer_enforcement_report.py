@@ -96,6 +96,27 @@ from scripts.calibrate_decision_threshold import (  # noqa: E402
 from scripts.fit_oracle_calibration import fit_consumer  # noqa: E402
 
 
+def parse_scopes(items) -> Dict[str, str]:
+    """``["tool_choice=tc-decide-v3"]`` -> ``{"tool_choice": "tc-decide-v3"}``."""
+    out: Dict[str, str] = {}
+    for it in items or []:
+        cid, _, stamp = str(it).partition("=")
+        if cid and stamp:
+            out[cid.strip()] = stamp.strip()
+    return out
+
+
+def scope_rows(rows: List[Dict[str, Any]], scopes: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Keep, for each SCOPED consumer, only its rows of that criteria_version
+    (LESSON 16: the report could not split cohorts by stamp, so a frame change
+    blended into the old curves). Unscoped consumers keep every row."""
+    if not scopes:
+        return rows
+    return [r for r in rows
+            if r["consumer_id"] not in scopes
+            or r.get("criteria_version") == scopes[r["consumer_id"]]]
+
+
 def load_rows(
     db: str, backend_id: Optional[str] = None,
     *, binary: Optional[frozenset] = None, dedupe: bool = True,
@@ -224,6 +245,9 @@ def load_rows(
                 "step_id": str(d.get("step_id") or ""),
                 "outcome_label": d.get("outcome_label"),
                 "outside_label": d.get("outside_label"),
+                # the FRAME/QUESTION cohort the row was measured under (the
+                # stamp), so a report can be scoped to ONE cohort (--scope)
+                "criteria_version": d.get("criteria_version"),
             }
             seen[key] = row
             rows.append(row)
@@ -446,9 +470,15 @@ def bar_rows(measured: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             "precision": m["precision"],
             "ece": None if m["threshold"] is None else m["ece"],
             # The hardened bar travels into the record too, so `--write` cannot
-            # persist a flip the report would refuse. No backend threshold = no
-            # honest block: the legacy clauses then fail on the missing ECE.
-            "honest": None if m["threshold"] is None else m.get("honest"),
+            # persist a flip the report would refuse.
+            # FIXED 2026-10-11: the honest block used to be dropped whenever
+            # the LEGACY yaml threshold (EngineConfig.threshold_for) was None -
+            # which it is for every d1 consumer, while the runtime reads the
+            # FITTED map (oracle_calibration). So no d1 consumer could ever be
+            # recorded enforced. The honest block carries its OWN fitted
+            # threshold and _derive_hardened refuses without it, so passing it
+            # always keeps the record fail-closed.
+            "honest": m.get("honest"),
             # REQ-6 AC6.1: the sampled rung's stated inputs, so the PERSISTED
             # record shows "sampled" exactly when the report does.
             "outcome_rows": int(m.get("outcome_rows") or 0),
@@ -469,22 +499,16 @@ def build_report(
     tiers = TIER_SAMPLABLE | TIER_REFUSE_ONLY
     consumers = {}
     for cid, m in sorted(measured.items()):
-        if m["threshold"] is None:
-            # AC6.1: the sampled rung does not need an enforcement threshold -
-            # a tier-eligible consumer WITH outcome-labelled rows is "sampled"
-            # here even though no curve exists yet.
-            if cid in tiers and int(m.get("outcome_rows") or 0) > 0:
-                status, gap = ("sampled",
-                               "no enforcement threshold; sampling rung live")
-            else:
-                status = "shadow"
-                gap = "no threshold for the active backend (fail-closed)"
-        else:
-            status, gap = derive_status(
-                m["rows"], m["precision"], m["ece"], honest=m.get("honest"),
-                sampling_eligible=cid in tiers,
-                outcome_rows=int(m.get("outcome_rows") or 0),
-            )
+        # ONE derivation for the printed status and the persisted record
+        # (2026-10-11): the old gate printed "no threshold for the active
+        # backend" from the LEGACY yaml threshold - None for every d1 consumer
+        # - while the record could say "enforced". The honest block carries
+        # its own fitted threshold; _derive_hardened refuses without it.
+        status, gap = derive_status(
+            m["rows"], m["precision"], m["ece"], honest=m.get("honest"),
+            sampling_eligible=cid in tiers,
+            outcome_rows=int(m.get("outcome_rows") or 0),
+        )
         consumers[cid] = {**m, "status": status, "gap": gap}
     return {
         "config": config,
@@ -562,7 +586,10 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--write", action="store_true",
                     help="persist the bar record (benchmarks/consumer_bar_record.json)")
+    ap.add_argument("--scope", action="append", default=[], metavar="CONSUMER=STAMP",
+                    help="measure CONSUMER on its rows of ONE criteria_version only")
     args = ap.parse_args()
+    scopes = parse_scopes(args.scope)
 
     db = Path(args.db)
     if not db.is_file():
@@ -578,6 +605,7 @@ def main() -> int:
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
+    rows = scope_rows(rows, scopes)
     # A threshold lookup for every CONSUMERS entry and every consumer in the ledger.
     thresholds, config = thresholds_by_consumer(sorted({r["consumer_id"] for r in rows}))
 
@@ -600,13 +628,18 @@ def main() -> int:
         _cap = int(config.get("candidate_cap") or 0)
 
         def _bar_config(cid: str) -> Dict[str, Any]:
-            return {
+            out = {
                 "backend_id": (
                     decision_identity(_model, CURRENT_READOUT_MODE, cid, _cap)
                     if _model else ""
                 ),
                 "criteria_hash": criteria_hash(cid, _cap),
             }
+            if cid in scopes:
+                # the cohort the bar was measured on - a frame change (a new
+                # stamp) is a different question and must re-earn the bar
+                out["criteria_version"] = scopes[cid]
+            return out
 
         record_bars(bar_rows(measured), config=config, config_of=_bar_config)
         rep["written"] = True

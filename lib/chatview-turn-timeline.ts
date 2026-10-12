@@ -49,9 +49,10 @@ export function buildChatTimeline<TMessage extends ChatTimelineMessage>(
     const card = entry.kind === "message" ? latestPerTurn.get(entry.message.id) : undefined
     const joins = !!card && !rendered.has(card.cardId)
     if (joins) rendered.add(card!.cardId)
-    if (joins && developer) out.push({ kind: "card", ts: entry.ts, card: card! })
+    // The card shows the WORK, the reply its RESULT: the card comes first in
+    // both modes (owner 2026-10-12: in personal mode it sat after the reply).
+    if (joins) out.push({ kind: "card", ts: entry.ts, card: card! })
     out.push(entry)
-    if (joins && !developer) out.push({ kind: "card", ts: entry.ts, card: card! })
   }
 
   const unrendered = [...latestPerTurn.entries()]

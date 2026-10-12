@@ -31,10 +31,56 @@ def test_untiered_and_refused_consumers_can_never_be_sampled(monkeypatch):
     assert de.sampled_consult_ok("presentation", "scope") is False, (
         "no ground truth, no sampling (Gate 2)")
     assert de.sampled_consult_ok("mode", "scope") is False
-    assert de.sampled_consult_ok("tool_choice", "scope") is False, (
-        "L3 irreversible is JOIN-only, never sampled")
+    # STALE-BY-SPEC update (2026-10-11, owner: "the Oracle decides all tools
+    # if capable"): tool_choice is SAMPLABLE now that a pick only NARROWS the
+    # model's menu (the model still writes the arguments, or finishes). The
+    # reversibility gate moved to the PICK: test_a_sampled_side_effect_pick_
+    # never_acts below pins that a sampled pick of a non-read-only tool never
+    # narrows anything without the eval switch.
+    assert de.sampled_consult_ok("tool_choice", "scope") is True
     assert de.sampled_consult_ok("done", "scope") is False
     assert de.sampled_consult_ok("needs_action", "scope") is True
+
+
+def _tool_box(chosen):
+    from backend.agent.decision_engine import CandidateScore, DecisionScore
+    from backend.agent.tool_decision import ToolDecisionBox
+
+    class _Eng:
+        model_id = "stub"
+
+        def decide(self, consumer_id, options, frame):
+            return DecisionScore(consumer_id=consumer_id, chosen=chosen, confidence=0.9,
+                                 distribution=tuple(CandidateScore(o, -0.1, 0.1) for o in options),
+                                 engine_latency_ms=1)
+
+    class _Bridge:
+        def record_decision(self, *a, **k):
+            pass
+
+    class _Router:
+        def generate(self, *a, **k):
+            return ("", "", [])
+
+    return ToolDecisionBox(router=_Router(), tool_bridge=_Bridge(),
+                           get_available_tools=lambda: [],
+                           validate_tool_call=lambda t, p: (True, None),
+                           decision_engine=_Eng())
+
+
+def test_a_sampled_side_effect_pick_never_acts(monkeypatch):
+    """AC6.6 Gate 1 per PICK (2026-10-11): a sampled tool pick narrows the
+    model's menu only to a READ-ONLY tool; a side-effect pick acts on a sample
+    only under the eval switch (throw-away work folders)."""
+    monkeypatch.setenv("IRIS_ORACLE_SAMPLE_FRACTION_TOOL_CHOICE", "1.0")
+    monkeypatch.delenv("IRIS_ORACLE_SAMPLE_SIDE_EFFECTS", raising=False)
+    menu = ["read_file", "edit_file", "run_command"]
+    kw = dict(goal="fix m.py", candidates=menu, scope_key="s")
+    assert _tool_box("edit_file").choose_node_tool(**kw) is None
+    got = _tool_box("read_file").choose_node_tool(**kw)
+    assert got is not None and got[0] == "read_file" and got[1]["route"] == "sampled"
+    monkeypatch.setenv("IRIS_ORACLE_SAMPLE_SIDE_EFFECTS", "1")
+    assert _tool_box("edit_file").choose_node_tool(**kw)[0] == "edit_file"
 
 
 def test_the_fraction_is_bounded_and_the_kill_switch_kills(monkeypatch):

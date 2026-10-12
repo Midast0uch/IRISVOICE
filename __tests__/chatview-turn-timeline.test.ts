@@ -26,21 +26,25 @@ describe("ChatView 11:52 deterministic turn fixture", () => {
     expect(chatMessage.conversation_id).toBe(documentRender.conversation_id)
   })
 
-  it("CT-3 joins the card immediately after its assistant anchor", () => {
+  // OWNER-DIRECTED CHANGE (2026-10-12): the card used to join immediately
+  // AFTER its assistant anchor in personal mode; the owner asked for it BEFORE
+  // the reply (the card is the work, the reply the result), as developer mode
+  // already did. Only the position changed; the join to the anchor is the same.
+  it("CT-3 joins the card immediately before its assistant anchor", () => {
     const fixture = CHATVIEW_1152_FIXTURE
     const timeline = buildChatTimeline(
       [fixture.userMessage, fixture.assistantMessage],
       [fixture.taskCard],
     )
 
-    expect(timeline.map((entry) => entry.kind)).toEqual(["message", "message", "card"])
+    expect(timeline.map((entry) => entry.kind)).toEqual(["message", "card", "message"])
     expect(timeline[1]).toMatchObject({
-      kind: "message",
-      message: { id: CHATVIEW_1152_TURN_ID },
-    })
-    expect(timeline[2]).toMatchObject({
       kind: "card",
       card: { responseTurnId: CHATVIEW_1152_TURN_ID },
+    })
+    expect(timeline[2]).toMatchObject({
+      kind: "message",
+      message: { id: CHATVIEW_1152_TURN_ID },
     })
   })
 
@@ -49,7 +53,8 @@ describe("ChatView 11:52 deterministic turn fixture", () => {
     const timeline = buildChatTimeline([fixture.assistantMessage], [fixture.taskCard])
     const cardIndex = timeline.findIndex((entry) => entry.kind === "card")
 
-    expect(cardIndex).toBe(1)
+    // Joined to its anchor (now placed before it), not appended as an orphan.
+    expect(cardIndex).toBe(0)
     expect(timeline[cardIndex].ts).toBe(fixture.assistantMessage.timestamp.getTime())
   })
 })

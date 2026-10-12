@@ -106,4 +106,43 @@ describe("useBrowserNavOverlay — REQ-16 visible navigation (T47)", () => {
 
     expect(result.current.status.state).toBe("complete")
   })
+
+  it("settles a live browser run at the turn's end - those tools send no crawler_complete", () => {
+    // Live 2026-10-11: browser_open/browser_act sent pages and actions, the
+    // answer came, and the overlay stayed "crawling" over the frame for good.
+    const { result } = renderHook(() => useBrowserNavOverlay())
+    fire("iris:crawler_page_fetched", { page_number: 1, total: 1 })
+    fire("iris:crawler_vision_action", { kind: "click", action_index: 1 })
+    fire("iris:crawler_page_fetched", { page_number: 2, total: 2 })
+    expect(result.current.status.state).toBe("crawling")
+
+    fire("iris:turn_end", {})
+    expect(result.current.status.state).toBe("complete")
+    expect(result.current.status.visionAction).toBe("")
+  })
+})
+
+describe("useBrowserNavOverlay — live-browser events (source: browser)", () => {
+  it("browser frames move the state but never change pagesDone/pagesTotal", () => {
+    const { result } = renderHook(() => useBrowserNavOverlay())
+
+    // A search is running with its own page counters.
+    fire("iris:crawler_started", { query: "pricing", url_count: 4 })
+    fire("iris:crawler_page_fetched", { page_number: 2, total: 4 })
+    expect(result.current.status.pagesDone).toBe(2)
+    expect(result.current.status.pagesTotal).toBe(4)
+
+    // browser_open arrives mid-search: counters and sub-goal survive.
+    fire("iris:crawler_started", { query: "https://example.com", url_count: 1, source: "browser" })
+    expect(result.current.status.state).toBe("loading")
+    expect(result.current.status.subGoal).toBe("pricing")
+    expect(result.current.status.pagesTotal).toBe(4)
+
+    // Frame counts must not inflate "pages done".
+    fire("iris:crawler_page_fetched", { page_number: 9, total: 9, source: "browser" })
+    fire("iris:crawler_page_fetched", { page_number: 10, total: 10, source: "browser" })
+    expect(result.current.status.state).toBe("crawling")
+    expect(result.current.status.pagesDone).toBe(2)
+    expect(result.current.status.pagesTotal).toBe(4)
+  })
 })

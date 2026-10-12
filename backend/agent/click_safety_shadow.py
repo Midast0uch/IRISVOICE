@@ -123,6 +123,9 @@ def record_assessment(statement: str, gate_verdict: str,
             "engine_latency_ms": ds.engine_latency_ms,
             "brain_choice": gate_verdict,
             "shadow": True,
+            # v2 (2026-10-11): action-first statement + guard budget 128 - the
+            # old rows read a goal-first text cut before the action.
+            "criteria_version": "click_safety/v2",
         }
         if scope:
             row.update(scope)
@@ -136,6 +139,15 @@ def record_assessment(statement: str, gate_verdict: str,
     except Exception as e:  # noqa: BLE001 - a shadow never raises
         logger.debug("[click_safety] shadow failed: %r", e)
         return None
+
+
+def statement(action: str, goal: str) -> str:
+    """The consult's text: the ACTION first, then the task (click_safety/v2).
+
+    It used to be ``goal | action``, and the guard budget (64 ids, ~256 chars)
+    cut from the END - with a long step goal the action, the very thing the
+    question is about, never reached the model."""
+    return f"{action} | task: {(goal or '')[:300]}"
 
 
 def submit_assessment(statement: str, gate_verdict: str,

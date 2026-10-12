@@ -44,3 +44,68 @@ def test_the_digest_carries_the_article_not_the_menus():
     data = asyncio.run(run())
     assert "5,895 m" in data["digest"] and "6 October 1889" in data["digest"]
     assert "Jump to content" not in data["digest"]
+
+
+# A shop's category page (live 2026-10-12): many <article> cards, a 50-link
+# sidebar, no <main>. The digest was the FIRST card ("Sharp Objects £47.82")
+# and the sidebar took 50 of the 60 element slots - the agent saw 4 of 20
+# products and picked the wrong "cheapest" one.
+_LIST_PAGE = (
+    "<html><body><header>Books to Scrape We love being scraped!</header>"
+    "<aside><ul>" + "".join(f"<li><a href='/c{i}'>Category {i}</a></li>" for i in range(50))
+    + "</ul></aside><section>"
+    + "".join(f"<article><h3><a href='/b{i}'>Book {i}</a></h3><p>£{40 - i}.50</p>"
+              f"<button>Add to basket</button></article>" for i in range(20))
+    + "</section></body></html>"
+)
+
+
+def test_a_list_page_digest_and_elements_carry_every_item_not_the_chrome():
+    from playwright.async_api import async_playwright
+
+    async def run():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.set_content(_LIST_PAGE)
+                return await page.evaluate(_OBSERVE_JS, 60)
+            finally:
+                await browser.close()
+
+    data = asyncio.run(run())
+    assert "Book 0" in data["digest"] and "£21.50" in data["digest"], data["digest"][:300]
+    assert "Category 7" not in data["digest"], "the sidebar is read as the page"
+    names = [m["name"] for m in data["marks"]]
+    assert "Book 19" in names, "the products were crowded out of the element list"
+    assert names.index("Book 0") < names.index("Category 0") if "Category 0" in names else True
+
+
+# ...and the navigation must survive a full page of items (live 2026-10-12: a
+# home page whose 20 products filled every slot hid the category links; the
+# agent guessed URLs and hit 404s).
+_FULL_HOME = (
+    "<html><body><aside><ul>" + "".join(f"<li><a href='/c{i}'>Category {i}</a></li>" for i in range(50))
+    + "</ul></aside><section>"
+    + "".join(f"<article><a href='/b{i}'><img alt='cover {i}'></a><h3><a href='/b{i}'>Book {i}</a></h3>"
+              f"<button>Add to basket</button></article>" for i in range(40))
+    + "</section></body></html>"
+)
+
+
+def test_navigation_links_keep_a_share_of_the_element_list():
+    from playwright.async_api import async_playwright
+
+    async def run():
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            try:
+                page = await browser.new_page()
+                await page.set_content(_FULL_HOME)
+                return await page.evaluate(_OBSERVE_JS, 80)
+            finally:
+                await browser.close()
+
+    names = [m["name"] for m in asyncio.run(run())["marks"]]
+    assert sum(n.startswith("Category") for n in names) >= 20, "navigation crowded out"
+    assert sum(n.startswith("Book") or n.startswith("cover") for n in names) >= 20

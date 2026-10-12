@@ -115,8 +115,10 @@ _TIMEOUT_S = float(os.environ.get("IRIS_D1_TIMEOUT_S", "20"))
 # as ["yes","no"] — render the native noul template for them (V1 probe:
 # 98.8%/96.5% polarity-correct).
 #
-# The LETTER readout vocabulary is GONE (AC1.4): a choice now pools over the
-# option NAME tokens (AC1.2), and no fallback scores through letters.
+# The LETTER readout is RESTORED (2026-10-10, commit 1561a908): a choice pools
+# over the option CODE tokens per the reference implementation — see "THE
+# REFERENCE READOUT" below. (The Wave-2 name-token readout was our error: it
+# read a distribution d1 was never trained to calibrate.)
 _YES_FORMS = ("yes", "Yes", "YES")
 _NO_FORMS = ("no", "No", "NO")
 _YES_NO_LOWER = frozenset({"yes", "no"})

@@ -197,6 +197,12 @@ export function useCrawl(wsConnected: boolean = true) {
     function onStarted(e: Event) {
       const msg = (e as CustomEvent<CrawlerStartedMsg>).detail
       activeRef.current = true
+      // The live browser (browser_open / browser_act) is not a search: it must
+      // not wipe a finished search's sources, nor swap the persisted session.
+      if (msg.source === "browser") {
+        setState((s) => (s.active ? s : { ...s, active: true }))
+        return
+      }
       sessionIdRef.current = msg.session_id ?? sessionIdRef.current
       if (msg.session_id) _persistSession(msg.session_id)
       setState(() => ({
@@ -220,27 +226,37 @@ export function useCrawl(wsConnected: boolean = true) {
     }
     function onPage(e: Event) {
       const msg = (e as CustomEvent<CrawlerPageMsg>).detail
+      const isBrowser = msg.source === "browser"
+      const page: CrawlPageProgress = {
+        url: msg.url,
+        pageNumber: msg.page_number,
+        total: msg.total,
+        host: msg.host || _hostOf(msg.url),
+        jobId: msg.job_id,
+        // Fall back to the counter only when the backend sent no address —
+        // the batch path, where the two coincide. Never invent one.
+        capturePage: msg.capture_page ?? msg.page_number,
+        // Absent means "not reported", which for older emitters meant the
+        // bytes were there; only an explicit false is a blocked page.
+        captureAvailable: msg.capture_available !== false,
+        title: msg.title,
+      }
+      // A live-browser frame stays in `pages` (the panel derives the live tab's
+      // capture provenance from it) but is not a search source, and its frame
+      // count is not the search's page total.
+      if (isBrowser) {
+        setState((s) => ({
+          ...s,
+          active: true,
+          pages: [...s.pages.filter((p) => p.url !== msg.url), page],
+        }))
+        return
+      }
       setState((s) => ({
         ...s,
         active: true,
         total: msg.total || s.total,
-        pages: [
-          ...s.pages.filter((p) => p.url !== msg.url),
-          {
-            url: msg.url,
-            pageNumber: msg.page_number,
-            total: msg.total,
-            host: msg.host || _hostOf(msg.url),
-            jobId: msg.job_id,
-            // Fall back to the counter only when the backend sent no address —
-            // the batch path, where the two coincide. Never invent one.
-            capturePage: msg.capture_page ?? msg.page_number,
-            // Absent means "not reported", which for older emitters meant the
-            // bytes were there; only an explicit false is a blocked page.
-            captureAvailable: msg.capture_available !== false,
-            title: msg.title,
-          },
-        ],
+        pages: [...s.pages.filter((p) => p.url !== msg.url), page],
         // Advance this source's outcome in the plan card. `capture_available:
         // false` means the bytes were deliberately not stored — a bot-challenge
         // interstitial — so the page was reached but is NOT readable evidence,
@@ -307,6 +323,9 @@ export function useCrawl(wsConnected: boolean = true) {
     }
     function onComplete(e: Event) {
       const msg = (e as CustomEvent<CrawlerCompleteMsg>).detail
+      // "browser session closed" is not the search's summary; turn_end settles
+      // the active flag for the live browser.
+      if (msg.source === "browser") return
       activeRef.current = false
       setState((s) => ({
         ...s,
@@ -316,6 +335,15 @@ export function useCrawl(wsConnected: boolean = true) {
         citedMarkdown: msg.cited_markdown ?? s.citedMarkdown,
         credibilityTopScore: msg.credibility_top_score ?? s.credibilityTopScore,
       }))
+    }
+    // The live browser tools (browser_open / browser_act) send page and action
+    // events but no crawler_complete - the session outlives the turn. Without
+    // this the header said "Searching" after the answer, for good (live
+    // 2026-10-11). turn.end is the one end the backend guarantees per turn; a
+    // crawl runs inside its turn, so its own complete has already landed.
+    function onTurnEnd() {
+      activeRef.current = false
+      setState((s) => (s.active ? { ...s, active: false, complete: true } : s))
     }
     function onSyncRequired(e: Event) {
       // REQ-31 edge / T23: TTL eviction dropped events we never replayed, so
@@ -364,7 +392,9 @@ export function useCrawl(wsConnected: boolean = true) {
     t.addEventListener("iris:crawler_error", onError as EventListener)
     t.addEventListener("iris:crawler_complete", onComplete as EventListener)
     t.addEventListener("iris:crawler_sync_required", onSyncRequired as EventListener)
+    t.addEventListener("iris:turn_end", onTurnEnd)
     return () => {
+      t.removeEventListener("iris:turn_end", onTurnEnd)
       t.removeEventListener("iris:crawler_started", onStarted as EventListener)
       t.removeEventListener("iris:crawler_page_fetched", onPage as EventListener)
       t.removeEventListener("iris:open_tab", onOpenTab as EventListener)

@@ -1,30 +1,36 @@
 """
 IRIS Backend Package
-"""
-from .models import (
-    Category,
-    FieldType,
-    InputField,
-    Section,
-    ColorTheme,
-    IRISState,
-    get_sections_for_category,
-    SECTION_CONFIGS,
-)
-from .state_manager import StateManager, get_state_manager
-from .ws_manager import WebSocketManager, get_websocket_manager
 
-__all__ = [
-    "Category",
-    "FieldType",
-    "InputField",
-    "Section",
-    "ColorTheme",
-    "IRISState",
-    "get_sections_for_category",
-    "SECTION_CONFIGS",
-    "StateManager",
-    "get_state_manager",
-    "WebSocketManager",
-    "get_websocket_manager",
-]
+The package names below load on first use (PEP 562), not at import. Every
+subprocess that imports any `backend.*` module ran this file: the TTS worker
+paid for fastapi + pydantic (4.6 s warm, far more on a cold hard disk) to use
+two small helpers, on the path that gates /health at boot.
+"""
+from importlib import import_module as _import_module
+
+_LAZY = {
+    "Category": ".models",
+    "FieldType": ".models",
+    "InputField": ".models",
+    "Section": ".models",
+    "ColorTheme": ".models",
+    "IRISState": ".models",
+    "get_sections_for_category": ".models",
+    "SECTION_CONFIGS": ".models",
+    "StateManager": ".state_manager",
+    "get_state_manager": ".state_manager",
+    "WebSocketManager": ".ws_manager",
+    "get_websocket_manager": ".ws_manager",
+}
+
+
+def __getattr__(name):
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(_import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+__all__ = list(_LAZY)

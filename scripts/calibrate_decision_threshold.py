@@ -119,13 +119,23 @@ def decision_label(outcome, payload: dict, d: dict) -> bool | None:
     to be counted as skipped, never scored.
     """
     shadow = bool(d.get("shadow")) or str(d.get("route") or "") == "shadow"
+    # REQ-7 AC7.1: the outside label, in preference to anything else - on
+    # EVERY row (2026-10-11). It used to be read on shadow rows only, so a row
+    # where the engine DECIDED (route "sampled"/"enforced") fell through to
+    # the event outcome below and its own outcome label was ignored: an
+    # Oracle-decided tool call could never be scored by what it did.
+    if d.get("outside_label") is not None:
+        ol = d["outside_label"]
+        if isinstance(ol, bool):
+            return bool(d.get("chosen")) == bool(ol)
+        return str(d.get("chosen")) == str(ol)
+    # An OUTCOME-labelled row with no outside label was never adjudicated (an
+    # Oracle tool pick the step finished without calling, an untested claim):
+    # counted by the caller, never scored - on a decided row the event outcome
+    # below says nothing about the pick (AC14.4).
+    if d.get("label_source") == "outcome" and not shadow:
+        return None
     if shadow:
-        # REQ-7 AC7.1: the outside label, in preference to the incumbent.
-        if d.get("outside_label") is not None:
-            ol = d["outside_label"]
-            if isinstance(ol, bool):
-                return bool(d.get("chosen")) == bool(ol)
-            return str(d.get("chosen")) == str(ol)
         if d.get("brain_choice") is not None:
             # NOT SCOREABLE (2): a control-label answer the reference can
             # never be. Counted by the caller, never scored as wrong.

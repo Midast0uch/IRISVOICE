@@ -45,18 +45,30 @@ const proxied = (url: string) => `/api/browser/proxy?url=${encodeURIComponent(ur
  * The token itself is never visible here — HttpOnly means page script cannot
  * read it, which is the point.
  */
-export function useBrowserSurfaceSession(): boolean {
-  const [ready, setReady] = useState(false)
+export function useBrowserSurfaceSession(): number {
+  // 0 = not minted yet; then a counter that grows on every re-mint, so the
+  // caller can reload its frames with the new cookie.
+  const [epoch, setEpoch] = useState(0)
   useEffect(() => {
     let cancelled = false
-    fetch("/api/browser/session", { method: "POST", credentials: "same-origin" })
-      .catch(() => undefined)
-      // Ready either way: a failure means the frames will show the endpoint's
-      // own refusal, which is more honest than rendering nothing forever.
-      .finally(() => { if (!cancelled) setReady(true) })
-    return () => { cancelled = true }
+    const mint = () => {
+      fetch("/api/browser/session", { method: "POST", credentials: "same-origin" })
+        .catch(() => undefined)
+        // Ready either way: a failure means the frames will show the endpoint's
+        // own refusal, which is more honest than rendering nothing forever.
+        .finally(() => { if (!cancelled) setEpoch(e => e + 1) })
+    }
+    mint()
+    // Without a wallet identity key the backend's token is per PROCESS: after
+    // a backend restart the old cookie is refused and every capture 404s
+    // ("not found") until the page reloads. Every WS (re)connect re-mints.
+    window.addEventListener("iris:ws_connected", mint)
+    return () => {
+      cancelled = true
+      window.removeEventListener("iris:ws_connected", mint)
+    }
   }, [])
-  return ready
+  return epoch
 }
 
 export function useActiveFrameSrc(args: {

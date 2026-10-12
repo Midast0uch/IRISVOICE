@@ -175,6 +175,31 @@ async def lifespan(app: FastAPI):
     app.state._started_at = _time.time()
     logger.info("IRIS Backend starting up...")
 
+    # ==========================================================================
+    # TTS STARTS FIRST (2026-10-12). /health waits for the TTS worker, and its
+    # imports are the longest single load at boot. Measured: the port check
+    # (config + 2,316 stored conversations) and the cleanups ran first and the
+    # worker spawned 12 s into startup. The orphan kill must come first - it
+    # matches workers by command line and would kill the new one.
+    # TTS LOADS WITH THE BACKEND (owner 2026-09-30; replaces REQ-5 lazy load):
+    # lazy loading put the cold load inside turns (2026-09-29: 5 min 6 s on the
+    # hard disk, a coding step's pytest ~2 s -> ~110 s). /health + /ready report
+    # not-ready until it is ready, so no turn starts during it. Memory stays
+    # bounded by the worker growth recycle (TTSManager._max_growth_mb).
+    # ==========================================================================
+    try:
+        from .agent.tts import kill_orphan_tts_workers
+
+        await asyncio.to_thread(kill_orphan_tts_workers)
+        logger.info("  - [CLEANUP] Orphaned TTS worker processes killed")
+    except Exception:
+        pass
+    try:
+        get_tts_manager().prewarm()
+        logger.info("  - TTS loading in the background (backend ready when TTS is ready)")
+    except Exception as _tts_boot_exc:  # noqa: BLE001 — a load failure is reported by /health
+        logger.error(f"  - TTS boot load could not start: {_tts_boot_exc}")
+
     # ── Port availability check at startup ────────────────────────────
     try:
         from backend.iris_config import load_config as _pc_load
@@ -207,30 +232,41 @@ async def lifespan(app: FastAPI):
     try:
         # Prune stale UUID session directories older than 7 days.
         # Keeps session_iris* dirs — removes only auto-generated UUID dirs.
-        try:
-            import time as _cleanup_time
-            from pathlib import Path as _Path
+        # On a thread, NOT awaited: it ran inline on the event loop and took
+        # 5.7 s on a cold boot (directory walk + rmtree on the hard disk),
+        # holding back everything after it - the TTS worker spawn included,
+        # and the worker's start is what gates /health. Nothing reads these
+        # directories at boot.
+        def _prune_stale_session_dirs() -> None:
+            try:
+                import shutil as _shutil
+                import time as _cleanup_time
+                from pathlib import Path as _Path
 
-            _sessions_root = _Path(__file__).parent / "sessions"
-            if _sessions_root.is_dir():
-                _cutoff = _cleanup_time.time() - 7 * 86400
-                _removed = 0
-                for _entry in _sessions_root.iterdir():
-                    if _entry.name.startswith("_") or _entry.name.startswith(
-                        "session_iris"
-                    ):
-                        continue
-                    if _entry.is_dir() and _entry.stat().st_mtime < _cutoff:
-                        import shutil as _shutil
+                _sessions_root = _Path(__file__).parent / "sessions"
+                if _sessions_root.is_dir():
+                    _cutoff = _cleanup_time.time() - 7 * 86400
+                    _removed = 0
+                    for _entry in _sessions_root.iterdir():
+                        if _entry.name.startswith("_") or _entry.name.startswith(
+                            "session_iris"
+                        ):
+                            continue
+                        if _entry.is_dir() and _entry.stat().st_mtime < _cutoff:
+                            _shutil.rmtree(_entry, ignore_errors=True)
+                            _removed += 1
+                    if _removed:
+                        logger.info(f"  - [CLEANUP] Removed {_removed} stale session dirs")
+            except Exception as _ce:
+                logger.warning(
+                    f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}"
+                )
 
-                        _shutil.rmtree(_entry, ignore_errors=True)
-                        _removed += 1
-                if _removed:
-                    logger.info(f"  - [CLEANUP] Removed {_removed} stale session dirs")
-        except Exception as _ce:
-            logger.warning(
-                f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}"
-            )
+        import threading as _cleanup_threading
+
+        _cleanup_threading.Thread(
+            target=_prune_stale_session_dirs, daemon=True, name="iris-session-prune",
+        ).start()
 
         # Kill any orphaned llama-server from previous crashes
         try:
@@ -242,19 +278,9 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
-        # Session-331: kill any orphaned Pocket-TTS worker from a previous
-        # crash. The worker is a ~2 GB-commit python subprocess; if the backend
-        # died mid-synthesis it is left orphaned with no parent to reap it, and
-        # it never idles out (its parent-owned reaper is gone). This mirrors the
-        # llama-server cleanup above so a crashed run can never leave a
-        # multi-GB zombie behind. Best-effort: a failure here never blocks boot.
-        try:
-            from .agent.tts import kill_orphan_tts_workers
-
-            await asyncio.to_thread(kill_orphan_tts_workers)
-            logger.info("  - [CLEANUP] Orphaned TTS worker processes killed")
-        except Exception:
-            pass
+        # Session-331: orphaned Pocket-TTS workers (a ~2 GB-commit python
+        # subprocess a crashed backend leaves behind) are killed at the TOP of
+        # the lifespan, right before the new worker spawns (see there).
 
         logger.info("  - Starting session manager...")
         session_manager = get_session_manager()
@@ -326,6 +352,22 @@ async def lifespan(app: FastAPI):
         # and is not warmed. The server idles out after 20 min
         # (IRIS_PHONON2_IDLE_EXIT_S) and respawns on the next utterance.
         def _phonon2_boot_warm():
+            # AFTER the TTS worker (2026-10-11): both are big Python imports
+            # from the hard disk, and /health waits for TTS. Spawned together
+            # they starved each other - TTS imports took 169 s and Phonon-2
+            # missed its own 300 s health deadline at every measured boot. The
+            # STT engine still warms WITH the backend (owner 2026-10-07), just
+            # off the path to /health. Bounded: after 300 s it spawns anyway.
+            try:
+                import time as _time
+
+                _deadline = _time.monotonic() + 300.0
+                while _time.monotonic() < _deadline:
+                    if get_tts_manager().readiness().get("status") not in ("loading", "not_started"):
+                        break
+                    _time.sleep(2.0)
+            except Exception:  # noqa: BLE001 - a probe never blocks the warm
+                pass
             try:
                 voice_handler._phonon2_warm_up()
             except Exception as _w_exc:
@@ -351,6 +393,15 @@ async def lifespan(app: FastAPI):
             try:
                 from backend.agent import tool_model_server as _tms
 
+                # Only when a role is bound to it (2026-10-11): with every role
+                # on hosted models the server is dormant, and warming it loaded
+                # a GGUF + scanned the model dirs on the hard disk during boot.
+                if not _tms.role_bound():
+                    logger.info(
+                        "    [-] [TOOLSERVER] dormant - no role is bound to the "
+                        "local tool server; not started at boot"
+                    )
+                    return
                 if _tms.ensure_running():
                     logger.info(
                         f"    [+] [TOOLSERVER] LFM2.5-2.6B warm on :{_tms.TOOL_MODEL_PORT} "
@@ -445,21 +496,138 @@ async def lifespan(app: FastAPI):
             logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
             raise
 
-        # ==========================================================================
-        # TTS LOADS WITH THE BACKEND (owner 2026-09-30; replaces REQ-5 lazy load).
-        # Lazy loading put the cold load inside turns: on 2026-09-29 the Pocket-TTS
-        # worker spawned on the first connect, needed 5 min 6 s on this machine's
-        # hard disk (110 s of imports cold vs 5 s warm), and its model load
-        # starved a coding step (pytest ~2 s -> ~110 s). The load now starts here,
-        # in the background, alongside the rest of startup, and /health + /ready
-        # report not-ready until it is ready, so no turn starts during it. Memory
-        # stays bounded by the worker growth recycle (TTSManager._max_growth_mb).
-        # ==========================================================================
-        try:
-            get_tts_manager().prewarm()
-            logger.info("  - TTS loading in the background (backend ready when TTS is ready)")
-        except Exception as _tts_boot_exc:  # noqa: BLE001 — a load failure is reported by /health
-            logger.error(f"  - TTS boot load could not start: {_tts_boot_exc}")
+
+        # MOVED EARLY (2026-10-11): d1's boot load used to be scheduled at the END
+        # of startup, behind the synchronous wake-word init - measured: d1 began
+        # loading at 56 s warm and 400 s under disk contention. It depends only on
+        # the config and the local model manager, so it starts here, right after
+        # the TTS spawn, and loads in parallel with the rest of startup.
+        # ── d1 boot load (owner 2026-10-08, Wave 3) ─────────────────────────
+        # d1 goes on the GPU at STARTUP, like the old Parakeet boot warm:
+        # vision AND the Oracle find it resident instead of racing a manual
+        # Models-card load. The pinned vision model IS the d1 build (the
+        # only model this boot will auto-load — an arbitrary future pin is
+        # refused with a log, never silently loaded). The load is async on
+        # the main loop; the engine warm below retries until it lands
+        # (decision_backend_d1.retry_load).
+        async def _boot_load_d1():
+            from pathlib import Path as _P
+
+            def _read_vision_pin() -> str:
+                # The pin lives at field_values.vision.vision_model — a nested
+                # dict in the JSON and possibly an object on the loaded config;
+                # tolerate both, then fall back to the file.
+                try:
+                    from backend.iris_config import load_config as _load_cfg
+
+                    _fv = getattr(_load_cfg(), "field_values", None)
+                    _vis = (
+                        _fv.get("vision") if isinstance(_fv, dict)
+                        else getattr(_fv, "vision", None)
+                    )
+                    _pin = (
+                        _vis.get("vision_model") if isinstance(_vis, dict)
+                        else getattr(_vis, "vision_model", "")
+                    )
+                    if _pin:
+                        return str(_pin)
+                except Exception:
+                    pass
+                try:
+                    import json as _json
+
+                    _cfgp = _P(__file__).resolve().parents[1] / "data" / "iris_config.json"
+                    return str(
+                        _json.loads(_cfgp.read_text(encoding="utf-8"))
+                        .get("field_values", {})
+                        .get("vision", {})
+                        .get("vision_model", "") or ""
+                    )
+                except Exception:
+                    return ""
+
+            try:
+                _pin = _read_vision_pin()
+                if not _pin or "d1-3b" not in _P(_pin).name.lower():
+                    logger.warning(
+                        f"    [x] [D1BOOT] pinned vision model is not the d1 "
+                        f"build ({_P(_pin).name or 'no pin'}) — skipping the "
+                        f"boot load; load d1 from the Models card"
+                    )
+                    return
+                # SSD TWIN (owner 2026-10-08, "68s is long"): the C: copy is a
+                # PHYSICAL file on the 7200rpm HDD (~80 MB/s measured,
+                # SESSION-2026-08-27), not the symlink the handoff pin claimed
+                # (fsutil: not a reparse point). The same bytes sit on the D:
+                # SSD (~1675 MB/s) under a DIFFERENT directory layout — find
+                # them by filename, not by mirroring the C: path. Loading from
+                # there cuts the 2.52 GB read from ~32 s to ~2 s. The
+                # registry/scan keep serving the C: path; only the BOOT load
+                # prefers the faster twin.
+                _load_path = _pin
+                try:
+                    _hits = list(
+                        (_P("D:/lmstudio/models")).rglob(_P(_pin).name)
+                    )
+                    if _hits:
+                        _load_path = str(_hits[0])
+                        logger.info(
+                            f"    [+] [D1BOOT] loading from the D: SSD twin "
+                            f"({_hits[0]}) instead of the C: HDD copy"
+                        )
+                except Exception:
+                    pass
+                from backend.agent.local_model_manager import get_local_model_manager
+
+                _mgr = get_local_model_manager()
+                _st = _mgr.get_status()
+                if _st.get("loaded") and "d1-3b" in _P(
+                    str(_st.get("model_path", ""))
+                ).name.lower():
+                    logger.info(
+                        f"    [+] [D1BOOT] d1 already resident on "
+                        f"{_st.get('endpoint', '8082')} — nothing to do"
+                    )
+                    return
+                logger.info(
+                    "    [+] [D1BOOT] loading d1 (+mmproj) on the shared "
+                    "server at boot (vision + Oracle resident, like the old "
+                    "Parakeet boot warm)",
+                )
+                # ctx from the REGISTRY entry (8192): the deriver's default
+                # picked d1's NATIVE 32768, and the 32k KV build was a large
+                # slice of the 68 s. 8192 is the owner's VRAM budget entry.
+                _nctx = 8192
+                try:
+                    import json as _json
+
+                    _reg = _json.loads(
+                        (_P(__file__).resolve().parents[1]
+                         / "models" / "gguf" / ".iris_model_settings.json"
+                         ).read_text(encoding="utf-8")
+                    )
+                    _nctx = int(
+                        _reg.get(_P(_pin).name, {}).get("last_ctx", 8192) or 8192
+                    )
+                except Exception:
+                    pass
+                _ok = await _mgr.load_model(
+                    _load_path, with_projector=True,
+                    custom_params={"n_ctx": _nctx},
+                )
+                if _ok:
+                    logger.info("    [+] [D1BOOT] d1 resident — vision + Oracle warm")
+                else:
+                    logger.warning(
+                        "    [x] [D1BOOT] d1 boot load failed — vision and "
+                        "the Oracle stay borrow-only until a Models-card load"
+                    )
+            except Exception as _d1_exc:
+                logger.warning(
+                    f"    [x] [D1BOOT] boot load failed (non-fatal): {_d1_exc}"
+                )
+
+        asyncio.create_task(_boot_load_d1())
 
         # ==========================================================================
         # WAKE WORD MODEL DISCOVERY AND CONFIGURATION WITH DIAGNOSTIC LOGGING
@@ -494,62 +662,73 @@ async def lifespan(app: FastAPI):
         # A bad model, missing dependency, or audio driver issue must never crash
         # the entire backend. The agent kernel, chat, and TTS all work without it.
         # ==========================================================================
-        logger.info("  - Initializing wake word detector (Violawake)...")
-        try:
-            if audio_engine.initialize_detector():  # reads phrase + sensitivity from WakeConfig
-                logger.info("    [+] [WAKE] Initialized with wake word config")
-            else:
-                logger.error(
-                    "    [x] [WAKE] Initialization FAILED — "
-                    "wake word detection disabled. Check the ONNX model path."
+        # OFF THE STARTUP PATH (2026-10-11): the detector init is synchronous
+        # (ONNX + the Silero VAD gate) and ran ON the event loop, so the rest of
+        # startup - and uvicorn's first /health answer - waited for it.
+        # Measured: 41 s warm (7.6 -> 48.9 s) and 381 s under disk contention
+        # (13.1 -> 394.0 s), with d1's boot load queued behind it. Wake word is
+        # NON-FATAL by contract (the app works without it), so it runs on its
+        # own thread and reports when it is done.
+        def _init_wake_and_audio() -> None:
+            _t0 = datetime.now()
+            try:
+                if audio_engine.initialize_detector():  # reads phrase + sensitivity from WakeConfig
+                    logger.info("    [+] [WAKE] Initialized with wake word config")
+                else:
+                    logger.error(
+                        "    [x] [WAKE] Initialization FAILED — "
+                        "wake word detection disabled. Check the ONNX model path."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"    [~] [WAKE] Wake word init failed (non-fatal — voice activation disabled): {e}"
                 )
-        except Exception as e:
-            logger.warning(
-                f"    [~] [WAKE] Wake word init failed (non-fatal — voice activation disabled): {e}"
-            )
-            # Do NOT raise — the app is fully usable without wake word detection.
+                # Do NOT raise — the app is fully usable without wake word detection.
 
-        # Step 8: Register live-update callback for dynamic wake word changes
-        try:
-            from backend.agent.wake_config import get_wake_config
+            # Register live-update callback for dynamic wake word changes
+            try:
+                from backend.agent.wake_config import get_wake_config
 
-            get_wake_config().register_change_callback(
-                audio_engine.reinitialize_detector
-            )
-            logger.info("    [+] [WAKE] Live wake-word updates registered")
-        except Exception as e:
-            logger.warning(
-                f"    [~] [WAKE] Wake-word update callback failed (non-fatal): {e}"
-            )
+                get_wake_config().register_change_callback(
+                    audio_engine.reinitialize_detector
+                )
+                logger.info("    [+] [WAKE] Live wake-word updates registered")
+            except Exception as e:
+                logger.warning(
+                    f"    [~] [WAKE] Wake-word update callback failed (non-fatal): {e}"
+                )
 
-        # Step 9: Start the AudioEngine so wake frame detection runs
-        start_time = datetime.now()
-        if not audio_engine.start():
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.warning(
-                f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)"
-            )
-        else:
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.info(
-                f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — wake word detection active"
-            )
+            # Start the AudioEngine so wake frame detection runs
+            try:
+                start_time = datetime.now()
+                if not audio_engine.start():
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    logger.warning(
+                        f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)"
+                    )
+                else:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    logger.info(
+                        f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — wake word detection active"
+                    )
+                logger.info(
+                    f"  - [AUDIO SUBSYSTEM] Initialization complete in "
+                    f"{(datetime.now() - _t0).total_seconds():.3f}s (background)"
+                )
+                logger.info(
+                    f"  - [AUDIO DIAG] Wake word: {'READY' if audio_engine._wake_detector_initialized else 'DISABLED'} | "
+                    f"Pipeline: {'RUNNING' if audio_engine._is_running else 'STOPPED'} | "
+                    f"Voice handler: {'WIRED' if voice_handler.is_recording is False else 'RECORDING'} | "
+                    f"Phonon-2: {'READY' if voice_handler._phonon2 is not None else 'SPAWNS AT BOOT'} | "
+                    f"Whisper: {'READY' if voice_handler._whisper is not None else 'FALLBACK (not loaded)'}"
+                )
+            except Exception as e:  # noqa: BLE001 - audio never blocks or crashes startup
+                logger.warning(f"    [~] [AUDIO ENGINE] start failed (non-fatal): {e}")
 
-        # Step 10: Log overall audio subsystem initialization status
-        total_elapsed = (datetime.now() - start_time).total_seconds()
-        logger.info(
-            f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s"
-        )
-        logger.info(
-            f"  - [AUDIO DIAG] Wake word: {'READY' if audio_engine._wake_detector_initialized else 'DISABLED'} | "
-            f"Pipeline: {'RUNNING' if audio_engine._is_running else 'STOPPED'} | "
-            f"Voice handler: {'WIRED' if voice_handler.is_recording is False else 'RECORDING'} | "
-            f"Phonon-2: {'READY' if voice_handler._phonon2 is not None else 'SPAWNS AT BOOT'} | "
-            f"Whisper: {'READY' if voice_handler._whisper is not None else 'FALLBACK (not loaded)'}"
-        )
-        logger.debug(
-            "  - Audio subsystem ready for wake word detection and voice processing"
-        )
+        logger.info("  - Initializing wake word detector (Violawake) in the background...")
+        _threading.Thread(
+            target=_init_wake_and_audio, daemon=True, name="iris-wake-audio-init"
+        ).start()
 
         # ==========================================================================
         # AGENT KERNEL INITIALIZATION WITH DIAGNOSTIC LOGGING
@@ -915,132 +1094,6 @@ async def lifespan(app: FastAPI):
         # cold-start outliers on the first decision after every backend restart).
         # A no-op when the engine is not configured (missing model file — the
         # box degrades to the legacy ladder). Runs off the async loop.
-        # ── d1 boot load (owner 2026-10-08, Wave 3) ─────────────────────────
-        # d1 goes on the GPU at STARTUP, like the old Parakeet boot warm:
-        # vision AND the Oracle find it resident instead of racing a manual
-        # Models-card load. The pinned vision model IS the d1 build (the
-        # only model this boot will auto-load — an arbitrary future pin is
-        # refused with a log, never silently loaded). The load is async on
-        # the main loop; the engine warm below retries until it lands
-        # (decision_backend_d1.retry_load).
-        async def _boot_load_d1():
-            from pathlib import Path as _P
-
-            def _read_vision_pin() -> str:
-                # The pin lives at field_values.vision.vision_model — a nested
-                # dict in the JSON and possibly an object on the loaded config;
-                # tolerate both, then fall back to the file.
-                try:
-                    from backend.iris_config import load_config as _load_cfg
-
-                    _fv = getattr(_load_config(), "field_values", None)
-                    _vis = (
-                        _fv.get("vision") if isinstance(_fv, dict)
-                        else getattr(_fv, "vision", None)
-                    )
-                    _pin = (
-                        _vis.get("vision_model") if isinstance(_vis, dict)
-                        else getattr(_vis, "vision_model", "")
-                    )
-                    if _pin:
-                        return str(_pin)
-                except Exception:
-                    pass
-                try:
-                    import json as _json
-
-                    _cfgp = _P(__file__).resolve().parents[1] / "data" / "iris_config.json"
-                    return str(
-                        _json.loads(_cfgp.read_text(encoding="utf-8"))
-                        .get("field_values", {})
-                        .get("vision", {})
-                        .get("vision_model", "") or ""
-                    )
-                except Exception:
-                    return ""
-
-            try:
-                _pin = _read_vision_pin()
-                if not _pin or "d1-3b" not in _P(_pin).name.lower():
-                    logger.warning(
-                        f"    [x] [D1BOOT] pinned vision model is not the d1 "
-                        f"build ({_P(_pin).name or 'no pin'}) — skipping the "
-                        f"boot load; load d1 from the Models card"
-                    )
-                    return
-                # SSD TWIN (owner 2026-10-08, "68s is long"): the C: copy is a
-                # PHYSICAL file on the 7200rpm HDD (~80 MB/s measured,
-                # SESSION-2026-08-27), not the symlink the handoff pin claimed
-                # (fsutil: not a reparse point). The same bytes sit on the D:
-                # SSD (~1675 MB/s) under a DIFFERENT directory layout — find
-                # them by filename, not by mirroring the C: path. Loading from
-                # there cuts the 2.52 GB read from ~32 s to ~2 s. The
-                # registry/scan keep serving the C: path; only the BOOT load
-                # prefers the faster twin.
-                _load_path = _pin
-                try:
-                    _hits = list(
-                        (_P("D:/lmstudio/models")).rglob(_P(_pin).name)
-                    )
-                    if _hits:
-                        _load_path = str(_hits[0])
-                        logger.info(
-                            f"    [+] [D1BOOT] loading from the D: SSD twin "
-                            f"({_hits[0]}) instead of the C: HDD copy"
-                        )
-                except Exception:
-                    pass
-                from backend.agent.local_model_manager import get_local_model_manager
-
-                _mgr = get_local_model_manager()
-                _st = _mgr.get_status()
-                if _st.get("loaded") and "d1-3b" in _P(
-                    str(_st.get("model_path", ""))
-                ).name.lower():
-                    logger.info(
-                        f"    [+] [D1BOOT] d1 already resident on "
-                        f"{_st.get('endpoint', '8082')} — nothing to do"
-                    )
-                    return
-                logger.info(
-                    "    [+] [D1BOOT] loading d1 (+mmproj) on the shared "
-                    "server at boot (vision + Oracle resident, like the old "
-                    "Parakeet boot warm)",
-                )
-                # ctx from the REGISTRY entry (8192): the deriver's default
-                # picked d1's NATIVE 32768, and the 32k KV build was a large
-                # slice of the 68 s. 8192 is the owner's VRAM budget entry.
-                _nctx = 8192
-                try:
-                    import json as _json
-
-                    _reg = _json.loads(
-                        (_P(__file__).resolve().parents[1]
-                         / "models" / "gguf" / ".iris_model_settings.json"
-                         ).read_text(encoding="utf-8")
-                    )
-                    _nctx = int(
-                        _reg.get(_P(_pin).name, {}).get("last_ctx", 8192) or 8192
-                    )
-                except Exception:
-                    pass
-                _ok = await _mgr.load_model(
-                    _load_path, with_projector=True,
-                    custom_params={"n_ctx": _nctx},
-                )
-                if _ok:
-                    logger.info("    [+] [D1BOOT] d1 resident — vision + Oracle warm")
-                else:
-                    logger.warning(
-                        "    [x] [D1BOOT] d1 boot load failed — vision and "
-                        "the Oracle stay borrow-only until a Models-card load"
-                    )
-            except Exception as _d1_exc:
-                logger.warning(
-                    f"    [x] [D1BOOT] boot load failed (non-fatal): {_d1_exc}"
-                )
-
-        asyncio.create_task(_boot_load_d1())
 
         async def _warm_decision_engine():
             import asyncio as _asyncio
@@ -3319,7 +3372,17 @@ _CONTROL_FRAMES |= {"notification_response", "question_response"}
 # diff_undo (edit diffs): the user reviews an edit while the agent may still be
 # working; the undo must not wait for the turn to end. It does file I/O (off the
 # loop, in the handler), so it is a background task, not an inline control frame.
-_UNLOCKED_FRAMES = {"terminal_input", "diff_undo"}
+#
+# The live browser view (2026-10-12): frame acks, the panel's size, the user's
+# input and Take control / Hand back act on the agent's browser WHILE the turn
+# runs. Behind the lock they waited for the turn to end (measured: every ack
+# and viewport message processed together ~2 min late) - the panel got ONE
+# frame per turn and the user could not take control mid-turn. They have their
+# own order (one frame in flight; the grant decides who writes the page).
+_UNLOCKED_FRAMES = {
+    "terminal_input", "diff_undo",
+    "takeover_frame_ack", "takeover_input", "browser_control", "browser_viewport",
+}
 
 # REQ-15 (T25/T26): steer / pause / stop / resume ride a dedicated channel so
 # they reach the RUNNING DER loop at its next step boundary instead of

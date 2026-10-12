@@ -226,10 +226,18 @@ def main() -> int:
     ap.add_argument("--db", default=app_store_path())
     ap.add_argument("--out", default=str(CALIBRATION_PATH))
     ap.add_argument("--dry-run", action="store_true", help="print, write nothing")
+    ap.add_argument("--scope", action="append", default=[], metavar="CONSUMER=STAMP",
+                    help="fit CONSUMER on its rows of ONE criteria_version only "
+                         "(the same scope the bar record is written with)")
     args = ap.parse_args()
 
     # Lazy: the report imports this module for fit_consumer.
-    from scripts.consumer_enforcement_report import load_rows, thresholds_by_consumer
+    from scripts.consumer_enforcement_report import (
+        load_rows,
+        parse_scopes,
+        scope_rows,
+        thresholds_by_consumer,
+    )
 
     db = Path(args.db)
     if not db.is_file():
@@ -237,16 +245,30 @@ def main() -> int:
         return 4
     _, config = thresholds_by_consumer()
     backend_id = config.get("backend_id")
-    if not backend_id:
+    # FIXED 2026-10-11: rows were filtered by `backend_id` ("model|readout")
+    # while a row's `engine` holds the MODEL id ("d1-3b-ad-q4_k_m+letters"),
+    # so EVERY d1 row read as other_backend and nothing was ever fitted; and
+    # the map was written under `backend_id` while the runtime looks a
+    # threshold up under the consumer's full decision identity
+    # (decision_engine._current_backend_identity(consumer)). Rows now filter on
+    # `engine_id` (the report's own filter) and each consumer's entry is ALSO
+    # written under its decision identity - the key decides() reads.
+    engine_id = config.get("engine_id")
+    if not backend_id or not engine_id:
         print("UNVERIFIED: active backend id unresolved; a map belongs to one backend")
         return 4
     try:
-        rows, skipped = load_rows(str(db), backend_id)
+        rows, skipped = load_rows(str(db), engine_id)
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
+    scopes = parse_scopes(args.scope)
+    rows = scope_rows(rows, scopes)
 
     fitted = fit_all(rows)
+    for cid, e in fitted.items():
+        if cid in scopes:
+            e["criteria_version"] = scopes[cid]
     print(f"backend={backend_id} distinct_rows={len(rows)} skipped={skipped}")
     for cid, e in fitted.items():
         o = e["oof"]
@@ -267,6 +289,13 @@ def main() -> int:
     except Exception:  # noqa: BLE001 - absent/unreadable = start fresh
         doc = {}
     doc[backend_id] = fitted
+    # the runtime key: each consumer under ITS decision identity
+    from backend.agent.decision_engine import CURRENT_READOUT_MODE, decision_identity
+
+    _cap = int(config.get("candidate_cap") or 0)
+    for cid, e in fitted.items():
+        doc.setdefault(decision_identity(str(engine_id), CURRENT_READOUT_MODE, cid, _cap),
+                       {})[cid] = e
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
     print(f"written: {out}")

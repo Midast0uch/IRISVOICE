@@ -318,6 +318,15 @@ class EpisodicStore:
             CREATE INDEX IF NOT EXISTS idx_chunk_zone     ON context_chunks(zone);
             CREATE INDEX IF NOT EXISTS idx_chunk_ts       ON context_chunks(timestamp);
             CREATE INDEX IF NOT EXISTS idx_chunk_usage    ON context_chunks(retrieval_count);
+            -- retrieve_context_chunks (session_id = ? AND zone IN (...)
+            -- ORDER BY timestamp DESC LIMIT 200) used idx_chunk_session and
+            -- then SORTED every row of the session: 12,295 rows with their
+            -- embedding blobs for session_iris. Warm 0.08 s; on a cold disk it
+            -- held a direct reply ~100 s (stack dumps, 2026-10-12). With the
+            -- timestamp in the index (and the zone checked in it) the walk
+            -- stops at the 200th match.
+            CREATE INDEX IF NOT EXISTS idx_chunks_session_ts_zone
+                ON context_chunks(session_id, timestamp, zone);
         """)
         self.db.commit()
         self._migrate_chunk_schema()

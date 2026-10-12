@@ -49,6 +49,10 @@ _OBSERVE_TIMEOUT_S = 30.0
 _ACT_TIMEOUT_S = 60.0 + click_safety.JUDGE_TIMEOUT_S + click_safety.ASK_TIMEOUT_S
 # browser_explore: the whole read of the related pages, and one page's navigation.
 _EXPLORE_TIMEOUT_S = 30.0
+# How long a CAPTCHA hand-over waits for the user (the ask card's own timeout).
+_TAKEOVER_WAIT_S = 180.0
+# How long an agent action waits for the user to hand the live page back.
+_HAND_BACK_WAIT_S = 90.0
 _EXPLORE_MAX_PAGES = 5
 _EXPLORE_NAV_MS = 8_000
 _EXPLORE_PASSAGE_CHARS = 400
@@ -116,6 +120,7 @@ class _BrowserRuntime:
             "query": session.url, "summary": f"browser session closed ({reason})",
             "page_count": getattr(session, "_frames_published", 0),
             "job_id": getattr(session, "_job_id", ""),
+            "source": "browser",
         })
         try:
             await session.close()
@@ -129,6 +134,12 @@ class _BrowserRuntime:
             try:
                 now = time.monotonic()
                 for conv, entry in list(self.sessions.items()):
+                    # A page the USER holds is not idle: no tool call touches
+                    # it while they solve a CAPTCHA or browse, and closing it
+                    # under them would lose their work.
+                    if entry.session.user_has_control():
+                        entry.last_used = now
+                        continue
                     if now - entry.last_used > _IDLE_TTL_S:
                         await self.close_entry(conv, "idle")
             except Exception as exc:  # noqa: BLE001 — the reaper must not die
@@ -155,6 +166,32 @@ def _normalize_url(url: str) -> str:
     if "://" not in url:
         url = "https://" + url
     return url if url.lower().startswith(("http://", "https://")) else ""
+
+
+def _https_first(url: str) -> str:
+    """The https form of a public http:// address ("" when it does not apply).
+
+    Live 2026-10-12: the model opened http://books.toscrape.com - the main
+    document took 33.8 s and every sub-resource 6-11 s over plain http on this
+    network; over https the same page loaded in 0.5 s. Loopback, private and
+    bare-IP hosts keep their scheme (a local dev server has no TLS)."""
+    if not url.lower().startswith("http://"):
+        return ""
+    try:
+        import ipaddress
+        from urllib.parse import urlsplit
+
+        host = (urlsplit(url).hostname or "").lower()
+        if not host or host == "localhost" or host.endswith((".localhost", ".local", ".test")):
+            return ""
+        try:
+            ipaddress.ip_address(host)
+            return ""  # a bare IP: keep http
+        except ValueError:
+            pass
+        return "https://" + url[len("http://"):]
+    except Exception:  # noqa: BLE001 - keep the address as given
+        return ""
 
 
 async def _egress_error(url: str) -> str:
@@ -258,8 +295,20 @@ async def browser_open(conversation_id: str, url: str, emit: Optional[Emit] = No
     refused = await _egress_error(url)
     if refused:
         return _fail(refused)
+    held = await _wait_for_hand_back(conversation_id)
+    if held:
+        return {**_fail(held), "waiting_for_user": True}
     try:
-        res = await _RT.run(_do_open(conversation_id, url, emit), _OPEN_TIMEOUT_S)
+        secure = _https_first(url)
+        if secure:
+            res = await _RT.run(_do_open(conversation_id, secure, emit), _OPEN_TIMEOUT_S)
+            if not (isinstance(res, dict) and res.get("success")):
+                logger.info("[browser_tools] https form failed conv=%s url=%s: %s - trying http",
+                            conversation_id, secure, (res or {}).get("error"))
+                res = await _RT.run(_do_open(conversation_id, url, emit), _OPEN_TIMEOUT_S)
+        else:
+            res = await _RT.run(_do_open(conversation_id, url, emit), _OPEN_TIMEOUT_S)
+        res = await _with_wall_takeover(conversation_id, res)
         return await _with_observation(conversation_id, res, emit)
     except asyncio.TimeoutError:
         return _fail(f"browser unavailable: opening {url} timed out")
@@ -298,6 +347,122 @@ async def _with_observation(conv: str, res: Dict[str, Any], emit: Optional[Emit]
     return out
 
 
+# The browser panel's last reported size (CSS px): a session opened later starts
+# in the panel's shape instead of waiting for the panel to report again.
+_PANEL_SIZE: Dict[str, int] = {}
+
+
+async def fit_live_viewport(run_id: str, width: Any, height: Any) -> Optional[dict]:
+    """The panel reported its size: give the live page that shape (any loop)."""
+    try:
+        w, h = int(width), int(height)
+    except (TypeError, ValueError):
+        return None
+    if w < 120 or h < 120:
+        return None
+    _PANEL_SIZE.update(width=w, height=h)
+
+    async def _fit() -> Optional[dict]:
+        for entry in list(_RT.sessions.values()):
+            if getattr(entry.session, "_job_id", None) == run_id:
+                return await entry.session.fit_viewport_to_panel(w, h)
+        return None
+
+    try:
+        return await _RT.run(_fit(), 20.0)
+    except Exception as exc:  # noqa: BLE001 - the page keeps its old size
+        logger.debug("[browser_tools] viewport fit run=%s: %s", run_id, exc)
+        return None
+
+
+def _same_page(a: str, b: str) -> bool:
+    norm = lambda u: (u or "").strip().rstrip("/").split("#")[0].lower()  # noqa: E731
+    return norm(a) == norm(b)
+
+
+async def live_page_screenshot(conv: str, url: str = "") -> Optional[bytes]:
+    """A picture of the agent's LIVE page when it is the page asked for (or no
+    address was given): what the agent sees - signed in, clicked through,
+    scrolled - with no second browser. None when there is no such live page."""
+
+    async def _shot() -> Optional[bytes]:
+        entry = _RT.sessions.get(conv)
+        if entry is None or not entry.session.available():
+            return None
+        page_url = str(getattr(entry.session._page, "url", "") or entry.session.url)
+        if url and not _same_page(url, page_url):
+            return None
+        return await entry.session.screenshot()
+
+    try:
+        return await _RT.run(_shot(), 20.0)
+    except Exception as exc:  # noqa: BLE001 - the caller opens its own page
+        logger.debug("[browser_tools] live screenshot conv=%s: %s", conv, exc)
+        return None
+
+
+async def _held_by_user(conv: str) -> bool:
+    entry = _RT.sessions.get(conv)
+    return bool(entry is not None and entry.session.user_has_control())
+
+
+async def _wait_for_hand_back(conv: str) -> Optional[str]:
+    """While the user holds the live page ("Take control"), the agent WAITS for
+    "Hand back" instead of failing at once. Live 2026-10-12: the act failed in
+    67 ms and the reply said "the click action failed" - the user could not
+    tell they were the reason. Bounded; returns the message to report when the
+    user still holds the page, else None."""
+    deadline = time.monotonic() + _HAND_BACK_WAIT_S
+    try:
+        while await _RT.run(_held_by_user(conv), 5.0):
+            if time.monotonic() >= deadline:
+                return ("The user is still controlling the browser. Ask them to press "
+                        "'Hand back' in the browser panel, then try again.")
+            await asyncio.sleep(1.0)
+    except Exception as exc:  # noqa: BLE001 - the session's own guard still refuses
+        logger.debug("[browser_tools] hand-back wait conv=%s: %s", conv, exc)
+    return None
+
+
+async def _with_wall_takeover(conv: str, res: Dict[str, Any]) -> Dict[str, Any]:
+    """Hand a CAPTCHA page to the user before the agent reads it (REQ-10).
+
+    The crawler's vision path always did this; the agent's own browser tools
+    never checked, so a challenge page reached the model as page text and the
+    panel's takeover surface had nothing to show. CAPTCHA only: the login
+    heuristic matches any page with "Log in" in its header (every Wikipedia
+    page) - a login form is the agent's to report, not a reason to stop.
+    """
+    if not (isinstance(res, dict) and res.get("success")):
+        return res
+    try:
+        out = await _RT.run(_do_wall_takeover(conv), _TAKEOVER_WAIT_S + 30.0)
+    except Exception as exc:  # noqa: BLE001 - the page result stands without it
+        logger.warning("[browser_tools] wall check failed conv=%s: %s", conv, exc)
+        return res
+    if not out:
+        return res
+    kind, cleared = out
+    note = (" The page showed a CAPTCHA; the user solved it in the browser panel."
+            if cleared else
+            " The page shows a CAPTCHA. The user was asked to solve it in the browser "
+            "panel and did not; do not try to solve it yourself.")
+    return {**res, "content": str(res.get("content") or "") + note,
+            "wall": kind, "wall_cleared": cleared}
+
+
+async def _do_wall_takeover(conv: str) -> "Optional[tuple]":
+    entry = _RT.sessions.get(conv)
+    if entry is None:
+        return None
+    wall = await entry.session.detect_wall()
+    if wall is None or wall.value != "captcha":
+        return None
+    logger.info("[browser_tools] CAPTCHA on the page conv=%s - asking the user", conv)
+    cleared = await entry.session.request_takeover(wall, timeout_seconds=int(_TAKEOVER_WAIT_S))
+    return wall.value, bool(cleared)
+
+
 async def browser_observe(conversation_id: str, emit: Optional[Emit] = None) -> Dict[str, Any]:
     """List the page's interactive elements, numbered (Set-of-Marks)."""
     want_image = await _vision_live()
@@ -314,9 +479,13 @@ async def browser_act(
     emit: Optional[Emit] = None,
 ) -> Dict[str, Any]:
     """click | type | select | scroll | back | press on the live page."""
+    held = await _wait_for_hand_back(conversation_id)
+    if held:
+        return {**_fail(held), "waiting_for_user": True}
     try:
         res = await _RT.run(_do_act(conversation_id, action, element_id, text, emit), _ACT_TIMEOUT_S)
         if isinstance(res, dict) and res.get("changed"):
+            res = await _with_wall_takeover(conversation_id, res)
             res = await _with_observation(conversation_id, res, emit)
         return res
     except asyncio.TimeoutError:
@@ -385,7 +554,11 @@ async def _do_open(conv: str, url: str, emit: Optional[Emit]) -> Dict[str, Any]:
         await _RT.close_entry(conv, "replaced")  # dead or out of budget: start fresh
         entry = None
 
-    _emit(emit, "CRAWLER_STARTED", {"query": url, "url_count": 1})
+    # `source: "browser"` tells the panel this is the live browser, not a web
+    # search: a search's sources, pages and summary must not be reset or
+    # overwritten by it (the two paths shared one crawl state).
+    _emit(emit, "CRAWLER_STARTED", {"query": url, "url_count": 1, "source": "browser",
+                                    "job_id": entry.session._job_id if entry is not None else ""})
     if entry is not None:
         res = await entry.session.navigate_to(url, emit)
         if not res["ok"]:
@@ -416,6 +589,11 @@ async def _do_open(conv: str, url: str, emit: Optional[Emit]) -> Dict[str, Any]:
         })
         await session._announce_page(emit, force=True)
 
+    # The panel shows the agent's real page live, beside the saved copies.
+    # Idempotent: an open stream on the same page is kept.
+    await session.start_live_view()
+    if _PANEL_SIZE:
+        await session.fit_viewport_to_panel(_PANEL_SIZE["width"], _PANEL_SIZE["height"])
     state = await session._page_state()
     return {
         "success": True,
@@ -439,7 +617,7 @@ async def _do_observe(conv: str, want_image: bool, emit: Optional[Emit]) -> Dict
     entry, problem = _need_session(conv, emit)
     if entry is None:
         return _fail(problem)
-    res = await entry.session.observe(marked_screenshot=want_image)
+    res = await entry.session.observe(marked_screenshot=want_image, emit=emit)
     if not res["ok"]:
         return _fail(res["error"])
     marks = res["marks"]
@@ -515,8 +693,8 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
             if _sampled:
                 _row = await asyncio.to_thread(
                     click_safety_shadow.record_assessment,
-                    f'{ctx.get("goal") or ""} | {what}', verdict, _shot,
-                    _scope_for_sample, True,
+                    click_safety_shadow.statement(what, ctx.get("goal") or ""),
+                    verdict, _shot, _scope_for_sample, True,
                 )
                 if _row is not None:
                     register_turn_pending(_scope_for_sample, sampled_row(
@@ -529,7 +707,7 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
     if not _sampled:
         try:
             click_safety_shadow.submit_assessment(
-                f'{ctx.get("goal") or ""} | {what}', verdict, _shot)
+                click_safety_shadow.statement(what, ctx.get("goal") or ""), verdict, _shot)
         except Exception as exc:  # noqa: BLE001 - the shadow never blocks an action
             logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
     if verdict == click_safety.SAFE:

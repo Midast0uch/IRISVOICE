@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -51,6 +52,10 @@ NODE_TOOLS = (
     # Live browser control (owner 2026-10-02: developer mode too). The base
     # tool list holds these only while the web toggle is ON - the one gate.
     "browser_open", "browser_observe", "browser_act", "browser_explore",
+    # A picture of the page (the live one when no URL is given). It was missing
+    # here: a planned "capture a screenshot" step could only click (live
+    # 2026-10-12, the reply said the screenshot failed).
+    "screenshot_page",
     # Web research (also web-toggle gated) and the user's own desktop.
     "search", "crawler_query",
     "open_url", "launch_app", "open_file", "get_system_info", "recall_memory",
@@ -168,6 +173,11 @@ class NodeContext:
     # Owner decision: the Oracle advises and records shadow rows in node
     # loops. Called with (tool, params) for every Brain call; must not block.
     on_call: Optional[Callable[[str, dict], None]] = None
+    # tool_approval (2026-10-10): called AFTER a call's result is known, with
+    # (tool, params, ok). The approval consult is post-hoc — it needs the
+    # OUTCOME as the label, while the frame stays the PRE-CALL state. Must not
+    # block (the consult runs on the oracle_shadow lane).
+    on_result: Optional[Callable[[str, dict, bool], None]] = None
     # Owner 2026-10-01: the loaded tool model does node tool calls; the Brain
     # only for vision work. An unbound tool_execution role falls back to the
     # router's default role (router.resolve), i.e. the Brain.
@@ -202,6 +212,19 @@ class NodeContext:
     # its label (the label IS the exit - the loop never reads anything back, so
     # the closing rule below stays the sole judge). None = no measurement.
     close_probe: Optional[Any] = None
+    # THE STEP'S OWN STATE, live (2026-10-11): run_node keeps these current so
+    # the Oracle hooks read the PRE-CALL state of THIS step - the calls made so
+    # far and the last result the model saw. Measured cause: the shadow frame
+    # carried the PREVIOUS STEP's result, computed once per node, so every call
+    # of a step (read -> edit -> run) gave d1 the SAME input while the model's
+    # answer changed - 50.9% parity on 395 rows. Written only by run_node.
+    history: List[Dict[str, Any]] = field(default_factory=list)
+    last_result_text: str = ""
+    # THE ORACLE DECIDES THE TOOL: called before each model call; returns the
+    # ONE tool the model must call this time (forced at the API - the model
+    # still writes the arguments), or None for the full menu. The kernel
+    # answers it through the enforcement chokepoint (enforced / sampled).
+    choose_tool: Optional[Callable[[], Optional[str]]] = None
 
 
 @dataclass
@@ -346,6 +369,113 @@ def _target(params: dict) -> str:
     return ""
 
 
+def history_text(calls: List[Dict[str, Any]], last: int = 6, limit: int = 400) -> str:
+    """This step's calls so far, oldest first, as one line for a decision frame:
+    ``read_file m.py ok; edit_file m.py FAILED``. The last ``last`` calls only,
+    bounded to ``limit`` chars. Empty for the first call of a step."""
+    parts = [f"{c.get('tool', '')} {c.get('target', '')}".strip()
+             + (" ok" if c.get("ok") else " FAILED") for c in calls[-last:]]
+    return "; ".join(parts)[-limit:]
+
+
+_FILE_RE = re.compile(
+    r"(?<![\w/\\.-])([\w./\\-]+\.(?:py|md|txt|json|ya?ml|toml|cfg|ini|js|jsx|ts|tsx|"
+    r"html|css|csv|sh|ps1|sql|rs|go|java|c|cpp|h))\b", re.IGNORECASE)
+_READ_TOOLS = ("read_file",)
+_WRITE_TOOLS = ("edit_file", "write_file")
+
+
+# A step whose goal is to SHOW a page: it is met only by a picture taken.
+# Narrow on purpose: "image"/"photo" alone would catch coding steps ("resize the
+# image file").
+_PICTURE_RE = re.compile(
+    r"\bscreen\s?shots?\b|\b(picture|snapshot|photo) of (the|this|that|its|their) "
+    r"(web\s?)?(page|site|website|listing|article)\b",
+    re.IGNORECASE)
+_PICTURE_TOOLS = frozenset({"screenshot_page", "take_screenshot"})
+_PICTURE_HINT = (
+    "This step asks for a picture of the page and none was taken. Call "
+    "screenshot_page now (with no url it photographs the page open in the "
+    "browser). Never say a screenshot was taken unless that tool returned success."
+)
+
+
+def _needs_picture(goal: str) -> bool:
+    return bool(_PICTURE_RE.search(goal or ""))
+
+
+def step_facts(goal: str, done_when: str, calls: List[Dict[str, Any]],
+               workdir: str = "", limit: int = 400, last_result: str = "") -> str:
+    """The facts that decide READ vs EDIT vs WRITE vs RUN, as one line for a
+    decision frame (2026-10-11). For each file the step names: whether it
+    exists in the work folder, and whether THIS step already read or changed
+    it; plus the last command and its result. The tool model knows these from
+    its transcript; the decision model must READ them - measured: without them
+    d1 chose edit_file where the model first reads (an edit needs the exact
+    current text), and its confidence sat at ~0.5 on read/write choices.
+    Empty when there is nothing to say. Bounded; never raises."""
+    try:
+        def _base(p: str) -> str:
+            return os.path.basename(str(p or "").replace("\\", "/").rstrip("/")).lower()
+
+        reads: Dict[str, int] = {}
+        for c in calls:
+            if c.get("tool") in _READ_TOOLS and c.get("ok"):
+                b = _base(c.get("target"))
+                reads[b] = reads.get(b, 0) + 1
+        changed = {_base(c.get("target")) for c in calls
+                   if c.get("tool") in _WRITE_TOOLS and c.get("ok")}
+
+        def _files(text: str) -> List[str]:
+            out: List[str] = []
+            for m in _FILE_RE.finditer(text or ""):
+                f = m.group(1).strip("./\\")
+                if f and f not in out:
+                    out.append(f)
+            return out
+
+        def _state(f: str) -> str:
+            b = _base(f)
+            if workdir:
+                exists = os.path.exists(os.path.join(workdir, f)) or os.path.exists(
+                    os.path.join(workdir, b))
+                where = "exists" if exists else "does not exist yet"
+            else:
+                where = "existence unknown"
+            n = reads.get(b, 0)
+            # a file read MORE than once in one step is being paged through
+            # (a long file read in parts) - the count says so
+            done = ("changed in this step" if b in changed
+                    else f"read {n} times in this step" if n > 1
+                    else "read in this step" if n else "not read in this step")
+            return f"{f} ({where}, {done})"
+
+        named = _files(f"{goal or ''} {done_when or ''}")
+        parts = [_state(f) for f in named[:5]]
+        line = ("files named: " + "; ".join(parts)) if parts else ""
+        # Files the LAST RESULT showed (a folder listing, search hits) that the
+        # step does not name: the model reads them next (measured: after
+        # `list_directory` it read roman.py, which no step text named).
+        seen = [f for f in _files(last_result[:4000])
+                if f not in named and _base(f) not in reads and _base(f) not in changed]
+        if seen:
+            line += ("; " if line else "") + "files seen in the last result, not read: " + \
+                ", ".join(seen[:5])
+        runs = [c for c in calls if c.get("tool") == "run_command"]
+        if runs:
+            r = runs[-1]
+            line += ("; " if line else "") + (
+                f"last command: {r.get('target', '')} {'ok' if r.get('ok') else 'FAILED'}")
+        if _needs_picture(f"{goal or ''} {done_when or ''}"):
+            taken = any(c.get("ok") and c.get("tool") in _PICTURE_TOOLS for c in calls)
+            line += ("; " if line else "") + (
+                "screenshot: taken in this step" if taken
+                else "screenshot: NOT taken yet in this step")
+        return line[:limit]
+    except Exception:  # noqa: BLE001 - a fact line never blocks a node
+        return ""
+
+
 def _failed(raw: Any) -> bool:
     if isinstance(raw, dict):
         if raw.get("success") is False:
@@ -439,6 +569,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     role = ctx.role
     helped = ""
     edit_failures = 0
+    picture_nudged = False
 
     def _hand_over(why: str) -> bool:
         """Switch this node to the helper model once; True when it happened."""
@@ -452,6 +583,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         last_key = last_res_key = None
         return True
     calls: List[Dict[str, Any]] = []
+    ctx.history = calls  # the same live list: the hooks read the step so far
+    ctx.last_result_text = ""
     last_command_failed: Optional[bool] = None
     deadline = time.monotonic() + ctx.budget_s
     text = ""
@@ -470,10 +603,32 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             remaining = deadline - time.monotonic()
             if remaining <= 5:
                 break
+            # The Oracle's pick narrows the menu to ONE tool. Not after a model
+            # slip (the full menu is the recovery), and never to a tool the node
+            # does not offer.
+            # The Oracle's pick is FORCED at the API (named tool_choice; the
+            # model writes the arguments). Measured: a narrowed tool list alone
+            # did not bind the model, and an unsure pick that narrowed the menu
+            # pushed it into the wrong tool - so a pick is either binding or
+            # absent. Not after a model slip (the full menu is the recovery),
+            # and never a tool the node does not offer.
+            gen_tools = tools
+            gen_extra: Dict[str, Any] = {}
+            if ctx.choose_tool is not None and not malformed:
+                try:
+                    forced = ctx.choose_tool()
+                except Exception as exc:  # noqa: BLE001 - the model decides
+                    logger.debug("[run_node] conv=%s choose_tool failed: %r", ctx.conv_id, exc)
+                    forced = None
+                if forced and forced in allowed:
+                    gen_tools = [t for t in tools
+                                 if (t.get("function") or {}).get("name") == forced] or tools
+                    gen_extra["tool_choice"] = forced
             try:
                 text, _think, tool_calls = ctx.generate(
-                    role, messages, tools=tools, max_tokens=ctx.max_tokens,
+                    role, messages, tools=gen_tools, max_tokens=ctx.max_tokens,
                     temperature=0.2, timeout_s=min(remaining, 300.0), thinking=False,
+                    **gen_extra,
                 )
             except (MalformedToolCallError, EmptyModelResponseError) as slip:
                 # A model slip, not a dead server: the server rejected the
@@ -501,6 +656,17 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 # through the model's own status, not the closing rule.
                 _resolve_claims("untested")
                 ok, reason, summary = _status(text or "")
+                # A step that must SHOW a page closes only with a picture taken
+                # (live 2026-10-12: "successfully captured its detail page
+                # screenshot" - no screenshot tool ran; the user got no image).
+                if ok and _needs_picture(goal) and not any(
+                        c.get("ok") and c.get("tool") in _PICTURE_TOOLS for c in calls):
+                    if not picture_nudged:
+                        picture_nudged = True
+                        messages.append({"role": "assistant", "content": text or ""})
+                        messages.append({"role": "user", "content": _PICTURE_HINT})
+                        continue
+                    ok, reason = False, "no screenshot was taken"
                 if not ok and _hand_over(f"step reported failure: {reason}"[:120]):
                     messages.append({"role": "assistant", "content": text or ""})
                     messages.append({"role": "user", "content": _HANDOVER_NOTE.format(
@@ -574,6 +740,14 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         except Exception as exc:  # noqa: BLE001 — typed result, the model reacts
                             raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
+                # tool_approval (2026-10-10): the call's OUTCOME is now known —
+                # submit the post-hoc approval consult (pre-call frame + this
+                # outcome as the label). Advisory only; never blocks the loop.
+                if ctx.on_result is not None:
+                    try:
+                        ctx.on_result(name, params, not failed)
+                    except Exception as exc:  # noqa: BLE001 — advisory only
+                        logger.debug("[run_node] approval hook failed: %r", exc)
                 if failed:
                     # A FAILED call may be retried as is (live 2026-10-02: a
                     # cold-start browser_open timed out at 90 s, the retry was
@@ -638,6 +812,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
                     "content": content,
                 })
+                ctx.last_result_text = content
                 # REQ-10 AC10.2/AC10.3: a claim is measured AFTER the claiming
                 # call's own result is known, from THIS call's scope. A
                 # repeat-skipped call leaves no record of its own (it never

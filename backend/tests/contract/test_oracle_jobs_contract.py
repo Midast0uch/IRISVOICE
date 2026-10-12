@@ -29,7 +29,12 @@ def test_budgets_respect_the_owner_maximum():
     # requires it - goal[:200] plus a ~600-char last_result snippet must both
     # fit, and at 128 the budget trim cuts the tail (the evidence the frame
     # fix exists to deliver). Widened for a physical reason, stated here.
-    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 256
+    # 384, not 256 (2026-10-10, tool_approval/v2): the approve job's frame
+    # adds the call arguments and the offered tool list - goal 200 +
+    # last_result 400 + description 200 + args 400 + offered names 200 chars -
+    # and at 256 the cap cut the args, the very evidence v2 exists to deliver.
+    # 512 stays the absolute ceiling (S19.3).
+    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 384
 
 
 def test_reference_fields_never_reach_the_model():
@@ -63,8 +68,13 @@ def test_job_input_returns_a_structured_state_with_the_job_attached():
     # the resolve-frame evidence fields (2026-10-10, the frame/job mismatch
     # fix). Pinned to the live declaration so a silent field change fails.
     assert state.fields == de.ORACLE_JOBS["route"].fields
-    assert state.fields[:6] == (
-        "coverage", "open_facts", "depth_met", "grade", "goal", "last_result")
+    # STALE-BY-SPEC update (2026-10-11, tc-frame-v5): `done_when` and
+    # `calls_this_step` sit between goal and last_result (the cap trims the
+    # long result snippet, never the step's own history).
+    # + `step_facts` (2026-10-11, tc-frame-v7): the read/edit/write/run facts.
+    assert state.fields[:9] == (
+        "coverage", "open_facts", "depth_met", "grade", "goal",
+        "done_when", "calls_this_step", "step_facts", "last_result")
     assert state.budget_ids == de.ORACLE_JOBS["route"].budget_ids
     assert state.images == ()
 
@@ -135,12 +145,16 @@ def test_shadow_scores_off_the_caller_and_keeps_the_reference(monkeypatch):
             engine_latency_ms=3)
 
     eng.decide = _decide
-    ok = eng.shadow("mode", ["quick", "spec"], {"goal": "build a parser"},
+    # SUBJECT SWITCH (2026-10-10, stale-by-spec): the subject was `mode` until
+    # the owner removed that consumer; `narration` is a surviving declared
+    # choice consumer. The mechanics under test are unchanged.
+    ok = eng.shadow("narration", ["speak_all", "stay_silent"],
+                    {"goal": "build a parser"},
                     sink=lambda r: (rows.append(r), landed.set()),
-                    reference={"brain_choice": "spec"})
+                    reference={"brain_choice": "stay_silent"})
     assert ok and not rows, "the caller must not wait for the score"
     release.set()
     assert landed.wait(5)
     row = rows[0]
-    assert row["job"] == "interpret" and row["brain_choice"] == "spec"
-    assert row["shadow"] is True and row["chosen"] == "quick"
+    assert row["job"] == "shape" and row["brain_choice"] == "stay_silent"
+    assert row["shadow"] is True and row["chosen"] == "speak_all"

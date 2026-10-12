@@ -123,6 +123,78 @@ def test_every_valid_call_reaches_the_shadow_hook_and_a_broken_hook_is_harmless(
     assert executed == [("read_file", {"path": "m.py"})] and r.success
 
 
+def test_the_shadow_hook_sees_the_steps_own_pre_call_state():
+    """tc-frame-v5 (2026-10-11): every call of a step must give the Oracle hooks
+    THIS step's state before the call - the calls so far and the last result -
+    not one frame fixed at node entry. Measured: the frozen frame scored
+    read -> edit -> run with the same input, 50.9% parity on 395 rows."""
+    script = [
+        ("", [_call("read_file", {"path": "m.py"})]),
+        ("", [_call("edit_file", {"path": "m.py", "old": "a", "new": "b"})]),
+        ("done", []),
+    ]
+    ctx, _, _ = _ctx(script, {"read_file": {"success": True, "content": "range(start, end)"},
+                              "edit_file": {"success": True}})
+    seen = []
+    ctx.on_call = lambda name, params: seen.append(
+        (name, [c["tool"] for c in ctx.history], ctx.last_result_text))
+    run_node("fix m.py", ctx)
+    assert seen[0] == ("read_file", [], "")
+    assert seen[1][0] == "edit_file" and seen[1][1] == ["read_file"]
+    assert "range(start, end)" in seen[1][2]
+
+
+def test_the_oracle_pick_is_forced_and_anything_else_keeps_the_full_menu():
+    """When the Oracle decides, the model is offered ONLY the picked tool and
+    the call is FORCED at the API (named tool_choice); the model still writes
+    the arguments. A pick the node does not offer, or a failing chooser,
+    leaves the full menu and no forcing."""
+    script = [("", [_call("read_file", {"path": "m.py"})]),
+              ("", [_call("read_file", {"path": "n.py"}, 1)]), ("done", [])]
+    seen = []
+    ctx, _, _ = _ctx(script, {"read_file": {"success": True, "content": "x"}})
+    gen = ctx.generate
+
+    def spy(role, messages, **k):
+        seen.append(([t["function"]["name"] for t in k["tools"]], k.get("tool_choice")))
+        return gen(role, messages, **k)
+
+    picks = iter(["read_file", "no_such_tool", RuntimeError("d1 down")])
+
+    def choose():
+        p = next(picks)
+        if isinstance(p, Exception):
+            raise p
+        return p
+
+    ctx.generate, ctx.choose_tool = spy, choose
+    run_node("read m.py and n.py", ctx)
+    full = ["read_file", "edit_file", "run_command"]
+    assert seen[0] == (["read_file"], "read_file")
+    assert seen[1] == (full, None)
+    assert seen[2] == (full, None)
+
+
+def test_step_facts_name_each_file_its_existence_and_this_steps_reads(tmp_path):
+    """tc-frame-v7: the facts that decide read vs edit vs write vs run."""
+    from backend.agent.node_executor import step_facts
+
+    (tmp_path / "m.py").write_text("x")
+    calls = [{"tool": "read_file", "target": "m.py", "ok": True},
+             {"tool": "run_command", "target": "pytest -q", "ok": False}]
+    line = step_facts("Fix m.py and add new.py", "pytest passes", calls, str(tmp_path))
+    assert "m.py (exists, read in this step)" in line
+    assert "new.py (does not exist yet, not read in this step)" in line
+    assert line.endswith("last command: pytest -q FAILED")
+    assert step_facts("say hello", "", [], str(tmp_path)) == ""
+    # a file read more than once is being paged; files a listing showed that
+    # no step text names are "seen, not read"
+    paged = step_facts("Read m.py", "", calls + [{"tool": "read_file", "target": "m.py", "ok": True}],
+                       str(tmp_path), last_result='[{"name": "roman.py"}, {"name": "m.py"}]')
+    assert "m.py (exists, read 2 times in this step)" in paged
+    assert "files seen in the last result, not read: roman.py" in paged
+
+
 def test_status_in_the_tool_answer_closes_the_step_without_another_call():
     """Owner 2026-10-01: the last call of every step cost one more model call
     only to hear "done" (~43 of 205 Brain calls in one coding run)."""
@@ -200,3 +272,39 @@ def test_a_broken_brain_is_a_failed_node_not_a_crash():
                       tools=TOOLS)
     r = run_node("fix it", ctx)
     assert r.success is False and "Ollama returned 500" in r.error
+
+
+# ── A step that must SHOW a page (live 2026-10-12) ──────────────────────────
+# "Capture a screenshot of the book's page" closed with "successfully captured
+# its detail page screenshot" - no screenshot tool ran and the user got no image.
+
+_SHOT_TOOLS = TOOLS + [{"type": "function", "function": {"name": "screenshot_page", "parameters": {}}}]
+
+
+def test_a_screenshot_step_cannot_close_without_a_screenshot():
+    script = [("Captured the screenshot.\nSTATUS: done", []),       # the false claim
+              ("Done, screenshot taken.\nSTATUS: done", [])]         # again, after the reminder
+    ctx, seen, executed = _ctx(script, {})
+    ctx.tools = _SHOT_TOOLS
+    r = run_node("Capture a screenshot of the book's page", ctx)
+    assert r.success is False and "no screenshot" in r.error
+    assert executed == []
+    assert any("screenshot_page" in (m.get("content") or "") for m in seen[1]
+               if m.get("role") == "user"), "the model was never told to take it"
+
+
+def test_a_screenshot_step_closes_once_the_picture_is_taken():
+    script = [("Captured it.\nSTATUS: done", []),
+              ("", [_call("screenshot_page", {})]),
+              ("Screenshot shown.\nSTATUS: done", [])]
+    ctx, _, executed = _ctx(script, {"screenshot_page": {"success": True, "document_id": "d1"}})
+    ctx.tools = _SHOT_TOOLS
+    r = run_node("Capture a screenshot of the book's page", ctx)
+    assert r.success is True and executed == [("screenshot_page", {})]
+
+
+def test_a_coding_step_about_an_image_needs_no_screenshot():
+    script = [("Resized it.\nSTATUS: done", [])]
+    ctx, _, _ = _ctx(script, {})
+    r = run_node("Resize the image file logo.png to 64px", ctx)
+    assert r.success is True

@@ -136,12 +136,14 @@ class TestSinkRoutesRowsToTheLedger:
 
 
 class TestExposedRowsAreForwarded:
-    """`mode` and `review_verdict` EXPOSE a row instead of emitting one.
+    """`review_verdict` EXPOSES a row instead of emitting one.
 
-    Measured live 2026-09-26: both scored (`Oracle decide consumer=mode`,
-    `consumer=review_verdict`) and NEITHER produced a ledger row, because the
-    only thing that read `last_mode_shadow` / `last_shadow_verdict` was a test.
-    These pins keep the forwarding honest: write once, and never twice.
+    Measured live 2026-09-26: it scored (`Oracle decide consumer=review_verdict`)
+    and produced NO ledger row, because the only thing that read
+    `last_shadow_verdict` was a test. These pins keep the forwarding honest:
+    write once, and never twice. (`mode` was the other exposed row until the
+    consumer was REMOVED 2026-10-10, owner — the fixtures below were updated
+    to the surviving attribute in the SAME change. STALE-BY-SPEC.)
     """
 
     def _kernel(self, rec):
@@ -158,17 +160,16 @@ class TestExposedRowsAreForwarded:
     def test_an_exposed_row_is_written_once_and_then_cleared(self):
         rec = _Recorder()
         k = self._kernel(rec)
-        holder = SimpleNamespace(
-            last_mode_shadow={"consumer_id": "mode", "chosen": "quick"},
-            last_shadow_verdict=None,
-        )
+        holder = SimpleNamespace(last_shadow_verdict={
+            "consumer_id": "review_verdict", "chosen": "pass",
+        })
 
         k._forward_consumer_rows(holder)
-        assert [m["consumer_id"] for m, _k, _s in rec.calls] == ["mode"], (
+        assert [m["consumer_id"] for m, _k, _s in rec.calls] == ["review_verdict"], (
             "an exposed row was not written — this is the defect that left "
-            "`mode` with zero calibration rows"
+            "`review_verdict` with zero calibration rows"
         )
-        assert holder.last_mode_shadow is None, (
+        assert holder.last_shadow_verdict is None, (
             "the row was not cleared, so the next turn would write it again "
             "and inflate every rate derived from the ledger"
         )
@@ -181,24 +182,24 @@ class TestExposedRowsAreForwarded:
         rec = _Recorder()
         k = self._kernel(rec)
         k._forward_consumer_rows(
-            SimpleNamespace(last_mode_shadow={"consumer_id": "mode"}),
+            SimpleNamespace(last_shadow_verdict={"consumer_id": "review_verdict"}),
             SimpleNamespace(last_shadow_verdict={"consumer_id": "review_verdict"}),
         )
         assert sorted(m["consumer_id"] for m, _k, _s in rec.calls) == [
-            "mode", "review_verdict",
+            "review_verdict", "review_verdict",
         ]
 
     def test_a_none_holder_and_empty_rows_are_ignored(self):
         rec = _Recorder()
         k = self._kernel(rec)
         k._forward_consumer_rows(None, SimpleNamespace(), SimpleNamespace(
-            last_mode_shadow=None, last_shadow_verdict={}))
+            last_shadow_verdict=None))
         assert rec.calls == []
 
     def test_a_broken_holder_never_raises(self):
         class _Boom:
             @property
-            def last_mode_shadow(self):
+            def last_shadow_verdict(self):
                 raise RuntimeError("boom")
 
         rec = _Recorder()

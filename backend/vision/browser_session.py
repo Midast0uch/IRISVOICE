@@ -85,6 +85,15 @@ _ACTION_POINT_TIMEOUT_MS = int(os.environ.get("IRIS_VISION_ACTION_POINT_TIMEOUT_
 # but lazy-loaded DOM assets need a beat to hydrate (REQ-4 AC4.3). Bounded and
 # env-overridable; the session stays machine-speed (no animation loops).
 _MICRO_SETTLE_MS = int(os.environ.get("IRIS_VISION_MICRO_SETTLE_MS", "150"))
+# A click that navigates waits this long for the new document to parse before
+# it is captured for the panel (a large article streams for several seconds).
+_ACTION_NAV_SETTLE_MS = 10_000
+# Saved frames per live-browser session (no slot block of its own).
+_UNSLOTTED_MAX_FRAMES = 24
+_USER_HAS_CONTROL = ("the user is controlling the browser right now; wait for them to "
+                     "hand it back, then observe the page again")
+# The observe pass's element tags, as page.content() serializes them.
+_MARK_ATTR_RE = re.compile(r'\sdata-iris-mark="\d+"')
 # Overlay dismissal locators, tried in order after Escape (REQ-5 AC5.2).
 DISMISS_SELECTORS = (
     "button:has-text('Accept')",
@@ -112,7 +121,9 @@ _POPUP_SETTLE_TIMEOUT_MS = 5_000
 # ── Interactive control (browser_observe / browser_act) ─────────────────────
 # Set-of-Marks cap: the model reads the list, so it stays short. In-viewport
 # elements come first, so the cap drops the far-off-screen tail, not the page.
-_MAX_MARKS = 60
+# 80 (was 60, 2026-10-12): a 20-item list page plus the site's navigation must
+# both fit - the content keeps the larger share, the chrome a reserved third.
+_MAX_MARKS = 80
 # How long the overlay gets to glide to the target between the `approach` event
 # and the real input (REQ-5 AC5.1). Matches the overlay's compressed transit.
 _APPROACH_MS = int(os.environ.get("IRIS_BROWSER_APPROACH_MS", "180"))
@@ -125,9 +136,10 @@ _INTERACT_ACTIONS = ("click", "type", "select", "scroll", "back", "press")
 # Collects every visible interactive element, tags it `data-iris-mark=<id>` so
 # the act step can re-find the SAME node, and returns [{id, role, name, tag,
 # x, y, w, h, in_view, disabled, +href/type/download/form when present}] plus a
-# short visible-text digest. Order: the
-# elements on screen in document order, then the rest in document order; ids
-# are 1..N in that order. Hidden, zero-size and off-document nodes are skipped.
+# visible-text digest of the page's content (2,500 chars). Order: the page's
+# CONTENT before its chrome (menus, sidebars, header, footer), and within each
+# the elements on screen before the rest, in document order; ids are 1..N in
+# that order. Hidden, zero-size and off-document nodes are skipped.
 # (Open shadow roots and cross-origin iframes are not entered.)
 _OBSERVE_JS = r"""
 (cap) => {
@@ -190,7 +202,13 @@ _OBSERVE_JS = r"""
     });
     return { fields, action: (f.getAttribute('action') || '').slice(0, 200) };
   };
-  const inView = [], offView = [];
+  // Site chrome: menus, sidebars, headers, footers. Live 2026-10-12: a shop's
+  // 50-link category sidebar took 50 of the 60 slots, so the agent saw 4 of the
+  // 20 products on the page and picked the wrong "cheapest" one. The page's
+  // own content is listed first; the chrome fills what is left.
+  const CHROME = 'nav, aside, header, footer, [role=navigation], [role=banner], ' +
+    '[role=contentinfo], [role=complementary]';
+  const groups = [[], [], [], []];  // content+view, content, chrome+view, chrome
   document.querySelectorAll(SEL).forEach(el => {
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return;
@@ -198,9 +216,35 @@ _OBSERVE_JS = r"""
     if (r.width < 2 || r.height < 2) return;
     if (r.right + sx <= 0 || r.bottom + sy <= 0 || r.left + sx >= docW) return;
     const visible = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
-    (visible ? inView : offView).push([el, r, visible]);
+    const chrome = !!el.closest(CHROME);
+    groups[(chrome ? 2 : 0) + (visible ? 0 : 1)].push([el, r, visible]);
   });
-  const picked = inView.concat(offView).slice(0, cap);
+  // A card's image link and title link go to the same place: one mark each.
+  const dedupe = (list) => {
+    const out = []; let lastHref = null;
+    for (const item of list) {
+      const href = item[0].tagName === 'A' ? item[0].href : null;
+      if (href && href === lastHref) {
+        // keep the one with the words (the title, not the cover image)
+        const prev = out[out.length - 1];
+        if ((item[0].innerText || '').trim().length > (prev[0].innerText || '').trim().length) {
+          out[out.length - 1] = item;
+        }
+        continue;
+      }
+      lastHref = href;
+      out.push(item);
+    }
+    return out;
+  };
+  // ...but navigation lives in the chrome: a list page whose items fill every
+  // slot hid the category links the agent needed to move on (live 2026-10-12:
+  // it guessed URLs and hit 404s). The chrome keeps a reserved share.
+  const content = dedupe(groups[0].concat(groups[1]));
+  const chromeAll = dedupe(groups[2].concat(groups[3]));
+  const chromeShare = Math.min(chromeAll.length, Math.floor(cap / 3));
+  const fromContent = content.slice(0, cap - chromeShare);
+  const picked = fromContent.concat(chromeAll.slice(0, cap - fromContent.length));
   const marks = picked.map(([el, r, visible], i) => {
     const id = i + 1;
     el.setAttribute('data-iris-mark', String(id));
@@ -222,9 +266,27 @@ _OBSERVE_JS = r"""
   // Wikipedia article are its header and menus, so a blind node model never
   // read the article and asked the screenshot reader, which misread facts
   // (live 2026-10-04: "The infobox height is 250.", 12-14 readings a turn).
-  const main = document.querySelector(
-    'main, [role=main], article, #mw-content-text, #content') || document.body;
-  const digest = clean(main ? main.innerText : '').slice(0, 1500);
+  // A LIST page has many <article>s (one per product): the first one is one
+  // card, not the page (live 2026-10-12: "Sharp Objects £47.82" was all the
+  // agent read of a 20-book category). An <article> counts only when it is
+  // the only one; otherwise the body minus its chrome is the content.
+  let main = null;
+  for (const s of ['main', '[role=main]', '#mw-content-text', '#content']) {
+    main = document.querySelector(s);
+    if (main) break;
+  }
+  if (!main && document.querySelectorAll('article').length === 1) main = document.querySelector('article');
+  let text = '';
+  if (main) {
+    text = main.innerText || '';
+  } else {
+    text = document.body ? (document.body.innerText || '') : '';
+    document.querySelectorAll(CHROME).forEach(c => {
+      const t = c.innerText || '';
+      if (t.length > 20) text = text.replace(t, ' ');
+    });
+  }
+  const digest = clean(text).slice(0, 2500);
   return { marks, digest, vw, vh, title: document.title || '' };
 }
 """
@@ -694,9 +756,29 @@ class BrowserSession:
             logger.warning("[browser_session] page CRASHED (renderer died) job=%s url=%s", job, self.url)
             self._unavailable = True
 
+        # Requests in flight, so a slow load names what it waits on (live
+        # 2026-10-12: books.toscrape.com took 20-45 s to "DOM ready" in the
+        # backend and 0.5 s alone). Bounded: oldest dropped past 64.
+        inflight = self._inflight_requests = {}
+        slow = self._slow_requests = []
+
+        def _req(r):
+            if len(inflight) >= 64:
+                inflight.pop(next(iter(inflight)), None)
+            inflight[id(r)] = (time.monotonic(), str(getattr(r, "url", ""))[:140])
+
+        def _done(r):
+            got = inflight.pop(id(r), None)
+            if got is not None and time.monotonic() - got[0] > 3.0:
+                slow.append((round(time.monotonic() - got[0], 1), got[1]))
+                del slow[:-8]
+
         try:
             on("close", _closed)
             on("crash", _crashed)
+            on("request", _req)
+            on("requestfinished", _done)
+            on("requestfailed", _done)
             ctx = getattr(page, "context", None)
             browser = getattr(ctx, "browser", None) if ctx is not None else None
             b_on = getattr(browser, "on", None)
@@ -910,6 +992,16 @@ class BrowserSession:
                     self._job_id, self.url, " | ".join(str(_nav_exc)[:600].splitlines()),
                 )
             _t_nav = time.monotonic()
+            if _t_nav - _t_page > 5.0:
+                _now = time.monotonic()
+                _waiting = sorted(
+                    ((round(_now - t0, 1), u) for t0, u in
+                     getattr(self, "_inflight_requests", {}).values()),
+                    reverse=True,
+                )[:5]
+                logger.info("[browser_session] slow load job=%s nav_s=%.1f still waiting on: %s; "
+                            "slow finished: %s", self._job_id, _t_nav - _t_page,
+                            _waiting or "nothing", getattr(self, "_slow_requests", []) or "none")
             # Where an open's time goes (2026-10-02: 86 s with a warm browser).
             logger.info(
                 "[browser_session] opened job=%s url=%s context_ms=%d cookies_ms=%d "
@@ -941,6 +1033,8 @@ class BrowserSession:
         if self._closed:
             return
         self._closed = True
+        # The live view's CDP session and registry entry die with the page.
+        await self._stop_takeover_manager("session_closed", keep_watch=False)
         page, context, lease = self._page, self._context, self._lease
         # Detach first so available() is False immediately and a failing close
         # cannot make a stale page look live.
@@ -1460,6 +1554,10 @@ class BrowserSession:
                 self.url = _live
             before = self._frames_published
             await self._publish_frame()
+            # An adopted popup replaced the page: the live view follows it.
+            mgr = getattr(self, "_takeover_mgr", None)
+            if mgr is not None and getattr(mgr, "watching", False) and mgr.page is not page:
+                await self.start_live_view()
             if emit is None or self.current_capture_page is None:
                 return  # nothing stored: nothing for the panel to show
             if self._frames_published == before and not force:
@@ -1474,6 +1572,9 @@ class BrowserSession:
                 "total": self._frames_published, "host": _host_of(self.url),
                 "title": title, "snippet": "", "job_id": self._job_id,
                 "capture_page": self._page_number, "capture_available": True,
+                # The live browser, not a search result: the panel keeps it out
+                # of a search's sources and page count.
+                "source": "browser",
             })
         except Exception as exc:  # noqa: BLE001 — publication is off the hot path
             logger.debug("[browser_session] announce failed job=%s: %s", self._job_id, exc)
@@ -1488,7 +1589,10 @@ class BrowserSession:
             title = ""
         return {"url": str(getattr(page, "url", "") or self.url), "title": title}
 
-    async def observe(self, marked_screenshot: bool = False) -> dict:
+    async def observe(
+        self, marked_screenshot: bool = False,
+        emit: Optional[Callable[[str, dict], None]] = None,
+    ) -> dict:
         """Set-of-Marks of the current page (REQ-4 AC4.2).
 
         Tags every visible interactive element with ``data-iris-mark`` and
@@ -1496,12 +1600,19 @@ class BrowserSession:
         marked_image}``. ``marked_image`` (JPEG bytes with the numbers drawn on)
         is produced only when the caller says a vision model can use it. Never
         raises; ``{"ok": False, "error": ...}`` on failure.
+
+        With ``emit``, the page the agent is about to read is published to the
+        panel first (deduped: an unchanged DOM publishes nothing), so content
+        that arrived after the last action - a late-loading page - reaches the
+        panel too. Before the mark pass, so the marks never count as a change.
         """
         async with self._action_lock:
             page = self._page
             if page is None:
                 return {"ok": False, "error": "browser session is closed; call browser_open"}
             self._renew_lease()
+            if emit is not None:
+                await self._announce_page(emit)
             try:
                 data = await page.evaluate(_OBSERVE_JS, _MAX_MARKS)
             except Exception as exc:  # noqa: BLE001
@@ -1541,6 +1652,8 @@ class BrowserSession:
             page = self._page
             if page is None:
                 return {"ok": False, "error": "browser session is closed; call browser_open"}
+            if self.user_has_control():
+                return {"ok": False, "error": _USER_HAS_CONTROL}
             over = self._budget_error()
             if over:
                 return {"ok": False, "error": over}
@@ -1596,6 +1709,10 @@ class BrowserSession:
             page = self._page
             if page is None:
                 return {"ok": False, "error": "browser session is closed; call browser_open"}
+            # One writer on the page (REQ-15 AC4): while the user holds it,
+            # the agent's input would fight theirs.
+            if self.user_has_control():
+                return {"ok": False, "error": _USER_HAS_CONTROL}
             over = self._budget_error()
             if over:
                 return {"ok": False, "error": over}
@@ -1642,6 +1759,17 @@ class BrowserSession:
                 await page.wait_for_load_state("domcontentloaded", timeout=2_000)
             except Exception:  # noqa: BLE001 — a page that never quiets is reported as-is
                 pass
+            # A click that NAVIGATED: wait for the NEW document to finish
+            # parsing before it is captured. Live 2026-10-11: a search-result
+            # click on Wikipedia was captured 2 s into the article's download -
+            # the panel replayed the info box only (88 KB of a ~480 KB page,
+            # one paragraph) and looked like the page never loaded.
+            if str(getattr(page, "url", "") or "") != before_url:
+                try:
+                    await page.wait_for_load_state(
+                        "domcontentloaded", timeout=_ACTION_NAV_SETTLE_MS)
+                except Exception:  # noqa: BLE001 — a slow page is captured as-is
+                    pass
             page = self._page or page  # a click may have opened an adopted popup
             done_point = await self._viewport_point(page, None)
             done_point.pop("x", None)
@@ -1858,27 +1986,84 @@ class BrowserSession:
         manager routes frames through the process-wide frame sink the gateway
         registers.
         """
+        from backend.vision import cdp_takeover as _cdp
+
         mgr = getattr(self, "_takeover_mgr", None)
         if mgr is None:
-            from backend.vision import cdp_takeover as _cdp
-
             mgr = _cdp.TakeoverManager(
                 run_id=self._job_id,
                 frame_sink=_cdp.get_frame_sink(),
             )
-            _cdp.register_active(mgr)
             self._takeover_mgr = mgr
+        # Re-register on every use: a stopped manager was unregistered, and an
+        # unregistered one silently drops the panel's input and frame acks.
+        _cdp.register_active(mgr)
         return mgr
 
-    async def _stop_takeover_manager(self, reason: str) -> None:
+    async def start_live_view(self) -> bool:
+        """Stream this page to the panel while the agent drives it, so the
+        panel shows the agent's real page - scripts running, typed text,
+        scroll - not a saved copy. Input stays grant-gated (the user takes
+        control explicitly). Re-targets after a popup adoption. Never raises."""
+        if self._page is None:
+            return False
+        try:
+            return await self._get_takeover_manager().start_watch(self._page)
+        except Exception as exc:  # noqa: BLE001 - the replay mirror still works
+            logger.info("[browser_session] live view unavailable job=%s: %s", self._job_id, exc)
+            return False
+
+    async def fit_viewport_to_panel(self, panel_w: int, panel_h: int) -> Optional[dict]:
+        """Give the page the panel's SHAPE so the live view fills the panel.
+
+        The page rendered at a fixed landscape viewport; in a tall narrow panel
+        the frame showed as a small strip inside wide bars. The viewport takes
+        the panel's aspect at a readable width (twice the panel width, kept
+        between 800 and 1366 CSS px), and the stream restarts at that size.
+        Returns the new viewport, or None when nothing changed. Never raises.
+        """
+        page = self._page
+        if page is None or panel_w < 120 or panel_h < 120:
+            return None
+        width = max(800, min(1366, int(panel_w) * 2))
+        height = max(480, min(2400, round(width * panel_h / panel_w)))
+        try:
+            current = getattr(page, "viewport_size", None) or {}
+            if abs(current.get("width", 0) - width) < 8 and abs(current.get("height", 0) - height) < 8:
+                return None
+            async with self._action_lock:  # never resize under an agent action
+                await page.set_viewport_size({"width": width, "height": height})
+            mgr = getattr(self, "_takeover_mgr", None)
+            if mgr is not None and getattr(mgr, "watching", False):
+                mgr.set_frame_bounds(width, height)
+                await mgr.stop_screencast()
+                await mgr.start_watch(self._page)
+            logger.info("[browser_session] viewport fit to panel job=%s panel=%dx%d viewport=%dx%d",
+                        self._job_id, panel_w, panel_h, width, height)
+            return {"width": width, "height": height}
+        except Exception as exc:  # noqa: BLE001 - the old viewport still works
+            logger.info("[browser_session] viewport fit failed job=%s: %s", self._job_id, exc)
+            return None
+
+    def user_has_control(self) -> bool:
+        """True while the user holds the page (an open grant): the agent waits."""
+        mgr = getattr(self, "_takeover_mgr", None)
+        return bool(mgr is not None and mgr.is_open())
+
+    async def _stop_takeover_manager(self, reason: str, keep_watch: bool = True) -> None:
         """Stop the screencast + release the CDP session + close the grant.
 
         REQ-13 AC3 / REQ-15 AC3: on resolve, timeout, cancel, or run end the
         screencast stops, the CDP session is released, and the session returns
-        to the deterministic DOM path. Idempotent; never raises.
+        to the deterministic DOM path. With ``keep_watch`` a live view that was
+        streaming before the hand-over keeps streaming; only the grant closes.
+        Idempotent; never raises.
         """
         mgr = getattr(self, "_takeover_mgr", None)
         if mgr is None:
+            return
+        if keep_watch and getattr(mgr, "watching", False):
+            mgr.close_grant(reason)
             return
         try:
             await mgr.stop_screencast()
@@ -2037,6 +2222,10 @@ class BrowserSession:
         html = await self.current_frame()
         if not html:
             return html
+        # The observe pass tags elements with data-iris-mark; those numbers are
+        # the agent's, not the page's. Left in, every observe after the first
+        # would look like a page change and publish a duplicate frame.
+        html = _MARK_ATTR_RE.sub("", html)
         # T16: skip exact-duplicate frames (same DOM, same job) — the capture
         # store keeps one page per distinct state, not one per action.
         if self._last_published == html:
@@ -2051,14 +2240,23 @@ class BrowserSession:
         # runaway loop can never write over the NEXT url's capture addresses —
         # which would silently serve one page's bytes under another's tab.
         _next = self._page_number + 1
-        _ceiling = self._page_offset + CAPTURE_SLOT_STRIDE - 1
-        if self._page_offset and _next > _ceiling:
-            logger.warning(
-                "[browser_session] frame block exhausted job=%s slot_offset=%s "
-                "frames=%s — not publishing further frames (would overwrite the "
-                "next URL's capture)",
-                self._job_id, self._page_offset, _next - self._page_offset,
-            )
+        # An unslotted session (the agent's live browser, offset 0) has no
+        # block to stay inside, and it may take 150 actions: its frames shared
+        # the store's one 100-page budget with the searches and pushed their
+        # captures out (a source card's replay then 404'd). The live view shows
+        # the browser's page, so a bounded number of saved frames is enough.
+        _ceiling = (self._page_offset + CAPTURE_SLOT_STRIDE - 1
+                    if self._page_offset else _UNSLOTTED_MAX_FRAMES)
+        if _next > _ceiling:
+            if not getattr(self, "_frame_cap_logged", False):
+                self._frame_cap_logged = True
+                logger.warning(
+                    "[browser_session] frame cap reached job=%s slot_offset=%s "
+                    "frames=%s — not publishing further frames (a slotted session "
+                    "would overwrite the next URL's capture; an unslotted one would "
+                    "evict other jobs' captures)",
+                    self._job_id, self._page_offset, _next - self._page_offset,
+                )
             return html
         self._page_number = _next
         _pub_t0 = time.monotonic()

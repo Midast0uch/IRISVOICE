@@ -183,86 +183,11 @@ class TestMonitorBoolShadowRows:
             assert eng.seen == [cid]
 
 
-# ── REQ-15 AC15.2 (T19): the mode consumer's measured confidence ───────────
-
-
-class TestModeConfidenceMeasured:
-    def test_mode_confidence_measured(self, oracle_decides):
-        """AC15.2: the inference branch reports the ENGINE's measured
-        probability for the chosen mode, not the hand-set keyword float.
-
-        Stage B (2026-10-05) setup change, assertions unchanged: the engine's
-        probability replaces the keyword confidence only when `mode` decides
-        through the enforcement chokepoint (the stand-in's 0.72 clears a fitted
-        threshold of 0.70)."""
-        from backend.agent.mode_detector import AgentMode, ModeDetector
-
-        oracle_decides("mode", threshold=0.70)
-
-        class _Eng:
-            def decide(self, consumer_id, options, frame):
-                probs = {"implement": 0.72, "research": 0.11, "spec": 0.04,
-                         "debug": 0.05, "test": 0.04, "review": 0.04}
-                return DecisionScore(
-                    consumer_id=consumer_id, chosen="implement",
-                    confidence=0.72,
-                    distribution=tuple(
-                        CandidateScore(n, -0.1, probs.get(n, 0.0))
-                        for n in options
-                    ),
-                    engine_latency_ms=2,
-                )
-
-        detector = ModeDetector()
-        detector.set_mode_engine(_Eng())
-
-        result = detector.detect("please write the code for the uploader")
-
-        assert result.mode == AgentMode.IMPLEMENT   # keyword still decides
-        assert abs(result.confidence - 0.72) < 1e-9, (
-            f"the confidence is still the hand-set keyword float "
-            f"({result.confidence}) instead of the engine's measurement"
-        )
-
-    def test_mode_consumer_scored_under_its_own_labels(self):
-        """AC19.3: the mode consumer is scored with the six mode labels and
-        its own instruction — never another consumer's head."""
-        from backend.agent.decision_engine import get_consumer_spec
-        from backend.agent.mode_detector import ModeDetector
-
-        class _Eng:
-            def __init__(self):
-                self.calls: list = []
-
-            def decide(self, consumer_id, options, frame):
-                self.calls.append((consumer_id, list(options), frame))
-                return DecisionScore(
-                    consumer_id=consumer_id, chosen=options[0], confidence=0.5,
-                    distribution=tuple(
-                        CandidateScore(o, -0.1, 1.0 / len(options))
-                        for o in options
-                    ),
-                    engine_latency_ms=1,
-                )
-
-        eng = _Eng()
-        detector = ModeDetector()
-        detector.set_mode_engine(eng)
-        detector.detect("write the code")
-        # Stage B (2026-10-05): a mode that does not decide is scored on the
-        # oracle_shadow lane; the call is observable once the lane drains.
-        from backend.utils.durability_queue import lane
-
-        assert lane("oracle_shadow").flush(10.0)
-
-        assert eng.calls, "the mode consumer was never scored"
-        consumer_id, labels, frame = eng.calls[0]
-        assert consumer_id == "review_verdict" or consumer_id == "mode"
-        assert set(labels) == set(ModeDetector.MODE_LABELS)
-        spec = get_consumer_spec("mode")
-        assert spec is not None
-        assert spec.instruction == ModeDetector.MODE_INSTRUCTION
-
+# REQ-15 AC15.2 (T19): the mode consumer section REMOVED 2026-10-10
+# (owner): the consumer itself was removed — its incumbent is the free
+# keyword rule, so enforcing it could never pay, and its reference was the
+# keyword list itself. STALE-BY-SPEC: both tests pinned the deleted
+# shadow machinery (set_mode_engine / MODE_LABELS / last_mode_shadow).
 
 # ── REQ-17 AC17.1/AC17.2 (T21): the failure-triage shadow row ──────────────
 

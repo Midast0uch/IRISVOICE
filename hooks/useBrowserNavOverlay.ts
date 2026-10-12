@@ -128,6 +128,9 @@ export interface NavOverlaySeed {
   subGoal?: string
 }
 
+/** How long a mid-run seed may sit in "loading" with no event before it settles. */
+const SEED_SETTLE_MS = 4000
+
 const IDLE: NavOverlayStatus = {
   state: "idle", subGoal: "", pagesDone: 0, pagesTotal: 0,
   visionAction: "", visionStep: 0, visionTotal: 0,
@@ -175,7 +178,13 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
   useEffect(() => {
     const onOpenTab = () => setStatus(p => ({ ...p, state: "loading", pagesDone: 0 }))
     const onCrawlerStarted = (e: Event) => {
-      const d = (e as CustomEvent<{ query?: string; url_count?: number }>).detail ?? {}
+      const d = (e as CustomEvent<{ query?: string; url_count?: number; source?: string }>).detail ?? {}
+      // The live browser opening mid-search must not zero the search's counters
+      // or vision fields - only the state moves.
+      if (d.source === "browser") {
+        setStatus(p => ({ ...p, state: "loading" }))
+        return
+      }
       setStatus(p => ({
         state: "loading",
         subGoal: d.query ?? p.subGoal,
@@ -207,14 +216,19 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
       }))
     }
     const onPageFetched = (e: Event) => {
-      const d = (e as CustomEvent<{ page_number?: number; total?: number }>).detail ?? {}
+      const d = (e as CustomEvent<{ page_number?: number; total?: number; source?: string }>).detail ?? {}
+      // A live-browser frame moves the state like a page does, but its numbers
+      // count frames, not pages: leave pagesDone/pagesTotal alone.
+      const isBrowser = d.source === "browser"
       setStatus(p => ({
         ...p,
         // First page found: the loading orb disperses outward ("touching"
         // the page); subsequent pages: the shutter-crawling state.
         state: p.state === "loading" ? "dispersing" : "crawling",
-        pagesDone: d.page_number ?? p.pagesDone + 1,
-        pagesTotal: d.total ?? p.pagesTotal,
+        ...(isBrowser ? {} : {
+          pagesDone: d.page_number ?? p.pagesDone + 1,
+          pagesTotal: d.total ?? p.pagesTotal,
+        }),
       }))
     }
     const onCrawlerComplete = (e: Event) => {
@@ -227,6 +241,14 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
       }))
     }
     const onCrawlerError = () => setStatus(p => ({ ...p, state: "error" }))
+    // The live browser tools never send crawler_complete (the session outlives
+    // the turn), so the overlay stayed in "crawling" over the frame after the
+    // answer. The turn's end settles a run that is still in flight.
+    const onTurnEnd = () => setStatus(p => (
+      p.state === "loading" || p.state === "dispersing" || p.state === "crawling"
+        ? { ...p, state: "complete", visionAction: "" }
+        : p
+    ))
 
     // REQ-11 AC4: a vision action keeps the SAME animation surface alive and
     // progressing — it introduces no new visual state (REQ-11 AC3: the panel's
@@ -301,6 +323,7 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
     window.addEventListener("iris:crawler_complete", onCrawlerComplete)
     window.addEventListener("iris:crawler_error", onCrawlerError)
     window.addEventListener("iris:crawler_vision_action", onVisionAction)
+    window.addEventListener("iris:turn_end", onTurnEnd)
 
     // T19 (REQ-10 AC10.1/AC10.3): takeover requested → the overlay's takeover
     // banner unlocks (its OWN pointer-events go auto — the overlay root stays
@@ -339,6 +362,7 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
       window.removeEventListener("iris:crawler_complete", onCrawlerComplete)
       window.removeEventListener("iris:crawler_error", onCrawlerError)
       window.removeEventListener("iris:crawler_vision_action", onVisionAction)
+      window.removeEventListener("iris:turn_end", onTurnEnd)
       window.removeEventListener("iris:browser_takeover_requested", onTakeoverRequested)
       window.removeEventListener("iris:question_answered", onQuestionResolved)
       window.removeEventListener("iris:question_timeout", onQuestionResolved)
@@ -351,6 +375,10 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
   // from it ONCE per run — only while IDLE, so real events keep ownership the
   // moment they flow, and SSE snapshot replays cannot double-seed.
   const seededRunRef = useRef<string>("")
+  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current)
+  }, [])
   useEffect(() => {
     if (!seed?.active) return
     const runKey = `${seed.subGoal ?? ""}|${seed.pagesTotal ?? 0}`
@@ -366,6 +394,18 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
         pagesTotal: seed.pagesTotal || p.pagesTotal,
       }
     })
+    // A mount mid-run never saw the events that already happened, so "loading"
+    // (the orb at the centre of the page) can be the wrong state for good: the
+    // live browser may send nothing more for a while. If pages had already been
+    // read, the run is past its opening - settle to crawling unless a real event
+    // has moved the state on (a fresh run resets pagesDone, so it never matches).
+    const seededDone = seed.pagesDone
+    if (seededDone > 0) {
+      if (settleTimerRef.current) clearTimeout(settleTimerRef.current)
+      settleTimerRef.current = setTimeout(() => {
+        setStatus(p => (p.state === "loading" && p.pagesDone === seededDone ? { ...p, state: "crawling" } : p))
+      }, SEED_SETTLE_MS)
+    }
   }, [seed?.active, seed?.pagesDone, seed?.pagesTotal, seed?.subGoal])
 
   // Auto-dismiss: a terminal state holds briefly, then returns to idle.

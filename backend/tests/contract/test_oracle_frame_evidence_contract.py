@@ -26,10 +26,10 @@ Plus the async-boundary defect that killed the tc-frame-v2 fix before it ever
 fired: ``record_shadow_tool_choice(async_=True)`` re-invoked itself on a thread
 WITHOUT ``last_result`` in the kwargs - and async is the only mode both live
 callers use - so every "v2" row measured the BLIND frame under the enriched
-stamp. And the mode row-path defect: the lane job only EXPOSED the row on
-``last_mode_shadow`` for a kernel forward that ran before the lane did, so in
-a one-turn conversation the row was never written (1,109 gliner rows end
-2026-10-06, zero since).
+stamp. (The mode row-path defect of the same class - the lane job only EXPOSED
+the row for a kernel forward that ran before the lane did - was pinned here
+until the `mode` consumer was REMOVED 2026-10-10, owner; its test went with
+the consumer. STALE-BY-SPEC.)
 """
 
 from __future__ import annotations
@@ -127,7 +127,43 @@ def test_sync_shadow_row_carries_the_frame_stamp():
         last_result="pytest output",
     )
     assert row is not None
-    assert row["criteria_version"] == "tc-frame-v4"
+    # STALE-BY-SPEC update (2026-10-11): v5 added the step's own calls and
+    # done-when; v6 makes the option lines the tools' decision lines - each a
+    # new cohort. The row also carries the replay keys and the menu fingerprint.
+    # v7 (2026-10-11): + step_facts (files named: exists / read / changed).
+    # v8: + files seen in the last result, + paged-read counts.
+    assert row["criteria_version"] == "tc-frame-v8"
+    assert row["state"].startswith("fix the failing test in utils.py")
+    assert isinstance(row["menu_fp"], str) and len(row["menu_fp"]) == 10
+
+
+def test_async_shadow_carries_the_steps_own_calls_and_done_when():
+    """tc-frame-v5 (2026-10-11): the step's own calls so far and its done-when
+    must survive the async boundary (the v2 lesson: a parameter not on the
+    thread kwargs is silently dropped) AND render into the route state."""
+    eng = _Engine()
+    _box(eng).record_shadow_tool_choice(
+        goal="fix the failing test in utils.py",
+        observed_tool="run_command",
+        candidates=["read_file", "edit_file", "run_command"],
+        last_result="edit applied",
+        calls_this_step="read_file utils.py ok; edit_file utils.py ok",
+        done_when="pytest passes",
+        source="der_node",
+        async_=True,
+    )
+    deadline = time.monotonic() + 5.0
+    while not eng.frames and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert eng.frames, "the async shadow never ran"
+    f = eng.frames[0]
+    assert f.get("calls_this_step") == "read_file utils.py ok; edit_file utils.py ok"
+    assert f.get("done_when") == "pytest passes"
+    assert f.get("source") == "der_node"
+    text = job_input("tool_choice", f).text
+    for needle in ("calls_this_step: read_file utils.py ok", "done_when: pytest passes",
+                   "last_result: edit applied"):
+        assert needle in text, f"declared route field not rendered: {needle}"
 
 
 # ── 2. the shape job must render its consumers' evidence ─────────────────
@@ -230,69 +266,30 @@ def test_dynamic_menu_criteria_render_into_the_option_lines():
 
 
 def test_async_shadow_passes_option_criteria():
-    """The v2 lesson, applied by construction: EVERY new parameter rides the
-    async thread kwargs or the async path silently drops it. The Thread call
-    carries target=record_shadow_tool_choice and kwargs={...}; the kwargs
-    Dict must contain both last_result and option_criteria."""
+    """The v2 lesson, applied by construction: EVERY parameter rides the async
+    hand-off or the async path silently drops it.
+
+    STALE-BY-SPEC update (2026-10-11): the hand-off moved from a Thread per
+    row to the `oracle_shadow` lane (one ordered writer - CLAUDE.md "lanes,
+    never a thread per row"); it forwards the `_kw` dict built inside
+    record_shadow_tool_choice. The guard is STRONGER now: `_kw` must carry
+    EVERY parameter of the function (not only last_result/option_criteria),
+    with async_ pinned False."""
     import ast
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[3] / "backend" / "agent"
            / "tool_decision.py").read_text(encoding="utf-8")
     found = False
-    for node in ast.walk(ast.parse(src)):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "Thread"):
+    for fn in ast.walk(ast.parse(src)):
+        if not (isinstance(fn, ast.FunctionDef) and fn.name == "record_shadow_tool_choice"):
             continue
-        target = next((k.value for k in node.keywords
-                      if k.arg == "target" and isinstance(k.value, ast.Attribute)
-                      and k.value.attr == "record_shadow_tool_choice"), None)
-        kw = next((k.value for k in node.keywords
-                   if k.arg == "kwargs" and isinstance(k.value, ast.Dict)), None)
-        if target is None or kw is None:
-            continue
-        keys = {k.value for k in kw.keys if isinstance(k, ast.Constant)}
-        assert {"last_result", "option_criteria"} <= keys, (
-            f"the async wrapper drops a parameter: {sorted(keys)}")
-        found = True
-    assert found, "the async shadow wrapper was not found"
-
-
-# ── 4. the mode lane job must WRITE the row, not only expose it ────────────
-
-
-def test_mode_lane_row_reaches_sink(monkeypatch):
-    """The lane job used to only set last_mode_shadow for a kernel forward
-    that runs BEFORE the lane - in a one-turn conversation the row was never
-    written (measured: zero mode rows after 2026-10-06)."""
-    from backend.agent.mode_detector import ModeDetector
-
-    md = ModeDetector()
-    md.set_mode_engine(_ModeEngine())
-    sink_rows: list = []
-    md.set_row_sink(sink_rows.append)
-    md._shadow_mode_async("research the websocket rfc", _kw_mode("research"))
-    from backend.utils.durability_queue import lane
-
-    lane("oracle_shadow").flush(10.0)
-    assert sink_rows, (
-        "the lane job did not write the row through the sink - it was only "
-        "exposed for a forward that already ran")
-    assert sink_rows[0]["consumer_id"] == "mode"
-
-
-def _kw_mode(value):
-    from backend.agent.mode_detector import AgentMode
-
-    return AgentMode(value)
-
-
-class _ModeEngine:
-    model_id = "mode-stub"
-
-    def decide(self, consumer_id, options, frame):
-        return DecisionScore(
-            consumer_id=consumer_id, chosen=options[0], confidence=0.9,
-            distribution=tuple(CandidateScore(o, -0.1, 0.1) for o in options),
-            engine_latency_ms=1,
-        )
+        params = {a.arg for a in fn.args.args + fn.args.kwonlyargs} - {"self"}
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)
+                    and any(isinstance(t, ast.Name) and t.id == "_kw" for t in node.targets)):
+                continue
+            keys = {k.value for k in node.value.keys if isinstance(k, ast.Constant)}
+            assert params <= keys, f"the async hand-off drops: {sorted(params - keys)}"
+            found = True
+    assert found, "the async shadow hand-off (_kw) was not found"

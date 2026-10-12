@@ -2,9 +2,9 @@
 
 Covers:
   - URL normalization (missing scheme -> https://).
-  - The in-app surface: an ``open_tab`` WS message (tab_type "browser", the
-    url) is broadcast to the session's clients — the existing dashboard
-    browser tab renders it with zero dashboard changes.
+  - The in-app surface: an ``open_tab`` WS message (tab_type "web", the url)
+    is broadcast to the session's clients — the dashboard renders a web tab
+    through the fetch proxy.
   - Agent content: the single page is fetched headlessly (CrawlOrchestrator
     single-URL path, no LLM planning) and returned as markdown + sources —
     the same envelope shape as ``search`` so the DER render path works.
@@ -121,7 +121,11 @@ def test_open_url_broadcasts_in_app_tab(monkeypatch):
     sid, msg = ws.broadcasts[0]
     assert sid == "s1"
     assert msg["type"] == "open_tab"
-    assert msg["tab_type"] == "browser"  # the dashboard's existing browser tab
+    # "web": the panel's TabType is code|web|html|dashboard and it renders only
+    # web tabs in the frame. This pinned "browser" (2026-10-12, changed with
+    # the owner's leave for browser-feature tests): that value drew a BLANK tab
+    # that also hid the live browser view.
+    assert msg["tab_type"] == "web"
     assert msg["url"] == "https://example.com/x"
     assert msg["title"] == "https://example.com/x"
     assert msg["id"]

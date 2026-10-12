@@ -55,12 +55,22 @@ _MAX_INFLIGHT = 1
 _SCREENCAST_QUALITY = int(os.environ.get("IRIS_TAKEOVER_FRAME_QUALITY", "60"))
 _SCREENCAST_MAX_W = int(os.environ.get("IRIS_TAKEOVER_MAX_W", "1366"))
 _SCREENCAST_MAX_H = int(os.environ.get("IRIS_TAKEOVER_MAX_H", "768"))
+# Upper bound for a frame side when the stream follows the page's viewport.
+_SCREENCAST_BOUND = 1600
 
 # REQ-14 AC3: the ONLY input kinds representable on the channel. A browser-level
 # or navigation command is not in this set and is rejected outright.
 _ALLOWED_INPUT_KINDS = frozenset({"pointer", "wheel", "key", "text"})
 # REQ-14 AC3: page-level pointer/keys only -- no browser-level commands.
 _ALLOWED_MOUSE_BUTTONS = frozenset({"left", "right", "middle", "none"})
+# Windows virtual key codes for the non-printing keys the panel forwards.
+_KEY_CODES = {
+    "Enter": 13, "Backspace": 8, "Tab": 9, "Escape": 27, "Delete": 46,
+    "ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40,
+    "Home": 36, "End": 35, "PageUp": 33, "PageDown": 34,
+}
+_KEY_DOM_CODES = {"Enter": "Enter", "Backspace": "Backspace", "Tab": "Tab",
+                  "Escape": "Escape", "Delete": "Delete"}
 
 
 def _now_ms() -> int:
@@ -121,6 +131,20 @@ def ack_frame(run_id: str) -> None:
         mgr.ack_frame()
 
 
+def resend_latest_frames() -> int:
+    """A panel (re)connected: free each live stream's in-flight slot (its ack
+    died with the old socket) and send the latest frame again. Returns how many
+    were sent. Never raises."""
+    sent = 0
+    for mgr in list(_ACTIVE.values()):
+        try:
+            if mgr.resend_latest():
+                sent += 1
+        except Exception:  # noqa: BLE001 - one dead stream never blocks the rest
+            continue
+    return sent
+
+
 def clear_registry() -> None:
     """Test helper: drop all active managers and the frame sink."""
     global _FRAME_SINK
@@ -169,6 +193,9 @@ class ScreencastFrame:
     viewport_h: int
     format: str
     bytes: str  # base64
+    # True while a grant is open (the user holds the page); False on a
+    # watch-only frame (the agent drives, the user watches).
+    control: bool = False
 
     def to_envelope(self) -> Dict[str, Any]:
         return {
@@ -181,6 +208,7 @@ class ScreencastFrame:
             "viewport_h": self.viewport_h,
             "format": self.format,
             "bytes": self.bytes,
+            "control": self.control,
         }
 
 
@@ -195,11 +223,16 @@ class TakeoverInput:
 
     kind: str
     seq: int = 0
+    # Pointer/wheel position as a FRACTION (0..1) of the frame the user saw;
+    # the manager scales it to the page's CSS pixels.
     x: Optional[float] = None
     y: Optional[float] = None
     button: Optional[str] = None
     key: Optional[str] = None
     text: Optional[str] = None
+    # Wheel distance in CSS pixels.
+    dx: Optional[float] = None
+    dy: Optional[float] = None
 
 
 @dataclass
@@ -283,6 +316,13 @@ class TakeoverManager:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._credentials: List[CredentialApplication] = []
         self._consents: Dict[str, ConsentRecord] = {}
+        # Watch mode: frames flow while the AGENT drives, so the panel shows the
+        # live page in tandem with the agent, not only during a hand-over.
+        # Input stays grant-gated either way.
+        self._watch = False
+        # The page's CSS viewport from the last frame: input fractions scale to it.
+        self._view_w = _SCREENCAST_MAX_W
+        self._view_h = _SCREENCAST_MAX_H
 
     @property
     def run_id(self) -> str:
@@ -362,8 +402,31 @@ class TakeoverManager:
         """True while a live (unexpired) grant owns the page (REQ-15 AC1)."""
         return self._grant is not None and self._grant.open()
 
+    @property
+    def watching(self) -> bool:
+        return self._watch and self._streaming
+
+    async def start_watch(self, page: object) -> bool:
+        """Stream the page while the agent drives it (input stays grant-gated).
+        Re-targets the stream when the session's page changed (a popup was
+        adopted). Never raises."""
+        if self._streaming and self._page is not page:
+            await self.stop_screencast()
+        self._watch = True
+        ok = await self.start_screencast(page)
+        if not ok:
+            self._watch = False
+        return ok
+
 
     # ── screencast transport ───────────────────────────────────────────────
+
+    def set_frame_bounds(self, max_w: int, max_h: int) -> None:
+        """Size the screencast to the page's viewport (takes effect on the next
+        start). The fixed 1366x768 bound scaled a TALL viewport down to a thin
+        strip, so the panel showed the page small inside wide bars."""
+        self._max_w = max(320, min(int(max_w), _SCREENCAST_BOUND))
+        self._max_h = max(320, min(int(max_h), _SCREENCAST_BOUND))
 
     async def start_screencast(self, page: object) -> bool:
         """Start a CDP screencast on the SESSION's page (REQ-13 AC1).
@@ -397,8 +460,8 @@ class TakeoverManager:
             await send("Page.startScreencast", {
                 "format": "jpeg",
                 "quality": _SCREENCAST_QUALITY,
-                "maxWidth": _SCREENCAST_MAX_W,
-                "maxHeight": _SCREENCAST_MAX_H,
+                "maxWidth": getattr(self, "_max_w", _SCREENCAST_MAX_W),
+                "maxHeight": getattr(self, "_max_h", _SCREENCAST_MAX_H),
                 "everyNthFrame": 1,
             })
             self._streaming = True
@@ -415,6 +478,7 @@ class TakeoverManager:
         Idempotent; never raises.
         """
         self._streaming = False
+        self._watch = False
         self._pending_frame = None
         self._inflight = 0
         cdp = self._cdp
@@ -445,12 +509,15 @@ class TakeoverManager:
         edge: a frame without an owner is unattributable).
         """
         try:
-            if not self.is_open():
-                # No owner -- drop, do not deliver (REQ-16 edge).
+            control = self.is_open()
+            if not (control or self._watch):
+                # No owner and nobody watching -- drop (REQ-16 edge).
                 self._ack(params)
                 return
             data = params.get("data")
             meta = params.get("metadata") or {}
+            self._view_w = int(meta.get("deviceWidth") or self._view_w)
+            self._view_h = int(meta.get("deviceHeight") or self._view_h)
             if not data:
                 self._ack(params)
                 return
@@ -464,7 +531,8 @@ class TakeoverManager:
             self._stats.last_frame_seq = self._frame_seq
             frame = ScreencastFrame(
                 run_id=self._run_id,
-                question_id=self._grant.question_id,
+                question_id=self._grant.question_id if control else "",
+                control=control,
                 seq=self._seq,
                 frame_seq=self._frame_seq,
                 ts=_now_ms(),
@@ -487,7 +555,21 @@ class TakeoverManager:
         except Exception as exc:  # noqa: BLE001 -- a frame failure never breaks the pump
             logger.debug("[cdp_takeover] frame handling failed: %s", exc)
 
+    def resend_latest(self) -> bool:
+        """Free the in-flight slot and send the latest frame again (a panel
+        reconnected). False when there is no live stream or no frame yet."""
+        if not (self.watching or self.is_open()):
+            return False
+        envelope = self._pending_frame or getattr(self, "_last_envelope", None)
+        self._inflight = 0
+        self._pending_frame = None
+        if envelope is None:
+            return False
+        self._deliver(envelope)
+        return True
+
     def _deliver(self, envelope: Dict[str, Any]) -> None:
+        self._last_envelope = envelope
         if self._frame_sink is None:
             return
         try:
@@ -566,38 +648,68 @@ class TakeoverManager:
         if not callable(send):
             return False
         try:
-            await self._dispatch_input(send, event)
+            # The CDP session belongs to the browser host loop; the gateway
+            # calls in from the main loop. Playwright objects are loop-bound,
+            # so the dispatch hops to the loop that owns them.
+            loop = self._loop
+            try:
+                here = asyncio.get_running_loop()
+            except RuntimeError:
+                here = None
+            if loop is not None and loop.is_running() and loop is not here:
+                fut = asyncio.run_coroutine_threadsafe(self._dispatch_input(send, event), loop)
+                await asyncio.wrap_future(fut)
+            else:
+                await self._dispatch_input(send, event)
             return True
         except Exception as exc:  # noqa: BLE001 -- a failed input is not a run failure
             logger.warning("[cdp_takeover] input dispatch failed kind=%s: %s", event.kind, exc)
             return False
 
+    def _to_page(self, x: Optional[float], y: Optional[float]) -> "tuple[float, float]":
+        """The panel sends where the user pointed as a FRACTION of the frame;
+        CDP wants the page's CSS pixels. Passing the fraction straight through
+        put every click at (0..1, 0..1) - the page's top-left corner."""
+        fx = min(1.0, max(0.0, float(x or 0.0)))
+        fy = min(1.0, max(0.0, float(y or 0.0)))
+        return fx * self._view_w, fy * self._view_h
+
     async def _dispatch_input(self, send: Callable, event: TakeoverInput) -> None:
         if event.kind == "pointer":
             button = event.button if event.button in _ALLOWED_MOUSE_BUTTONS else "left"
+            px, py = self._to_page(event.x, event.y)
+            # A move first: hover state and some click handlers need it.
+            await send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": px, "y": py})
             await send("Input.dispatchMouseEvent", {
                 "type": "mousePressed",
-                "x": event.x or 0, "y": event.y or 0,
+                "x": px, "y": py,
                 "button": button, "clickCount": 1,
             })
             await send("Input.dispatchMouseEvent", {
                 "type": "mouseReleased",
-                "x": event.x or 0, "y": event.y or 0,
+                "x": px, "y": py,
                 "button": button, "clickCount": 1,
             })
         elif event.kind == "wheel":
+            px, py = self._to_page(event.x, event.y)
             await send("Input.dispatchMouseEvent", {
                 "type": "mouseWheel",
-                "x": event.x or 0, "y": event.y or 0,
-                "deltaX": event.x or 0, "deltaY": event.y or 0,
+                "x": px, "y": py,
+                "deltaX": float(event.dx or 0.0), "deltaY": float(event.dy or 0.0),
             })
         elif event.kind == "key":
-            await send("Input.dispatchKeyEvent", {
-                "type": "keyDown", "key": event.key or "",
-            })
-            await send("Input.dispatchKeyEvent", {
-                "type": "keyUp", "key": event.key or "",
-            })
+            # Without a key code Chromium drops the editing keys (Enter does
+            # not submit, Backspace does not delete). Enter also needs its text.
+            key = event.key or ""
+            code = _KEY_CODES.get(key)
+            down: Dict[str, Any] = {"type": "rawKeyDown" if code else "keyDown", "key": key}
+            if code:
+                down["windowsVirtualKeyCode"] = code
+                down["code"] = _KEY_DOM_CODES.get(key, key)
+            await send("Input.dispatchKeyEvent", down)
+            if key == "Enter":
+                await send("Input.dispatchKeyEvent", {"type": "char", "text": "\r", "key": key})
+            await send("Input.dispatchKeyEvent", {**down, "type": "keyUp"})
         elif event.kind == "text":
             # REQ-14 AC4: the typed value is EPHEMERAL. Forward it and drop it;
             # it is never logged, stored, or echoed in a frame event.

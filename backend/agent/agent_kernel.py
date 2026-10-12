@@ -365,6 +365,16 @@ def _step_tool_name(item) -> str:
     return str(call.get("tool")) if call and call.get("tool") else "direct"
 
 
+# A goal that ACTS on a web page (browser control, not a search). "type of" and
+# "press release" are reading phrases, not actions.
+_BROWSER_ACTION_RE = re.compile(
+    r"\b(?:in\s+the\s+(?:live\s+|in-app\s+)?browser|click|tap|type(?!\s+of)|"
+    r"fill(?:\s+(?:in|out))?|scroll|press(?!\s+release)|submit|log\s?in|sign\s?in|"
+    r"select|add\s+to\s+(?:cart|basket)|check\s?out|navigate|hover|drag)\b",
+    re.IGNORECASE,
+)
+
+
 _CLAIMS_MISSING_RE = re.compile(
     r"\b(?:did\s+not|didn't|does\s+not|doesn't|do\s+not|could\s+not|couldn't|"
     r"unable\s+to|failed\s+to|not\s+able\s+to)\b[^.\n]{0,60}?\b(?:include|return|"
@@ -1623,23 +1633,9 @@ class AgentKernel:
             from backend.agent.mode_detector import ModeDetector as _MD
 
             self._mode_detector = _MD()
-            # REQ-15 AC15.2 (T19): same wiring for the `mode` consumer — the
-            # detector must be able to shadow-score, or its rows never flow
-            # (AC15.2's measured confidence is unreachable otherwise).
-            try:
-                from backend.agent.decision_engine import get_decision_engine
-
-                self._mode_detector.set_mode_engine(get_decision_engine())
-            except Exception as _md_eng_err:  # noqa: BLE001 — advisory
-                logger.debug(
-                    f"[AgentKernel] ModeDetector engine unavailable: "
-                    f"{_md_eng_err}"
-                )
-            # ROW PATH FIX (2026-10-10): the lane-written row goes to the
-            # kernel's single writer directly — the expose-and-forward path
-            # lost every row in a one-turn conversation (see
-            # mode_detector._shadow_mode_async).
-            self._mode_detector.set_row_sink(self._shadow_row_sink)
+            # The `mode` Oracle consumer was REMOVED 2026-10-10 (owner): the
+            # detector keeps its keyword classifier only — no engine wiring, no
+            # row sink (see mode_detector.py).
             logger.info("[AgentKernel] ModeDetector initialized (DER)")
         except Exception as _md_err:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
@@ -1681,6 +1677,15 @@ class AgentKernel:
             from backend.agent import event_oracle as _eo_rows
 
             _eo_rows.set_row_sink(_shadow_sink)
+            # tool_approval (2026-10-10): the binary outcome-referenced approval
+            # consumer. Same single-writer sink as the other shadow consumers.
+            from backend.agent import tool_approval_shadow as _ta_rows
+
+            _ta_rows.set_row_sink(_shadow_sink)
+            # browser_next (2026-10-11): the element-choice consumer.
+            from backend.agent import browser_next_shadow as _bn_rows
+
+            _bn_rows.set_row_sink(_shadow_sink)
             # REQ-14 (Wave 5): resolved OUTCOME-labelled rows (the deferred
             # registry) land on the SAME single-writer sink.
             from backend.agent import decision_engine as _de_rows
@@ -1761,17 +1766,17 @@ class AgentKernel:
         except Exception as exc:  # noqa: BLE001 — a row never blocks a step
             logger.debug("[AgentKernel] shadow row sink failed: %r", exc)
 
-    # The two consumers that EXPOSE a row instead of emitting it through a
-    # module sink: `ModeDetector.last_mode_shadow` and
-    # `Reviewer.last_shadow_verdict`. Both were populating on every turn and
-    # NOTHING wrote them — the Reviewer's own docstring says the row exists "for
+    # The consumer that EXPOSES a row instead of emitting it through a module
+    # sink: `Reviewer.last_shadow_verdict`. It was populating on every turn and
+    # NOTHING wrote it — the Reviewer's own docstring says the row exists "for
     # the kernel's EXISTING single writer", and no caller did the writing. So
-    # `mode` and `review_verdict` could score forever and never produce a
-    # calibration row. Measured live 2026-09-26: the log showed
-    # `Oracle decide consumer=mode` and `consumer=review_verdict` while the
-    # ledger held no row for either. That is the same defect class as the
-    # missing monitor/surface sink, one layer further out.
-    _EXPOSED_ROW_ATTRS = ("last_mode_shadow", "last_shadow_verdict")
+    # `review_verdict` could score forever and never produce a calibration row.
+    # Measured live 2026-09-26: the log showed `Oracle decide
+    # consumer=review_verdict` while the ledger held no row for it. The same
+    # defect class as the missing monitor/surface sink, one layer further out.
+    # (`ModeDetector.last_mode_shadow` was the other exposed row until the
+    # `mode` consumer was REMOVED 2026-10-10, owner — see mode_detector.py.)
+    _EXPOSED_ROW_ATTRS = ("last_shadow_verdict",)
 
     def _forward_consumer_rows(self, *holders: Any) -> None:
         """Write any row the given holders EXPOSE, once, then clear it.
@@ -4331,6 +4336,47 @@ class AgentKernel:
                                 break
                     except Exception:  # noqa: BLE001
                         _lr = ""
+                    # the offered tools' descriptions, rendered into the option
+                    # lines (measured: 5/5 with, 5/6 without). Hoisted so the
+                    # tool_approval consult below can carry the proposed tool's
+                    # own description.
+                    _crit = {
+                        (t.get("function") or {}).get("name"):
+                        ((t.get("function") or {}).get("description") or "")
+                        for t in (_tools or [])
+                        if (t.get("function") or {}).get("name")
+                    }
+                    # tc-frame-v5: this turn's calls BEFORE this one, in order
+                    # (names + targets; the ReAct transcript holds no ok flag).
+                    _hist = ""
+                    try:
+                        from backend.agent.node_executor import _target as _tgt
+
+                        _prev = []
+                        for _m in messages:
+                            for _ptc in (_m.get("tool_calls") or []) if _m.get("role") == "assistant" else []:
+                                if _ptc is _tc:
+                                    raise StopIteration
+                                _pf = _ptc.get("function") or {}
+                                try:
+                                    _pp = _json.loads(_pf.get("arguments") or "{}")
+                                except Exception:  # noqa: BLE001
+                                    _pp = {}
+                                _prev.append(f"{_pf.get('name', '')} "
+                                             f"{_tgt(_pp if isinstance(_pp, dict) else {})}".strip())
+                    except StopIteration:
+                        pass
+                    except Exception:  # noqa: BLE001 - a shadow never needs context
+                        _prev = []
+                    _hist = "; ".join(_prev[-6:])[-400:]
+                    # tc-frame-v6: the tools' decision lines as option text
+                    try:
+                        from backend.agent.tool_registry import oracle_hint as _ohint
+
+                        _hints = {n: _ohint(n, d) for n, d in _crit.items() if n}
+                        _hints.update({n: _ohint(n) for n in ("DELEGATE", "NONE")})
+                    except Exception:  # noqa: BLE001
+                        _hints = dict(_crit)
                     self._get_tool_box().record_shadow_tool_choice(
                         goal=text,
                         observed_tool=_name,
@@ -4341,14 +4387,8 @@ class AgentKernel:
                             for t in (_tools or [])
                         ] or None,
                         last_result=_lr or None,
-                        # the offered tools' descriptions, rendered into the
-                        # option lines (measured: 5/5 with, 5/6 without)
-                        option_criteria={
-                            (t.get("function") or {}).get("name"):
-                            ((t.get("function") or {}).get("description") or "")
-                            for t in (_tools or [])
-                            if (t.get("function") or {}).get("name")
-                        } or None,
+                        option_criteria=_hints or None,
+                        calls_this_step=_hist or None,
                         session_id=self.conversation_id or "voice",
                         conversation_id=self.conversation_id or "",
                         async_=True,
@@ -4380,6 +4420,34 @@ class AgentKernel:
                             ),
                         ).result(timeout=60)
                 _content = self._format_tool_result(_raw)
+                # tool_approval (2026-10-10): the call's OUTCOME is now known.
+                # Submit the post-hoc approval consult with the PRE-CALL frame
+                # (goal + last_result + proposed tool + its description) and the
+                # outcome as the label. Off the reply path; never blocks.
+                try:
+                    from backend.agent import tool_approval_shadow as _ta
+
+                    _ta.record_tool_approval(
+                        goal=text,
+                        last_result=_lr or None,
+                        proposed_tool=_name,
+                        tool_description=(_crit or {}).get(_name) or "",
+                        # v2: the arguments the Brain executed and the menu it
+                        # was offered — the evidence the v1 frame lacked.
+                        args=_params if isinstance(_params, dict) else None,
+                        offered_tools=[(t.get("function") or {}).get("name")
+                                       for t in (_tools or [])] or None,
+                        outcome_success=bool(
+                            isinstance(_raw, dict) and _raw.get("success")
+                        ),
+                        calls_this_step=_hist or None,
+                        session_id=self.conversation_id or "voice",
+                        conversation_id=self.conversation_id or "",
+                    )
+                except Exception as _ta_err:  # noqa: BLE001
+                    logger.debug(
+                        "[RespondDirect] tool_approval row failed: %r", _ta_err
+                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": _tc_id,
@@ -6264,7 +6332,10 @@ class AgentKernel:
 
             import uuid
 
-            document_id = str(uuid.uuid4())
+            # A caller that stored a BLOB first (screenshot_page: the image is
+            # keyed by the document id, so the row and its picture live and die
+            # together) hands that id in; everyone else gets a fresh one.
+            document_id = str(extra.pop("document_id", "") or uuid.uuid4())
             # REQ-10 AC1/AC2 (reply-surface-contract T20): every prism card
             # carries a stable lifecycle id alongside the document store key,
             # minted once here and reused by update/reformat.
@@ -9107,9 +9178,8 @@ class AgentKernel:
                         _confidence = _mode_result.confidence
                     except Exception as _md_exc:
                         loud_error(_md_exc, "mode_detector.detect")
-                    # `mode` scores here; without this the row was dropped on
-                    # the floor (see _forward_consumer_rows).
-                    self._forward_consumer_rows(self._mode_detector)
+                    # The `mode` Oracle consumer was REMOVED 2026-10-10 (owner):
+                    # no shadow row to forward any more.
 
             _plan = None
             try:
@@ -17004,6 +17074,14 @@ Respond with a JSON object:
                     ))
                 except Exception:  # noqa: BLE001
                     pass
+                # A goal that ACTS on a page ("open X in the browser and click
+                # Y", "log in", "add to cart") is browser control, not a web
+                # search: the pre-commit below would answer it with `search`
+                # and the browser would never open. The tool choice (the
+                # Oracle) decides it instead.
+                if _is_web_goal and _BROWSER_ACTION_RE.search(goal or ""):
+                    logger.info("[DER] browser-action goal -> no web pre-commit goal=%r", goal[:60])
+                    _is_web_goal = False
                 # Spec A4 (RC4): a quick-tier `search` that came back insufficient
                 # (requires_deep_crawl) sanctions ONE escalation to crawler_query.
                 # The flag is set when the search result lands and cleared when a
@@ -17694,35 +17772,166 @@ Respond with a JSON object:
         _offered = [t["function"]["name"] for t in tools]
         workdir =(getattr(self._tool_bridge, "_session_workdirs", None) or {}).get(_session, "")
 
-        def _shadow(name, params):
-            # Same single ledger writer as the direct loop; async_=True runs it
-            # on a daemon thread, so the node pays no latency.
-            # `last_result`: the previous step's result - the most predictive
-            # signal for the next tool (see the route job's declaration).
+        # The pre-call evidence, computed ONCE for this node: the previous
+        # step's result (the most predictive signal for the next tool) and the
+        # offered tools' descriptions. Both the tool_choice shadow and the
+        # tool_approval consult read them.
+        _lr = ""
+        try:
+            if _prior_results:
+                _p = _prior_results[-1]
+                _lr = f"{_p.get('description') or ''}: {_p.get('result') or ''}"
+        except Exception:  # noqa: BLE001 — a shadow never needs context
             _lr = ""
-            try:
-                if _prior_results:
-                    _p = _prior_results[-1]
-                    _lr = f"{_p.get('description') or ''}: {_p.get('result') or ''}"
-            except Exception:  # noqa: BLE001 — a shadow never needs context
-                _lr = ""
-            # The offered tools' descriptions, rendered into the option lines
-            # (measured: 5/5 with, 5/6 without).
+        _crit = {}
+        try:
+            for t in tools or []:
+                _fn = t.get("function") or {}
+                if _fn.get("name"):
+                    _crit[_fn["name"]] = _fn.get("description") or ""
+        except Exception:  # noqa: BLE001 — a shadow never needs context
             _crit = {}
-            try:
-                for t in tools or []:
-                    _fn = t.get("function") or {}
-                    if _fn.get("name"):
-                        _crit[_fn["name"]] = _fn.get("description") or ""
-            except Exception:  # noqa: BLE001 — a shadow never needs context
-                _crit = {}
-            box.record_shadow_tool_choice(
-                goal=goal, observed_tool=name, observed_params=params,
-                candidates=_offered, last_result=_lr or None,
-                option_criteria=_crit or None,
-                session_id=self.conversation_id or "voice",
-                conversation_id=self.conversation_id or "", async_=True,
+        # tc-frame-v6: the option lines are the tools' DECISION lines (when to
+        # choose, with the precondition), not the argument-oriented LLM text.
+        try:
+            from backend.agent.tool_registry import oracle_hint as _ohint
+
+            _hints = {n: _ohint(n, _crit.get(n, "")) for n in _offered}
+            _hints.update({n: _ohint(n) for n in ("DELEGATE", "NONE")})
+        except Exception:  # noqa: BLE001 — a shadow never needs context
+            _hints = dict(_crit)
+
+        # THE STEP'S OWN STATE (tc-frame-v5 / tool_approval v3, 2026-10-11):
+        # the hooks read the node's LIVE pre-call state - the calls this step
+        # made so far and the last result the model saw - not `_lr` alone,
+        # which is the previous STEP's result computed once per node (every
+        # call of a step scored the same frame: 50.9% parity on 395 rows).
+        # Read and rendered to strings AT CALL TIME: the list keeps growing.
+        _node_state: Dict[str, Any] = {}
+        _done_when = str(getattr(item, "expected_output", "") or "")
+
+        def _step_so_far():
+            from backend.agent.node_executor import history_text
+
+            _c = _node_state.get("ctx")
+            if _c is None:
+                return "", _lr
+            return history_text(_c.history), (_c.last_result_text or _lr)
+
+        def _facts_now():
+            # tc-frame-v7: the read/edit/write/run facts of THIS step, now.
+            from backend.agent.node_executor import step_facts
+
+            _c = _node_state.get("ctx")
+            return step_facts(goal, _done_when, list(_c.history) if _c is not None else [],
+                              workdir or "",
+                              last_result=(_c.last_result_text if _c is not None else "") or "")
+
+        # THE ORACLE DECIDES THE TOOL: before each model call, one d1 question
+        # over the offered tools on the step's pre-call state, through the
+        # enforcement chokepoint (enforced, else sampled). A pick is FORCED at
+        # the API; the pending row is labelled by the call that follows
+        # (_on_result) or flushed as "finished".
+        _decided: Dict[str, Any] = {}
+
+        def _flush_decided():
+            _p = _decided.pop("row", None)
+            if _p is not None:
+                box.label_decided_row(_p, called=None, ok=None,
+                                      session_id=self.conversation_id or "voice")
+
+        def _choose_tool():
+            _flush_decided()  # the previous pick was never called: finished
+            _hist, _last = _step_so_far()
+            _c = _node_state.get("ctx")
+            _n = len(_c.history) if _c is not None else 0
+            got = box.choose_node_tool(
+                goal=goal, candidates=_offered,
+                scope_key=f"{_turn_id or ''}|{getattr(item, 'step_id', '') or ''}|{goal[:80]}|{_n}",
+                last_result=_last or None, option_criteria=_hints or None,
+                calls_this_step=_hist or None, done_when=_done_when or None,
+                step_facts=_facts_now() or None,
             )
+            if got is None:
+                return None
+            # An ENFORCED pick already cleared its calibrated threshold. A
+            # SAMPLED pick acts only at raw confidence >= IRIS_ORACLE_FORCE_MIN
+            # (default 0.9; measured 96.7% held at >= 0.9 on 90 decided rows).
+            # Below it the model decides: an unsure pick that only narrowed
+            # the menu pushed the model into the wrong tool (edit_file picks
+            # at median confidence 0.46 FAILED 22 times).
+            try:
+                _floor = float(os.environ.get("IRIS_ORACLE_FORCE_MIN", "0.9"))
+            except ValueError:
+                _floor = 0.9
+            if not (got[1].get("route") == "enforced"
+                    or float(got[1].get("confidence") or 0.0) >= _floor):
+                return None
+            got[1]["binding"] = True
+            _decided["row"] = got[1]
+            return got[0]
+
+        def _on_result(name, params, ok):
+            # The call's OUTCOME is now known. Every node consult runs HERE,
+            # post-hoc, on the PRE-CALL state: run_node calls this BEFORE it
+            # appends the call and before it updates the last result, so
+            # _step_so_far() still returns what the model saw before the call.
+            # (2026-10-11: tool_choice and browser_next moved here from the
+            # pre-call hook so their rows carry `brain_ok` - an outcome-checked
+            # label and fine-tuning data, not only parity.)
+            _hist, _last = _step_so_far()
+            # An Oracle-decided pick is labelled by what THIS call did.
+            _pend = _decided.pop("row", None)
+            if _pend is not None:
+                box.label_decided_row(_pend, called=name, ok=bool(ok),
+                                      params=params if isinstance(params, dict) else None,
+                                      session_id=self.conversation_id or "voice")
+            if name == "browser_act" and isinstance(params, dict) \
+                    and params.get("element_id") is not None:
+                try:
+                    from backend.agent import browser_next_shadow as _bn
+
+                    _bn.record_browser_next(
+                        goal=goal, page_text=_last or "",
+                        element_id=params.get("element_id"),
+                        action=str(params.get("action") or ""),
+                        done_when=_done_when or None, calls_this_step=_hist or None,
+                        brain_ok=bool(ok),
+                    )
+                except Exception as _bn_err:  # noqa: BLE001 — a shadow never blocks
+                    logger.debug("[DER] browser_next row failed: %r", _bn_err)
+            try:
+                # Same single ledger writer as the direct loop; async_=True runs
+                # it on a daemon thread, so the node pays no latency.
+                box.record_shadow_tool_choice(
+                    goal=goal, observed_tool=name, observed_params=params,
+                    candidates=_offered, last_result=_last or None,
+                    option_criteria=_hints or None,
+                    calls_this_step=_hist or None, done_when=_done_when or None,
+                    step_facts=_facts_now() or None,
+                    source="der_node", brain_ok=bool(ok),
+                    session_id=self.conversation_id or "voice",
+                    conversation_id=self.conversation_id or "", async_=True,
+                )
+            except Exception as _tc_err:  # noqa: BLE001 — a shadow never blocks
+                logger.debug("[DER] tool_choice row failed: %r", _tc_err)
+            # tool_approval (2026-10-10): post-hoc approval consult with the
+            # PRE-CALL frame + the outcome label (v2 args/menu, v3 history).
+            try:
+                from backend.agent import tool_approval_shadow as _ta
+
+                _ta.record_tool_approval(
+                    goal=goal, last_result=_last or None,
+                    proposed_tool=name, tool_description=_crit.get(name) or "",
+                    args=params if isinstance(params, dict) else None,
+                    offered_tools=_offered or None,
+                    outcome_success=bool(ok),
+                    session_id=self.conversation_id or "voice",
+                    conversation_id=self.conversation_id or "",
+                    calls_this_step=_hist or None,
+                )
+            except Exception as _ta_err:  # noqa: BLE001 — a shadow never blocks
+                logger.debug("[DER] tool_approval row failed: %r", _ta_err)
 
         # Eval C (owner 2026-10-02): the Brain helps a struggling tool model -
         # only when they are different models (a model cannot help itself).
@@ -17784,11 +17993,12 @@ Respond with a JSON object:
         except Exception:  # noqa: BLE001 - measurement never blocks a node
             _close_probe = None
         try:
-            result = run_node(goal, NodeContext(
+            _node_ctx = NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
-            conv_id=self.conversation_id or "", on_call=_shadow, helper_role=_helper,
+            conv_id=self.conversation_id or "", helper_role=_helper,
+            on_result=_on_result, choose_tool=_choose_tool,
             sees=_sees, look=_look,
             # the step's own criterion, its parent step, the reviewer's reason
             expected=str(getattr(item, "expected_output", "") or ""),
@@ -17796,7 +18006,10 @@ Respond with a JSON object:
             review_note=str(getattr(item, "review_feedback", "") or ""),
             parallel_ok=_node_call_parallel_ok if _DER_PARALLEL else None,  # one off switch
             close_probe=_close_probe,
-        ))
+            )
+            _node_state["ctx"] = _node_ctx
+            result = run_node(goal, _node_ctx)
+            _flush_decided()  # a last pick the step finished without calling
         finally:
             for _c in _held:
                 _der_release(self, _c)
@@ -18038,7 +18251,11 @@ Respond with a JSON object:
     )
     # Tools the conversation-wide REPEAT rule applies to: web fetches, whose
     # repeat returns the same page. Local tools are re-runnable (audit B3).
-    _REPEAT_GUARDED_TOOLS = _WEB_CONTENT_TOOLS | {"fetch_url", "browser_read", "open_url"}
+    # The live browser tools are NOT here (nor in _WEB_CONTENT_TOOLS): a
+    # repeated click or open is a new action on a changed page, and a crawl
+    # budget would cut a multi-step browser task short (S39 exempts them from
+    # the dispatcher's loop guard for the same reason).
+    _REPEAT_GUARDED_TOOLS = _WEB_CONTENT_TOOLS | {"fetch_url", "open_url"}
     # pin_42ddd255162d: display/render tools complete by SUCCESS, not by content
     # volume — a rendered-card confirmation is a legit completion, never a
     # candidate for a verify-failure split (which is what made the task card

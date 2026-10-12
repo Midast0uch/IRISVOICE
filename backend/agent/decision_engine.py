@@ -86,9 +86,18 @@ CONSUMERS: Tuple[str, ...] = (
     # `on_track` REMOVED 2026-10-05 (owner, Oracle Stage B): no production caller
     # since 2026-10-02 - a consumer nothing consults is a calibration line that
     # can never move. `has_gaps` removed with it (below).
-    # REQ-15 AC15.1 (T19): mode + web_intent shadow the ModeDetector keyword
-    # branch and the duplicated web-trigger lists.
-    "mode",
+    # REQ-15 AC15.1 (T19): web_intent shadows the duplicated web-trigger lists.
+    # `mode` REMOVED 2026-10-10 (owner): its incumbent is a FREE deterministic
+    # keyword rule, so enforcing it could never pay (a 0 ms rule swapped for a
+    # ~100-300 ms model call), and its reference IS the keyword list - the bar
+    # could only ever prove agreement with a list the system already trusts
+    # more than the model. Its AUROC also fell below the bar at volume (0.591
+    # at 77 rows; the 0.677 that once justified keeping it was small-n). The
+    # keyword classifier itself is UNTOUCHED (mode_detector._infer_mode); only
+    # the Oracle shadow measurement is gone. The pinned enumerations are
+    # updated in the SAME change, so the declared set is never left
+    # half-changed. The ledger's historical mode rows stay (retired, never
+    # blended back).
     "web_intent",
     # `retry_same` REMOVED as a declared consumer (Wave 4 T4.5,
     # specs/phonon2-d1-model-swap REQ-12 AC12.2 / oracle.md §11.5): it never
@@ -220,17 +229,63 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               # depth_route's REFERENCE, and a row whose input carries its
               # own answer measures nothing (test_reference_fields_never_
               # reach_the_model, oracle.md S19).
+              # tc-frame-v5 (2026-10-11): `done_when` (the step's own criterion)
+              # and `calls_this_step` (the calls the step already made, ok or
+              # FAILED). MEASURED CAUSE: every call of a step gave d1 the SAME
+              # frame (the previous STEP's result, computed once per node) while
+              # the model's answer moved read -> edit -> run: 50.9% parity on
+              # 395 rows, top-4 coverage 85%. Placed BEFORE last_result so the
+              # cap trims the long result snippet, never the history.
+              # Budget 256 -> 384: goal 200 + done_when 200 + calls_this_step
+              # 400 + last_result 600 chars do not fit 1024; 384 ids (1536
+              # chars) does, the same width `approve` measured. 512 stays the
+              # ceiling (S19.3).
+              # tc-frame-v7 (2026-10-11): `step_facts` - for each file the
+              # step names, whether it exists and whether this step already
+              # read/changed it, plus the last command's result: the facts
+              # that decide read vs edit vs write vs run (node_executor.
+              # step_facts). Before last_result, so the cap never cuts them.
               ("coverage", "open_facts", "depth_met", "grade", "goal",
+               "done_when", "calls_this_step", "step_facts",
                "last_result", "task_class", "previous_chosen",
                "previous_outcome", "step_index", "needs_vision",
                "vision_candidates", "ruled_out", "error_snippet",
-               "pushes_used"), 256),
+               "pushes_used"), 384),
+    # tool_approval (2026-10-10, pin_1fb3ce63bb3b): the binary
+    # outcome-referenced approval question. A NEW job, not an extension of
+    # `route` — route's cohorts must not re-stamp. The state carries the
+    # PRE-CALL evidence only: the goal, the previous result, the proposed tool,
+    # its description, the call's ARGUMENTS and the offered tool list. The
+    # call's own result is NEVER a field (it is the label — a row whose input
+    # carries its answer measures nothing).
+    # v2 (2026-10-10, owner-directed iteration): `args` + `offered_tools` were
+    # MISSING at v1, and v1's AUROC read 0.4953 at n=104 — for a tool like
+    # run_command the ARGUMENTS are the strongest approval signal, and the
+    # model could not see what else was offered. Budget 256 -> 384 for the
+    # physical reason: goal[:200] + last_result[:400] + description[:200] +
+    # args[:400] + offered names[:200] must all fit, and at 256 (1024 chars)
+    # the cap cut the args — the very evidence v2 exists to deliver. 512 stays
+    # the absolute ceiling (S19.3).
+    # v3 (2026-10-11): `calls_this_step` - the same once-per-node frame defect
+    # as tool_choice (last_result was the previous STEP's result, the step's
+    # own calls were invisible). Budget stays 384 (1536 chars): the call site
+    # caps calls_this_step and last_result at 300 and description/offered at
+    # 150 so goal 200 + 300 + 300 + 150 + args 400 + 150 + labels fit with
+    # args intact (the cap trims from the END; offered names go first).
+    OracleJob("approve", "is this the right tool for this goal?",
+              ("goal", "calls_this_step", "last_result", "proposed_tool",
+               "tool_description", "args", "offered_tools"), 384),
     OracleJob("guard", "is this action safe to take without asking?",
               # REQ-5 AC5.2 (AC9.1 sanctioned exception 4): `guard` is the
               # first IMAGE job - click_safety's question is visual by
               # construction and its frame carries the session-scoped
               # screenshot under "screenshot" (AC5.3).
-              ("goal",), 64, image_fields=("screenshot",)),
+              # Budget 64 -> 128 (2026-10-11): click_safety's statement is
+              # "action | task: goal[:300]" (~400 chars); at 64 ids (256 chars)
+              # the cap cut the task and, before v2's action-first order, the
+              # action itself. The cap is a ceiling for the other guard
+              # consumers (needs_action, use_thinking), not a floor.
+              ("goal",), 128, image_fields=("screenshot",)),
     OracleJob("judge_step", "did this step do its part?",
               ("goal",), 96),
     OracleJob("judge_goal", "is the objective met, deep and sufficient?",
@@ -264,12 +319,20 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
 )}
 
 CONSUMER_JOBS: Dict[str, str] = {
-    "mode": "interpret", "web_intent": "interpret", "user_feedback": "interpret",
+    # `mode` REMOVED 2026-10-10 (owner): see the CONSUMERS tuple.
+    "web_intent": "interpret", "user_feedback": "interpret",
     "tool_choice": "route", "recovery_strategy": "route",
+    # tool_approval (2026-10-10): its own job — the pre-call approval question.
+    "tool_approval": "approve",
     # T1.8 (AC9.1 sanctioned exception 1): `browser_next` and `web_depth` had job
     # assignments and NO call site anywhere in the backend - the same class as
     # `on_track` and `retry_same`, both deleted for exactly that reason. 19 -> 17.
     "depth_route": "route",
+    # browser_next RETURNS (2026-10-11) with a real call site: the node loop's
+    # browser_act hook (browser_next_shadow). Same route fields: goal,
+    # done_when, calls_this_step and the page head as last_result; the element
+    # labels ride the option lines.
+    "browser_next": "route",
     "click_safety": "guard", "needs_action": "guard", "use_thinking": "guard",
     "review_verdict": "judge_step",
     "escalate_incomplete": "judge_step",
@@ -334,7 +397,15 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     # The names come from the menu built upstream (the tool schemas); there is
     # no static name set to describe, so the mapping is empty by design.
     "tool_choice": ConsumerDeclaration("choice", {}),
-    "recovery_strategy": ConsumerDeclaration("choice", {}),
+    # Descriptions (2026-10-11): the reference renders "A {description}"; bare
+    # names like `decompose` carry little meaning to the model.
+    "recovery_strategy": ConsumerDeclaration("choice", {
+        "retry_same": "Run the same tool call again (a transient error)",
+        "retry_different_tool": "Reach the same goal with a different tool",
+        "decompose": "Split the failed step into smaller steps",
+        "escalate": "Give up on this approach and make a new plan",
+        "DELEGATE": "Not sure - let the planner decide",
+    }),
     "presentation": ConsumerDeclaration("choice", {
         "plain_text": "Answer in prose only, with no rendered card",
         "prism_card": "Render a prism card carrying the structured result",
@@ -355,14 +426,9 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
                    "needs another pass before it is trusted"),
         "veto": "The step must not run: it is unsafe, off-goal or harmful",
     }),
-    "mode": ConsumerDeclaration("choice", {
-        "spec": "Write or update a specification",
-        "research": "Gather information before acting",
-        "implement": "Change code or files to satisfy a request",
-        "debug": "Diagnose and fix a failure",
-        "test": "Write or run tests",
-        "review": "Inspect existing work and report on it",
-    }),
+    # `mode` REMOVED 2026-10-10 (owner): see the CONSUMERS tuple. A consumer
+    # absent from this table registers UNDECLARED and the engine REFUSES to
+    # score it (AC1.6) - the removal is fail-closed by construction.
     "depth_route": ConsumerDeclaration("choice", {
         "cover_open_fact": "Cover a required fact that is still open",
         "bonus_ceiling": "Run the bounded bonus pass over the ceiling facts",
@@ -403,6 +469,15 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
         "true": "This request requires fetching information from the web",
         "false": "This request does not require the web",
     }),
+    # tool_approval (2026-10-10, pin_1fb3ce63bb3b): the binary
+    # outcome-referenced approval consumer. The reference is the call's OUTCOME
+    # (brain_bool = success), so the label is GROUND TRUTH, not parity — the
+    # fix for tool_choice's parity-label noise. The true/false lines render as
+    # the reference's Yes:/No: criteria lines.
+    "tool_approval": ConsumerDeclaration("noul", {
+        "true": "This tool is the right next tool for the goal, given the last result",
+        "false": "This tool is not the right next tool for the goal",
+    }),
     # NOTE (declared from the CODE, not the spec's prose): click_safety's real
     # label set is ("safe", "unsafe", "unsure") - three options, so it is a
     # CHOICE. REQ-5 describes the question as a "yes/no safety question about
@@ -421,6 +496,9 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     }),
     # ── choice over a family's own labels ───────────────────────────────────
     "user_feedback": ConsumerDeclaration("choice", {}),
+    # The options are the page's element ids; their labels arrive per consult
+    # as dynamic criteria (the menu changes with every page).
+    "browser_next": ConsumerDeclaration("choice", {}),
     "event_family": ConsumerDeclaration("choice", {}),
 }
 
@@ -821,7 +899,18 @@ LEGACY_READOUT_MODE = "legacy_letters"
 # choice consumer is re-identified and its threshold stops resolving. No
 # consumer is enforced today, so nothing flips - but any threshold fitted
 # under the cap of 6 is now correctly stale.
-CANDIDATE_CAP_DEFAULT = 11
+#
+# 11 -> 32 (2026-10-11): 11 still truncated in REGISTRY order outside developer
+# mode - the nine file tools came first and every browser tool fell off the
+# menu (browser tasks: d1 agreed 0% on browser_open/observe/act; it could never
+# pick them). 32 covers every NODE_TOOLS entry (24) + the screen tools + the two
+# control labels. Re-identifies the choice consumers again (AC13.3) - no
+# threshold exists yet, so nothing goes stale that was in use.
+CANDIDATE_CAP_DEFAULT = 32
+
+# The general bound on ANY consumer's options: the reference code pool
+# (A..Z then 00..99). `candidate_cap` is only the tool menu's width.
+OPTION_CEILING = 120
 
 
 def criteria_hash(consumer_id: str,
@@ -1030,16 +1119,29 @@ def _enforcement(consumer_id: str) -> Tuple[Optional[float], str]:
 
 
 _ENFORCEMENT_LOGGED = False
+_ENFORCEMENT_IDENTITY: Optional[str] = None
 
 
 def _log_enforcement_once() -> None:
     """One INFO line per process: who decides, and why each allow-listed
     consumer that does not, does not. A silent "nothing decides" would be
     indistinguishable from a broken switch."""
-    global _ENFORCEMENT_LOGGED
-    if _ENFORCEMENT_LOGGED:
+    global _ENFORCEMENT_LOGGED, _ENFORCEMENT_IDENTITY
+    # Once - and ONCE MORE when the engine's identity changes. The first
+    # decides() can run while d1 is still loading: the identity then falls
+    # back to the declared variant (no readout tag) and the line said "not
+    # earned" for a consumer that decided a second later (measured
+    # 2026-10-11). Re-logging on the identity change reports the state the
+    # decisions actually use; a process with no engine still logs (a silent
+    # "nothing decides" must stay distinguishable from a broken switch).
+    try:
+        ident = str(getattr(get_decision_engine(), "model_id", "") or "")
+    except Exception:  # noqa: BLE001 - identity is best-effort
+        ident = ""
+    if _ENFORCEMENT_LOGGED and (not ident or ident == _ENFORCEMENT_IDENTITY):
         return
     _ENFORCEMENT_LOGGED = True
+    _ENFORCEMENT_IDENTITY = ident
     allowed = sorted(_owner_allow_list())
     deciding, refused = [], []
     for c in allowed:
@@ -1402,15 +1504,23 @@ def call_closing_counters() -> Dict[str, int]:
 # (REFUSED, never sampleable); done/sufficient/depth_met/tool_choice are
 # JOIN-only (labelled by outcome, never sampled); consumers with no ground
 # truth are observation-only (mode/narration/presentation/event_*).
+# tool_choice JOINS the samplable tier (owner, 2026-10-11: "the Oracle decides
+# all tools if capable - find out how"). Gate 1: a sampled pick only NARROWS the
+# tool model's menu to one tool - the model still writes the arguments, may
+# finish instead of calling, and the next pick sees the FAILED result in the
+# step's own history. Gate 2: the call's outcome (ok / FAILED) labels the row.
+# Parity could never show capability: three valid tools (read_file /
+# list_directory / glob_files) score two of them "wrong" (replay 2026-10-11:
+# 57.8% agreement with the decision lines).
 TIER_SAMPLABLE: frozenset = frozenset({
-    "needs_action", "recovery_strategy", "escalate_incomplete",
+    "needs_action", "recovery_strategy", "escalate_incomplete", "tool_choice",
 })
 # AC6.6: refuse-direction ONLY - sampled, but the engine may only ever tighten
 # (refuse/veto where the incumbent allowed), never loosen. Wired at the
 # incumbent's own refuse junction.
 TIER_REFUSE_ONLY: frozenset = frozenset({"click_safety", "review_verdict"})
 TIER_JOIN_ONLY: frozenset = frozenset({
-    "done", "sufficient", "depth_met", "tool_choice",
+    "done", "sufficient", "depth_met",
 })
 
 # AC6.4: the fraction is a NAMED CONSTANT with a stated default and a kill
@@ -1434,8 +1544,12 @@ def sampled_consult_ok(consumer_id: str, scope_key: str) -> bool:
         return False
     if os.environ.get(_SAMPLE_KILL, "1") == "0":
         return False
+    # Per-consumer override first (IRIS_ORACLE_SAMPLE_FRACTION_TOOL_CHOICE=1
+    # runs the tool A/B at 100% while every other consumer keeps its share).
+    _per = os.environ.get(f"{_SAMPLE_FRACTION_ENV}_{consumer_id.upper()}")
     try:
-        frac = float(os.environ.get(_SAMPLE_FRACTION_ENV, SAMPLE_FRACTION))
+        frac = float(_per if _per is not None
+                     else os.environ.get(_SAMPLE_FRACTION_ENV, SAMPLE_FRACTION))
     except (TypeError, ValueError):
         frac = SAMPLE_FRACTION
     frac = min(1.0, max(0.0, frac))
@@ -1611,7 +1725,12 @@ class EngineConfig:
     # (AC25.5): enforcement is refused until the curve is re-derived.
     # Left at 6 deliberately — that is the width the fitted curve was measured
     # at, so the mismatch with candidate_cap is what keeps enforcement refused.
-    calibrated_cap: int = 6
+    # 6 -> 32 (2026-10-11): the FIRST curve fitted on d1 (tool_choice,
+    # tc-decide-v3, outcome-labelled, 388 distinct rows) was measured at menu
+    # width 32 - every one of those rows ran after the cap moved to 32. A
+    # different deployed width is still stale (and re-identifies via
+    # criteria_hash).
+    calibrated_cap: int = 32
 
     def __post_init__(self) -> None:
         if self.backend_thresholds is None:
@@ -2196,9 +2315,13 @@ class DecisionEngine:
                 "measuring it in shadow (no threshold => no enforcement)",
                 consumer_id,
             )
-        opts = [o for o in options if isinstance(o, str) and o][
-            : self._cfg.candidate_cap
-        ]
+        # The ONE general bound is the option-code pool (A..Z then 00..99):
+        # `candidate_cap` is the TOOL MENU's width, applied where the menu is
+        # composed (ToolDecisionBox._compose_engine_menu). Cutting EVERY
+        # consumer to it here (measured 2026-10-11) silently dropped page
+        # elements past the 11th from browser_next - the element the model
+        # clicked was often never on d1's menu.
+        opts = [o for o in options if isinstance(o, str) and o][:OPTION_CEILING]
         if not opts:
             return None
         # THE input rule (Oracle jobs): the engine builds what the model
@@ -2291,7 +2414,7 @@ class DecisionEngine:
                 g = g_index[key]
                 cid, options, _frame = consults[i]
                 opts = [o for o in options if isinstance(o, str) and o][
-                    : self._cfg.candidate_cap]
+                    :OPTION_CEILING]
                 order.append((g, len(group_members[g])))
                 group_members[g].append((cid, opts))
             out: List[Optional[DecisionScore]] = [None] * len(consults)

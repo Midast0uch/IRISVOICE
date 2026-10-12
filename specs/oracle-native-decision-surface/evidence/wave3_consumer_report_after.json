@@ -19,22 +19,22 @@
   "skipped": {
     "unreadable": 0,
     "no_confidence": 0,
-    "no_label": 27,
+    "no_label": 42,
     "other_backend": 19781,
-    "duplicates": 64
+    "duplicates": 137
   },
   "n_consumers": 21,
   "flipped": [],
   "consumers": {
     "call_closing": {
-      "rows": 0,
-      "rows_raw": 0,
+      "rows": 21,
+      "rows_raw": 21,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 0,
-        "rows_raw": 0,
+        "rows_distinct": 21,
+        "rows_raw": 21,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -44,73 +44,88 @@
           "wilson_lb": null
         },
         "classes": {
-          "correct": 0,
-          "wrong": 0
+          "correct": 11,
+          "wrong": 10
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": null,
-      "brier": null,
-      "auroc": null,
+      "ece": 0.1548,
+      "brier": 0.2647,
+      "auroc": 0.6364,
       "threshold": null,
-      "shadow_rows": 0,
-      "engines": [],
-      "label_sources": {},
+      "shadow_rows": 21,
+      "engines": [
+        "d1-3b-ad-q4_k_m"
+      ],
+      "label_sources": {
+        "outcome": 21
+      },
+      "label_integrity": 1.0,
+      "outcome_rows": 21,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "depth_met": {
-      "rows": 36,
-      "rows_raw": 36,
+      "rows": 54,
+      "rows_raw": 54,
       "honest": {
         "method": "isotonic",
-        "knots": [],
+        "knots": [
+          [
+            0.63627,
+            0.5
+          ]
+        ],
         "threshold": null,
-        "rows_distinct": 36,
-        "rows_raw": 36,
+        "rows_distinct": 54,
+        "rows_raw": 54,
         "rows_above": 0,
         "oof": {
-          "ece": null,
-          "brier": null,
-          "auroc": null,
+          "ece": 0.0,
+          "brier": 0.25,
+          "auroc": 0.5,
           "precision_at_t": null,
           "wilson_lb": null
         },
         "classes": {
-          "correct": 20,
-          "wrong": 16
+          "correct": 27,
+          "wrong": 27
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.0622,
-      "brier": 0.2641,
-      "auroc": 0.4938,
+      "ece": 0.1396,
+      "brier": 0.2985,
+      "auroc": 0.428,
       "threshold": null,
-      "shadow_rows": 36,
+      "shadow_rows": 54,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 36
+        "incumbent": 54
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "depth_route": {
-      "rows": 5,
-      "rows_raw": 5,
+      "rows": 8,
+      "rows_raw": 8,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 5,
-        "rows_raw": 5,
+        "rows_distinct": 8,
+        "rows_raw": 8,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -120,37 +135,40 @@
           "wilson_lb": null
         },
         "classes": {
-          "correct": 2,
-          "wrong": 3
+          "correct": 4,
+          "wrong": 4
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.555,
-      "brier": 0.4873,
-      "auroc": 0.25,
+      "ece": 0.328,
+      "brier": 0.3934,
+      "auroc": 0.1562,
       "threshold": null,
-      "shadow_rows": 5,
+      "shadow_rows": 8,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 5
+        "incumbent": 8
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "done": {
-      "rows": 5,
-      "rows_raw": 5,
+      "rows": 7,
+      "rows_raw": 7,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 5,
-        "rows_raw": 5,
+        "rows_distinct": 7,
+        "rows_raw": 7,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -160,25 +178,28 @@
           "wilson_lb": null
         },
         "classes": {
-          "correct": 3,
-          "wrong": 2
+          "correct": 4,
+          "wrong": 3
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.0877,
-      "brier": 0.2652,
-      "auroc": 0.1667,
+      "ece": 0.0843,
+      "brier": 0.2591,
+      "auroc": 0.4167,
       "threshold": null,
-      "shadow_rows": 5,
+      "shadow_rows": 7,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 5
+        "incumbent": 7
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
@@ -203,7 +224,7 @@
           "correct": 1,
           "wrong": 1
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -219,18 +240,21 @@
       "label_sources": {
         "incumbent": 2
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "event_family": {
-      "rows": 14,
-      "rows_raw": 25,
+      "rows": 16,
+      "rows_raw": 34,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 14,
-        "rows_raw": 25,
+        "rows_distinct": 16,
+        "rows_raw": 34,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -241,36 +265,39 @@
         },
         "classes": {
           "correct": 2,
-          "wrong": 12
+          "wrong": 14
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.2124,
-      "brier": 0.1852,
-      "auroc": 0.3333,
+      "ece": 0.2925,
+      "brier": 0.2531,
+      "auroc": 0.2857,
       "threshold": null,
-      "shadow_rows": 14,
+      "shadow_rows": 16,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 14
+        "incumbent": 16
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "event_type:control": {
       "rows": 2,
-      "rows_raw": 4,
+      "rows_raw": 5,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
         "rows_distinct": 2,
-        "rows_raw": 4,
+        "rows_raw": 5,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -283,7 +310,7 @@
           "correct": 0,
           "wrong": 2
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -299,18 +326,21 @@
       "label_sources": {
         "incumbent": 2
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "event_type:delivery": {
-      "rows": 6,
-      "rows_raw": 9,
+      "rows": 7,
+      "rows_raw": 14,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 6,
-        "rows_raw": 9,
+        "rows_distinct": 7,
+        "rows_raw": 14,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -321,36 +351,39 @@
         },
         "classes": {
           "correct": 2,
-          "wrong": 4
+          "wrong": 5
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.2504,
-      "brier": 0.2729,
-      "auroc": 0.5625,
+      "ece": 0.2966,
+      "brier": 0.2809,
+      "auroc": 0.6,
       "threshold": null,
-      "shadow_rows": 6,
+      "shadow_rows": 7,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 6
+        "incumbent": 7
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "event_type:knowledge": {
-      "rows": 1,
-      "rows_raw": 1,
+      "rows": 2,
+      "rows_raw": 3,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 1,
-        "rows_raw": 1,
+        "rows_distinct": 2,
+        "rows_raw": 3,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -360,37 +393,40 @@
           "wilson_lb": null
         },
         "classes": {
-          "correct": 1,
+          "correct": 2,
           "wrong": 0
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.3638,
-      "brier": 0.1324,
+      "ece": 0.1819,
+      "brier": 0.0662,
       "auroc": null,
       "threshold": null,
-      "shadow_rows": 1,
+      "shadow_rows": 2,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 1
+        "incumbent": 2
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "event_type:memory": {
       "rows": 8,
-      "rows_raw": 12,
+      "rows_raw": 15,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
         "rows_distinct": 8,
-        "rows_raw": 12,
+        "rows_raw": 15,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -403,7 +439,7 @@
           "correct": 2,
           "wrong": 6
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -419,6 +455,9 @@
       "label_sources": {
         "incumbent": 8
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
@@ -443,7 +482,7 @@
           "correct": 0,
           "wrong": 0
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -455,18 +494,21 @@
       "shadow_rows": 0,
       "engines": [],
       "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "narration": {
-      "rows": 32,
-      "rows_raw": 32,
+      "rows": 33,
+      "rows_raw": 48,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 32,
-        "rows_raw": 32,
+        "rows_distinct": 33,
+        "rows_raw": 48,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -476,25 +518,28 @@
           "wilson_lb": null
         },
         "classes": {
-          "correct": 14,
+          "correct": 15,
           "wrong": 18
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.2843,
-      "brier": 0.3084,
-      "auroc": 0.5933,
+      "ece": 0.2757,
+      "brier": 0.299,
+      "auroc": 0.6167,
       "threshold": null,
-      "shadow_rows": 32,
+      "shadow_rows": 33,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 32
+        "incumbent": 33
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
@@ -519,7 +564,7 @@
           "correct": 0,
           "wrong": 0
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -531,18 +576,21 @@
       "shadow_rows": 0,
       "engines": [],
       "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "presentation": {
       "rows": 4,
-      "rows_raw": 36,
+      "rows_raw": 54,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
         "rows_distinct": 4,
-        "rows_raw": 36,
+        "rows_raw": 54,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -555,7 +603,7 @@
           "correct": 0,
           "wrong": 4
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -571,6 +619,9 @@
       "label_sources": {
         "incumbent": 4
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
@@ -595,7 +646,7 @@
           "correct": 0,
           "wrong": 1
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -611,55 +662,57 @@
       "label_sources": {
         "incumbent": 1
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "review_verdict": {
-      "rows": 89,
-      "rows_raw": 89,
+      "rows": 143,
+      "rows_raw": 145,
       "honest": {
         "method": "isotonic",
         "knots": [
           [
-            0.437279,
-            0.323529
-          ],
-          [
-            0.678656,
-            0.509091
+            0.658787,
+            0.293706
           ]
         ],
         "threshold": null,
-        "rows_distinct": 89,
-        "rows_raw": 89,
+        "rows_distinct": 143,
+        "rows_raw": 145,
         "rows_above": 0,
         "oof": {
-          "ece": 0.0728,
-          "brier": 0.2475,
-          "auroc": 0.5449,
+          "ece": 0.0,
+          "brier": 0.2075,
+          "auroc": 0.4876,
           "precision_at_t": null,
           "wilson_lb": null
         },
         "classes": {
-          "correct": 39,
-          "wrong": 50
+          "correct": 42,
+          "wrong": 101
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.1482,
-      "brier": 0.2572,
-      "auroc": 0.6041,
+      "ece": 0.3651,
+      "brier": 0.3883,
+      "auroc": 0.4207,
       "threshold": null,
-      "shadow_rows": 89,
+      "shadow_rows": 143,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 89
+        "incumbent": 143
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": true,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
@@ -684,7 +737,7 @@
           "correct": 0,
           "wrong": 0
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -696,59 +749,73 @@
       "shadow_rows": 0,
       "engines": [],
       "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "tool_choice": {
-      "rows": 144,
-      "rows_raw": 152,
+      "rows": 205,
+      "rows_raw": 225,
       "honest": {
         "method": "isotonic",
         "knots": [
           [
-            0.518878,
-            0.218182
+            0.375765,
+            0.173913
           ],
           [
-            0.885065,
-            0.347826
+            0.61772,
+            0.23913
           ],
           [
-            0.950635,
-            0.5
+            0.8747,
+            0.333333
+          ],
+          [
+            0.942243,
+            0.45679
+          ],
+          [
+            0.986779,
+            0.617647
           ]
         ],
         "threshold": null,
-        "rows_distinct": 144,
-        "rows_raw": 152,
+        "rows_distinct": 205,
+        "rows_raw": 225,
         "rows_above": 0,
         "oof": {
-          "ece": 0.0729,
-          "brier": 0.2227,
-          "auroc": 0.6067,
+          "ece": 0.0371,
+          "brier": 0.2281,
+          "auroc": 0.6297,
           "precision_at_t": null,
           "wilson_lb": null
         },
         "classes": {
-          "correct": 53,
-          "wrong": 91
+          "correct": 80,
+          "wrong": 125
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.4072,
-      "brier": 0.4014,
-      "auroc": 0.6327,
+      "ece": 0.4161,
+      "brier": 0.4077,
+      "auroc": 0.6495,
       "threshold": null,
-      "shadow_rows": 144,
+      "shadow_rows": 205,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 144
+        "incumbent": 205
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
@@ -773,7 +840,7 @@
           "correct": 0,
           "wrong": 0
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
@@ -785,18 +852,21 @@
       "shadow_rows": 0,
       "engines": [],
       "label_sources": {},
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "user_feedback": {
-      "rows": 8,
-      "rows_raw": 8,
+      "rows": 13,
+      "rows_raw": 13,
       "honest": {
         "method": "isotonic",
         "knots": [],
         "threshold": null,
-        "rows_distinct": 8,
-        "rows_raw": 8,
+        "rows_distinct": 13,
+        "rows_raw": 13,
         "rows_above": 0,
         "oof": {
           "ece": null,
@@ -806,65 +876,76 @@
           "wilson_lb": null
         },
         "classes": {
-          "correct": 8,
+          "correct": 13,
           "wrong": 0
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.284,
-      "brier": 0.0954,
+      "ece": 0.2176,
+      "brier": 0.0635,
       "auroc": null,
       "threshold": null,
-      "shadow_rows": 8,
+      "shadow_rows": 13,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 8
+        "incumbent": 13
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     },
     "web_intent": {
-      "rows": 31,
-      "rows_raw": 35,
+      "rows": 41,
+      "rows_raw": 55,
       "honest": {
         "method": "isotonic",
-        "knots": [],
+        "knots": [
+          [
+            0.84371,
+            0.853659
+          ]
+        ],
         "threshold": null,
-        "rows_distinct": 31,
-        "rows_raw": 35,
+        "rows_distinct": 41,
+        "rows_raw": 55,
         "rows_above": 0,
         "oof": {
-          "ece": null,
-          "brier": null,
-          "auroc": null,
+          "ece": 0.0007,
+          "brier": 0.1259,
+          "auroc": 0.4333,
           "precision_at_t": null,
           "wilson_lb": null
         },
         "classes": {
-          "correct": 25,
+          "correct": 35,
           "wrong": 6
         },
-        "fitted_at": "2026-10-09T06:27:54+00:00",
+        "fitted_at": "2026-10-09T15:11:37+00:00",
         "label_source": "agreement with the incumbent (brain_choice/brain_bool)"
       },
       "rows_above_threshold": 0,
       "precision": 0.0,
-      "ece": 0.0691,
-      "brier": 0.1358,
-      "auroc": 0.7333,
+      "ece": 0.0683,
+      "brier": 0.1038,
+      "auroc": 0.7619,
       "threshold": null,
-      "shadow_rows": 31,
+      "shadow_rows": 41,
       "engines": [
         "d1-3b-ad-q4_k_m"
       ],
       "label_sources": {
-        "incumbent": 31
+        "incumbent": 41
       },
+      "label_integrity": null,
+      "outcome_rows": 0,
+      "sampling_eligible": false,
       "status": "shadow",
       "gap": "no threshold for the active backend (fail-closed)"
     }

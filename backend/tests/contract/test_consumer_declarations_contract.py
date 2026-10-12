@@ -143,23 +143,49 @@ def test_event_type_inherits_its_family_declaration():
 # ── the job-routing surface (T1.8, T1.9, AC10.7) ────────────────────────────
 
 def test_dead_job_assignments_are_removed_and_the_new_ones_added():
-    assert "browser_next" not in de.CONSUMER_JOBS
+    # STALE-BY-SPEC update (2026-10-11): `browser_next` was removed at T1.8
+    # because it had NO call site; it returns WITH one (the node loop's
+    # browser_act hook -> browser_next_shadow, test_browser_next_contract).
+    # `web_depth` still has none and stays removed.
+    assert de.CONSUMER_JOBS["browser_next"] == "route"
     assert "web_depth" not in de.CONSUMER_JOBS
     assert de.CONSUMER_JOBS["depth_route"] == "route"
     assert de.CONSUMER_JOBS["call_closing"] == "judge_call"
-    assert len(de.CONSUMER_JOBS) == 18   # 19 - 2 dead + 1 new
+    assert de.CONSUMER_JOBS["tool_approval"] == "approve"
+    # 19 - 2 dead + 1 new + 1 tool_approval - 1 mode (owner removal, 2026-10-10)
+    # + 1 browser_next (2026-10-11, now with a call site)
+    assert len(de.CONSUMER_JOBS) == 19
+    assert "mode" not in de.CONSUMER_JOBS
 
 
 def test_oracle_jobs_gained_only_the_call_closing_job():
-    """AC10.7 gives `call_closing` its own job. The eight prior jobs keep their
-    names; fields/budgets evolve with the frame fixes (route gained
-    `last_result` + evidence fields 2026-10-10; the budget bound moved to 256
-    for the physical reason stated in test_oracle_jobs_contract)."""
-    assert len(de.ORACLE_JOBS) == 9
+    """AC10.7 gives `call_closing` its own job; tool_approval (2026-10-10) adds
+    the `approve` job. The prior jobs keep their names; fields/budgets evolve
+    with the frame fixes (route gained `last_result` + evidence fields
+    2026-10-10; approve widened to 384 for the v2 frame — the physical reason
+    is stated in test_oracle_jobs_contract)."""
+    assert len(de.ORACLE_JOBS) == 10
     assert de.ORACLE_JOBS["judge_call"].fields == ("goal", "call", "result")
-    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 256
+    # STALE-BY-SPEC update (2026-10-11, tool_approval/v3): `calls_this_step`
+    # joins the approve job - the step's own calls were invisible (the frame
+    # carried the previous STEP's result once per node). Budget unchanged.
+    assert de.ORACLE_JOBS["approve"].fields == (
+        "goal", "calls_this_step", "last_result", "proposed_tool",
+        "tool_description", "args", "offered_tools")
+    # 384, not 256 (2026-10-10, tool_approval/v2): the enriched frame
+    # (goal 200 + last_result 400 + description 200 + args 400 + offered
+    # names 200 chars) physically requires it — at 256 the cap cut the args,
+    # the very evidence v2 exists to deliver. Widened for a physical reason,
+    # stated here. 512 stays the absolute ceiling.
+    assert max(j.budget_ids for j in de.ORACLE_JOBS.values()) <= 384
 
 
 def test_consumers_grew_by_exactly_two():
+    """STALE-BY-SPEC update (2026-10-10, owner): `mode` was REMOVED from the
+    declared set — its incumbent is a free keyword rule, so enforcing it could
+    never pay, and its AUROC fell below the bar at volume (0.591 at 77 rows).
+    The removal is complete (CONSUMERS, CONSUMER_DECLARATIONS, CONSUMER_JOBS,
+    the scoring site and its tests all changed in the SAME commit), so the
+    declared set is not left half-changed."""
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {"depth_route", "call_closing"}
-    assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == set()   # nothing removed
+    assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {"mode"}   # owner-directed removal

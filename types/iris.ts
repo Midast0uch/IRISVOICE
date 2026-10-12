@@ -123,6 +123,10 @@ export interface CrawlerStartedMsg {
   /** Subset of `urls` that came from vision discovery rather than the planner. */
   discovered_urls?: string[]
   session_id?: string
+  /** "browser" = the live browser tools (browser_open / browser_act), not a
+   * search/crawl. Their events must not rewrite the search's sources/summary. */
+  source?: string
+  job_id?: string
 }
 /** Sources ADDED mid-run — a broadened re-plan, or URLs the vision model found
  * by typing a query into a search engine. The plan card must APPEND these; the
@@ -158,6 +162,8 @@ export interface CrawlerPageMsg {
    * panel must render a "blocked by the site" state instead of a dead iframe. */
   capture_available?: boolean
   title?: string
+  /** "browser" = a live-browser frame (page_number counts frames, not sources). */
+  source?: string
 }
 /** REQ-11/12 (T17): in-flight stage message (stage: narrowing/refining/fetching). */
 export interface CrawlerProgressMsg {
@@ -259,6 +265,8 @@ export interface CrawlerCompleteMsg {
   summary: string
   cited_markdown?: string
   credibility_top_score?: number
+  /** "browser" = the live-browser session closed; it is not a search summary. */
+  source?: string
 }
 export interface CliActivityMsg {
   type: 'cli_activity'
