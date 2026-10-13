@@ -23,10 +23,7 @@ from typing import Any, Dict, Optional
 
 from backend.memory.db import app_flush, app_write, owns_store
 
-from backend.agent.artifact_policy import (
-    card_title_from_content,
-    is_tool_result_envelope,
-)
+from backend.agent.artifact_policy import card_title_from_content
 
 logger = logging.getLogger(__name__)
 
@@ -549,7 +546,17 @@ class DocumentDataStore:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
                     "turn_id, card_id, substr(content, 1, ?), "
-                    "title, kind, summary, language "
+                    "title, kind, summary, language, "
+                    # The tool-result-envelope rule (artifact_policy.
+                    # is_tool_result_envelope: a JSON object with a top-level
+                    # "success") judged on the WHOLE body, in SQL so the body
+                    # never leaves the database. It used to run on the 400-char
+                    # title preview, which never ends in "}" for a real search
+                    # result: two 11 KB captured search results came back as
+                    # "data" cards titled {"success": true, "query": ...
+                    # (conv-1573, 2026-10-12).
+                    "CASE WHEN substr(ltrim(content), 1, 1) = '{' AND json_valid(content) "
+                    "THEN json_type(content, '$.success') IS NOT NULL ELSE 0 END "
                     # A research record (fmt 'research') is memory, not a card:
                     # it is never offered for rehydration.
                     "FROM document_data WHERE conversation_id = ? AND fmt IS NOT 'research' "
@@ -586,7 +593,7 @@ class DocumentDataStore:
                     # raw JSON and whose title was the "Document" fallback — the
                     # "prism cards are rendering with just json output" report.
                     # Not offered = not rendered, and nothing is deleted.
-                    if not is_tool_result_envelope(r[8])
+                    if not r[13]
                 ]
             # Pre-existing bug fixed 2026-09-25: this branch assigned `row`
             # (singular) and then iterated `rows`, so the agent-side full-data

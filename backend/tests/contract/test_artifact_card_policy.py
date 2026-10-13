@@ -328,3 +328,36 @@ def test_a_conversation_scoped_frame_is_withheld_too():
     clear_card_free_conversation("conv-151")
     assert not WSEventBridge._card_event_withheld(IRISStreamEvent.TASK_PROGRESS, frame)
 
+
+def test_long_tool_result_is_never_offered_as_a_card():
+    """Conv-1573 symptom (2026-10-12): two captured 11 KB search results came back
+    from list_for_conversation as "data" cards titled {"success": true, "query": ...
+
+    The envelope rule used to run on the 400-char title preview, which never ends
+    in "}" for a long body, so a long tool result passed as an artifact. The rule
+    now runs in SQL on the whole body. Four rows are stored in one conversation:
+    a long receipt, a short receipt, a markdown artifact and a JSON data artifact
+    with no success key. Only the two artifacts may be offered.
+    """
+    import json
+    import sqlite3
+
+    from backend.agent.document_store import DocumentDataStore
+
+    store = DocumentDataStore(sqlite3.connect(":memory:"))
+    long_result = json.dumps({
+        "success": True,
+        "query": "books.toscrape.com poetry category",
+        "results": [{"url": f"https://x/{i}", "text": "y" * 200} for i in range(60)],
+    })
+    assert len(long_result) > 10_000
+    store.store("a", "c1", "json", long_result, {}, [], "trusted")
+    store.store("b", "c1", "json", '{"success": true, "n": 1}', {}, [], "trusted")
+    store.store("c", "c1", "markdown", "# Poetry\n\nA Light in the Attic", {}, [], "trusted",
+                title="Poetry list")
+    store.store("d", "c1", "json",
+                json.dumps({"books": [{"title": "t", "price": 1.0}] * 50}), {}, [], "trusted")
+    docs = store.list_for_conversation("c1", metadata_only=True)
+    assert sorted(d["document_id"] for d in docs) == ["c", "d"]
+    assert not any(str(d["title"]).startswith('{"success"') for d in docs)
+

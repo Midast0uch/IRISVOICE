@@ -206,6 +206,37 @@ let _sharedTurnInFlightAt = 0
 const TURN_SILENCE_GRACE_MS = 300_000
 const _connSubs = new Set<() => void>()
 
+// The live-browser forwarders (window event -> WS message), one set per page.
+let _fwdRefcount = 0
+let _fwdSend: ((type: string, payload?: Record<string, unknown>) => void) | null = null
+const _FORWARDED: ReadonlyArray<[string, string]> = [
+  ['iris:takeover_input', 'takeover_input'],
+  ['iris:takeover_frame_ack', 'takeover_frame_ack'],
+  // The live surface's box size (CSS px): the backend gives the agent's
+  // browser viewport the panel's aspect so frames fill the surface.
+  ['iris:browser_viewport', 'browser_viewport'],
+]
+const _fwdHandlers = new Map<string, (e: Event) => void>()
+
+function _installForwarders() {
+  if (typeof window === 'undefined') return
+  for (const [event, type] of _FORWARDED) {
+    const h = (e: Event) => {
+      const d = (e as CustomEvent<Record<string, unknown>>).detail
+      if (!d) return
+      _fwdSend?.(type, d)
+    }
+    _fwdHandlers.set(event, h)
+    window.addEventListener(event, h)
+  }
+}
+
+function _removeForwarders() {
+  if (typeof window === 'undefined') return
+  for (const [event, h] of _fwdHandlers) window.removeEventListener(event, h)
+  _fwdHandlers.clear()
+}
+
 function _emitSharedConn(next: ConnectionState) {
   if (_sharedConnState === next) return
   _sharedConnState = next
@@ -2298,31 +2329,19 @@ export function useIRISWebSocket(
   // surface emits these as window events (transport-agnostic); this is the ONE
   // place they become WS messages. The typed value rides the `takeover_input`
   // message and is never stored here.
+  // ONE owner per page, not per hook instance: the hook is mounted several
+  // times (3 live, 2026-10-12) and each instance's listeners sent every ack,
+  // viewport and INPUT once more - a user click was dispatched three times.
+  // The listeners live at module level, installed by the first mount and
+  // removed by the last; they send through the most recently mounted send.
   useEffect(() => {
-    const onInput = (e: Event) => {
-      const d = (e as CustomEvent<Record<string, unknown>>).detail
-      if (!d) return
-      sendMessage('takeover_input', d)
-    }
-    const onAck = (e: Event) => {
-      const d = (e as CustomEvent<Record<string, unknown>>).detail
-      if (!d) return
-      sendMessage('takeover_frame_ack', d)
-    }
-    // The live surface's box size (CSS px): the backend gives the agent's
-    // browser viewport the panel's aspect so frames fill the surface.
-    const onViewport = (e: Event) => {
-      const d = (e as CustomEvent<Record<string, unknown>>).detail
-      if (!d) return
-      sendMessage('browser_viewport', d)
-    }
-    window.addEventListener('iris:takeover_input', onInput)
-    window.addEventListener('iris:takeover_frame_ack', onAck)
-    window.addEventListener('iris:browser_viewport', onViewport)
+    _fwdSend = sendMessage
+    if (_fwdRefcount++ === 0) _installForwarders()
     return () => {
-      window.removeEventListener('iris:takeover_input', onInput)
-      window.removeEventListener('iris:takeover_frame_ack', onAck)
-      window.removeEventListener('iris:browser_viewport', onViewport)
+      if (--_fwdRefcount === 0) {
+        _removeForwarders()
+        _fwdSend = null
+      }
     }
   }, [sendMessage])
 

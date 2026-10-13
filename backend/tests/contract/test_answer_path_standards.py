@@ -331,3 +331,119 @@ def test_s80_retention_cycle_runs_off_the_event_loop(monkeypatch):
     asyncio.run(_main())
     gaps = [b - a for a, b in zip(ticks, ticks[1:])]
     assert max(gaps) < 0.5, f"the loop stalled {max(gaps):.2f}s during the cycle"
+
+
+# ── S81: the dedup read of a rare chunk type uses one index, no temp sort ───
+# (stack dumps 2026-10-12, conv-1573: fragment_and_store's dedup read had an
+# index on session_id only. It walked the session newest-first and tested
+# chunk_type row by row; der_failure is rare, so the read held the DER loop
+# 56 s before a failed step's recovery could start.)
+
+_DEDUP_READ = (
+    "SELECT id, embedding, embedding_backend FROM context_chunks "
+    "WHERE session_id = ? AND chunk_type = ? ORDER BY timestamp DESC LIMIT 50"
+)
+
+
+def test_dedup_read_uses_one_index_for_session_type_and_order(tmp_path):
+    """Measured 2026-10-12 (conv-1573): a failed step's der_failure note held the
+    DER loop 56 s. The dedup read filters on session_id AND chunk_type and
+    orders by timestamp. One index over those three columns must serve all of
+    it, so the walk stops at the 50th match and never sorts. The session below
+    holds 3000 rows, 20 of them der_failure, so the planner has a real choice."""
+    from backend.memory.episodic import EpisodicStore
+
+    store = EpisodicStore(db_path=str(tmp_path / "memory.db"), biometric_key=b"\0" * 32)
+    db = store.db
+    try:
+        rows = [
+            (
+                f"c{i}", "s", "der_failure" if i % 150 == 0 else "context_fragment",
+                "tool", f"chunk {i}", f"2026-10-12 00:{i // 60:02d}:{i % 60:02d}",
+            )
+            for i in range(3000)
+        ]
+        db.executemany(
+            "INSERT INTO context_chunks (id, session_id, chunk_type, zone, content, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        db.commit()
+        db.execute("ANALYZE")
+        plan = _plan(db, _DEDUP_READ, ("s", "der_failure"))
+    finally:
+        db.close()
+    assert any(
+        p.startswith("SEARCH") and "session_id=?" in p and "chunk_type=?" in p for p in plan
+    ), f"the dedup read must search on session_id AND chunk_type in one index, plan: {plan}"
+    assert not any("TEMP B-TREE FOR ORDER BY" in p for p in plan), (
+        f"the dedup read sorts the rows again, plan: {plan} - the 56 s loop stall")
+
+
+# ── S82: a failed step's der_failure note is written off the DER loop ───────
+# (stack dumps 2026-10-12, conv-1573: the note ran inline on the loop thread
+# and held it 56 s before the recovery graft started.)
+
+
+def test_failure_note_is_not_written_on_the_loop_thread():
+    """Measured 2026-10-12 (conv-1573): the der_failure note ran inline on the
+    DER loop thread. The recovery waits on nothing the note decides, so the
+    note is a lane write: under the lane rule ("before adding work to finalize
+    or turn end, ask: does THIS reply need it? If not, it goes on a lane") it
+    must run on lane("memory_events"), never on the thread that settles the
+    failed node."""
+    import types
+
+    from backend.agent import agent_kernel
+    from backend.agent.agent_kernel import AgentKernel
+    from backend.agent.der_loop import DirectorQueue, QueueItem
+
+    written = threading.Event()
+    writer_threads: list = []
+
+    class _Episodic:
+        def fragment_and_store(self, **_kw):
+            writer_threads.append(threading.current_thread())
+            written.set()
+
+    k = AgentKernel.__new__(AgentKernel)
+    k._memory_interface = types.SimpleNamespace(episodic=_Episodic())
+    k._der_route_step_failure = lambda *a, **kw: None
+    k._der_report_run_grade = lambda *a, **kw: None
+    k._der_handle_step_failure = lambda item, queue, *a, **kw: queue.mark_failed(item.step_id)
+
+    item = QueueItem(
+        step_id="s2", step_number=2, description="open the Poetry category",
+        expected_output="the Poetry page is open",
+    )
+    queue = DirectorQueue(objective="obj")
+    queue.add_item(item)
+    plan = types.SimpleNamespace(
+        steps=[item], original_task="obj", plan_title="t", strategy="standard",
+    )
+
+    agent_kernel._der_post_step(
+        k,
+        item,
+        "I opened the site.\n[node error: step call limit reached (12 calls)]",
+        False,
+        None,
+        "execute",
+        queue=queue,
+        plan=plan,
+        _session="sess",
+        _turn_id="turn",
+        context_package=None,
+        completed_items=[],
+        step_outputs=[],
+        _tokens_used=0,
+        _token_budget=30000,
+        is_mature=False,
+        _live_ctx=None,
+        from_voice=False,
+        inflight=set(),
+    )
+
+    assert written.wait(timeout=5), "the der_failure note was never written"
+    assert writer_threads[0] is not threading.current_thread(), (
+        f"the der_failure note ran on the loop thread ({writer_threads[0].name})")

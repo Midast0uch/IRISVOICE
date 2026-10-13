@@ -327,6 +327,16 @@ class EpisodicStore:
             -- stops at the 200th match.
             CREATE INDEX IF NOT EXISTS idx_chunks_session_ts_zone
                 ON context_chunks(session_id, timestamp, zone);
+            -- fragment_and_store's dedup read (session_id = ? AND
+            -- chunk_type = ? ORDER BY timestamp DESC LIMIT 50). With only the
+            -- index above, the planner walked the session newest-first and
+            -- tested chunk_type row by row, so a rare type (der_failure: 104
+            -- of ~11.9k session_iris rows) read most of the session: a failed
+            -- step's note held the DER loop 56 s before its recovery started
+            -- (stack dumps, conv-1573, 2026-10-12). Both equalities plus the
+            -- order in one index: the walk stops at the 50th match.
+            CREATE INDEX IF NOT EXISTS idx_chunks_session_type_ts
+                ON context_chunks(session_id, chunk_type, timestamp);
         """)
         self.db.commit()
         self._migrate_chunk_schema()
@@ -857,8 +867,9 @@ class EpisodicStore:
                         continue
                 if is_dup:
                     continue
-            except Exception:
-                pass  # dedup failure is non-fatal; store anyway
+            except Exception as exc:  # dedup failure is non-fatal; store anyway
+                logger.warning("[EpisodicStore] dedup read failed session=%s type=%s: %r",
+                               session_id, chunk_type, exc)
 
             chunk_id = str(uuid.uuid4())
             embedding_blob = _pack_embedding(embedding)

@@ -1153,24 +1153,45 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
             # A3 FIX: fragment the failed output here (the shared
             # _der_finalize_step helper is only reached for successful
             # steps, so failures would otherwise never be stored).
+            # D1: on lane("memory_events"), never inline - the recovery waits
+            # on nothing this note decides (it embeds, dedups and writes; it
+            # held the loop 56 s before s2's graft, conv-1573 2026-10-12).
             try:
                 if self._memory_interface and step_result:
                     _ep = self._memory_interface.episodic
                     if hasattr(_ep, "fragment_and_store"):
-                        _ep.fragment_and_store(
+                        from backend.utils.durability_queue import lane as _durability_lane
+
+                        if not _durability_lane("memory_events").submit(
+                            "der_failure_fragment", _ep.fragment_and_store,
                             content=f"[DER FAIL Step {item.step_number}: "
                                     f"{item.description[:80]}]\n{step_result[:500]}",
                             session_id=_session,
                             chunk_type="der_failure",
                             zone="tool",
-                        )
-            except Exception:
-                pass
+                        ):
+                            logger.warning("[DER] der_failure note for %s not queued "
+                                           "(memory_events lane full)", item.step_id)
+            except Exception as _frag_exc:  # noqa: BLE001 - a note never blocks recovery
+                logger.warning("[DER] der_failure note for %s failed: %r",
+                               item.step_id, _frag_exc)
             # Step failed after retry — mark, abort downstream, graft.
             self._der_handle_step_failure(
                 item, queue, plan, _session, _turn_id, context_package,
                 step_result=step_result,
             )
+            # A failed split child settles its parent too. Only the success
+            # path below called _der_settle_split, so when every child of a
+            # graft failed the parent sat in split_pending - neither complete
+            # nor failed - and the dependents hold_split_parent revived waited
+            # on it. A child that split again is a parent now: its own
+            # children settle it.
+            try:
+                if item.step_id not in (getattr(queue, "split_pending", None) or {}):
+                    _der_settle_split(self, item, queue, inflight)
+            except Exception as _settle_exc:  # noqa: BLE001 - never block the turn
+                logger.warning("[DER] split settle after failure of %s failed: %r",
+                               item.step_id, _settle_exc)
             # AC5.6 (session-319 fix): the failure/abort path never
             # reached the completion grade site — `_der_report_run_grade`
             # is only called from finalize-complete (which needs
@@ -14199,11 +14220,7 @@ Respond with a JSON object:
                         )
                         return aborted
                     queue.graft_attempts += 1
-                    # REQ-7 AC1/AC2/AC3 (T25): route subloop children through
-                    # the batcher — each ready group (full OR force-flushed at
-                    # the join point) dispatches as ONE batched call via
-                    # dispatch_batch, with results routed back per node;
-                    # parse-failure children fall back to individual execution.
+                    # The children run as nodes (their own tool loops).
                     self._der_route_subloop_children(
                         _children, queue, _session, _turn_id
                     )
@@ -14250,7 +14267,11 @@ Respond with a JSON object:
         # failed, descendants already aborted, failure evidence already
         # recorded — the DER loop's final summary carries the remaining nodes
         # with their failure classes and the honest incomplete result.
-        if item.critical and queue.graft_attempts >= DER_MAX_GRAFTS:
+        # Not when THIS failure just spent the last graft: the step waits on
+        # its children then (live amend-7, 2026-10-12: this line said
+        # "finalizing honestly" in the same second the third graft ran).
+        if (item.critical and queue.graft_attempts >= DER_MAX_GRAFTS
+                and item.step_id not in (getattr(queue, "split_pending", None) or {})):
             logger.info(
                 "[DER] REQ-5: critical step %s failed after %d grafts — "
                 "finalizing honestly with remaining nodes + failure class",
@@ -14269,15 +14290,20 @@ Respond with a JSON object:
                 if self._memory_interface and item.result:
                     _ep = self._memory_interface.episodic
                     if hasattr(_ep, "fragment_and_store"):
-                        _ep.fragment_and_store(
+                        # D1: on the memory lane, never the answer path.
+                        from backend.utils.durability_queue import lane as _durability_lane
+
+                        _durability_lane("memory_events").submit(
+                            "der_failure_fragment", _ep.fragment_and_store,
                             content=f"[NON-CRITICAL FAIL Step {item.step_number}: "
                                     f"{item.description[:80]}]\n{item.result[:500]}",
                             session_id=_session,
                             chunk_type="der_failure",
                             zone="trusted",
                         )
-            except Exception:
-                pass
+            except Exception as _frag_exc:  # noqa: BLE001 - a note never blocks the loop
+                logger.warning("[DER] non-critical der_failure note for %s failed: %r",
+                               item.step_id, _frag_exc)
             try:
                 from backend.gateway.iris_ffi import ffi_caducean_update
 
@@ -14781,6 +14807,15 @@ Respond with a JSON object:
             "connection"
         ):
             return f"transient infrastructure failure: {_res[:200]}"
+        # A node's result opens with the model's summary and ends with the
+        # reason it stopped (NodeResult.as_step_result). That reason IS the
+        # blocker: "step call limit reached (12 calls)", "no screenshot was
+        # taken". Without this line every failed node was named by its
+        # expected output, so the child was told only what the parent had
+        # been told.
+        _node_err = re.search(r"\[node error: ([^\]\n]+)\]", _res)
+        if _node_err:
+            return f"the step stopped before it was done: {_node_err.group(1)[:200]}"
         if trigger == "verify_failed":
             _exp = (item.expected_output or "").strip()
             if _exp:
@@ -15065,52 +15100,20 @@ Respond with a JSON object:
     def _der_route_subloop_children(
         self, _children: List["QueueItem"], queue, _session: str, _turn_id: str
     ) -> None:
-        """REQ-7 AC1/AC2/AC3 (T25): route split children through the batcher.
+        """Queue split children as NODES: each runs its own tool loop.
 
-        Each ready group (full from ``offer()`` OR force-flushed at the join
-        point) is dispatched as ONE batched call via ``dispatch_batch``, with
-        results routed back per node. Guarantees:
-
-        - AC1: children in a ready group share a single LLM call.
-        - AC2: NO child is ever silently lost — full groups dispatch now,
-          width-1/2 groups are force-flushed at the join point, and children
-          the batcher declined (phase outside window / not independent) are
-          queued directly. A child whose batched segment parsed is queued
-          WITH its answer pre-seeded (item.result), so its execution
-          short-circuits to the verify/finalize path; a child whose segment
-          failed to parse is queued WITHOUT a result and executes individually.
-        - AC3: each dispatched group increments the per-turn call counter
-          (self._der_turn_calls), recorded against the T3 baseline.
+        A split child resolves a step that failed - a browser step that hit
+        its call limit, a read that came back wrong. That is tool work. The
+        REQ-7 batcher answered every child with ONE tool-less text call and
+        pre-seeded the answer, so no recovery child ever opened a page or
+        read a file: measured 2026-10-12, 7 of 7 grafts in logs/iris.log were
+        BATCH_ROUTED, 0 ran a node, and the written guess became the parent's
+        result (conv-1573 s2: 12 browser calls -> call limit -> a 272-char
+        text answer stood in for the page). The batcher stays a module for
+        pure-text sub-queries; split children never go through it.
         """
-        from backend.agent.batch_dispatch import BatchGroup, dispatch_batch
-
-        # Use the module-level `get_batcher` (imported above) — NOT a local
-        # import — so tests that patch agent_kernel.get_batcher keep working.
-        _batcher = get_batcher()
-        _join = ""
-        _ready: List[BatchGroup] = []
         for _c in _children:
-            _g = _batcher.offer(_c)
-            if _g is not None:
-                _ready.append(_g)
-            _sid = getattr(_c, "step_id", "")
-            if not _join and _sid:
-                _join = _sid.rsplit("_s", 1)[0] if "_s" in _sid else _sid
-        # Force-flush the join point so a width-1/2 group (offer() returned
-        # None because the group was not full) is ALSO dispatched now instead
-        # of being silently dropped by the next flush_expired().
-        _tail = _batcher.flush(_join) if _join else None
-        if _tail is not None:
-            _ready.append(_tail)
-        _routed: set = set()
-        for _g in _ready:
-            _routed.update(
-                self._der_dispatch_batch_group(_g, queue, _session, _turn_id)
-            )
-        # Children never grouped (declined / not independent) run individually.
-        for _c in _children:
-            if getattr(_c, "step_id", "") not in _routed:
-                queue.add_item(_c)
+            queue.add_item(_c)
 
     def _der_dispatch_batch_group(
         self, group, queue, _session: str, _turn_id: str
@@ -18054,12 +18057,6 @@ Respond with a JSON object:
         crawl was decided by a model that had never seen a byte of the crawl
         output ("I am unable to access the search results", conv-36).
         """
-        # REQ-7 AC1 (T25): a batched sub-loop child already carries its answer
-        # (pre-seeded by _der_dispatch_batch_group via dispatch_batch). Skip
-        # the per-child resolve + LLM call; verification/finalize still run
-        # below so each child still credits its own mediator (REQ-26 edge).
-        if getattr(item, "is_subloop", False) and getattr(item, "result", None):
-            return item.result, True
         step_result = ""
         step_success = True
         try:
@@ -19645,9 +19642,7 @@ Respond with a JSON object:
                     # (NORTHSTAR defect-shape #1).
                     _measured = 0
                     if _children:
-                        # REQ-7 AC1/AC2/AC3 (T25): one batched call per ready
-                        # group (dispatch_batch), results routed per node;
-                        # parse-failure children execute individually (AC2).
+                        # The children run as nodes (their own tool loops).
                         self._der_route_subloop_children(
                             _children, queue, _session, _turn_id
                         )

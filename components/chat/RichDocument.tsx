@@ -495,7 +495,7 @@ export function RichDocument({
                   const mark = s.status ? _SOURCE_MARK[s.status] : undefined
                   return (
                     <li
-                      key={s.url}
+                      key={`${i}-${s.url}`}
                       className="text-[9px] leading-tight flex items-baseline gap-1"
                       style={mark ? { opacity: mark.dim } : undefined}
                     >
