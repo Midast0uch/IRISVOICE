@@ -680,6 +680,50 @@ Enforcement today: `tool_choice`, `escalate_incomplete` and `needs_action` are o
 - **Rows below 100** (`click_safety`, `depth_route`, `done`, `presentation`, event consumers, `browser_next` precision): more live traffic, no code change.
 - Decision rows do not store the rendered `state`, so a row cannot be replayed against a changed frame; `web_intent` and `review_verdict` rows carry no `criteria_version`.
 
+### 7.5 Path to the bar for the label-defect consumers
+
+The method that took `needs_action` from 0 rows to enforced (section 4.1) applies to
+each of these. The order: (1) find the LIVE decision the consumer should own and its
+caller; (2) give it an OUTCOME label - something that happened outside the Oracle -
+instead of agreement with a rule; (3) make the question ask what the label measures;
+(4) replay the wording on 15-20 hand-labelled cases with real d1 before any live run;
+(5) stamp a new `criteria_version` and measure only that cohort (`--scope`); (6) earn
+the bar on eval traffic, write it scoped, switch it on, run the live gate. Never lower
+a bar clause to get there.
+
+- **`tool_approval` - make the question match its honest label.** The label "the
+  call succeeded" is clean and outside; the question "is this the right tool" is not
+  what it measures. Re-ask it as "Will this call succeed as written?" over the frame it
+  already has (goal, calls_this_step, step_facts-style facts, proposed tool, args,
+  never the call's own result). Its live decision is then a pre-call guard: on a
+  confident "it will fail" (an `edit_file` whose old text is not in the file, a guessed
+  URL, a missing path) the node asks the model to correct the call before it runs.
+  Imbalance: 91% of calls succeed, so the failures are the minority class (>= 5% holds).
+  Stamp `tool_approval/v4`.
+- **`depth_met` - an outcome label, or retire it.** Its reference, the loop grade, is
+  a deterministic rule over inputs the model never sees, so the Oracle cannot beat it
+  (AUROC 0.40 is the proof). The honest label is whether the TURN was actually right:
+  the eval verdict (pass/fail, hidden tests, missing facts) for eval turns, and a user
+  correction or a re-ask of the same request for live turns. Join it at turn end by
+  `turn_id` (`register_turn_pending` / `resolve_turn_pending` already do this for
+  sampled rows). Give the `judge_goal` frame the evidence first and the coverage
+  number, and keep `grade` out. If no outcome label is wired, retire `depth_met`: a
+  rule does this job exactly, which is the `tier0_classify` non-fit pattern.
+- **`web_intent` - label by what the turn needed.** Its live decision is the explorer's
+  "fetch from the web?" trigger (`explorer.py`). Label each row at turn end: True when
+  the turn ran a web tool (`search`, `crawler_query`, `browser_*`) that succeeded and
+  the reply passed (eval) or stood (live); False when the turn answered without the web
+  and passed. Requests that name a URL are True by rule, so the keyword list's blind
+  spot stops being label noise. The question already matches this label. Stamp
+  `web_intent/v2` (today's rows carry no `criteria_version`, so the new cohort is
+  separable only by the stamp).
+- **`review_verdict`** - raise the `judge_step` budget or render RECENT RESULTS before
+  STEP/OBJECTIVE, and keep the outcome label (`IRIS_ORACLE_REVIEW_OUTCOME`); its AUROC
+  0.6271 is close to 0.65.
+- **`narration`, `user_feedback`** - only ECE misses (0.0539, 0.0544 vs 0.05); more
+  rows usually settle it. `user_feedback` also needs adding to `CONSUMERS` before the
+  owner can switch it on.
+
 ---
 
 ## 8. Operations
