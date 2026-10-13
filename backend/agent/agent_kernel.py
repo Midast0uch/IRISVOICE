@@ -1492,7 +1492,7 @@ class AgentKernel:
         #   [AgentKernel._plan_task] router planning failed:
         #     No local model loaded for in-process inference
         # No plan means no DER, so the step consumers (review_verdict,
-        # sufficient, done, on_track, has_gaps, use_thinking, needs_action,
+        # sufficient, done, on_track, has_gaps, needs_action,
         # recovery_strategy) never ran and could never reach the Wave 7 bar no
         # matter how much traffic was driven. The manager is a process-wide
         # singleton, so attach it here instead of depending on load-time fan-out
@@ -1733,7 +1733,7 @@ class AgentKernel:
 
         REQ-14 AC14.1 / REQ-29 (T18, T46-T49). The monitor consumers
         (`sufficient`, `done`, `on_track`) and the surface consumers
-        (`has_gaps`, `use_thinking`, `escalate_incomplete`, `needs_action`) are
+        (`has_gaps`, `escalate_incomplete`, `needs_action`) are
         SHADOW: they must write a calibration row and change no decision.
 
         Why this method exists: the consumer modules emitted their rows to a
@@ -3604,30 +3604,7 @@ class AgentKernel:
             "given that",
             "assuming",
         ]
-        _lexical_thinking = any(trigger in t for trigger in THINKING_TRIGGERS)
-        # REQ-29 AC29.2 (T47): shadow-score `use_thinking`. The phrase list is
-        # RETAINED as the engine-unavailable fallback (AC29.7), and the user's
-        # explicit `concise`/`thorough` setting plus the social short-circuit
-        # above are untouched — those are rules, not heuristics to calibrate.
-        # Stage B (2026-10-05): the Oracle decides only through the chokepoint;
-        # otherwise the phrase list answers and the score runs on the lane.
-        try:
-            from backend.agent import surface_shadow as _ss
-            from backend.agent.decision_engine import decides, oracle_acts
-
-            _dec = decides("use_thinking") is not None
-            _value, _row = _ss.surface_bool(
-                "use_thinking", text,
-                brain_bool_fn=lambda: _lexical_thinking,
-                engine=_ss.AUTO_ENGINE,
-                # defer is ignored once enforced: a deciding consumer is waited for.
-                enforced=_dec, defer=True,
-                acts=lambda c: oracle_acts("use_thinking", c),
-            )
-            _ss.emit_row(_row)
-            return bool(_value)
-        except Exception:  # noqa: BLE001 — the phrase list is the fallback
-            return _lexical_thinking
+        return any(trigger in t for trigger in THINKING_TRIGGERS)
 
     @staticmethod
     def _parse_thinking(text: str) -> tuple:
@@ -17574,6 +17551,23 @@ Respond with a JSON object:
         from backend.agent import external_reference as _xr_mode
 
         item.mode = _xr_mode.mode_for_goal(goal, self._turn_sources())
+        # `needs_action` may move a REACT step to DIRECT (no tool loop) once the
+        # owner switched it on AND it earned the bar; below its calibrated
+        # threshold, or with no engine, the rule's mode stands.
+        if item.mode != _xr_mode.DIRECT:
+            try:
+                from backend.agent import decision_engine as _de_na
+                from backend.agent import surface_shadow as _ss_na
+
+                if _de_na.decides("needs_action") is not None:
+                    _na = _ss_na.score_surface_bool("needs_action", goal, engine=_ss_na.AUTO_ENGINE)
+                    if _na is not None and not _na.true(0.5) and _de_na.oracle_acts(
+                            "needs_action", max(float(_na.probability), 1.0 - float(_na.probability))):
+                        logger.info("[DER] needs_action: step %s needs no tool (P(yes)=%.2f) - direct",
+                                    getattr(item, "step_id", "?"), float(_na.probability))
+                        item.mode = _xr_mode.DIRECT
+            except Exception as _na_exc:  # noqa: BLE001 - the rule's mode stands
+                logger.debug("[DER] needs_action consult skipped: %r", _na_exc)
         if item.mode == _xr_mode.DIRECT:
             return self._der_run_direct_node(item, goal, task)
         _menu = set(NODE_TOOLS) | (set(NODE_SCREEN_TOOLS) if _vision_relevant(goal) else set())
@@ -17844,6 +17838,24 @@ Respond with a JSON object:
         item.node_digest = params_digest("run_node", {"calls": [
             [str(c.get("tool") or ""), str(c.get("target") or "")] for c in (result.calls or [])
         ]})
+        # `needs_action` asks the question the DIRECT/REACT mode rule answers
+        # (mode_for_goal): does this goal need a tool call? This node ran the
+        # tool loop, so its OUTCOME labels it: a call that worked = a tool was
+        # needed; done with zero calls = it was not (live g04: such steps paid
+        # a full tool-loop call for nothing). Ambiguous outcomes get no row.
+        # Scored on the shadow lane after the step - never on the answer path.
+        try:
+            _calls = result.calls or []
+            _label = (True if any(c.get("ok") for c in _calls)
+                      else False if (not _calls and result.success) else None)
+            if _label is not None:
+                from backend.agent import surface_shadow as _ss_na
+
+                _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
+                                      True, None, "needs_action/v1",
+                                      outside_label=_label)
+        except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
+            logger.debug("[DER] needs_action row skipped: %r", _na_exc)
         return result.as_step_result(), result.success
 
     def _der_run_step_execution(

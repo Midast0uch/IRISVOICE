@@ -1,7 +1,7 @@
 """Contract pin: the shadow-consumer row sink (REQ-14 AC14.1, REQ-29; T18, T46-T49).
 
 Why this contract exists. The monitor consumers (`sufficient`, `done`,
-`on_track`) and the surface consumers (`has_gaps`, `use_thinking`,
+`on_track`) and the surface consumers (`has_gaps`,
 `escalate_incomplete`, `needs_action`) are SHADOW: each must WRITE a
 calibration row and change no decision. Their modules emit that row to a
 module-level sink (`monitor_shadow.set_row_sink` / `surface_shadow.set_row_sink`).

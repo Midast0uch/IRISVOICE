@@ -98,7 +98,8 @@ def _web_intent_row(p, keyword):
 @pytest.mark.parametrize("make_row", [
     pytest.param(lambda p: monitor_row("sufficient", _Noul(p), brain_bool=False),
                  id="monitor_shadow"),
-    pytest.param(lambda p: surface_row("use_thinking", _Noul(p), brain_bool=False),
+    # needs_action replaces the removed use_thinking (2026-10-13): same row shape.
+    pytest.param(lambda p: surface_row("needs_action", _Noul(p), brain_bool=False),
                  id="surface_shadow"),
     pytest.param(lambda p: _web_intent_row(p, keyword=False), id="explorer_web_intent"),
 ])
@@ -172,7 +173,7 @@ class TestLoadRows:
     def test_the_binary_set_is_read_from_the_engine_specs(self):
         b = binary_consumers()
         # `on_track` and `has_gaps` were removed 2026-10-05 (Stage B, owner-approved).
-        assert {"sufficient", "done", "use_thinking",
+        assert {"sufficient", "done",
                 "escalate_incomplete", "needs_action", "depth_met",
                 WEB_INTENT_CONSUMER} <= b
         assert not ({"on_track", "has_gaps"} & b)

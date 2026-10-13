@@ -4,7 +4,6 @@ Choice-shaped Brain decisions that the §8.4 wiring survey missed. Each is a
 BOOLEAN question the common case answers negatively, and each currently costs a
 Brain call or a keyword list:
 
-  ``use_thinking``        the ~40-phrase thinking trigger list
   ``escalate_incomplete`` the incomplete-result keyword list that escalates
   ``needs_action``        the heuristics that gate the engine's OWN NONE commit
 
@@ -43,13 +42,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 logger = logging.getLogger("surface_shadow")
 
 SURFACE_CONSUMERS: Dict[str, str] = {
-    "use_thinking": (
-        "Does this request need extended step-by-step reasoning?"
-    ),
     "escalate_incomplete": (
         "Is this step result too incomplete to proceed without more work?"
     ),
-    "needs_action": "Does this goal require calling a tool?",
+    "needs_action": (
+        "Does this step need to use a tool such as the browser, a file, "
+        "a web search or a command?"
+    ),
     # Session 364 (owner request). The DEPTH question, anchored to the task's
     # success criteria: `sufficient`/`done` ask whether the objective is
     # COVERED, this asks whether it is done to the DEPTH the criteria require.
@@ -286,7 +285,8 @@ def surface_bool(
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,
                    brain_bool: Optional[bool], frame: Optional[dict],
                    criteria_version: Optional[str] = None,
-                   scope: Optional[Dict[str, str]] = None) -> None:
+                   scope: Optional[Dict[str, str]] = None,
+                   outside_label: Optional[bool] = None) -> None:
     """Score + emit one shadow row on the ``oracle_shadow`` lane. Values are
     bound now (the statement, the frame, the legacy answer, the scope ids), so
     the row pairs what THIS call saw. Never raises; a full lane is counted by
@@ -299,6 +299,9 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
         row = shadow_row(consumer_id, noul, brain_bool=brain_bool, scope=_scope)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
+        if row is not None and outside_label is not None:
+            row["outside_label"] = bool(outside_label)
+            row["label_source"] = "outcome"
         emit_row(row)
 
     try:

@@ -4230,6 +4230,14 @@ class LocalModelManager:
             # NOT added to the legacy llama_cpp.server path below — that
             # branch is CPU-bound and only kept for pre-flight protection.
             cmd += ["--no-warmup"]
+            # The d1 Oracle/vision server: no host-RAM prompt cache. Oracle
+            # prompts share ~4 tokens (lcp = 4), so the cache never paid, yet it
+            # kept EVERY prompt (default 8192 MiB): after a 2026-10-13 eval run
+            # 592 prompts / 1.6 GB, each decision spent 240-380 ms on the cache
+            # update (3-6 ms after boot) and the per-request cache listing wrote
+            # ~10 MB/min into the backend log on the HDD.
+            if "d1-3b" in Path(str(model_path)).name.lower():
+                cmd += ["--cache-ram", "0"]
             if params.get("n_ctx"):
                 cmd += ["--ctx-size", str(params["n_ctx"])]
             if params.get("n_batch"):

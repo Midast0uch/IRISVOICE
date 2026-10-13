@@ -1,12 +1,9 @@
-"""Behavioural tests: the `use_thinking` consumer (REQ-29 AC29.2, T47).
+"""Behavioural tests: `AgentKernel._needs_thinking` (the phrase-list heuristic).
 
-AC29.2 — a `use_thinking` bool consumer shadowing the phrase list, with the
-list retained as the engine-unavailable fallback (AC29.7).
-
-The site is `AgentKernel._needs_thinking` (`agent_kernel.py:2365`; the spec's
-`_should_use_thinking` name is stale). The user's explicit `concise`/`thorough`
-setting and the social short-circuit are RULES, not heuristics — they are
-untouched and are asserted here so a future edit cannot quietly score them.
+The `use_thinking` Oracle consumer was REMOVED (owner decision, 2026-10-13: models
+think natively). The phrase list is the only answer. The user's explicit
+`concise`/`thorough` setting and the social short-circuit are RULES, not
+heuristics — they are asserted here so a future edit cannot quietly change them.
 """
 
 from __future__ import annotations
@@ -50,67 +47,20 @@ def _install(monkeypatch, engine):
 
 
 class TestUseThinking:
-    def test_use_thinking_shadow_and_fallback(self, monkeypatch, rows):
-        """AC29.2/AC29.7: shadow scores the phrase-list verdict; with no engine
-        the phrase list is the answer, byte-identical to today."""
-        # (a) engine available and AGREEING: the phrase list still decides.
-        engine = _Eng(p=0.93)
-        _install(monkeypatch, engine)
-        k = _kernel()
-
-        assert k._needs_thinking(
-            "why does the sky look blue during the day") is True
-        # Stage B (2026-10-05): the shadow score runs on the oracle_shadow lane.
-        from backend.utils.durability_queue import lane
-
-        assert lane("oracle_shadow").flush(10.0)
-        assert engine.seen == ["use_thinking"]
-        assert rows and rows[0]["consumer_id"] == "use_thinking"
-        assert rows[0]["brain_bool"] is True
-
-        # (b) engine UNAVAILABLE: the phrase list is the fallback (AC29.7).
-        rows.clear()
-
-        def _dead():
-            raise RuntimeError("engine dead")
-
-        monkeypatch.setattr(
-            "backend.agent.decision_engine.get_decision_engine", _dead)
-
-        assert k._needs_thinking(
-            "why does the sky look blue during the day") is True
-        assert k._needs_thinking("what time is it") is False
-        assert rows == [], "a dead engine must not fabricate a row"
-
     def test_a_plain_question_still_skips_thinking(self, monkeypatch, rows):
-        """The shadow must not turn every message into a thinking request."""
+        """A plain question must not turn into a thinking request."""
         _install(monkeypatch, _Eng(p=0.97))
         k = _kernel()
         assert k._needs_thinking("what time is it") is False
 
-    def test_explicit_style_settings_are_not_scored(self, monkeypatch, rows):
-        """`concise` / `thorough` are user RULES — the engine must not be
-        consulted, so no row is produced for them."""
-        engine = _Eng(p=0.99)
-        _install(monkeypatch, engine)
-
+    def test_explicit_style_settings_are_rules(self):
+        """`concise` / `thorough` are user RULES: they answer whatever the text says."""
         assert _kernel("concise")._needs_thinking("why?") is False
         assert _kernel("thorough")._needs_thinking("hi") is True
 
-        assert engine.seen == [], (
-            "an explicit user setting was shadow-scored — it is a rule, not a "
-            "heuristic to calibrate"
-        )
-        assert rows == []
-
-    def test_the_social_short_circuit_is_not_scored(self, monkeypatch, rows):
-        """A short social message is a hard rule, not a calibration target."""
-        engine = _Eng(p=0.99)
-        _install(monkeypatch, engine)
-
+    def test_the_social_short_circuit_is_a_rule(self):
+        """A short social message is a hard rule, not a phrase-list match."""
         assert _kernel()._needs_thinking("how are you") is False
-        assert engine.seen == []
-        assert rows == []
 
     def test_a_dead_engine_matches_the_phrase_list_exactly(
         self, monkeypatch, rows,

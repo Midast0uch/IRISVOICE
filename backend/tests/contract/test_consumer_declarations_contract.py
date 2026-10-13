@@ -154,7 +154,8 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     assert de.CONSUMER_JOBS["tool_approval"] == "approve"
     # 19 - 2 dead + 1 new + 1 tool_approval - 1 mode (owner removal, 2026-10-10)
     # + 1 browser_next (2026-10-11, now with a call site)
-    assert len(de.CONSUMER_JOBS) == 19
+    # - 1 use_thinking (owner removal, 2026-10-13)
+    assert len(de.CONSUMER_JOBS) == 18
     assert "mode" not in de.CONSUMER_JOBS
 
 
@@ -188,4 +189,5 @@ def test_consumers_grew_by_exactly_two():
     the scoring site and its tests all changed in the SAME commit), so the
     declared set is not left half-changed."""
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {"depth_route", "call_closing"}
-    assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {"mode"}   # owner-directed removal
+    # owner-directed removals: `mode` (2026-10-10) and `use_thinking` (2026-10-13)
+    assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {"mode", "use_thinking"}

@@ -39,7 +39,8 @@ class TestBarRecordedPerConsumer:
         measured = {
             "tool_choice": {"rows": 500, "precision": 0.96, "ece": 0.01},
             "has_gaps": {"rows": 40, "precision": 0.93, "ece": 0.02},
-            "use_thinking": {"rows": 200, "precision": 0.88, "ece": 0.02},
+            # The precision-gap case (was use_thinking, removed 2026-10-13).
+            "depth_met": {"rows": 200, "precision": 0.88, "ece": 0.02},
             "needs_action": {"rows": 200, "precision": 0.95, "ece": 0.11},
         }
         record = record_bars(
@@ -62,9 +63,9 @@ class TestBarRecordedPerConsumer:
 
         # Each shadow one names the clause it missed — no silent shadow.
         assert "rows 40" in record["has_gaps"].gap
-        assert "precision" in record["use_thinking"].gap
+        assert "precision" in record["depth_met"].gap
         assert "ECE" in record["needs_action"].gap
-        for cid in ("has_gaps", "use_thinking", "needs_action"):
+        for cid in ("has_gaps", "depth_met", "needs_action"):
             assert record[cid].status == "shadow"
 
         # And it is PERSISTED where the next run will read it.

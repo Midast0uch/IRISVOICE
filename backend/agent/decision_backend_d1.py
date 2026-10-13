@@ -111,7 +111,7 @@ _TIMEOUT_S = float(os.environ.get("IRIS_D1_TIMEOUT_S", "20"))
 # The NOUL readout vocabulary (prompt.py YES_FORMS/NO_FORMS): d1 was TRAINED
 # on yes/no questions in this exact shape ("Reply with yes or no only."),
 # not as a 2-option letter menu. Binary consumers (done/sufficient/depth_met/
-# escalate_incomplete/web_intent/use_thinking/needs_action/call_closing) arrive
+# escalate_incomplete/web_intent/needs_action/call_closing) arrive
 # as ["yes","no"] — render the native noul template for them (V1 probe:
 # 98.8%/96.5% polarity-correct).
 #

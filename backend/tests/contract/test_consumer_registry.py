@@ -19,7 +19,7 @@ from backend.agent.decision_engine import CONSUMERS
 _REPO = Path(__file__).resolve().parents[3]
 
 # `has_gaps` removed 2026-10-05 (Oracle Stage B, owner-approved): no live site.
-_SURFACE = ("use_thinking", "escalate_incomplete", "needs_action")
+_SURFACE = ("escalate_incomplete", "needs_action")
 _NON_FIT = "tier0_classify"
 
 

@@ -71,7 +71,7 @@ class TestAllFourSitesUnchangedWhenDead:
         assert _goal_needs_action("ponder the meaning of it all") is False
         assert _goal_needs_action("") is False
 
-        # ── site 2: use_thinking ───────────────────────────────────────────
+        # ── site 2: _needs_thinking (lexical heuristic; no consumer) ───────
         k = _kernel()
         for text in _THINKING:
             assert isinstance(k._needs_thinking(text), bool), text
@@ -102,8 +102,7 @@ class TestAllFourSitesUnchangedWhenDead:
     def test_every_site_is_opt_in_on_the_engine(self, dead_engine):
         """`engine=None` means NO ENGINE: the shadow must not adopt the
         singleton implicitly, or a unit test would load a 642MB model."""
-        for cid in ("has_gaps", "use_thinking", "escalate_incomplete",
-                    "needs_action"):
+        for cid in ("has_gaps", "escalate_incomplete", "needs_action"):
             assert ss.score_surface_bool(cid, "x", engine=None) is None, cid
 
     def test_the_surface_bool_helper_is_fail_safe(self, dead_engine):
@@ -112,8 +111,7 @@ class TestAllFourSitesUnchangedWhenDead:
         def _boom():
             raise ValueError("decider exploded")
 
-        for cid in ("has_gaps", "use_thinking", "escalate_incomplete",
-                    "needs_action"):
+        for cid in ("has_gaps", "escalate_incomplete", "needs_action"):
             value, row = ss.surface_bool(
                 cid, "x", brain_bool_fn=_boom, engine=ss.AUTO_ENGINE)
             assert value is False

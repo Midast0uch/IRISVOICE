@@ -116,13 +116,6 @@ class TestFlipOnlyOnTheMeasuredBar:
                                         "ece": 0.02})
         assert flipped.status == "enforced" and flipped.gap == ""
 
-        shadow = build_bar("use_thinking", {"rows": 40, "precision": 0.97,
-                                            "ece": 0.01})
-        assert shadow.status == "shadow"
-        assert "rows 40" in shadow.gap, (
-            "the missing clause must be recorded, not rounded up into a flip"
-        )
-
     def test_tg7_stands_when_config_unchanged(self):
         """AC31.6 (Decision C): an UNCHANGED configuration re-validates
         nothing — no settled flip is re-litigated."""

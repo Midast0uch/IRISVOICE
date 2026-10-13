@@ -160,7 +160,7 @@ class TestCtDe1Shapes:
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
             "mode", "web_intent",
-            "use_thinking", "escalate_incomplete", "needs_action",
+            "escalate_incomplete", "needs_action",
             # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
             # (no production caller since 2026-10-02) and `has_gaps` (no live
             # site) are REMOVED. Nothing else changed.

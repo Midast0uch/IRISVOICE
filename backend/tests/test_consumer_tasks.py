@@ -294,14 +294,6 @@ def _drive_web_intent(eng):
         "please grab that article for me", engine=eng, turn_key=object())
 
 
-def _drive_use_thinking(eng):
-    from backend.agent.agent_kernel import AgentKernel
-
-    k = AgentKernel.__new__(AgentKernel)
-    k._thinking_style = "balanced"
-    return k._needs_thinking("what is the capital city of France please tell")
-
-
 def _drive_escalate_incomplete(eng):
     from backend.agent.der_loop import DirectorQueue, ExecutionMode
 
@@ -351,7 +343,6 @@ def _drive_tool_choice(eng):
 # the Oracle acts, does the Oracle still SCORE (off path) when it does not decide
 SITES = {
     "web_intent": ("web_intent", _drive_web_intent, {}, False, True, True),
-    "use_thinking": ("use_thinking", _drive_use_thinking, {}, False, True, True),
     "escalate_incomplete": ("escalate_incomplete", _drive_escalate_incomplete,
                             {}, False, True, True),
     "needs_action": ("needs_action", _drive_needs_action, {}, False, True, True),
@@ -415,7 +406,7 @@ def test_deciding_below_the_calibrated_threshold_keeps_the_incumbent(
     path decides. Fails on the old code: web_intent acted at 0.85 >= 0.8,
     recovery_strategy at 0.85 >= 0.40, tool_choice at 0.85 >= its raw threshold,
     mode replaced the confidence; consumers that never acted on the old code
-    (use_thinking, escalate_incomplete, needs_action, sufficient) fail the
+    (escalate_incomplete, needs_action, sufficient) fail the
     chokepoint-was-asked assertion."""
     consumer, driver, kw, _r, _o, _s = SITES[site]
     chokepoint.enable([consumer], threshold=0.95)

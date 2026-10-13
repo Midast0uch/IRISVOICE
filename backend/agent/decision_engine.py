@@ -111,7 +111,6 @@ CONSUMERS: Tuple[str, ...] = (
     # producer (trailing_director.py) was deleted 2026-08-06, so it had no live
     # site. `tier0_classify` is a recorded NON-FIT and is deliberately absent
     # (AC29.5).
-    "use_thinking",
     "escalate_incomplete",
     "needs_action",
     # Session 364 (owner request): the DEPTH question, asked against the task's
@@ -284,7 +283,7 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               # "action | task: goal[:300]" (~400 chars); at 64 ids (256 chars)
               # the cap cut the task and, before v2's action-first order, the
               # action itself. The cap is a ceiling for the other guard
-              # consumers (needs_action, use_thinking), not a floor.
+              # consumer (needs_action), not a floor.
               ("goal",), 128, image_fields=("screenshot",)),
     OracleJob("judge_step", "did this step do its part?",
               ("goal",), 96),
@@ -333,7 +332,7 @@ CONSUMER_JOBS: Dict[str, str] = {
     # done_when, calls_this_step and the page head as last_result; the element
     # labels ride the option lines.
     "browser_next": "route",
-    "click_safety": "guard", "needs_action": "guard", "use_thinking": "guard",
+    "click_safety": "guard", "needs_action": "guard",
     "review_verdict": "judge_step",
     "escalate_incomplete": "judge_step",
     # REQ-10: the per-call closing question has its own job (AC10.7).
@@ -457,13 +456,12 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
         "true": "Too incomplete to proceed without more work",
         "false": "Complete enough to proceed",
     }),
+    # 2026-10-13 replay on real d1, 16 hand-labelled step goals: "requires
+    # calling a tool" 11/16 (it said NO to opening a URL, editing a file,
+    # listing a folder, saving a file); naming the tools 16/16.
     "needs_action": ConsumerDeclaration("noul", {
-        "true": "This goal requires calling a tool",
-        "false": "This goal needs no tool call",
-    }),
-    "use_thinking": ConsumerDeclaration("noul", {
-        "true": "This request needs extended step-by-step reasoning",
-        "false": "This request does not need extended reasoning",
+        "true": "Yes: it needs the browser, a file, a search or a command",
+        "false": "No: it only writes or reasons about information that is already available",
     }),
     "web_intent": ConsumerDeclaration("noul", {
         "true": "This request requires fetching information from the web",
