@@ -78,6 +78,8 @@ _SYSTEM = (
     "Rules:\n"
     "- Paths are relative to the project folder: `main.py`, `pkg/mod.py`.\n"
     "- Read a file before you change it.\n"
+    "- Create a file or folder only when the task asks for one; give findings "
+    "in your answer, not in a file.\n"
     "- Change an existing file with edit_file: `old` must be copied exactly from "
     "the file and match once. Use write_file only for a new file or a full rewrite.\n"
     "- When the step is about behaviour, run the tests with run_command and read "

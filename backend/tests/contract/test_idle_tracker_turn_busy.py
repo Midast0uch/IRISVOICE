@@ -11,6 +11,9 @@ Pinned:
   2. every turn (voice, chat, developer orchestrator) runs inside busy() -
      the decorator on AgentKernel.process_text_message, the one shared entry;
   3. the whisper warm-up waits on the tracker, not on a fixed sleep alone.
+  4. transport frames (pong, ping, heartbeat, frame acks) never reset the
+     idle clock, but a user message does (2026-10-13);
+  5. the distillation maintenance guard reads the same clock as should_run.
 """
 from __future__ import annotations
 
@@ -88,3 +91,68 @@ def test_boot_prewarm_waits_for_idle():
     )
     body = ast.unparse(fn)
     assert "is_idle(" in body, "the warm-up must wait for no turn in flight"
+
+
+def test_keepalives_do_not_reset_the_idle_clock(monkeypatch):
+    """Transport frames are not the user (measured 2026-10-13).
+
+    With the app open and unused, a "pong" every 30 s (720 overnight) reset
+    the idle clock, so the 10-min gate never opened and distillation never
+    ran. The gateway handler runs for real; only the tracker is a recorder
+    and the handler's own collaborators are stubs.
+    """
+    import asyncio
+    import logging
+    from unittest.mock import AsyncMock, MagicMock
+
+    import backend.core.idle_tracker as idle_mod
+    from backend.iris_gateway import IRISGateway
+
+    class _Recorder:
+        touches = 0
+
+        def touch(self):
+            self.touches += 1
+
+    rec = _Recorder()
+    monkeypatch.setattr(idle_mod, "get_idle_tracker", lambda: rec)
+
+    class _Gateway:
+        _main_loop = None
+        _logger = logging.getLogger("test_idle_tracker_turn_busy")
+
+        def __init__(self):
+            self._send_error = AsyncMock()
+            self._handle_chat = AsyncMock()
+            self._touch_session = MagicMock()
+            self._ws_manager = MagicMock(
+                send_to_client=AsyncMock(), handle_pong=AsyncMock()
+            )
+
+    gw = _Gateway()
+
+    def _touches_for(message):
+        before = rec.touches
+        asyncio.run(IRISGateway.handle_message(gw, "client-1", message, session_id="s-1"))
+        return rec.touches - before
+
+    for kind in ("pong", "ping", "heartbeat", "chat_heartbeat", "takeover_frame_ack"):
+        assert _touches_for({"type": kind}) == 0, f"{kind} reset the idle clock"
+    assert _touches_for({"type": "text_message", "payload": {"text": "hi"}}) == 1, (
+        "a user message must reset the idle clock"
+    )
+
+
+def test_maintenance_guard_reads_the_shared_idle_clock():
+    """The mycelium-maintenance guard must read the clock should_run reads
+    (idle_minutes -> IdleTracker). The old guard read self._last_activity,
+    which only start() and record_activity() set, and nothing calls
+    record_activity - so it measured uptime, not idleness."""
+    src = (_BACKEND / "memory" / "distillation.py").read_text(encoding="utf-8")
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_distillation"
+    )
+    body = ast.unparse(fn)
+    assert "self.idle_minutes >= self.config.idle_threshold_minutes" in body
+    assert "time.time() - self._last_activity" not in body

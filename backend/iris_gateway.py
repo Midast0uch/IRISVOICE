@@ -123,6 +123,11 @@ _RE_EMOJI = re.compile(
 # grant expires and the agent may act again (a forgotten hand-back must not
 # stall the agent forever).
 _USER_CONTROL_MS = 600_000
+# WS messages that keep the connection or the live view going without the user
+# doing anything: they must not reset the idle clock (handle_message).
+_TRANSPORT_MESSAGE_TYPES = frozenset({
+    "ping", "pong", "heartbeat", "chat_heartbeat", "takeover_frame_ack",
+})
 _RE_MD_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _RE_MD_BULLET = re.compile(r"^\s*[-*•]\s+", re.MULTILINE)
 _RE_MD_BOLD = re.compile(r"\*\*(.*?)\*\*")
@@ -664,12 +669,18 @@ class IRISGateway:
                 pass
 
         try:
-            # Touch the idle tracker on every incoming message so background workers
+            # Touch the idle tracker on every USER message so background workers
             # (distillation, retention, MCP health checks) know the user is active.
+            # Keep-alives and frame acks are the transport, not the user: with
+            # the app open and unused, a "pong" every 30 s (720 overnight,
+            # 2026-10-13) kept the 10-min idle gate shut, and distillation -
+            # the one writer that can mature the coordinate graph - never ran.
             try:
-                from backend.core.idle_tracker import get_idle_tracker
+                if not (isinstance(message, dict)
+                        and message.get("type") in _TRANSPORT_MESSAGE_TYPES):
+                    from backend.core.idle_tracker import get_idle_tracker
 
-                get_idle_tracker().touch()
+                    get_idle_tracker().touch()
             except Exception:
                 pass  # never block message processing on tracker failure
 

@@ -856,8 +856,9 @@ export function TurnView({
             </div>
           )}
 
-          {/* Feedback action bar (personal mode only; see the header note above) */}
-          {!isDeveloper && (
+          {/* Feedback action bar (personal mode only; see the header note above).
+              Not on a running turn that has no words yet: copy / speak / rate of "" is an empty bubble with buttons. */}
+          {!isDeveloper && !(isStreaming && !message.text.trim()) && (
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
             {/* Icon-only, like every other action here. The
                 "Copy"/"Copied!" label was the one text button

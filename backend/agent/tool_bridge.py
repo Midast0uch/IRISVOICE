@@ -1381,6 +1381,11 @@ class AgentToolBridge:
 
         _diff_before = None
         if server_name == "file_manager":
+            if tool_name in self._CREATE_TOOLS:
+                params, _not_saved = await self._folder_for_new_file(
+                    params, session_id, tool_name)
+                if _not_saved is not None:
+                    return _not_saved
             params = self._anchor_file_paths(params, session_id)
             if tool_name in ("read_file", "list_directory"):
                 params = {k: (self._self_edit_view(v, session_id)
@@ -1605,6 +1610,95 @@ class AgentToolBridge:
         finally:
             click_safety.ACT_CONTEXT.reset(_act_tok)
 
+    def _live_turn_id(self, session_id: str) -> str:
+        """The LIVE turn id for a question card, else the session id.
+
+        Audit 2026-09-22 (F1, reply-surface-contract REQ-11): the frontend
+        anchors a question card to its message turn (chat-view.tsx join on
+        message.id / message.turn_id); a session id never matches, so questions
+        fell to the bottom block and turn-supersession never fired."""
+        try:
+            from backend.agent.agent_kernel import get_agent_kernel
+
+            _conv_id = self._active_conversation_id.get(session_id) or "default"
+            _kernel = get_agent_kernel(_conv_id, session_id)
+            return getattr(_kernel, "_current_turn_id", None) or session_id
+        except Exception:  # noqa: BLE001 — never block a question on it
+            return session_id
+
+    # Personal mode, no folder chosen: a new file or folder would land in IRIS's
+    # own app folder (the backend's cwd). Live 2026-10-12: a browsing task wrote
+    # temp/einstein_info.txt into the IRIS repo. The user is asked where instead.
+    _CREATE_TOOLS = ("write_file", "create_directory")
+
+    async def _folder_for_new_file(self, params: Dict, session_id: str, tool_name: str):
+        """``(params, None)`` to go on (possibly re-pointed into the folder the
+        user chose), or ``(None, result)`` when nothing is written."""
+        from backend.capabilities import CapabilitySet
+
+        self.__init_bridge_state__()
+        if CapabilitySet.is_developer() or self._session_workdirs.get(session_id):
+            return params, None  # developer mode edits IRIS; a bound folder anchors
+        key = next((k for k in self._FILE_PATH_KEYS
+                    if isinstance(params.get(k), str) and params[k].strip()), None)
+        if key is None:
+            return params, None
+        target = os.path.abspath(params[key])
+        if not self._path_under(target, self._DEFAULT_REPO):
+            return params, None  # the user's own location: write there
+        name = os.path.basename(target.rstrip("\\/")) or "the file"
+        # A "no" holds for the rest of the turn. Live 2026-10-13: after "Don't
+        # save it" the next step asked again for the same file and waited out
+        # the full 120 s question window.
+        turn_id = self._live_turn_id(session_id)
+        if getattr(self, "_save_declined", {}).get(session_id) == turn_id:
+            return None, {"success": False, "error": (
+                "Not saved: the user already chose not to save files in this "
+                "turn. Give the result in the reply instead.")}
+        from pathlib import Path
+
+        from backend.agent.tools.ask_user_tool import get_ask_user_tool
+
+        suggested = str(Path.home() / "Documents" / "IRIS")
+        new_folder = f"New folder: {suggested}"
+        tool = get_ask_user_tool()
+        question = tool.ask(
+            text=(f'IRIS wants to save "{name}", and no folder is chosen. '
+                  f"Where should it go? (Type another folder to use that one.)"),
+            options=[new_folder, "Don't save it"],
+            allow_other=True,
+            turn_id=turn_id,
+            conversation_id=self._active_conversation_id.get(session_id) or None,
+            session_id=session_id,
+        )
+        resolved = await asyncio.to_thread(tool.wait_for_answer, question)
+        answer = str(resolved.answer or "").strip() if resolved.status == "answered" else ""
+        if not answer or answer.lower().startswith("don"):
+            # Bounded: one entry per session, overwritten each turn.
+            if not hasattr(self, "_save_declined"):
+                self._save_declined = {}
+            self._save_declined[session_id] = turn_id
+            logger.info("[ToolBridge] session=%s %s %r not saved (%s)", session_id,
+                        tool_name, name, "declined" if answer else resolved.status)
+            return None, {"success": False, "error": (
+                "Not saved: no folder is chosen and the user "
+                + ("chose not to save it." if answer else "did not answer.")
+                + " Give the result in the reply instead.")}
+        folder = suggested if answer == new_folder else os.path.expanduser(answer)
+        if not os.path.isabs(folder):
+            folder = os.path.join(suggested, folder)
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as exc:
+            return None, {"success": False, "error": f"Could not create {folder}: {exc}"}
+        # The answer holds for the rest of this session: later files go there too.
+        self.set_session_workdir(session_id, folder)
+        moved = dict(params)
+        moved[key] = os.path.join(folder, os.path.relpath(target, self._DEFAULT_REPO))
+        logger.info("[ToolBridge] session=%s %s -> %s (user's folder)",
+                    session_id, tool_name, moved[key])
+        return moved, None
+
     async def _handle_ask_user_question(self, params: Dict, session_id: str) -> Dict:
         """Handle the ask_user_question tool — ask user, wait for answer.
 
@@ -1623,25 +1717,7 @@ class AgentToolBridge:
             if not text:
                 return {"success": False, "error": "Question text is required"}
 
-            # Audit 2026-09-22 (F1, reply-surface-contract REQ-11): the question
-            # must carry the LIVE turn id, not the WS session id — the frontend
-            # anchors the card to its message turn (chat-view.tsx join on
-            # message.id / message.turn_id), and a session id never matches, so
-            # questions fell to the bottom block and turn-supersession never
-            # fired. Fall back to session_id only outside a known turn.
-            _turn_id = session_id
-            try:
-                from backend.agent.agent_kernel import get_agent_kernel
-
-                _conv_id = (
-                    self._active_conversation_id.get(session_id) or "default"
-                )
-                _kernel = get_agent_kernel(_conv_id, session_id)
-                _turn_id = (
-                    getattr(_kernel, "_current_turn_id", None) or session_id
-                )
-            except Exception:  # noqa: BLE001 — never block a question on it
-                pass
+            _turn_id = self._live_turn_id(session_id)
 
             # T14 (REQ-13): park-and-continue. When the caller passes
             # non_blocking=True (with optional parked_url/run_id), the question
@@ -1678,8 +1754,10 @@ class AgentToolBridge:
                 session_id=session_id,
             )
 
-            # Wait for answer (this blocks until user responds or timeout)
-            resolved = tool.wait_for_answer(question)
+            # Wait for the answer on a worker thread: wait_for_answer polls
+            # with time.sleep for up to the question timeout (120 s), which
+            # held this event loop for the whole wait.
+            resolved = await asyncio.to_thread(tool.wait_for_answer, question)
 
             if resolved.status == "answered":
                 return {

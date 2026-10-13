@@ -218,10 +218,19 @@ export function Timeline({
     const lt = liveTurnById.get(m.id) ?? (m.turn_id ? liveTurnById.get(m.turn_id) : undefined)
     return askCardOf.has(m.id) || (!!m.turn_id && askCardOf.has(m.turn_id)) || (!!lt && askCardOf.has(lt.id))
   }
-  const messageTurnIds = React.useMemo(
-    () => new Set(messages.flatMap((m) => (m.turn_id ? [m.id, m.turn_id] : [m.id]))),
-    [messages],
-  )
+  // The messages the turn DRAWS, not the stored ones: a live turn that has not streamed yet
+  // is a placeholder message (mergeLiveTurns) that is only in the render timeline, and it
+  // carries the turn's ask row. Reading the stored messages left the legacy card up beside it
+  // (live 2026-10-13: one question showed twice, as a card in the turn and as "Asking You").
+  const messageTurnIds = React.useMemo(() => {
+    const s = new Set<string>()
+    for (const e of renderTimeline) {
+      if (e.kind !== 'message') continue
+      s.add(e.message.id)
+      if (e.message.turn_id) s.add(e.message.turn_id)
+    }
+    return s
+  }, [renderTimeline])
   // Hide the legacy card of an ask ONLY when the turn really shows it (a card or a message).
   const shownAskIds = React.useMemo(() => {
     const s = new Set<string>()

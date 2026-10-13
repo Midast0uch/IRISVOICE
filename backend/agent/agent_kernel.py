@@ -7267,6 +7267,15 @@ class AgentKernel:
                     _base += float(PERMISSION_TIMEOUT_SIDE_EFFECT) + 15.0
             except Exception:
                 pass  # permission read must never break the deadline
+            # A new file with no folder chosen asks the user where to save it
+            # (tool_bridge._folder_for_new_file): that wait is not execution.
+            if (tool or "").lower() in ("write_file", "create_directory"):
+                try:
+                    from backend.agent.tools.ask_user_tool import ASK_USER_QUESTION_TIMEOUT
+
+                    _base += float(ASK_USER_QUESTION_TIMEOUT) + 15.0
+                except Exception:
+                    pass
             return _base
         except Exception:
             return 90.0

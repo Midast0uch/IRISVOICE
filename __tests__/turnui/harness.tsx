@@ -135,12 +135,14 @@ export interface MountOpts {
   pendingQuestions?: Map<string, unknown>
   setExpandedDocId?: jest.Mock
   conversationId?: string
+  /** The turn has not streamed a message yet: its reply is only the live placeholder (in the render timeline, not in the stored messages). */
+  placeholder?: boolean
 }
 
 /** The real Timeline, fed one turn: its prompt, the assistant message (id = turn id) and optionally its card. */
 export function mountTimeline(o: MountOpts) {
   const user = { id: "u1", text: "fix the cap", sender: "user", timestamp: new Date(1000) }
-  const reply = { id: TURN, turn_id: TURN, text: o.turn.text || "On it.", sender: "assistant", timestamp: new Date(2000) }
+  const reply = { id: TURN, turn_id: TURN, text: o.placeholder ? "" : o.turn.text || "On it.", sender: "assistant", timestamp: new Date(2000) }
   const entries: any[] = [
     { kind: "message", ts: 1000, message: user, index: 0 },
     { kind: "message", ts: 2000, message: reply, index: 1 },
@@ -150,7 +152,7 @@ export function mountTimeline(o: MountOpts) {
     id: o.conversationId ?? CONV,
     title: "t",
     preview: "",
-    messages: [user, reply],
+    messages: o.placeholder ? [user] : [user, reply],
     documents: (o.documents ?? []) as any[],
     timestamp: new Date(),
     isPinned: false,
@@ -181,7 +183,12 @@ export function mountTimeline(o: MountOpts) {
     activeConversationId: conv.id,
     anchoredQuestionIds: new Set<string>(),
     pendingQuestions: o.pendingQuestions ?? new Map(),
-    questionCardFor: (q: { questionId: string; text: string }) => <div key={q.questionId} data-legacy-question={q.questionId}>{q.text}</div>,
+    questionCardFor: (q: { questionId: string; text: string; options?: string[] }) => (
+      <div key={q.questionId} data-legacy-question={q.questionId}>
+        {q.text}
+        {(q.options ?? []).map((o) => <button key={o} type="button">{o}</button>)}
+      </div>
+    ),
     liveTurnById: new Map([[o.turn.id, o.turn]]),
     taskProgress: { turnId: undefined, steps: [], currentStep: 0, totalSteps: 0, isWorking: false, cards: [] },
     crawlState: { sources: [] },

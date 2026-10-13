@@ -350,6 +350,32 @@ describe.each(MODES)("a question waits in the turn — %s mode", (_m, isDevelope
     expect(rmQ).toHaveBeenCalledWith("q_1")
     expect(container.querySelector("[data-ask-receipt]")).toHaveTextContent("✓ Answered · Keep the reserve at 256? · Keep it")
   })
+
+  // Live 2026-10-13: one QUESTION_ASK (save "love_quotes.txt") showed twice in one turn: the ask
+  // inside the turn, and the legacy "Asking You" card under it. The turn had no stored message
+  // yet (only the live placeholder) and no task card, so nothing counted the turn as showing it.
+  it("one question shows ONCE while the turn is only a live placeholder (no stored message, no card)", () => {
+    const turn = turnOf([
+      startMsg(isDeveloper ? "developer" : "personal"),
+      questionAskPart({ question_id: "q_save", text: 'IRIS wants to save "love_quotes.txt"', options: ["New folder: C:\\Users\\midas\\Documents\\IRIS", "Don't save it"], allow_other: true }),
+    ])
+    const { container } = mountTimeline({
+      isDeveloper, turn, placeholder: true,
+      pendingQuestions: new Map([["q_save", { questionId: "q_save", text: 'IRIS wants to save "love_quotes.txt"', options: ["New folder: C:\\Users\\midas\\Documents\\IRIS", "Don't save it"], allowOther: true, timeoutSeconds: 120, turnId: TURN }]]),
+    })
+    expect(screen.getAllByRole("button", { name: "Don't save it" })).toHaveLength(1)
+    expect(container.querySelectorAll('[data-ask="q_save"]')).toHaveLength(1)
+    expect(container.querySelector('[data-legacy-question="q_save"]')).toBeNull()
+    // the countdown is the backend's 120 s
+    expect(container.querySelector("[data-ask-countdown]")).toHaveTextContent("2:00")
+  })
+
+  it("a running turn with no words yet has no copy / speak / rate row", () => {
+    const turn = turnOf([startMsg("personal")])
+    mountTimeline({ isDeveloper: false, turn, placeholder: true })
+    expect(screen.queryByTitle("Copy to clipboard")).toBeNull()
+    expect(screen.queryByTitle("Helpful response")).toBeNull()
+  })
 })
 
 describe("personal card: plain words", () => {

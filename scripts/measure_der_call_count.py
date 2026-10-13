@@ -1,224 +1,233 @@
-"""T3 (Wave 0) + Wave 1.5 evidence: per-turn LLM call count, 5-step FULL task.
+"""Per-turn DER call count and timing, measured from the backend log.
 
-Offline measurement of the DER loop's per-turn LLM call count on two task
-shapes:
+Replaces the batcher simulation removed with commits 5a62d45d and a645c2bc
+(2026-10-12). That script drove stub routers, so its numbers never came from a
+real turn. This script reads the log that the backend wrote during real turns
+and prints one row per DER turn:
 
-  no_splits   : 5 steps, all verified
-  with_splits : 5 steps, step 3 FAILS -> _split_step -> 3 sub-loop children
+  wall     text_message -> DER response, seconds (the turn time)
+  1st      text_message -> first node start, seconds (planning and routing)
+  plan     planner model calls (_plan_task)
+  calls    node model calls (run_node)
+  tools    tool calls that ran: ok / FAILED
+  oracle   tool_choice Oracle decisions: enforced / decided
+  other    other Oracle decisions: count / total decision ms
+  nodes    nodes finished; zero = nodes that made no tool call
+  split    _split_step triggers; recov = critical-failure recoveries
+  card     task card suppressed / earned; shown = card rendered
+  slowest  slowest "[Timing] DER stage" in the turn
 
-Split children run as NODES (agent_kernel._der_route_subloop_children queues
-them; the batcher that once answered them with one text call is removed), so
-each child resolves with its own router.generate call. The with_splits shape
-must therefore cost MORE calls than no_splits - the children are real work.
+Why: turns must stay fast. These columns show where a slow turn spent its
+calls: planning, nodes that did no tool work, or splits. Only the log tail is
+read (seek from the end), so the cost stays bounded on a multi-GB log.
 
-The counting router wraps kernel._router and counts EVERY router.generate
-call: planner (_plan_task) and per-step resolve (tool_decision.py).
-Response discriminator:
-  user msg contains "tool-selection"    -> resolve call (return tool JSON)
-  otherwise                             -> planner call (return 5-step plan)
-
-Prints machine-readable [MEASURE] lines and exits 0/1.
+Usage:
+  python scripts/measure_der_call_count.py [--log logs/iris.log]
+         [--tail-mb 40] [--last 10] [--conv conv-1579]
+Exit 0 for a measurement run; 2 for bad arguments or a missing log.
 """
+import argparse
 import json
-import os
 import re
+import statistics
 import sys
+from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
 
-# Running as a script puts scripts/ on sys.path, not the repo root. Insert
-# the repo root so `import backend` resolves the same way pytest does.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-os.chdir(Path(__file__).resolve().parent.parent)
+REPO = Path(__file__).resolve().parent.parent
+MB = 1024 * 1024
+# Cheap substring filter, checked before the regexes below.
+KEYS = ("AgentKernel", "[DER", "[run_node]", "Oracle decide", "[Timing] DER stage")
 
-_PLAN_JSON = json.dumps({
-    "strategy": "do_it_myself",
-    "plan_title": "measure",
-    "reasoning": "measurement task",
-    "steps": [
-        {"step_id": "s1", "step_number": 1, "description": "step one",
-         "tool": None, "params": {}, "depends_on": [], "critical": True},
-        {"step_id": "s2", "step_number": 2, "description": "step two",
-         "tool": None, "params": {}, "depends_on": [], "critical": True},
-        {"step_id": "s3", "step_number": 3, "description": "step three",
-         "tool": None, "params": {}, "depends_on": [], "critical": True},
-        {"step_id": "s4", "step_number": 4, "description": "step four",
-         "tool": None, "params": {}, "depends_on": [], "critical": True},
-        {"step_id": "s5", "step_number": 5, "description": "step five",
-         "tool": None, "params": {}, "depends_on": [], "critical": True},
-    ],
-})
+RE_START = re.compile(r"\[Session: session_iris\] Processing message type: text_message")
+RE_CARD = re.compile(r"TASK_CARD ts=\S+ conv=(\S+) turn=(\S+) title='(.*)' steps=\d+")
+RE_RESPONSE = re.compile(r"\[AgentKernel\] DER response:")
+RE_NODE_START = re.compile(r"\[DER\] node start step=")
+RE_NODE_DONE = re.compile(r"\[DER\] node done step=")
+RE_PLAN_TOK = re.compile(r"\(real, source=_plan_task\)")
+RE_NODE_TOK = re.compile(r"\(real, source=run_node\)")
+RE_TOOL = re.compile(r"\[run_node\] conv=(\S+) .*? -> (ok|FAILED)\b")
+RE_ZERO = re.compile(r"\[run_node\] conv=(\S+) done[^:]*: 0 call\(s\)")
+RE_ORACLE = re.compile(r"Oracle decide consumer=(\S+)(?:.*decision_latency_ms=(\d+))?")
+RE_ENFORCED = re.compile(r"\[TOOL_DECISION\] Oracle decides tool=\S+ .*route=enforced")
+RE_SPLIT = re.compile(r"\[DER\] _split_step trigger=")
+RE_RECOV = re.compile(r"Critical-failure recovery -> split")
+RE_SUPP = re.compile(r"task card suppressed")
+RE_EARN = re.compile(r"task card earned at tool call")
+RE_SURF = re.compile(r"surface_decision ")
+RE_SHOWN = re.compile(r"surface_decision .*had_show=True")
+RE_STAGE = re.compile(r"\[Timing\] DER stage (.+?): ([\d.]+) ms")
 
-
-class _CountingRouter:
-    def __init__(self):
-        self.calls = 0
-        self.by_branch = {"planner": 0, "resolve": 0, "other": 0}
-
-    def generate(self, role_or_model, messages, tools=None, **kw):
-        self.calls += 1
-        user = "\n".join(
-            (m.get("content", "") or "") for m in (messages or [])
-            if m.get("role") == "user"
-        )
-        if "tool-selection" in user:
-            self.by_branch["resolve"] += 1
-            # Derive UNIQUE params from the goal so the kernel's dispatch
-            # dedup (tool+args hash) never flags a step as a duplicate call.
-            _gm = re.search(r"GOAL:\s*(.+)", user)
-            _goal = (_gm.group(1).strip() if _gm else f"step{self.calls}")
-            return (
-                json.dumps({
-                    "kind": "tool", "tool": "run_command",
-                    "params": {"cmd": f"pytest --run {_goal}"},
-                    "rationale": "m",
-                }),
-                "",
-                [],
-            )
-        self.by_branch["planner"] += 1
-        return (_PLAN_JSON, "", [])
+COLS = [("conv", 9), ("turn", 8), ("title", 30), ("wall", 6), ("1st", 6),
+        ("plan", 4), ("calls", 5), ("tools", 7), ("oracle", 7), ("other", 11),
+        ("nodes", 5), ("zero", 4), ("split", 5), ("recov", 5), ("card", 10),
+        ("shown", 5), ("slowest", 0)]
 
 
-def _build_kernel(router):
-    from backend.agent.agent_kernel import AgentKernel
-
-    k = AgentKernel.__new__(AgentKernel)
-    k._memory_interface = None
-    k._tool_bridge = None
-    k._reviewer = None
-    k._mcm_orch = None
-    k._trailing_director = None
-    k._der_task_class = "full"
-    k._der_completed_tools = []
-    k._der_work_units = 30000
-    k.conversation_id = "measure-conv"
-    k.session_id = "measure-session"
-    k._personality = None
-    k._caducean_modulate_temperature = lambda base, sid: base
-    k._get_failure_warnings = lambda text: "None"
-    k._build_planning_prompt = lambda **kw: "PLAN PROMPT"
-    k.resolve_context_window = lambda: 30000
-    k._router = router
-    k.infer = lambda prompt, **kw: SimpleNamespace(
-        raw_text=('{"kind": "tool", "tool": "run_command", '
-                  '"params": {"cmd": "pytest"}}')
-    )
-    k._der_live_cad_state = lambda sid: {"u": 0.2, "xi": 0.1, "x": 0.1, "y": 0.1}
-    k._der_ledger = MagicMock()
-    k._der_last_u_mag = 0.0
-    k._der_crawl_attempts = {}
-    k._cancel_requested = SimpleNamespace(is_set=lambda: False)
-    # Real _der_finalize_step re-verifies internally (agent_kernel.py:9122) and
-    # FORCES step_success=False if _verify_step_result returns "FAILED" — a real
-    # verifier would mark our stub outputs as failed and split every step.
-    # Stub it deterministically: the caller controls failure via the shape.
-    k._verify_step_result = lambda desc, exp, result, tool=None, success=True: (
-        "VERIFIED" if success else "FAILED"
-    )
-
-    async def _execute_tool(tool_name=None, params=None, **kw):
-        return {"success": True, "output": f"ran {tool_name} ok",
-                "tool_name": tool_name}
-
-    k._tool_bridge = SimpleNamespace(execute_tool=_execute_tool)
-    return k
+class Turn:
+    def __init__(self, start):
+        self.start = start
+        self.conv = None
+        self.turn = "-"
+        self.title = ""
+        self.lines = []  # (timestamp, message) for lines the report reads
 
 
-def _run_shape(router, with_splits):
-    """Drive the real DER loop for one shape; return calls."""
-    from backend.agent.agent_kernel import AgentKernel
-    from backend.agent.der_loop import DirectorQueue, QueueItem
-
-    # module-level registry stubs (smoke-test pattern) so the real
-    # ToolDecisionBox can validate run_command offline. The box is built by
-    # _get_tool_box (agent_kernel.py:8059) with get_registry_tools and
-    # validate_tool_call imported DIRECTLY from tool_registry, so stub that
-    # module (stubbing explorer's re-export is not enough).
-    import backend.agent.explorer as ex
-    import backend.agent.tool_registry as tr
-
-    ex.get_registry_tools = lambda: [
-        {"name": "run_command"}, {"name": "write_file"}]
-    tr.get_registry_tools = lambda: [
-        {"name": "run_command"}, {"name": "write_file"}]
-    tr.validate_tool_call = lambda tool, params: (
-        (True, None) if tool in ("run_command", "write_file")
-        else (False, "unknown tool")
-    )
-
-    k = _build_kernel(router)
-    ctx = SimpleNamespace()
-    plan = k._plan_task("do the five step thing", session_id=k.session_id)
-    steps = plan.steps
-    plan_ns = SimpleNamespace(
-        steps=steps, original_task="do the five step thing",
-        plan_title="measure",
-    )
-    queue = DirectorQueue(objective="measure")
-    items = []
-    for s in steps:
-        item = QueueItem(
-            step_id=s.step_id, step_number=s.step_number,
-            description=s.description, objective_anchor=plan.original_task,
-            depth_layer=0, expected_output="done",
-            tool=getattr(s, "tool", None), params=getattr(s, "params", {}),
-            critical=getattr(s, "critical", True),
-        )
-        queue.add_item(item)
-        items.append(item)
-
-    def _finalize(item, result, success):
-        k._der_finalize_step(
-            item=item, step_result=result, step_success=success,
-            step_outputs=[(item, result)], completed_items=[item],
-            _tokens_used=0, _token_budget=50000,
-            _session=k.session_id, _turn_id="turn-1", _phase=0,
-            is_mature=False, _live_ctx=None, plan=plan_ns,
-            context_package=ctx, queue=queue, verdict=MagicMock(),
-        )
-
-    for idx, item in enumerate(items):
-        res, ok = k._der_run_step_execution(
-            item, ctx, k.session_id, "turn-1", plan_ns
-        )
-        if with_splits and item.step_id == "s3":
-            _finalize(item, "FAILED: could not complete the step", False)
-        else:
-            _finalize(item, res, ok)
-
-    # Execute the sub-loop children the split routed into the queue. They
-    # carry no pre-seeded result -> each resolves (1 call).
-    for child in queue.items[len(items):]:
-        k._der_run_step_execution(child, ctx, k.session_id, "turn-1", plan_ns)
-
-    return router.calls, getattr(k, "_der_turn_calls", 0)
+def read_turns(path, tail_bytes):
+    """Return (turns, parsed_line_count) for the last tail_bytes of the log."""
+    turns, cur, parsed = [], None, 0
+    with path.open("rb") as f:
+        start = max(0, f.seek(0, 2) - tail_bytes)
+        f.seek(start)
+        if start:
+            f.readline()  # the seek landed inside a line; drop that partial line
+        for raw in f:
+            try:
+                obj = json.loads(raw)
+                when = datetime.fromisoformat(obj["timestamp"])
+                msg = obj["message"]
+            except (ValueError, KeyError, TypeError):
+                continue  # not a JSON log line
+            if not isinstance(msg, str):
+                continue
+            parsed += 1
+            if RE_START.search(msg):
+                if cur is not None:
+                    turns.append(cur)
+                cur = Turn(when)
+                continue
+            if cur is None or not any(k in msg for k in KEYS):
+                continue
+            cur.lines.append((when, msg))
+            if cur.conv is None:
+                m = RE_CARD.search(msg)
+                if m:
+                    cur.conv, cur.turn, cur.title = m.group(1), m.group(2), m.group(3)
+    if cur is not None:
+        turns.append(cur)
+    return turns, parsed
 
 
-def main():
-    # ---- Shape 1: no splits ---------------------------------------------
-    no_splits, der_calls = _run_shape(_CountingRouter(), with_splits=False)
-    print(f"[MEASURE] shape=no_splits calls={no_splits} der_calls={der_calls}")
+def measure(t):
+    def hits(rx):
+        return [m for m in (rx.search(msg) for _, msg in t.lines) if m]
 
-    # ---- Shape 2: with splits -------------------------------------------
-    with_splits, der_calls = _run_shape(_CountingRouter(), with_splits=True)
-    print(f"[MEASURE] shape=with_splits calls={with_splits} "
-          f"der_calls={der_calls}")
+    end = next((w for w, msg in t.lines if RE_RESPONSE.search(msg)), None)
+    first = next((w for w, msg in t.lines if RE_NODE_START.search(msg)), None)
+    tools = [m.group(2) for m in hits(RE_TOOL) if m.group(1) == t.conv]
+    oracle = hits(RE_ORACLE)
+    tool_dec = [m for m in oracle if m.group(1) == "tool_choice"]
+    other = [m for m in oracle if m.group(1) != "tool_choice"]
+    stages = [(float(m.group(2)), m.group(1)) for m in hits(RE_STAGE)]
+    if hits(RE_SUPP):
+        card = "suppressed"
+    elif hits(RE_EARN):
+        card = "earned"
+    else:
+        card = "-"
+    if hits(RE_SHOWN):
+        shown = "yes"
+    elif hits(RE_SURF):
+        shown = "no"
+    else:
+        shown = "-"
+    return {
+        "conv": t.conv, "turn": t.turn, "title": t.title,
+        "wall": (end - t.start).total_seconds() if end else None,
+        "first": (first - t.start).total_seconds() if first else None,
+        "plan": len(hits(RE_PLAN_TOK)),
+        "calls": len(hits(RE_NODE_TOK)),
+        "tool_n": len(tools), "ok": tools.count("ok"), "failed": tools.count("FAILED"),
+        "enforced": len(hits(RE_ENFORCED)), "decided": len(tool_dec),
+        "other_n": len(other),
+        "other_ms": sum(int(m.group(2)) for m in other if m.group(2)),
+        "nodes": len(hits(RE_NODE_DONE)),
+        "zero": sum(1 for m in hits(RE_ZERO) if m.group(1) == t.conv),
+        "split": len(hits(RE_SPLIT)), "recov": len(hits(RE_RECOV)),
+        "card": card, "shown": shown,
+        "slowest": max(stages, default=(0.0, "-")),
+    }
 
-    # ---- Assertion -------------------------------------------------------
-    # Split children are nodes: each resolves with its own call, so a split
-    # turn must cost more calls than a clean one.
-    print(f"[MEASURE] extra_calls_with_splits={with_splits - no_splits}")
 
-    ok = True
-    if not (with_splits > no_splits):
-        ok = False
-        print(f"[MEASURE] FAIL: with_splits({with_splits}) not above "
-              f"no_splits({no_splits}) - split children did not run as nodes")
+def _num(v, fmt):
+    return "-" if v is None else fmt.format(v)
 
-    print("T3_BASELINE_OK" if ok else "T3_BASELINE_FAIL")
-    return 0 if ok else 1
+
+def _cells(r):
+    return [
+        r["conv"], r["turn"][:8], r["title"].encode("ascii", "replace").decode()[:30],
+        _num(r["wall"], "{:.1f}"), _num(r["first"], "{:.1f}"),
+        r["plan"], r["calls"], f"{r['ok']}/{r['failed']}",
+        f"{r['enforced']}/{r['decided']}", f"{r['other_n']}/{r['other_ms']}ms",
+        r["nodes"], r["zero"], r["split"], r["recov"], r["card"], r["shown"],
+        f"{r['slowest'][1]} {r['slowest'][0]:.0f}ms",
+    ]
+
+
+def _line(cells):
+    return " ".join(f"{str(v):<{w}}" for (_, w), v in zip(COLS, cells)).rstrip()
+
+
+def _median(rows, key):
+    vals = [r[key] for r in rows if r[key] is not None]
+    return statistics.median(vals) if vals else None
+
+
+def _report(rows):
+    tot = {k: sum(r[k] for r in rows) for k in
+           ("ok", "failed", "enforced", "decided", "other_n", "other_ms",
+            "calls", "plan", "nodes", "zero", "split", "recov")}
+    print()
+    print(_line([name for name, _ in COLS]))
+    print(_line(["-" * w for _, w in COLS]))
+    for r in rows:
+        print(_line(_cells(r)))
+    print()
+    print(f"TOTALS over {len(rows)} turn(s): tools ok={tot['ok']} failed={tot['failed']}"
+          f" | oracle enforced={tot['enforced']}/decided={tot['decided']}"
+          f" | other={tot['other_n']} ({tot['other_ms']} ms)"
+          f" | planner={tot['plan']} node calls={tot['calls']}"
+          f" | nodes={tot['nodes']} zero-call={tot['zero']}"
+          f" | splits={tot['split']} recov={tot['recov']}"
+          f" | card suppressed={sum(r['card'] == 'suppressed' for r in rows)}"
+          f" earned={sum(r['card'] == 'earned' for r in rows)}"
+          f" shown={sum(r['shown'] == 'yes' for r in rows)}")
+    med = {k: _median(rows, k) for k in ("wall", "first", "plan", "calls", "tool_n", "nodes", "zero", "split")}
+    print("MEDIANS: wall={} s | 1st node={} s | planner={} | node calls={} | tools={}"
+          " | nodes={} | zero-call={} | splits={}".format(
+              *[_num(med[k], "{:.1f}") for k in ("wall", "first", "plan", "calls", "tool_n", "nodes", "zero", "split")]))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Per-turn DER call count and timing from the backend log.")
+    ap.add_argument("--log", type=Path, default=REPO / "logs" / "iris.log")
+    ap.add_argument("--tail-mb", type=float, default=40.0, help="log tail to read, in MB")
+    ap.add_argument("--last", type=int, default=10, help="show the last N DER turns")
+    ap.add_argument("--conv", default=None, help="show only this conversation id")
+    args = ap.parse_args(argv)
+    if not args.log.is_file():
+        print(f"missing log: {args.log}", file=sys.stderr)
+        return 2
+    if args.tail_mb <= 0 or args.last <= 0:
+        print("--tail-mb and --last must be positive", file=sys.stderr)
+        return 2
+
+    turns, parsed = read_turns(args.log, int(args.tail_mb * MB))
+    all_rows = [measure(t) for t in turns if t.conv]
+    rows = [r for r in all_rows if args.conv in (None, r["conv"])][-args.last:]
+    print(f"log: {args.log}  tail: {args.tail_mb:g} MB  json lines: {parsed}"
+          f"  text turns: {len(turns)}  DER turns: {len(all_rows)}")
+    print("legend: wall/1st seconds; plan = planner calls; calls = node model calls;"
+          " tools = ok/FAILED; oracle = tool_choice enforced/decided;"
+          " other = other Oracle decisions count/ms; zero = nodes with 0 tool calls;"
+          " recov = critical-failure recoveries; shown = card rendered")
+    if not rows:
+        print("no DER turns found in the tail (try a larger --tail-mb)")
+        return 0
+    _report(rows)
+    print(f"no task card (not DER): {len(turns) - len(all_rows)}"
+          f"  no DER response (cut off): {sum(r['wall'] is None for r in rows)}")
+    return 0
 
 
 if __name__ == "__main__":

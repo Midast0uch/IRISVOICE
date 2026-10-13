@@ -239,10 +239,12 @@ class DistillationProcess:
             await self._run_skill_crystallisation()
 
             # Mycelium maintenance sequence (Req 13.8–13.14)
-            # Guard: only run when idle ≥ DISTILLATION_IDLE_THRESHOLD seconds
-            idle_seconds = (time.time() - self._last_activity)
+            # Guard: only run while still idle - the SAME clock as should_run
+            # (self._last_activity is set at start and by record_activity,
+            # which nothing calls, so it measured uptime, not idleness).
             mycelium = getattr(self.memory, "_mycelium", None)
-            if mycelium is not None and idle_seconds >= 600:
+            if (mycelium is not None
+                    and self.idle_minutes >= self.config.idle_threshold_minutes):
                 await self._run_mycelium_maintenance(episodes, mycelium)
 
         except Exception as e:
