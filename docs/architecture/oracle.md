@@ -212,8 +212,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 A consumer is one decision point (one question asked at one place in the app).
 Each has an id, a declared decision type and criteria, and one job.
 
-`CONSUMERS` (the declared set, `decision_engine.py`) and the declaration table
-`CONSUMER_DECLARATIONS` give the type per consumer:
+`CONSUMER_DECLARATIONS` (`decision_engine.py`) declares the type of every consumer below. `CONSUMERS` is the smaller set of 14 ids the owner can switch on; `tool_approval`, `click_safety`, `browser_next`, `user_feedback` and the event consumers are declared but are not members of it.
 
 | Consumer | Job | Type | Incumbent that decides today | Where |
 |---|---|---|---|---|
@@ -238,8 +237,9 @@ Each has an id, a declared decision type and criteria, and one job.
 
 Rules of the registry:
 
-- A consumer with NO declared decision type is registered undeclared and the engine
-  REFUSES to score it. It never borrows another consumer's shape.
+- A consumer with NO declared decision type is registered undeclared and is never
+  scored: the engine logs it and the d1 backend refuses it (`decision_backend_d1.py`).
+  It never borrows another consumer's shape.
 - `event_type:<family>` consumers inherit the `event_family` declaration.
 - `REFUSED_CONSUMERS = {"call_closing"}`: never enforced, never sampled, never
   resolved to a threshold, whatever any flag says. It is asked only about calls that
@@ -304,7 +304,7 @@ mode the coding tools in `_DEV_MENU_ORDER` first; else registry order), then
 `DELEGATE` ("Not sure - let the model choose the tool") and `NONE` ("No tool - the step
 is already done"). Each option renders as `{code} {text}`; the text is the tool's
 decision line from `tool_registry.ORACLE_HINTS` - one short "when to choose it, with its
-precondition" line per tool (24 tools plus the two controls), for example `read_file`:
+precondition" line per tool (25 node tools plus the two controls), for example `read_file`:
 "Read a file that exists but is not read in this step". A tool with no hint falls back to
 the first sentence of its description (`oracle_hint`).
 
@@ -392,6 +392,8 @@ raises; a fault means "does not decide". One INFO line per process (and again if
 engine identity changes) names who decides and why each allow-listed consumer that
 does not, does not.
 
+**Threshold on the raw scale.** `EngineConfig.threshold_for(consumer)` serves callers that hold a RAW confidence (the evidence-prior cap, ledger rows, `recovery_strategy`/`depth_route` rows, the presentation surface). It reads an explicit per-consumer override, then `agent_config.yaml` `backend_thresholds` (retired backends only: `lfm2-350m-extract`, `gliner25-decide-onnx-int8`), then the fitted curve for the active decision identity through `oracle_calibration.raw_threshold`: the smallest raw confidence whose calibrated value clears the fitted threshold (`tool_choice` 0.6407 raw = 0.7902 calibrated). Before 2026-10-13 the last step did not exist: the yaml store has no d1 key, so every d1 row recorded threshold 1.01 and `ToolDecisionBox` logged a false "no threshold for the active backend" warning. Enforcement itself never read that store; it reads `decides()` / `oracle_acts()`. Guard: `test_raw_threshold_contract.py`.
+
 ### 3.7 The sampled rung
 
 Between shadow and enforced sits `sampled`: a bar status for a consumer that fails the
@@ -424,7 +426,7 @@ replace the incumbent on THIS consult:
 `OPTION_CEILING = 120` bounds any consumer's options (the code pool). `CANDIDATE_CAP_DEFAULT
 = 32` (and `agent_config.yaml` `oracle.constraints.candidate_cap: 32`, which overrides
 the code default) bounds the tool menu: up to 30 real tools plus `DELEGATE` and `NONE`.
-The node tool set (24 tools) plus the two controls fits whole. The cap is inside
+The node tool set (25 tools) plus the two controls fits whole (27 options); with the 5 screen tools the menu is exactly 32. The cap is inside
 `criteria_hash` and `calibrated_cap` is 32; a deployed cap that differs marks every
 threshold stale and enforcement is refused.
 
@@ -505,6 +507,8 @@ All must hold, and the first one missing is recorded as the gap:
 | 6 | distinct rows at or above the threshold | >= 50 (`MIN_ROWS_ABOVE`) |
 | 7 | out-of-fold calibrated ECE | <= 0.05 (`MAX_ECE`) |
 
+The report checks the clauses in this order and names the first one that fails: rows, both classes, minority share, AUROC, a threshold exists, rows at or above it, precision, Wilson bound, ECE.
+
 How the numbers are made:
 
 - **Distinct rows.** Rows with the same (consumer, engine, rounded confidence, chosen,
@@ -532,7 +536,7 @@ How the numbers are made:
   backend identity and under every consumer's decision identity. The calibration file is
   re-read when its mtime changes; the bar record is re-read on every `decides()` call. A
   new `--write` takes effect without a restart. The owner's allow-list is an environment
-  variable and needs a restart.
+  variable and needs a restart. Measure a consumer on its own cohort: `--scope tool_choice=tc-decide-v3` (the flag repeats for more consumers; a comma list is not supported). Unscoped, `tool_choice` blends the `tc-frame-*` parity rows with the decided rows and fails the bar (2026-10-13: 1977 rows, AUROC 0.6836, no threshold), so a `--write` without the scope would remove its enforced status.
 
 **Staying accurate as tools are added or changed.**
 
@@ -589,7 +593,7 @@ How the numbers are made:
 
 ## 7. Performance and measurables
 
-All figures are as of 2026-10-12.
+Figures in 7.1 are as of 2026-10-12 unless dated. Table 7.2 is the read-only measurement of 2026-10-13 (`consumer_enforcement_report.py`, nothing written; the bar record and calibration files on disk are still those of 2026-10-11).
 
 ### 7.1 Headline
 
@@ -611,27 +615,25 @@ All figures are as of 2026-10-12.
 Distinct rows and out-of-fold numbers on the running identity. "On" means in the
 owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 
-| Consumer | Distinct rows | OOF AUROC | OOF ECE | Threshold | Status |
-|---|---|---|---|---|---|
-| `tool_choice` | 388 | 0.754 | 0.037 | 0.790 | earned, ON (decides node tool calls) |
-| `escalate_incomplete` | 292 | 0.829 | 0.022 | 0.618 (273 above, precision 0.908, Wilson 0.868) | earned, not on |
-| `narration` | 289 | 0.713 | 0.031 | 0.857 (151 above, precision 0.907, Wilson 0.850) | earned, not on |
-| `review_verdict` | 950 | 0.617 | 0.045 | 0.786 (50 above) | sampled rung (AUROC below 0.65) |
-| `tool_approval` | 1216 | 0.575 | 0.037 | none | shadow (AUROC below 0.65) |
-| `depth_met` | 352 | 0.436 | 0.088 | none | shadow (AUROC below 0.65) |
-| `call_closing` | 556 | 0.496 | - | none | shadow, refused by design |
-| `web_intent` | 157 | 0.473 | 0.000 | none | shadow (AUROC below 0.65) |
-| `user_feedback` | 128 | 0.454 | 0.021 | none | shadow (AUROC below 0.65) |
-| `browser_next` | 76 | 0.634 | 0.101 | none | shadow (rows below 100) |
-| `click_safety` 46, `event_family` 21, `depth_route` 17, `done` 12, `presentation` 9 | below 100 | - | - | none | shadow (rows below 100) |
-| `needs_action`, `recovery_strategy`, `sufficient`, `use_thinking` | 0 | - | - | none | shadow (no rows) |
+| Consumer | Distinct rows (correct/wrong) | OOF AUROC | OOF ECE | Threshold (rows above, precision, Wilson) | Measured status | Gap |
+|---|---|---|---|---|---|---|
+| `tool_choice` (scope `tc-decide-v3`) | 478 (377/101) | 0.7442 | 0.0438 | 0.7502 (310, 0.900, 0.8616) | meets the bar; ON | - |
+| `tool_choice` (scope `tc-frame-v8`, parity) | 673 (495/178) | 0.8002 | 0.0154 | 0.6193 (396, 0.9015, 0.8682) | meets the bar | - |
+| `escalate_incomplete` | 393 (335/58) | 0.8308 | 0.0183 | 0.6214 (334, 0.9102, 0.8747) | meets the bar; not on | - |
+| `user_feedback` | 140 (123/17) | 0.885 | 0.0491 | 0.5758 (130, 0.9154, 0.8548) | meets the bar; cannot be switched on (not in `CONSUMERS`) | - |
+| `narration` | 332 (266/66) | 0.7571 | 0.0501 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0501 > 0.05 |
+| `review_verdict` | 1137 (530/607) | 0.6271 | 0.0372 | 0.776 (61, 0.9508, 0.8651) | sampled rung | AUROC < 0.65 |
+| `browser_next` | 126 (71/55) | 0.7059 | 0.095 | none | shadow | no threshold reaches precision 0.90 on 50 rows |
+| `tool_approval` | 1484 (867/617) | 0.5739 | 0.0092 | none | shadow | AUROC < 0.65 |
+| `depth_met` | 401 (153/248) | 0.3983 | 0.0658 | none | shadow | AUROC < 0.65 |
+| `web_intent` | 183 (144/39) | 0.4925 | 0.0001 | none | shadow | AUROC < 0.65 |
+| `call_closing` | 657 (122/535) | 0.4951 | 0.0 | none | shadow, refused by design | AUROC < 0.65 |
+| `click_safety` | 92 (89/3) | 0.3034 | 0.0003 | 0.9595 | shadow | rows < 100 (and 3 wrong: minority < 5%) |
+| `mode` (retired) 77, `depth_route` 27, `event_family` 21, `done` 20, `presentation` 13, `event_type:*` 1-13 | below 100 | - | - | none | shadow | rows < 100 |
+| `needs_action`, `use_thinking` | 0 | - | - | none | shadow | no live caller (below) |
+| `recovery_strategy`, `sufficient` | 0 on d1 | - | - | none | shadow | failure-only paths (below) |
 
-`event_type:<family>` consumers (1 to 13 rows each) are shadow. The bar record also
-holds a row for the retired `mode` consumer; it is not a declared consumer.
-
-Enforcement today: only `tool_choice` is on and earned, so only `tool_choice` decides.
-The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and
-null); the hardened numbers are in the calibration file (`oof` block).
+Enforcement today: only `tool_choice` is on, so only `tool_choice` decides. The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and null); the hardened numbers are in the calibration file (`oof` block). `escalate_incomplete`, `narration` and `user_feedback` are labelled by agreement with their incumbent, so meeting the bar means "agrees with the rule", not "is right".
 
 ### 7.3 Cost per decision
 
@@ -654,6 +656,17 @@ null); the hardened numbers are in the calibration file (`oof` block).
   lane, bounded at 512 pending jobs. A full lane drops the job, counts it and logs it;
   `submit()` never blocks and never raises.
 
+### 7.4 Why the other consumers do not meet the bar (2026-10-13)
+
+- **`needs_action`, `use_thinking`: no live caller.** `needs_action` is asked only inside `ToolDecisionBox.resolve()`, which has no production caller; the live node path (`choose_node_tool`) returns on `NONE` without asking it. `use_thinking` is asked only inside `_needs_thinking`, called from `_dispatch_api` / `_dispatch_openai_compat`, which have no caller since the transport moved to `inference/transport.py` (the live transport always sends `enable_thinking=True`). They cannot earn rows until a live path asks them.
+- **`recovery_strategy`, `sufficient`: failure-only paths.** 183 `recovery_strategy` rows and 5 `sufficient` rows exist, none on the d1 identity with a label; both are asked only after a step fails.
+- **`depth_met`: a rule's output as the reference.** The reference is the loop grade (`grade == "pass"`), a deterministic function of envelope match, open facts and coverage that are not in the model's input; the `judge_goal` job also drops `coverage` (`grade` is the reference and must stay out) and cuts `evidence` first. 85% of references are True. AUROC 0.40 means its confidence ranks errors backwards.
+- **`web_intent`: a noisy reference.** The reference is a substring keyword list (`explorer.py`) that misses requests with a URL ("Open https://..."); 88% of references are "no". Many Oracle "yes" answers that are scored wrong are right.
+- **`tool_approval`: the label answers another question.** The question is "is this the right tool"; the label is "the call succeeded" (91% True). A right tool can fail and a wrong tool can succeed.
+- **`review_verdict`: the evidence is cut.** The `judge_step` job reads only `goal` (96 ids = 384 chars) and renders STEP, OBJECTIVE, then RECENT RESULTS, so the budget cuts the results first. The Brain reference says "pass" 99% of the time.
+- **Rows below 100** (`click_safety`, `depth_route`, `done`, `presentation`, event consumers, `browser_next` precision): more live traffic, no code change.
+- Decision rows do not store the rendered `state`, so a row cannot be replayed against a changed frame; `web_intent` and `review_verdict` rows carry no `criteria_version`.
+
 ---
 
 ## 8. Operations
@@ -668,7 +681,7 @@ null); the hardened numbers are in the calibration file (`oof` block).
 | `IRIS_ORACLE_SAMPLE_FRACTION` | 0.05 | sampled share for every samplable consumer |
 | `IRIS_ORACLE_SAMPLE_FRACTION_<CONSUMER>` | unset | per-consumer share, for example `_TOOL_CHOICE=1` |
 | `IRIS_ORACLE_SAMPLE_SIDE_EFFECTS` | unset | `1` lets a sampled pick force a side-effect tool (eval work folders only) |
-| `IRIS_ORACLE_PHASE`, `IRIS_ORACLE_PHASE_EXIT` | `.env` sets both to 1 | phase-model admission; `0` returns to the engine lock |
+| `IRIS_ORACLE_PHASE`, `IRIS_ORACLE_PHASE_EXIT` | off in code; `.env` sets both to 1 | phase-model admission; `0` returns to the engine lock |
 | `IRIS_ORACLE_PHASE_PERIOD_S`, `_MAX_WAIT_S`, `_K` | 0.3, 0.3, 0.6 | phase gate tuning (timed gate) |
 | `IRIS_ORACLE_BATCH_CAP` | 8 | width of a batched pass (no production caller) |
 | `IRIS_ORACLE_REVIEW_OUTCOME` | off | stamps pending `review_verdict` rows with the step's settled label (VERIFIED / UNVERIFIED / FAILED) as the outside label |
@@ -684,7 +697,7 @@ server or serve another model: every consumer returns to its incumbent.
 
 ```
 # per-consumer status vs the bar (read-only); --write persists the bar record
-python scripts/consumer_enforcement_report.py [--json] [--write] [--scope tool_choice=tc-decide-v3]
+python scripts/consumer_enforcement_report.py [--json] [--write] [--scope tool_choice=tc-decide-v3 ...]   # repeat --scope; never --write unscoped
 
 # fit the calibration map and threshold (offline); --dry-run writes nothing
 python scripts/fit_oracle_calibration.py [--dry-run] [--scope tool_choice=tc-decide-v3]
@@ -740,6 +753,7 @@ Under `backend/tests/` (`contract/` unless a path is given).
 - `test_consumer_declarations_contract.py`, `test_consumer_registry.py`, `test_consumer_tasks_contract.py`, `test_surface_observer_contract.py` - declared types and criteria; an undeclared consumer scores nothing.
 - `test_readonly_engine.py` - the engine writes nothing to the memory graph.
 - `test_oracle_phase_contract.py`, `test_phase_domain_exit_admission.py`, `behavioral/test_oracle_phase_identity.py` - phase admission and identical answers alone and under load.
+- `test_raw_threshold_contract.py` - `threshold_for` resolves the active identity's fitted curve on the raw scale.
 
 **Input, readout, jobs**
 

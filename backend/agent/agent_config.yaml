@@ -63,11 +63,11 @@ models:
       backend_thresholds:
         lfm2-350m-extract: 0.85           # retiring backend (REQ-21); historical rows only
         gliner25-decide-onnx-int8: 0.40   # retired backend (Wave 3); historical rows only
-        # d1-3b-ad-q4_k_m (Wave 3): the ACTIVE identity — deliberately NO
-        # entry: absence IS the fail-closed state (threshold_for returns
-        # None). A measured threshold lands here only after the calibration
-        # is re-earned on the d1 weights (REQ-6 AC6.2: a flip earned on a
-        # retired model cannot carry over), via fit_oracle_calibration.py.
+        # d1-3b-ad-q4_k_m (Wave 3): the ACTIVE identity has NO entry here.
+        # Its curves live in benchmarks/oracle_calibration.json (written by
+        # fit_oracle_calibration.py); threshold_for falls back to that file
+        # and returns the fitted threshold on the RAW confidence scale. No
+        # fitted curve for an identity is still the fail-closed state (None).
       # Per-consumer overrides sit ON TOP of the backend threshold (REQ-13).
       thresholds: {}
     optional: true   # decision paths degrade to the legacy heuristics if missing

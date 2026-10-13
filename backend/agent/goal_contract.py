@@ -27,7 +27,16 @@ _STOPWORDS = frozenset({
     "documentation", "authoritative", "information", "please",
     "show", "give", "what", "when", "that", "this", "from",
     "into", "your", "about", "which", "their", "there",
+    # Words that only ASK ("tell me how many games they won", "what it
+    # shows"): a result never carries them, so as a fact's own terms they
+    # left the fact open after the answer was found (live g04 2026-10-13:
+    # terms tell/many/games/they, C stuck at 0.5, 3 zero-call steer nodes).
+    "tell", "many", "much", "they", "them", "does", "shows", "says",
+    "look", "have", "whoever",
 })
+# A year is the most specific word a fact can hold ("won in 1990"), and the
+# word rule above needs a letter first, so it never saw one.
+_YEAR_RE = re.compile(r"(?<![\d.,])(?:1[0-9]|20)\d{2}(?![\d.,]\d)")
 
 _ENUM_PREFIX_RE = re.compile(r"^\s*(?:\d+[.)]\s+|\(\d+\)\s*|[-*•]\s+)")
 _SPLIT_RE = re.compile(r"\s*(?:\n+|;+|\s+\d+[.)]\s+|\s*\(\d+\)\s*)\s*")
@@ -90,7 +99,7 @@ def _clean_fact(text: str) -> str:
 
 def _distinctive_terms(text: str) -> List[str]:
     _seen: Dict[str, None] = {}
-    for _w in _WORD_RE.findall(text or ""):
+    for _w in _WORD_RE.findall(text or "") + _YEAR_RE.findall(text or ""):
         _lw = _w.lower()
         if _lw in _STOPWORDS:
             continue

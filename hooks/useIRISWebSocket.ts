@@ -684,7 +684,7 @@ export function useIRISWebSocket(
             window.dispatchEvent(new CustomEvent('iris:ws_connected'))
           }
           // Live browser views start over: a dead session's last frame (and
-          // its Take control button) must not stay on screen after a backend
+          // its Pause IRIS button) must not stay on screen after a backend
           // restart. request_state below makes the backend resend the latest
           // frame of every session that is still live.
           clearAllLiveRuns()
@@ -1818,7 +1818,7 @@ export function useIRISWebSocket(
       }
 
       case "browser_control_state": {
-        // The backend's answer to "Take control" / "Hand back": who holds the
+        // The backend's answer to "Pause IRIS" / "Resume IRIS": who holds the
         // agent's live page now.
         setLiveControl(String(payload.run_id ?? ''), !!payload.control)
         if (typeof window !== 'undefined') {

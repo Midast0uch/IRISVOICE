@@ -16,7 +16,7 @@ The harness changes three pieces of app state for the run and restores two:
   - launcher mode   (switched per group, restored at the end)
   - project list    (the eval root is registered so run_command may use it;
                      restored at the end)
-  - web mode        (turned ON for research; left on, it is an in-memory toggle
+  - web mode        (turned ON for research, browser and browser_goal; left on, it is an in-memory toggle
                      the UI re-sends)
 
 Usage:
@@ -200,7 +200,11 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
     async with websockets.connect(url, max_size=16 * 1024 * 1024, ping_interval=None) as ws:
         await ws.send(json.dumps({"type": "new_conversation",
                                   "payload": {"conversation_id": conv_id}}))
-        if task["group"] in ("research", "browser"):
+        # browser_goal too: its prompts only state a goal on a web page. Left
+        # out, it ran with web on only when an earlier task had left the
+        # in-memory toggle on (fresh backend 2026-10-13: g02 got no browser
+        # tools, wrote scripts, and waited 120 s on the save-folder question).
+        if task["group"] in ("research", "browser", "browser_goal"):
             await ws.send(json.dumps({"type": "set_web_mode", "payload": {"enabled": True}}))
 
         if task["path"] == "dev_cli":

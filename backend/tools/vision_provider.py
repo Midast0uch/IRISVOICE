@@ -415,7 +415,12 @@ def _is_verified_vision_capable(
     choice and an auto-scan don't collide."""
     _key = (url, preferred_model or "")
     _hit = _VISION_CAPABILITY_CACHE.get(_key)
-    if _hit is not None and time.monotonic() - _hit[1] < _CAPABILITY_TTL_S:
+    # A PROVEN server keeps its verdict until a vision call to it fails
+    # (LFMVLProvider._call drops it) or a load clears the cache. Re-proving it
+    # on a timer sent an image to the shared one-slot d1 server inside a turn:
+    # live g04 2026-10-13, the probe held the slot 13.6 s (cold image encoder)
+    # and the node's tool_choice decision waited 9.8 s behind it.
+    if _hit is not None and (_hit[0] or time.monotonic() - _hit[1] < _CAPABILITY_TTL_S):
         return _hit[0]
     _model_id = _probe_vision_capability(url, auth=auth, preferred_model=preferred_model)
     _VISION_CAPABILITY_CACHE[_key] = (_model_id, time.monotonic())
@@ -1059,6 +1064,12 @@ class LFMVLProvider:
 
         except Exception as e:
             logger.warning(f"[LFMVLProvider] Call failed: {e}")
+            # The endpoint's "multimodal" verdict is no longer trusted: the
+            # next resolution proves it again (it may have lost its projector).
+            if _reused_vision_base_url:
+                for _k in [k for k in _VISION_CAPABILITY_CACHE if k[0] == _reused_vision_base_url]:
+                    _VISION_CAPABILITY_CACHE.pop(_k, None)
+                _reset_reused_vision_server()
             return f"Vision unavailable: {e}"
 
     def health_check(self) -> bool:

@@ -588,6 +588,7 @@ async def lifespan(app: FastAPI):
                         f"    [+] [D1BOOT] d1 already resident on "
                         f"{_st.get('endpoint', '8082')} — nothing to do"
                     )
+                    await _warm_vision_verdict()
                     return
                 logger.info(
                     "    [+] [D1BOOT] loading d1 (+mmproj) on the shared "
@@ -617,6 +618,7 @@ async def lifespan(app: FastAPI):
                 )
                 if _ok:
                     logger.info("    [+] [D1BOOT] d1 resident — vision + Oracle warm")
+                    await _warm_vision_verdict()
                 else:
                     logger.warning(
                         "    [x] [D1BOOT] d1 boot load failed — vision and "
@@ -626,6 +628,23 @@ async def lifespan(app: FastAPI):
                 logger.warning(
                     f"    [x] [D1BOOT] boot load failed (non-fatal): {_d1_exc}"
                 )
+
+        async def _warm_vision_verdict():
+            # Prove the shared server multimodal NOW (one 1x1-PNG round trip,
+            # which also warms its image encoder) so no turn pays it: inside a
+            # turn the probe held the one d1 slot 13.6 s while the node's
+            # Oracle tool decision waited (live g04 2026-10-13). Never raises.
+            try:
+                from backend.tools import vision_provider as _vp
+
+                _t0 = time.monotonic()
+                _url = await asyncio.to_thread(_vp._discover_reusable_vision_server, "")
+                logger.info(
+                    f"    [+] [D1BOOT] vision verdict {'proved' if _url else 'none'} "
+                    f"in {time.monotonic() - _t0:.1f}s"
+                )
+            except Exception as _vv_exc:  # noqa: BLE001 - a warm-up is a bonus
+                logger.info(f"    [D1BOOT] vision verdict warm-up skipped: {_vv_exc}")
 
         asyncio.create_task(_boot_load_d1())
 

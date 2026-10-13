@@ -414,8 +414,8 @@ async def _held_by_user(conv: str) -> bool:
 
 
 async def _wait_for_hand_back(conv: str) -> Optional[str]:
-    """While the user holds the live page ("Take control"), the agent WAITS for
-    "Hand back" instead of failing at once. Live 2026-10-12: the act failed in
+    """While the user holds the live page ("Pause IRIS"), the agent WAITS for
+    "Resume IRIS" instead of failing at once. Live 2026-10-12: the act failed in
     67 ms and the reply said "the click action failed" - the user could not
     tell they were the reason. Bounded; returns the message to report when the
     user still holds the page, else None."""
@@ -424,7 +424,7 @@ async def _wait_for_hand_back(conv: str) -> Optional[str]:
         while await _RT.run(_held_by_user(conv), 5.0):
             if time.monotonic() >= deadline:
                 return ("The user is still controlling the browser. Ask them to press "
-                        "'Hand back' in the browser panel, then try again.")
+                        "'Resume IRIS' in the browser panel, then try again.")
             await asyncio.sleep(1.0)
     except Exception as exc:  # noqa: BLE001 - the session's own guard still refuses
         logger.debug("[browser_tools] hand-back wait conv=%s: %s", conv, exc)

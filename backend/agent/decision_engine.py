@@ -1778,6 +1778,11 @@ class EngineConfig:
             key = _current_backend_identity(consumer_id, self.candidate_cap)
         if key and key in bt:
             return float(bt[key])
+        # The fitted curve for this identity (fit_oracle_calibration.py),
+        # converted to the RAW scale its callers compare a raw confidence on.
+        if key:
+            from backend.agent import oracle_calibration
+            return oracle_calibration.raw_threshold(key, consumer_id)
         return None
 
 

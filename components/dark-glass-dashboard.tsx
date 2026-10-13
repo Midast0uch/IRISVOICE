@@ -956,7 +956,7 @@ export function DarkGlassDashboard({
     sendMessage,
   } = useNavigation();
 
-  // "Take control" / "Hand back" for the agent's live browser (liveRun above).
+  // "Pause IRIS" / "Resume IRIS" for the agent's live browser (liveRun above).
   const setBrowserControl = useCallback((take: boolean) => {
     if (!liveRun || !sendMessage) return
     sendMessage('browser_control', { run_id: liveRun.runId, action: take ? 'take' : 'release' })
@@ -2202,8 +2202,8 @@ export function DarkGlassDashboard({
                         <button
                           onClick={() => setBrowserControl(!liveRun.control)}
                           title={liveRun.control
-                            ? "Give the page back to the agent"
-                            : "Act in the agent's page yourself - the agent waits until you hand it back"}
+                            ? "Give the page back to IRIS"
+                            : "IRIS waits while you use the page"}
                           aria-pressed={liveRun.control}
                           className="shrink-0 flex items-center gap-1 px-2 h-5 rounded text-[10px] font-mono transition-colors hover:brightness-125"
                           style={{
@@ -2213,7 +2213,7 @@ export function DarkGlassDashboard({
                           }}
                         >
                           <span className="w-1 h-1 rounded-full" style={{ background: liveRun.control ? '#fbbf24' : glowColor }} />
-                          {liveRun.control ? 'Hand back' : 'Take control'}
+                          {liveRun.control ? '▶ Resume IRIS' : '⏸ Pause IRIS'}
                         </button>
                       )}
                       {/* REQ-15 AC3: when a source pin pauses live-following,
@@ -2291,8 +2291,8 @@ export function DarkGlassDashboard({
                      </div>
                    ) : showLiveView && liveRun ? (
                      /* The agent's REAL page, streamed live (CDP screencast):
-                        the user watches the agent work and, after "Take
-                        control" or during a CAPTCHA hand-over, acts in that
+                        the user watches the agent work and, after "Pause
+                        IRIS" or during a CAPTCHA hand-over, acts in that
                         same page. A pinned source falls back to its capture. */
                      <TakeoverLiveSurface
                        watch

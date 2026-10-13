@@ -117,6 +117,35 @@ def threshold(
         return None
 
 
+def raw_threshold(
+    backend_id: str, consumer: str, path: Optional[Path] = None,
+) -> Optional[float]:
+    """The fitted threshold on the RAW confidence scale, or None.
+
+    The smallest raw confidence whose calibrated value clears ``threshold()``,
+    so a caller that holds a raw confidence (a ledger row's ``confidence``) can
+    compare it without mixing scales. The map is monotone, so the first knot
+    segment that reaches the threshold holds the answer.
+    """
+    try:
+        e = _entry(backend_id, consumer, path) or {}
+        t, knots = e.get("threshold"), e.get("knots") or []
+        if t is None or not knots:
+            return None
+        t = float(t)
+        prev_x = prev_y = None
+        for k in knots:
+            x, y = float(k[0]), float(k[1])
+            if round(y, 4) >= t:
+                if prev_x is None or y == prev_y:
+                    return round(x, 4)
+                return round(prev_x + (x - prev_x) * (t - prev_y) / (y - prev_y), 4)
+            prev_x, prev_y = x, y
+        return None  # the map never reaches the threshold
+    except Exception:  # noqa: BLE001 - never raises
+        return None
+
+
 def binary_consumers() -> frozenset:
     """Consumers whose engine answer is a yes/no Noul, from the engine's own specs.
 

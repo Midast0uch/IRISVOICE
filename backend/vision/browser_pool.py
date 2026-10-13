@@ -112,13 +112,6 @@ _SPEED_ARGS = [
 ]
 
 
-def _netlog_probe_args() -> list:
-    """TEMP probe (2026-10-13, remove after the in-app slow-navigation hunt):
-    IRIS_BROWSER_NETLOG=<path> makes the app's Chromium write its net-log."""
-    path = os.environ.get("IRIS_BROWSER_NETLOG")
-    return [f"--log-net-log={path}", "--net-log-capture-mode=Default"] if path else []
-
-
 def _proxy_args() -> list:
     """``["--no-proxy-server"]`` unless the user set a proxy.
 
@@ -153,6 +146,72 @@ def _proxy_args() -> list:
     return ["--no-proxy-server"]
 
 
+# Cold first page (2026-10-13): the 199 MB chrome-headless-shell.exe lives on a
+# 99%-full HDD. When its pages are not in the OS file cache, the first renderer
+# reads them from disk in small random faults: launch 25.9 s + first page 10.6 s
+# with every process idle (Chromium's own CDP replies 26-37 s late). One
+# sequential read first puts them in the cache: 2.0 s + 2.4 s. On an SSD
+# (PLAYWRIGHT_BROWSERS_PATH) the read costs well under a second.
+_EXE_PREREAD_EVERY_S = 300.0
+_exe_preread_lock = threading.Lock()
+_exe_preread_busy = False
+_exe_preread_done_at = 0.0
+
+
+def _headless_shell_files() -> list:
+    """The installed headless-shell executable and its DLLs, or [] when unknown."""
+    try:
+        import glob
+        import json
+
+        import playwright
+
+        pkg = os.path.join(os.path.dirname(playwright.__file__), "driver", "package")
+        with open(os.path.join(pkg, "browsers.json"), encoding="utf-8") as fh:
+            rev = next(b["revision"] for b in json.load(fh)["browsers"]
+                       if b["name"] == "chromium-headless-shell")
+        base = os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or os.path.join(
+            os.environ.get("LOCALAPPDATA", ""), "ms-playwright")
+        folder = os.path.join(base, f"chromium_headless_shell-{rev}",
+                              "chrome-headless-shell-win64")
+        exe = os.path.join(folder, "chrome-headless-shell.exe")
+        if not os.path.isfile(exe):
+            return []
+        return [exe] + sorted(glob.glob(os.path.join(folder, "*.dll")))
+    except Exception as exc:  # noqa: BLE001 - no file list means no pre-read
+        logger.debug("[browser_pool] headless shell files not found: %s", exc)
+        return []
+
+
+def _preread_browser_files() -> None:
+    """Read the Chromium files once on a daemon thread (OS cache warm-up).
+    At most one read at a time and one per ``_EXE_PREREAD_EVERY_S``. Never raises."""
+    global _exe_preread_busy
+    with _exe_preread_lock:
+        if _exe_preread_busy or time.monotonic() - _exe_preread_done_at < _EXE_PREREAD_EVERY_S:
+            return
+        _exe_preread_busy = True
+
+    def _read() -> None:
+        global _exe_preread_busy, _exe_preread_done_at
+        t0, total = time.monotonic(), 0
+        try:
+            for path in _headless_shell_files():
+                with open(path, "rb") as fh:
+                    while chunk := fh.read(8 << 20):
+                        total += len(chunk)
+            logger.info("[browser_pool] Chromium files read into the OS cache: %.0f MB in %.1f s",
+                        total / 1e6, time.monotonic() - t0)
+        except Exception as exc:  # noqa: BLE001 - a warm-up is a bonus
+            logger.info("[browser_pool] Chromium file pre-read stopped: %s", exc)
+        finally:
+            with _exe_preread_lock:
+                _exe_preread_busy = False
+                _exe_preread_done_at = time.monotonic()
+
+    threading.Thread(target=_read, name="iris-browser-preread", daemon=True).start()
+
+
 async def block_heavy_resources(target) -> None:
     """Drop media and fonts before they are fetched, on a crawl context or page
     (D5 memory bound). Best-effort - a target without ``route`` just loads them."""
@@ -170,6 +229,10 @@ async def block_heavy_resources(target) -> None:
 
 # Shared Chromium process state. None until the first acquire_browser().
 _pw = None  # Playwright driver instance (opaque; typed loosely — lazy import)
+# The driver an idle stop left running (live 2026-10-13: a cold driver start -
+# node.exe + 400 package files on the C: HDD - took 27.7 s and made a web
+# toggle's relaunch 67.5 s; the next launch reuses it). Stopped on shutdown.
+_idle_driver = None
 _browser = None  # Chromium Browser instance (opaque)
 _owned: bool = False  # True once THIS module started _browser (ownership tracking)
 
@@ -294,7 +357,7 @@ async def _idle_watch() -> None:
         _idle_task = None
     if not should_idle_stop_browser():
         return  # active lease or already stopped -> defer; next touch reschedules
-    await _stop_owned_browser()
+    await _stop_owned_browser(keep_driver=True)
     cb = _browser_idle_callback
     if cb is not None:
         try:
@@ -445,9 +508,24 @@ async def _start_browser() -> None:
     existed. On a launch crash the half-started driver is stopped so the pool
     is left clean for the next attempt to retry.
     """
-    global _pw, _browser, _owned
+    global _pw, _browser, _owned, _idle_driver
+    _preread_browser_files()  # overlaps the launch; a cold exe is 25.9 s on the HDD
     from playwright.async_api import async_playwright  # noqa: PLC0415 — lazy, heavy
 
+    pw, _idle_driver = _idle_driver, None
+    if pw is not None:
+        try:
+            browser = await pw.chromium.launch(
+                headless=True, args=_LAUNCH_ARGS + _SPEED_ARGS + _proxy_args())
+            _pw, _browser, _owned = pw, browser, True
+            logger.info("[browser_pool] shared browser started (driver kept from the idle stop)")
+            return
+        except Exception as exc:  # noqa: BLE001 - a dead kept driver: start fresh
+            logger.info("[browser_pool] kept driver unusable (%s) - starting a fresh one", exc)
+            try:
+                await pw.stop()
+            except Exception:  # noqa: BLE001
+                pass
     pw = await async_playwright().start()
     try:
         # Session-331: launch with a REALISTIC UA and automation signals
@@ -466,8 +544,7 @@ async def _start_browser() -> None:
         # that accept only ``headless`` — retry bare rather than crash the pool.
         try:
             browser = await pw.chromium.launch(
-                headless=True, args=_LAUNCH_ARGS + _SPEED_ARGS + _proxy_args()
-                + _netlog_probe_args())
+                headless=True, args=_LAUNCH_ARGS + _SPEED_ARGS + _proxy_args())
         except TypeError:
             browser = await pw.chromium.launch(headless=True)
     except Exception:
@@ -650,14 +727,24 @@ async def _drop_spare() -> None:
             pass
 
 
-async def _stop_owned_browser() -> None:
+async def _stop_owned_browser(keep_driver: bool = False) -> None:
     """Close the Chromium browser + Playwright driver IRIS itself started.
+
+    ``keep_driver`` (the idle stop): close Chromium - the RAM - and keep the
+    small driver process for the next launch. Every other stop (crash, reset,
+    shutdown) also stops a driver kept earlier.
 
     Ownership-gated: a browser this module did not start (``_owned`` False)
     is left alone — mirrors ``vision_provider._stop_owned_vision_server``'s
     tracked-PID guard. Never raises.
     """
-    global _pw, _browser, _owned
+    global _pw, _browser, _owned, _idle_driver
+    if not keep_driver and _idle_driver is not None:
+        kept, _idle_driver = _idle_driver, None
+        try:
+            await kept.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[browser_pool] kept driver stop failed: %s", exc)
     if not _owned or _browser is None:
         return
     await _drop_spare()
@@ -670,12 +757,15 @@ async def _stop_owned_browser() -> None:
             await browser.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[browser_pool] browser close failed: %s", exc)
-    if pw is not None:
+    if pw is not None and keep_driver:
+        _idle_driver = pw
+    elif pw is not None:
         try:
             await pw.stop()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[browser_pool] playwright stop failed: %s", exc)
-    logger.info("[browser_pool] shared browser stopped")
+    logger.info("[browser_pool] shared browser stopped%s",
+                " (driver kept)" if keep_driver and pw is not None else "")
 
 
 def set_web_hold(enabled: bool) -> None:
@@ -686,6 +776,7 @@ def set_web_hold(enabled: bool) -> None:
     try:
         host = get_browser_host()
         if enabled:
+            _preread_browser_files()
             asyncio.run_coroutine_threadsafe(_prewarm_on_host(), host.loop())
             # keyring's first import + backend discovery (9.5 s measured) is
             # paid here, not inside the agent's first browser_open.

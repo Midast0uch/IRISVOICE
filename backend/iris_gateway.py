@@ -119,8 +119,8 @@ _RE_EMOJI = re.compile(
     "]+",
     flags=re.UNICODE,
 )
-# How long a user's "Take control" of the agent's live browser lasts before the
-# grant expires and the agent may act again (a forgotten hand-back must not
+# How long a user's "Pause IRIS" of the agent's live browser lasts before the
+# grant expires and the agent may act again (a forgotten "Resume IRIS" must not
 # stall the agent forever).
 _USER_CONTROL_MS = 600_000
 # WS messages that keep the connection or the live view going without the user
