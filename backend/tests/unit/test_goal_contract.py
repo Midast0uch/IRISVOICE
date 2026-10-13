@@ -53,6 +53,30 @@ def test_extract_caps_at_required_cap():
     assert len(facts) == dc.GOAL_REQUIRED_FACTS_CAP
 
 
+def test_a_short_question_tail_stays_with_its_clause():
+    """A short question tail after a comma ("..., and how many") asks more about the
+    clause before it; it is not a fact of its own. Live 2026-10-12: "how many" became
+    a fact that names nothing, was never covered, drew 2 goal pushes of 8 empty nodes
+    (48 s) and a false "Parts of your request I could not ..." in the reply. A real
+    list of three deliverables still yields three facts.
+    """
+    facts = gc.extract_required(
+        "On https://www.scrapethissite.com/pages/forms/, search the team list for "
+        "'Rangers' and tell me which season the New York Rangers had their most wins, "
+        "and how many."
+    )
+    assert "how many" not in [_f.lower() for _f in facts]
+    assert any("most wins" in _f and "how many" in _f for _f in facts)
+    listed = gc.extract_required(
+        "Find the height of the Eiffel Tower, the year the Golden Gate Bridge opened, "
+        "and the year the first Harry Potter book was published"
+    )
+    assert len(listed) == 3
+    assert any("Eiffel Tower" in _f for _f in listed)
+    assert any("Golden Gate Bridge" in _f for _f in listed)
+    assert any("Harry Potter" in _f for _f in listed)
+
+
 # ── map_to_steps (REQ-1 AC1.2/AC1.3) ────────────────────────────────────────
 
 

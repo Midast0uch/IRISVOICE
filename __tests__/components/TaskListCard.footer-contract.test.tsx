@@ -100,4 +100,18 @@ describe("FOOTER CONTRACT — liveness pills", () => {
     // frozen duration pill: 180s -> "3:00" (rendered inside the ⏱ pill)
     expect(screen.getByText(/⏱\s*3:00/)).toBeInTheDocument()
   })
+
+  it("frozen duration from a float never shows raw decimals (live 1:22.608000000000004)", () => {
+    render(
+      <TaskListCard
+        steps={[step({ status: "done" })]}
+        cardActive={false}
+        durationSec={82.608000000000004}
+        cardId="card_fb24d28d-f98"
+        planTitle="Fusion research"
+      />,
+    )
+    // 82.608 s -> whole seconds, floor -> "1:22" (no float tail in the pill)
+    expect(screen.getByText(/^⏱\s*1:22$/)).toBeInTheDocument()
+  })
 })

@@ -94,6 +94,40 @@ _LAUNCH_ARGS = [
 BLOCKED_CRAWL_RESOURCES = frozenset({"media", "font"})
 
 
+def _proxy_args() -> list:
+    """``["--no-proxy-server"]`` unless the user set a proxy.
+
+    With no flag Chromium runs Windows proxy AUTO-DETECT (WPAD) before its first
+    connection. Measured 2026-10-12 (Chromium net-log, this machine): the lookup
+    waited 18.1 s in PROXY_RESOLUTION_SERVICE, failed, and fell back to direct;
+    cold page opens took 9-69 s (two hit the 45-60 s goto timeout). With the
+    flag the same five sites opened in 0.1-4.7 s cold. A proxy the user DID set
+    (HTTP(S)_PROXY / ALL_PROXY, or Windows "Use a proxy server" / a setup
+    script) is kept: Chromium then reads the system settings as before.
+    """
+    if any(os.environ.get(k) for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                                       "https_proxy", "http_proxy", "all_proxy")):
+        return []
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        ) as key:
+            def _value(name):
+                try:
+                    return winreg.QueryValueEx(key, name)[0]
+                except OSError:
+                    return None
+
+            if _value("ProxyEnable") == 1 or _value("AutoConfigURL"):
+                return []
+    except Exception:  # noqa: BLE001 - not Windows, or no settings: direct
+        pass
+    return ["--no-proxy-server"]
+
+
 async def block_heavy_resources(target) -> None:
     """Drop media and fonts before they are fetched, on a crawl context or page
     (D5 memory bound). Best-effort - a target without ``route`` just loads them."""
@@ -406,7 +440,8 @@ async def _start_browser() -> None:
         # The args launch is tolerant of doubles (tests / alternate drivers)
         # that accept only ``headless`` — retry bare rather than crash the pool.
         try:
-            browser = await pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
+            browser = await pw.chromium.launch(
+                headless=True, args=_LAUNCH_ARGS + _proxy_args())
         except TypeError:
             browser = await pw.chromium.launch(headless=True)
     except Exception:

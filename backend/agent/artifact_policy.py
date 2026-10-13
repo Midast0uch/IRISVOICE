@@ -377,6 +377,18 @@ def card_suppressed(turn_id: Optional[str]) -> bool:
         return turn_id in _CARD_SUPPRESSED
 
 
+def release_card_for_turn(
+    turn_id: Optional[str], conversation_id: Optional[str] = None
+) -> None:
+    """The turn EARNED its card while it ran (MIN_TOOL_STEPS_FOR_CARD real tool
+    calls): its card-lifecycle events flow from now on."""
+    with _GATE_LOCK:
+        if turn_id:
+            _CARD_SUPPRESSED.pop(turn_id, None)
+        if conversation_id:
+            _CONVERSATION_CARD_FREE.pop(conversation_id, None)
+
+
 def clear_card_gate_for_testing() -> None:
     with _GATE_LOCK:
         _CARD_SUPPRESSED.clear()

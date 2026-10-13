@@ -663,6 +663,12 @@ def initialise_mycelium_schema(conn) -> None:
             ON mycelium_episode_index(episode_id);
         CREATE INDEX IF NOT EXISTS idx_epindex_session
             ON mycelium_episode_index(session_id);
+        -- resonance._load_session_nodes_by_space reads the session's NEWEST
+        -- row (ORDER BY created_at DESC LIMIT 1). On (session_id) alone it
+        -- read and sorted all 363 session_iris rows: 0.9 s cold, 8.2 s inside
+        -- a live context package (stack dumps, 2026-10-12 22:04:26).
+        CREATE INDEX IF NOT EXISTS idx_epindex_session_created
+            ON mycelium_episode_index(session_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_epindex_landmark
             ON mycelium_episode_index(landmark_id);
         CREATE INDEX IF NOT EXISTS idx_epindex_hash

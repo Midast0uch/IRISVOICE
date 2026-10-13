@@ -42,7 +42,6 @@ from backend.agent.call_context import (
     set_call_class,
     restores_call_class,
 )
-from backend.agent.batch_dispatch import get_batcher
 # GROUND TRUTH REQ-13: named counters for swallowed write-path failures.
 # Pure in-process tally (threading only) - safe at module scope.
 from backend.agent import write_counters as _write_counters
@@ -372,6 +371,12 @@ _BROWSER_ACTION_RE = re.compile(
     r"fill(?:\s+(?:in|out))?|scroll|press(?!\s+release)|submit|log\s?in|sign\s?in|"
     r"select|add\s+to\s+(?:cart|basket)|check\s?out|navigate|hover|drag)\b",
     re.IGNORECASE,
+)
+
+
+# The user names the live browser: the request cannot be done without it.
+_LIVE_BROWSER_RE = re.compile(
+    r"\b(?:live|in-app)\s+browser\b|\bin\s+the\s+browser\b", re.IGNORECASE,
 )
 
 
@@ -3676,48 +3681,6 @@ class AgentKernel:
         """
         _, clean = AgentKernel._parse_thinking(text)
         return clean
-
-    # Pure social/casual phrases that never need planning or tools.
-    _CHITCHAT_PATTERNS = (
-        "hi", "hello", "hey", "yo", "sup", "howdy", "hiya", "greetings",
-        "good morning", "good afternoon", "good evening", "good night",
-        "how are you", "how's it going", "how is it going", "how are things",
-        "how have you been", "how's your day", "what's up", "whats up",
-        "wassup", "what is up", "thanks", "thank you", "thx", "ty",
-        "appreciate it", "appreciate that", "nice", "cool", "great", "awesome",
-        "sweet", "lol", "haha", "hahaha", "lmao", "bye", "goodbye", "see you",
-        "see ya", "cya", "talk later", "take care", "who are you", "what are you",
-    )
-    # Short acknowledgements / confirmations that are not task continuations.
-    _CHITCHAT_ACKS = (
-        "yes", "yeah", "yep", "yup", "no", "nope", "nah", "ok", "okay", "k",
-        "sure", "maybe", "perhaps", "right", "correct", "of course", "got it",
-        "gotcha", "alright", "fine", "agreed", "sounds good", "sure thing",
-    )
-
-    def _is_chitchat(self, text: str) -> bool:
-        """
-        True for pure social/casual messages that need no planning or tools.
-
-        Used by the universal planner (Phase 1.1): every inbound message routes
-        through the planner EXCEPT chit-chat, which keeps the fast direct path.
-        """
-        t = (text or "").lower().strip()
-        if not t:
-            return True
-        if t in self._CHITCHAT_PATTERNS:
-            return True
-        # Starts with a greeting token (e.g. "hey there")
-        _first = t.split()[0] if t.split() else ""
-        if _first in ("hi", "hello", "hey", "yo", "sup", "howdy", "hiya", "greetings"):
-            return True
-        # "how are you" family — social, not a task
-        if t.startswith("how are") or t.startswith("how's") or t.startswith("how is"):
-            return True
-        # Short casual acknowledgement (no tool intent)
-        if t in self._CHITCHAT_ACKS:
-            return True
-        return False
 
     # Action/tool intent markers — prompts containing these need the DER
     # planning/tool loop. Everything else (simple questions, factual lookups,
@@ -9086,7 +9049,13 @@ class AgentKernel:
         # ── Internet-access gate check (runs before DER to save cost) ──────
         # If web tools are disabled and the user explicitly asked for a web
         # search, respond directly without engaging the expensive DER loop.
-        if not get_global_internet_access() and self._is_web_search_request(text):
+        # A request that names the live browser needs the web too: with
+        # internet off the node menu has no browser tool, and the turn spent
+        # 90 s on curl via an unknown run_command, memory lookups and grafts
+        # (live conv-1574, 2026-10-12).
+        if not get_global_internet_access() and (
+            self._is_web_search_request(text) or _LIVE_BROWSER_RE.search(text or "")
+        ):
             return (
                 "Web search is currently disabled. You can toggle internet "
                 "access on via the dashboard (the web button) to enable "
@@ -9436,12 +9405,18 @@ class AgentKernel:
                                 _plan.steps, getattr(_plan, "original_task", "") or ""
                             ) or _developer_mode(self):
                                 # This turn HAS a card: stop gating the thread.
+                                self._suppressed_card_turn = None
                                 clear_card_free_conversation(self.conversation_id)
                             else:
+                                _gated_turn = task_id or getattr(self, "_current_turn_id", None)
                                 suppress_card_for_conversation(
-                                    self.conversation_id,
-                                    task_id or getattr(self, "_current_turn_id", None),
+                                    self.conversation_id, _gated_turn,
                                 )
+                                # Arms the persist gate too: without it the
+                                # snapshot below saved a "running" card row
+                                # for every card-free turn, rehydrated later
+                                # as a card that never rendered (2026-10-12).
+                                self._suppressed_card_turn = _gated_turn
                         except Exception:
                             pass  # the gate must never block a turn
                         _card_task_id = task_id or _plan.original_task[:40]
@@ -10488,12 +10463,6 @@ Respond with a JSON object:
         # T6.4: mark the call class as USER_TURN at the real turn entry so the
         # phase gate admits it immediately (high-priority lane).
         set_call_class(CallClass.USER_TURN)
-        # T6.8: sweep expired batch groups before each DER cycle so
-        # BATCH_MAX_HOLD_S (REQ-18 AC3) is enforced even in quiet periods.
-        try:
-            get_batcher().flush_expired()
-        except Exception:
-            logger.debug("[DER] batcher flush_expired failed", exc_info=True)
         from backend.agent.der_loop import (
             DirectorQueue,
             NodeRecord,
@@ -10769,6 +10738,7 @@ Respond with a JSON object:
             _artifact_ask = is_artifact_ask(plan.original_task or "")
             self._current_task_text = plan.original_task or ""
             # The card bound is a personal-mode rule (see _developer_mode).
+            self._der_card_hold = None
             if card_warranted(items, plan.original_task or "") or _developer_mode(self):
                 # This turn may have a card — clear the conversation-scoped
                 # marker a previous short turn left behind.
@@ -10777,6 +10747,17 @@ Respond with a JSON object:
             else:
                 suppress_card_for_conversation(self.conversation_id, _turn_id)
                 self._suppressed_card_turn = _turn_id
+                # A plan step is a NODE now (up to 12 tool calls), so a short
+                # plan can still be long work: the card is released at the
+                # turn's MIN_TOOL_STEPS_FOR_CARD-th real tool call
+                # (_der_count_tool_call). Live 2026-10-12: 3-step plans with
+                # 5 real calls (author lookup, pizza form) showed no card.
+                if not _artifact_ask:
+                    self._der_card_hold = {
+                        "turn": _turn_id, "queue": queue, "plan": plan,
+                        "session": _session, "calls": 0,
+                        "lock": threading.Lock(),
+                    }
                 logger.info(
                     "[AgentKernel] task card suppressed: tool_steps=%d (bound "
                     ">=%d) artifact_ask=%s turn=%s — the turn runs, the artifact "
@@ -13267,6 +13248,15 @@ Respond with a JSON object:
             _base = len(queue.items) + 1
             _fresh: List["QueueItem"] = []
             for _i, _s in enumerate(new_steps):
+                # A graft's split child joins the graph AS ITSELF: its id is
+                # what settle_split waits on, and it carries its parent link,
+                # depth and node record. A copy ran beside it as "amend-N"
+                # (live conv-1574, 2026-10-12: amend-3 and s1_s0 queued for
+                # the same browser page, s1_s0 waited 36 s) and its result
+                # never settled the failed parent.
+                if isinstance(_s, QueueItem) and getattr(_s, "is_subloop", False):
+                    _fresh.append(_s)
+                    continue
                 _fresh.append(
                     QueueItem(
                         step_id=f"amend-{_base + _i}",
@@ -13368,6 +13358,87 @@ Respond with a JSON object:
                 cause="error", detail=str(_amend_exc)[:200],
             )
             return False
+
+    def _der_count_tool_call(self, item=None) -> None:
+        """One real tool call finished in this turn. At the
+        MIN_TOOL_STEPS_FOR_CARD-th call a card-free turn EARNS its card: the
+        gate is released and the card starts with the steps' state so far.
+        Runs on node threads; never raises, never blocks the node."""
+        hold = getattr(self, "_der_card_hold", None)
+        if not hold:
+            return
+        try:
+            from backend.agent.artifact_policy import (
+                MIN_TOOL_STEPS_FOR_CARD,
+                release_card_for_turn,
+            )
+
+            with hold["lock"]:
+                hold["calls"] += 1
+                if hold["calls"] < MIN_TOOL_STEPS_FOR_CARD or hold.get("released"):
+                    return
+                hold["released"] = True
+            _turn_id, queue, plan = hold["turn"], hold["queue"], hold["plan"]
+            if getattr(self, "_suppressed_card_turn", None) != _turn_id:
+                return  # the turn ended or another turn began
+            release_card_for_turn(_turn_id, self.conversation_id)
+            self._suppressed_card_turn = None
+            _done, _failed = set(queue.completed_ids), set(queue.failed_ids)
+            _running = getattr(item, "step_id", None)
+            steps = [
+                {
+                    "id": it.step_id,
+                    "description": it.description,
+                    "status": ("done" if it.step_id in _done
+                               else "failed" if it.step_id in _failed
+                               else "running" if it.step_id == _running
+                               else "pending"),
+                    "stepNumber": it.step_number,
+                    "toolName": _step_tool(it),
+                }
+                for it in list(queue.items)
+            ]
+            _card_id, _ = self._resolve_card_identity(_turn_id, "initial")
+            _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_START,
+                data=self._task_start_payload(
+                    task_id=_turn_id,
+                    description=(getattr(plan, "original_task", "") or "")[:120],
+                    plan_title=self._effective_plan_title(plan),
+                    mode=_mode,
+                    steps=steps,
+                    total_steps=len(steps),
+                    origin="initial",
+                    card_id=_card_id,
+                    # The frontend never saw this card: it starts one.
+                    card_relation="new",
+                    conversation_id=self.conversation_id,
+                    turn_id=_turn_id,
+                    **self._multiagent_tags(),
+                ),
+                turn_id=_turn_id,
+                conversation_id=self.conversation_id,
+                session_id=hold["session"],
+            )
+            self._persist_card_snapshot(
+                card_id=_card_id,
+                conversation_id=self.conversation_id,
+                card_relation="new",
+                plan_title=self._effective_plan_title(plan),
+                mode=_mode,
+                steps=self._queue_steps_snapshot(queue),
+                total_steps=len(queue.items),
+                terminal_state="running",
+            )
+            logger.info(
+                "[AgentKernel] task card earned at tool call %d (bound >=%d) turn=%s",
+                hold["calls"], MIN_TOOL_STEPS_FOR_CARD, _turn_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - a card never blocks the work
+            logger.warning("[AgentKernel] card release failed: %r", exc)
 
     def _emit_steering_ack(self, channel, message_id, status, _session) -> None:
         """REQ-15 AC5 (T26): visible acknowledgement that a steering message
@@ -13665,17 +13736,12 @@ Respond with a JSON object:
         queue=None,
     ) -> Optional[str]:
         try:
-            from backend.agent.nodes.outcome import NodeOutcome, NodeStatus, Reason
             from backend.agent.nodes.router import (
                 RouteRequest,
                 get_node_router,
                 routing_enabled,
             )
-            from backend.agent.nodes.runner import (
-                get_node_runner,
-                outcome_from_crawler_error,
-            )
-            from backend.agent.nodes.telemetry import log_node_execution, log_routing_decision
+            from backend.agent.nodes.runner import outcome_from_crawler_error
             from backend.agent.tool_registry import get_node_spec, resolve_tool
 
             if not routing_enabled():
@@ -13730,81 +13796,15 @@ Respond with a JSON object:
             # it builds no envelope of its own, so the recovery is invisible to
             # the ledger. Queuing fixes both: the failing step settles honestly
             # and the recovery runs as its own step with its own envelope.
-            #
-            # The legacy inline path is left untouched below and is used only when
-            # no queue is passed (an older caller or a unit test), so this change
-            # cannot break a caller that does not supply one.
-            if queue is not None:
-                return self._der_enqueue_recovery(
-                    item, recovery, step_result, _session, _turn_id,
-                    outcome, tool, queue,
-                )
-            # Run the recovery node through the node RUNNER (CT-4 caller
-            # existence) with the tool_bridge as its executor — the SAME
-            # dispatch path the failing node used, with the same params: the
-            # route is an alternative execution of the intent.
-            try:
-                self._tool_bridge._active_conversation_id[_session] = (
-                    self.conversation_id or ""
-                )
-            except Exception:
-                pass
-            import asyncio
-
-            _runner = get_node_runner()
-            _runner.set_executor(self._tool_bridge.execute_tool)
-            try:
-                _outcome = asyncio.run(
-                    _runner.run(
-                        recovery.name,
-                        dict(item.params or {}),
-                        node_spec=recovery,
-                        session_id=_session,
-                        plan_title=(getattr(plan, "plan_title", "") or ""),
-                    )
-                )
-            except Exception as _route_exc:  # noqa: BLE001 — recovery must not crash the loop
-                logger.warning(
-                    "[DER] routing recovery %s for %s crashed: %s",
-                    recovery.name, tool, _route_exc,
-                )
-                log_routing_decision(
-                    task_id=self.conversation_id or _session,
-                    step_id=item.step_id, node=tool,
-                    reason=outcome.reason.value,
-                    candidates=[recovery.name],
-                    selected=None, blocked_by="upstream_error",
-                )
+            # The old inline form (run the recovery node here, blocking the
+            # loop) was removed 2026-10-12: every production caller passes the
+            # queue, so it only ran for callers that did not exist.
+            if queue is None:
                 return None
-            log_node_execution(
-                task_id=self.conversation_id or _session,
-                node=recovery.name,
-                status=_outcome.status.value,
-                reason=_outcome.reason.value,
-                duration_ms=0,
+            return self._der_enqueue_recovery(
+                item, recovery, step_result, _session, _turn_id,
+                outcome, tool, queue,
             )
-            if _outcome.succeeded:
-                logger.info(
-                    "[DER] routed %s failure reason=%s -> recovery node %s (step %s)",
-                    tool, outcome.reason.value, recovery.name, item.step_id,
-                )
-                # Recover the formatted tool result from the outcome artifact
-                # (the runner already adapted the raw dict).
-                _raw = (
-                    _outcome.artifact.value
-                    if _outcome.artifact is not None else None
-                )
-                return self._format_tool_result(_raw) if _raw is not None else ""
-            # Recovery node failed identically — the router's attempt bound
-            # makes the second identical failure terminal (REQ-4 AC3).
-            log_routing_decision(
-                task_id=self.conversation_id or _session,
-                step_id=item.step_id, node=tool,
-                reason=outcome.reason.value,
-                candidates=[recovery.name],
-                selected=recovery.name, bound_hit=True,
-            )
-            return None
         except Exception as _route_err:  # noqa: BLE001 — routing must never break the loop
             logger.warning("[DER] routing consultation failed: %s", _route_err)
             return None
@@ -14111,10 +14111,22 @@ Respond with a JSON object:
                 logger.debug(
                     "[DER] terminal-failure triage consult failed: %r", _tt_err
                 )
+        # ONE repair per failure: the node router may already have queued a
+        # recovery step for it (_der_enqueue_recovery, the dead-fetch crawl).
+        # The graft split ran beside it with no check - two crews on one
+        # failure (ripple map, 2026-10-12).
+        _recovery_queued = any(
+            getattr(_qi, "recovery_of", "") == item.step_id
+            for _qi in (getattr(queue, "items", None) or ())
+        )
+        if _recovery_queued:
+            logger.info("[DER] %s failed - a recovery step is queued; no graft split",
+                        item.step_id)
         if (
             _split_ok
             and item.critical
             and not _terminal_failure
+            and not _recovery_queued
             and queue.graft_attempts < DER_MAX_GRAFTS
         ):
             # ── Session 247: GOAL-SUFFICIENCY GATE ──────────────────────────
@@ -14220,10 +14232,9 @@ Respond with a JSON object:
                         )
                         return aborted
                     queue.graft_attempts += 1
-                    # The children run as nodes (their own tool loops).
-                    self._der_route_subloop_children(
-                        _children, queue, _session, _turn_id
-                    )
+                    # The gate queued the children themselves; they run as
+                    # nodes (their own tool loops). Routing them again here
+                    # queued each child twice.
                     # Fold-back (parallel nodes, 2026-10-04): the failed step
                     # waits for its children instead of failing, and the
                     # dependents its failure aborted wait again - the first
@@ -15109,102 +15120,11 @@ Respond with a JSON object:
         read a file: measured 2026-10-12, 7 of 7 grafts in logs/iris.log were
         BATCH_ROUTED, 0 ran a node, and the written guess became the parent's
         result (conv-1573 s2: 12 browser calls -> call limit -> a 272-char
-        text answer stood in for the page). The batcher stays a module for
-        pure-text sub-queries; split children never go through it.
+        text answer stood in for the page). The batcher is removed; split
+        children are queued here and nothing else answers for them.
         """
         for _c in _children:
             queue.add_item(_c)
-
-    def _der_dispatch_batch_group(
-        self, group, queue, _session: str, _turn_id: str
-    ) -> set:
-        """Execute one ready BatchGroup as a single batched call and route
-        each child's answer back to its node. Returns the set of step_ids
-        queued. AC3: each dispatched group increments the per-turn call
-        counter."""
-        from backend.agent.batch_dispatch import BatchGroup, dispatch_batch
-
-        # Defensive: never iterate a non-BatchGroup. A patched/mocked batcher
-        # (unit tests) may return an auto-created MagicMock from flush() —
-        # treat it as "no group" so children fall through to the caller's
-        # per-child fallback instead of crashing on a non-iterable group.
-        if not isinstance(group, BatchGroup):
-            return set()
-
-        _queued: set = set()
-        _results: dict = {}
-        _router = getattr(self, "_router", None)
-        if _router is not None:
-            try:
-                # REQ-1 AC2 / T25: route the batched call through the ROUTER's
-                # role binding ("reasoning"), exactly like the per-step path
-                # (box.resolve → router.generate("reasoning")). Passing a model
-                # STRING here is a real bug: router.generate's first arg is a
-                # ROLE, so a model id fails resolve() and falls back to the
-                # legacy default (provider='ollama') — observed live 2026-08-06:
-                # "der_batch_dispatch failed: Ollama returned 500" while
-                # per-step calls routed to cerebras. The role form makes the
-                # batched call use the SAME bound provider as its siblings.
-                _messages = self._der_batch_base_messages(_session)
-                _results = (
-                    dispatch_batch(group, _router, "reasoning", _messages) or {}
-                )
-                # D1: dispatch_batch() calls router.generate() directly with
-                # this SAME router instance — credit its real (or, absent
-                # that, estimated-from-combined-children) usage here.
-                self._accrue_tokens(
-                    " ".join(_results.values()) if _results else "",
-                    getattr(_router, "last_usage", None),
-                    source="_der_dispatch_batch_group",
-                )
-                # REQ-7 AC3 (T25): record the batched call against the
-                # per-turn baseline so the loop shows call-count reduction.
-                self._der_turn_calls = getattr(self, "_der_turn_calls", 0) + 1
-            except Exception as _bexc:  # noqa: BLE001
-                loud_error(_bexc, "der_batch_dispatch")
-                _results = {}
-        for _child in getattr(group, "children", None) or []:
-            _sid = getattr(_child, "step_id", "")
-            _res = (_results or {}).get(_sid, "")
-            if _res and _res.strip():
-                _child.result = _res.strip()  # pre-seed → execution short-circuits
-                logger.info(
-                    "[DER] BATCH_ROUTED child=%s len=%d", _sid, len(_res)
-                )
-            else:
-                logger.warning(
-                    "[DER] BATCH_PARSE_FALLBACK child=%s -> individual", _sid
-                )
-            queue.add_item(_child)
-            _queued.add(_sid)
-        return _queued
-
-    def _der_batch_base_messages(self, _session: str) -> list:
-        """Base messages for a batched sub-loop call: the shared context each
-        child would otherwise receive (system zone + working memory)."""
-        _msgs = []
-        try:
-            _cp = ""
-            if getattr(self, "_live_ctx", None) is not None and hasattr(
-                self._live_ctx, "get_system_zone_content"
-            ):
-                _cp = self._live_ctx.get_system_zone_content() or ""
-            _wm = ""
-            if getattr(self, "_memory_interface", None) is not None:
-                _wm = self._memory_interface.get_assembled_context(_session) or ""
-            _sys = "\n\n".join(x for x in (_cp, _wm) if x).strip()
-            if _sys:
-                _msgs.append({"role": "system", "content": _sys})
-        except Exception:
-            pass
-        if not _msgs:
-            _msgs.append(
-                {
-                    "role": "system",
-                    "content": "You are a precise sub-query executor.",
-                }
-            )
-        return _msgs
 
     def _der_live_cad_state(self, session_id: str) -> Dict[str, float]:
         """Live Caducean state for the split decision (D2.2).
@@ -15245,127 +15165,6 @@ Respond with a JSON object:
             }
         except Exception:
             return {"x": 0.0, "y": 0.0, "xi": 0.0, "u": 0.0}
-
-    def _der_graft_recovery_plan(
-        self,
-        objective: str,
-        failed_item: "QueueItem",
-        error_msg: str,
-        _session: str,
-    ) -> List["QueueItem"]:
-        """
-        Legacy recovery-subgraph helper (kept for the M.3.3 memory-aware
-        recovery prompt tests). It asks the LLM for ALTERNATIVE recovery
-        STEPS but returns them as GOALS ONLY (tool=None, params={}) so they
-        resolve through the single resolver (explorer.propose) when executed.
-        It must NOT assign tools directly — that would violate F6 / the
-        System Invariant. The live critical-failure path routes through
-        _split_step instead; this method is a goal-only fallback.
-        Returns a list of QueueItem (recovery steps) or [] on any failure.
-        Never raises.
-        """
-        import re as _re
-        from backend.agent.der_loop import QueueItem
-
-        try:
-            # M.3.3 FIX: wire memory into recovery so the graft avoids
-            # previously-failed approaches and can reuse proven ones.
-            _failure_ctx = ""
-            _success_ctx = ""
-            _tools_block = ""
-            try:
-                if self._memory_interface:
-                    _ep = self._memory_interface.episodic
-                    _failures = _ep.retrieve_failures(
-                        task=failed_item.description, limit=2
-                    )
-                    if _failures:
-                        _failure_ctx = "\n".join(
-                            f"  - AVOID: {f.get('task_summary', '')[:100]} "
-                            f"(reason: {f.get('failure_reason', 'unknown')[:100]})"
-                            for f in _failures
-                        )
-                    _successes = _ep.retrieve_similar(
-                        task=failed_item.description, limit=2
-                    )
-                    if _successes:
-                        _success_ctx = "\n".join(
-                            f"  - ALTERNATIVE: {s.get('task_summary', '')[:100]} "
-                            f"(tools: {' -> '.join(str(t.get('tool', '?')) for t in s.get('tool_sequence', [])[:4])})"
-                            for s in _successes
-                        )
-            except Exception:
-                pass  # never block recovery on memory failure
-            try:
-                from backend.agent.tool_registry import get_all_specs
-
-                _specs = get_all_specs()
-                if _specs:
-                    _tools_block = "\n".join(
-                        f"  - {s.name}" for s in _specs[:40]
-                    )
-            except Exception:
-                pass
-
-            # What the failed step actually ran (a node step has no item.tool;
-            # this line used to read "TOOL: None").
-            _calls_line = "; ".join(
-                f"{_c.get('tool') or '?'} {_c.get('target') or ''}".strip()
-                + (" -> ok" if _c.get("ok", True) else " -> FAILED")
-                for _c in _step_calls(failed_item)
-            ) or "none"
-            prompt = (
-                f"OBJECTIVE: {objective}\n"
-                f"FAILED STEP: {failed_item.description}\n"
-                f"TOOL CALLS: {_calls_line}\n"
-                f"ERROR: {error_msg}\n\n"
-            )
-            if _failure_ctx:
-                prompt += (
-                    f"PAST FAILURES (do NOT repeat these approaches):\n"
-                    f"{_failure_ctx}\n\n"
-                )
-            if _success_ctx:
-                prompt += f"ALTERNATIVE PROVEN APPROACHES:\n{_success_ctx}\n\n"
-            if _tools_block:
-                prompt += f"AVAILABLE TOOLS:\n{_tools_block}\n\n"
-            prompt += (
-                "The execution of this step failed. Provide a JSON-only recovery "
-                "sub-graph containing alternative step(s) to achieve the objective "
-                "or gracefully handle the error.\n"
-                'Respond with: {"steps": [{"step_id": "r1", "description": "...", '
-                '"tool": "...", "params": {}, "depends_on": []}]}'
-            )
-            # Recovery planning is THINKING, not tool execution -> Brain (2026-08-16).
-            _raw = self.infer(prompt, role="reasoning", max_tokens=400, temperature=0.2)
-            _text = _raw.raw_text or ""
-            _m = _re.search(r"\{[\s\S]+\}", _text)
-            if not _m:
-                return []
-            _data = json.loads(_m.group())
-            _steps: List["QueueItem"] = []
-            for _rs in _data.get("steps", []):
-                # GOALS ONLY: do NOT assign tool/params here. The single
-                # resolver (explorer.propose) picks the tool when the step
-                # executes (F6 / System Invariant). tool=None forces that path.
-                _desc = str(_rs.get("description", ""))
-                _steps.append(
-                    QueueItem(
-                        step_id=str(_rs.get("step_id", f"r{len(_steps) + 1}")),
-                        step_number=900 + len(_steps),
-                        description=_desc,
-                        tool=None,
-                        params={},
-                        depends_on=list(_rs.get("depends_on", []) or []),
-                        critical=bool(_rs.get("critical", True)),
-                        parallel_safe=False,
-                        objective_anchor=objective,
-                    )
-                )
-            return _steps
-        except Exception as _e:
-            logger.warning("[DER] graft recovery parse failed: %s", _e)
-            return []
 
     def _der_stamp_session_exit(self, natural_exit: bool) -> None:
         """REQ-16 AC2 (T32): stamp the session's exit nature on the
@@ -17032,7 +16831,7 @@ Respond with a JSON object:
                     U_SPLIT = 0.5
                 # pin_42ddd255162d: key the gather-sanction state by the
                 # CONVERSATION, not the execution session — DER split children
-                # (SubLoopBatcher) run under the placeholder session
+                # run under the placeholder session
                 # "unknown", which made every child look like a fresh task and
                 # bypassed the converged/budget veto (u=0.00 yet children
                 # re-gathered in a 5-11ms recursion).
@@ -17883,6 +17682,8 @@ Respond with a JSON object:
             # pre-call hook so their rows carry `brain_ok` - an outcome-checked
             # label and fine-tuning data, not only parity.)
             _hist, _last = _step_so_far()
+            # A real tool call: a card-free turn earns its card at the bound.
+            self._der_count_tool_call(item)
             # An Oracle-decided pick is labelled by what THIS call did.
             _pend = _decided.pop("row", None)
             if _pend is not None:

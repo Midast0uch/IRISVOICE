@@ -134,9 +134,7 @@ class TestTaskLearningActuallyEmits:
 
         item = _Item()
         item.is_subloop = False
-        with patch("backend.agent.agent_kernel.get_batcher") as _batcher, \
-             patch("backend.agent.agent_kernel.debit_work_units", return_value=0):
-            _batcher.return_value.offer.return_value = None
+        with patch("backend.agent.agent_kernel.debit_work_units", return_value=0):
             _run(kernel, queue, item, step_success=False, bus=bus)
 
         events = _learning_events(bus)

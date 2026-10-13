@@ -2,7 +2,7 @@
 Contract test: scheduler module isolation (CT-3 / CT-4).
 
 The scheduler modules (phase_manager.py, rate_meter.py, trig_coupling.py,
-call_context.py, batch_dispatch.py) must NEVER:
+call_context.py) must NEVER:
   - Call ``coupled_registry`` methods (apply_coupling, register_session, etc.)
   - Call ``iris_ffi`` functions (ffi_caducean_get_xi, get_state, etc.)
   - Import anything beyond ``math``, ``typing``, ``time``, ``asyncio``,
@@ -41,7 +41,6 @@ _SCHEDULER_MODULES = [
     "backend.agent.rate_meter",
     "backend.agent.trig_coupling",
     "backend.agent.call_context",
-    "backend.agent.batch_dispatch",
 ]
 
 

@@ -18,7 +18,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.memory.db import app_flush, app_write
 from .encoder import PathEncoder
@@ -148,7 +148,7 @@ class MyceliumInterface:
         self._lm_index = LandmarkIndex(conn)
         self._merger = LandmarkMerger(self._lm_index)
         self._renderer = ProfileRenderer(self._store, self._lm_index)
-        self._ep_indexer = EpisodeIndexer(conn)
+        self._ep_indexer = EpisodeIndexer(conn, active_state=self._active_node_state)
         self._resonance = ResonanceScorer(conn, self._store)
 
         # Convenience public references for callers that need direct access
@@ -377,6 +377,23 @@ class MyceliumInterface:
     # ------------------------------------------------------------------
     # Context path generation
     # ------------------------------------------------------------------
+
+    # Bound on the node ids one episode-index row carries (the session's active
+    # set only grows during a session).
+    _MAX_INDEXED_NODES = 32
+
+    def _active_node_state(self, session_id: str) -> Tuple[List[str], List[str]]:
+        """The session's active node ids (the nodes its context paths walked)
+        and their spaces, for the episode index. Never raises."""
+        try:
+            ids = sorted(self._registry.get_active(session_id))[: self._MAX_INDEXED_NODES]
+            spaces = sorted({
+                n.space_id for n in (self._store.get_node_by_id(i) for i in ids) if n
+            })
+            return ids, spaces
+        except Exception as exc:  # noqa: BLE001 - an empty state still indexes
+            logger.debug("[interface] active node state failed: %s", exc)
+            return [], []
 
     def get_context_path(
         self, task_text: str, session_id: str, minimal: bool = False

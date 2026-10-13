@@ -10,8 +10,9 @@ import uuid
 import pytest
 from .conftest_mycelium import mem_conn  # noqa: F401
 
+from backend.memory.mycelium.interface import MyceliumInterface
 from backend.memory.mycelium.store import CoordinateStore
-from backend.memory.mycelium.resonance import ResonanceScorer
+from backend.memory.mycelium.resonance import EpisodeIndexer, ResonanceScorer
 from backend.memory.mycelium.spaces import (
     RESONANCE_SPACES,
     RESONANCE_WEIGHT_PER_SPACE,
@@ -271,3 +272,50 @@ def test_augment_retrieval_returns_empty_for_empty_input(mem_conn):
 
     results = scorer.augment_retrieval("sess_empty", [])
     assert results == [], "Empty input must return empty list"
+
+
+def test_episode_index_records_the_sessions_active_nodes(mem_conn):
+    """
+    Measured 2026-10-12 on data/memory.db: all 2,405 rows of
+    mycelium_episode_index had node_ids = '[]'. Every caller of
+    EpisodeIndexer.index_episode passed no node_ids, so the session's newest
+    row never named its active nodes and ResonanceScorer had no session state
+    (_load_session_nodes_by_space returned {}).
+
+    The interface's indexer reads the session's active node ids and their
+    spaces itself. An EpisodeIndexer built without active_state keeps the old
+    "[]" behaviour for direct callers.
+    """
+    _seed_spaces(mem_conn)
+    mi = MyceliumInterface(mem_conn)
+    store = CoordinateStore(mem_conn)
+
+    node_domain = store.upsert_node("domain", [0.9, 0.9, 0.9, 0.9, 0.9], "dom", 0.8)
+    node_style = store.upsert_node("style", [0.2, 0.2, 0.2, 0.2, 0.2], "sty", 0.8)
+    session_id = "s1"
+    mi._registry.register(session_id, [node_domain.node_id, node_style.node_id])
+
+    mi.episode_indexer.index_episode(episode_id="e1", session_id=session_id)
+
+    node_ids, space_ids = mem_conn.execute(
+        "SELECT node_ids, space_ids FROM mycelium_episode_index WHERE episode_id = ?",
+        ("e1",),
+    ).fetchone()
+    assert json.loads(node_ids) == sorted([node_domain.node_id, node_style.node_id]), (
+        f"episode index must record the session's active nodes, got {node_ids}"
+    )
+    assert json.loads(space_ids) == ["domain", "style"], (
+        f"episode index must record the active nodes' spaces, got {space_ids}"
+    )
+
+    session_nodes = ResonanceScorer(mem_conn, store)._load_session_nodes_by_space(session_id)
+    assert set(session_nodes) == {"domain", "style"}, (
+        f"resonance must see the session's spaces, got {sorted(session_nodes)}"
+    )
+
+    EpisodeIndexer(mem_conn).index_episode(episode_id="e2", session_id=session_id)
+    raw = mem_conn.execute(
+        "SELECT node_ids FROM mycelium_episode_index WHERE episode_id = ?",
+        ("e2",),
+    ).fetchone()[0]
+    assert raw == "[]", f"indexer without active_state must keep '[]', got {raw}"

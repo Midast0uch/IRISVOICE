@@ -7,8 +7,7 @@ in-process only — unreachable from a running app without a debugger.
 
 `GET /api/debug/caducean` returns flag states, the oscillator registry, per-quota
 rate-meter draw + learned ceilings + **inter-request gap statistics**, the coupled
-registry with each session's assigned winding numbers, and the pending Sub-Loop
-batch groups.
+registry with each session's assigned winding numbers.
 
 Strictly read-only and side-effect free: every accessor used here is documented as
 such (`provider_metrics`, `draw`, `gap_stats`, `snapshot`, `list_sessions`). It
@@ -118,30 +117,6 @@ def _coupling() -> dict[str, Any]:
             # registry; a single session produces no nucleus/barrier pair.
             "differentiation_possible": len(sessions) >= 2,
         }
-    except Exception as exc:
-        return {"error": str(exc)[:200]}
-
-
-def _batching() -> dict[str, Any]:
-    """Pending Sub-Loop batch groups (Wave 4)."""
-    try:
-        from backend.agent.batch_dispatch import get_batcher
-    except Exception as exc:
-        return {"error": f"batch_dispatch unavailable: {exc}"[:200]}
-
-    try:
-        batcher = get_batcher()
-        groups = []
-        with batcher._lock:  # read-only snapshot under the batcher's own lock
-            for _jp, _g in batcher._groups.items():
-                groups.append({
-                    "join_point": _jp,
-                    "children": [
-                        getattr(c, "step_id", "?") for c in _g.children
-                    ],
-                    "quota_id": _g.quota_id,
-                })
-        return {"pending_group_count": len(groups), "pending_groups": groups}
     except Exception as exc:
         return {"error": str(exc)[:200]}
 
@@ -611,7 +586,6 @@ async def caducean_debug() -> dict[str, Any]:
         "flags": _flags(),
         "scheduler": _scheduler(),
         "coupling": _coupling(),
-        "batching": _batching(),
         "memory": _memory(),
         "context_window": _context_window(),
         "loader_state": _loader_state(),

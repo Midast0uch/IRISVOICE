@@ -37,6 +37,12 @@ _AND_RE = re.compile(r"\s+and\s+", re.IGNORECASE)
 # Example: f('a, b')" is not a list).
 _LIST_LEAD_RE = re.compile(r"^((?:(?![.!?]\s)[^:]){3,}):\s+(.+)$", re.DOTALL)
 _LIST_JOIN_RE = re.compile(r"^(?:and|or)\s+", re.IGNORECASE)
+# A short question tail ("how many", "and when", "where exactly"): at most three
+# words, opening with a question word.
+_FOLLOW_UP_RE = re.compile(
+    r"^(?:how|what|when|where|which|who|whom|whose|why)\b(?:\s+\S+){0,2}\s*[?.!]?$",
+    re.IGNORECASE,
+)
 # A list comma, not one inside a call or a quote: "add(name, qty)".
 _LIST_COMMA_RE = re.compile(r",(?![^()]*\))(?=(?:[^'\"]*['\"][^'\"]*['\"])*[^'\"]*$)")
 # A prohibition ("do not change app.py") is kept by NOT acting, so no step can
@@ -211,8 +217,19 @@ def extract_required(request: str) -> Tuple[str, ...]:
         # A comma list first ("A, B, and C"), then "A and B" inside each item.
         _items = [_chunk]
         if len(_LIST_COMMA_RE.findall(_chunk)) >= 2:
-            _subs = [_LIST_JOIN_RE.sub("", _s.strip()) for _s in _LIST_COMMA_RE.split(_chunk)]
-            _subs = [_s for _s in _subs if _s]
+            _subs = []
+            for _s in (_LIST_JOIN_RE.sub("", _s.strip()) for _s in _LIST_COMMA_RE.split(_chunk)):
+                if not _s:
+                    continue
+                # "... which season they had the most wins, and how many": a
+                # short question tail asks more about the clause before it, it
+                # is not a deliverable of its own. As a fact "how many" names
+                # nothing, was never covered, drew 2 pushes of 8 empty nodes
+                # (48 s) and a false "could not" in the reply (live 2026-10-12).
+                if _subs and _FOLLOW_UP_RE.match(_s):
+                    _subs[-1] = f"{_subs[-1]}, {_s}"
+                    continue
+                _subs.append(_s)
             if len(_subs) > 1 and all(len(_s) >= 8 for _s in _subs):
                 _items = _subs
         for _item in _items:

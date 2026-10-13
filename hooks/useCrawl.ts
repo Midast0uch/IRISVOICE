@@ -187,9 +187,12 @@ export function useCrawl(wsConnected: boolean = true) {
   const reducedMotion = useReducedMotion()
   const activeRef = useRef(false)
   const sessionIdRef = useRef<string | null>(null)
+  // The turn the crawl on screen ran in has ended (turn.end since its start).
+  const turnEndedRef = useRef(false)
 
   const reset = useCallback(() => {
     _persistSession(null)
+    turnEndedRef.current = false
     setState(IDLE)
   }, [])
 
@@ -199,10 +202,18 @@ export function useCrawl(wsConnected: boolean = true) {
       activeRef.current = true
       // The live browser (browser_open / browser_act) is not a search: it must
       // not wipe a finished search's sources, nor swap the persisted session.
+      // But a crawl whose TURN has ended is history: a browser run in a later
+      // turn starts clean (live 2026-10-12: a new thread's browser run showed
+      // the previous turn's "Searching quotes.toscrape.com", "[5/5]", "8/5").
       if (msg.source === "browser") {
-        setState((s) => (s.active ? s : { ...s, active: true }))
+        const laterTurn = turnEndedRef.current
+        turnEndedRef.current = false
+        setState((s) => (laterTurn
+          ? { ...IDLE, active: true, sessionId: sessionIdRef.current }
+          : s.active ? s : { ...s, active: true }))
         return
       }
+      turnEndedRef.current = false
       sessionIdRef.current = msg.session_id ?? sessionIdRef.current
       if (msg.session_id) _persistSession(msg.session_id)
       setState(() => ({
@@ -343,6 +354,7 @@ export function useCrawl(wsConnected: boolean = true) {
     // crawl runs inside its turn, so its own complete has already landed.
     function onTurnEnd() {
       activeRef.current = false
+      turnEndedRef.current = true
       setState((s) => (s.active ? { ...s, active: false, complete: true } : s))
     }
     function onSyncRequired(e: Event) {

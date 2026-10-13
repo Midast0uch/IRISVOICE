@@ -352,3 +352,68 @@ def test_input_without_a_grant_is_still_refused_while_watching():
     ok = asyncio.run(mgr.deliver_input(cdp.TakeoverInput(kind="pointer", x=0.5, y=0.5)))
     assert ok is False
     assert not [m for m, _ in fake.sent if m == "Input.dispatchMouseEvent"]
+
+
+class _PanelSession:
+    """A stand-in for BrowserSession: records the fit and the observe in order.
+    ``_action_lock`` is the lock an agent action holds while it drives the page."""
+
+    _job_id = "r1"
+
+    def __init__(self):
+        self._action_lock = asyncio.Lock()
+        self.calls: list = []
+
+    def available(self):
+        return True
+
+    def user_has_control(self):
+        return False
+
+    async def fit_viewport_to_panel(self, w, h):
+        async with self._action_lock:  # as the real fit: never resize under an action
+            self.calls.append(("fit", w, h))
+        return {"width": w, "height": h}
+
+    async def observe(self, marked_screenshot, emit):
+        self.calls.append(("observe",))
+        return {"ok": True, "marks": [], "marks_seq": 1, "title": "t", "url": "u", "digest": "d"}
+
+
+def test_panel_size_during_an_action_is_applied_by_the_next_observe(monkeypatch):
+    """Live 2026-10-12 (run browser-c9f117159a4f): the panel reported its size while
+    an observe held the page lock. The fit waited 20 s for the lock, then was
+    dropped, and the page stayed 1366x768 in a tall panel. Now the fit returns at
+    once and keeps the size; the next observe applies it before the marks."""
+    from backend.agent.tools import browser_tools as bt
+
+    async def _main():
+        session = _PanelSession()
+        monkeypatch.setattr(bt, "_PANEL_SIZE", {})
+        monkeypatch.setitem(bt._RT.sessions, "c1", bt._Entry(session=session))
+        await session._action_lock.acquire()
+        try:
+            out = await asyncio.wait_for(bt.fit_live_viewport("r1", 344, 671), 1.0)
+        finally:
+            session._action_lock.release()
+        assert out is None and session.calls == [], session.calls
+        assert bt._PANEL_SIZE == {"width": 344, "height": 671}, bt._PANEL_SIZE
+        await bt._do_observe("c1", False, None)
+        assert session.calls[:2] == [("fit", 344, 671), ("observe",)], session.calls
+
+    asyncio.run(_main())
+
+
+def test_an_observe_fits_the_panel_before_it_takes_the_marks(monkeypatch):
+    """A resize after the marks would move every box, so the panel's shape is
+    applied first. Pins the order of the fit and the observe."""
+    from backend.agent.tools import browser_tools as bt
+
+    async def _main():
+        session = _PanelSession()
+        monkeypatch.setattr(bt, "_PANEL_SIZE", {"width": 344, "height": 671})
+        monkeypatch.setitem(bt._RT.sessions, "c1", bt._Entry(session=session))
+        await bt._do_observe("c1", False, None)
+        return session.calls
+
+    assert asyncio.run(_main()) == [("fit", 344, 671), ("observe",)]

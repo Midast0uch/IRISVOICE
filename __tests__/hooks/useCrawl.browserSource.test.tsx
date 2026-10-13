@@ -84,4 +84,61 @@ describe("useCrawl browser-source events", () => {
     act(() => fire("iris:turn_end", {}))
     expect(result.current.state.active).toBe(false)
   })
+
+  it("a browser run in a LATER turn starts with a clean crawl state", () => {
+    // Live 2026-10-12: in a new thread, a browser run kept the previous turn's
+    // header ("Searching quotes.toscrape.com"), its counter ("[5/5]", then "8/5")
+    // and its sources. The turn end marks the search as history.
+    const { result } = renderHook(() => useCrawl(true))
+    const urls = [1, 2, 3, 4, 5].map((n) => `https://quotes.toscrape.com/page/${n}/`)
+
+    act(() => fire("iris:crawler_started", {
+      query: "quotes.toscrape.com", url_count: 5, urls, session_id: "sess-2", job_id: "job-web",
+    }))
+    urls.forEach((url, i) => act(() => fire("iris:crawler_page_fetched", {
+      url, page_number: i + 1, total: 5, host: "quotes.toscrape.com", job_id: "job-web",
+    })))
+    act(() => fire("iris:crawler_progress", { stage: "fetching", message: "[5/5] quotes.toscrape.com quote" }))
+    act(() => fire("iris:crawler_vision_action", { type: "crawler_vision_action", action: "click", run_id: "job-web", seq: 1 }))
+    expect(result.current.state.sources).toHaveLength(5)
+    expect(result.current.state.visionActions).toHaveLength(1)
+
+    act(() => fire("iris:turn_end", {}))
+    act(() => fire("iris:crawler_started", {
+      query: "https://example.com/", url_count: 1, source: "browser", job_id: "run-2",
+    }))
+    const s = result.current.state
+    expect(s.active).toBe(true)
+    expect(s.query).toBe("")
+    expect(s.total).toBe(0)
+    expect(s.progress).toBeNull()
+    expect(s.pages).toEqual([])
+    expect(s.sources).toEqual([])
+    expect(s.visionActions).toEqual([])
+  })
+
+  it("a browser run in the SAME turn as a web crawl keeps the search state", () => {
+    // Same sequence as above, without the turn end: the search is still the
+    // current turn's work, so the browser start must not wipe it.
+    const { result } = renderHook(() => useCrawl(true))
+    const urls = [1, 2, 3, 4, 5].map((n) => `https://quotes.toscrape.com/page/${n}/`)
+
+    act(() => fire("iris:crawler_started", {
+      query: "quotes.toscrape.com", url_count: 5, urls, session_id: "sess-2", job_id: "job-web",
+    }))
+    urls.forEach((url, i) => act(() => fire("iris:crawler_page_fetched", {
+      url, page_number: i + 1, total: 5, host: "quotes.toscrape.com", job_id: "job-web",
+    })))
+    act(() => fire("iris:crawler_progress", { stage: "fetching", message: "[5/5] quotes.toscrape.com quote" }))
+    act(() => fire("iris:crawler_vision_action", { type: "crawler_vision_action", action: "click", run_id: "job-web", seq: 1 }))
+
+    act(() => fire("iris:crawler_started", {
+      query: "https://example.com/", url_count: 1, source: "browser", job_id: "run-2",
+    }))
+    const s = result.current.state
+    expect(s.active).toBe(true)
+    expect(s.query).toBe("quotes.toscrape.com")
+    expect(s.sources).toHaveLength(5)
+    expect(s.visionActions).toHaveLength(1)
+  })
 })

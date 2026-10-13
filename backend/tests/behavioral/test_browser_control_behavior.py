@@ -42,6 +42,17 @@ document.getElementById('b').addEventListener('click', function () {
 document.getElementById('q').addEventListener('keydown', function () { window.__keys.push(Date.now()); });
 </script></body></html>"""
 _TWO = "<!doctype html><html><head><title>Fixture Two</title></head><body><h1>Second page</h1><a href='/'>Home</a></body></html>"
+_FORM = """<!doctype html><html><head><title>Fixture Form</title></head><body>
+<h1>Order form</h1>
+<form>
+<fieldset><legend>Size</legend>
+<input type="radio" id="s-small" name="size" value="small"><label for="s-small">Small</label>
+<input type="radio" id="s-medium" name="size" value="medium"><label for="s-medium">Medium</label>
+<input type="radio" id="s-large" name="size" value="large"><label for="s-large">Large</label>
+</fieldset>
+<label for="t">Topping</label>
+<select id="t" name="topping"><option value="bacon">Bacon</option><option value="cheese">Cheese</option></select>
+</form></body></html>"""
 
 
 _HEAVY = """<!doctype html><html><head><title>Heavy</title>
@@ -81,7 +92,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        page = _TWO if self.path.startswith("/two.html") else _HEAVY if self.path.startswith("/heavy.html") else _INDEX
+        page = (_TWO if self.path.startswith("/two.html") else _FORM if self.path.startswith("/form.html")
+                else _HEAVY if self.path.startswith("/heavy.html") else _INDEX)
         body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -317,6 +329,31 @@ async def test_failed_action_reports_ok_false_and_the_error(site, allow_loopback
     back = await browser_tools.browser_act(conv, "back", None, None, events)  # no history
     assert back["success"] is False and "no previous page" in back["error"]
     assert events.vision()[-1][0]["ok"] is False
+
+
+async def test_select_on_a_radio_button_clicks_it(site, allow_loopback, conv):
+    """Live 2026-10-12 (httpbin.org/forms/post, the pizza size radios): the model sent
+    browser_act "select" to a radio button. It failed twice - "select needs text", then
+    "Element is not a <select> element" - before it clicked. A radio is chosen by a
+    click with no text; a real <select> still needs its option's text."""
+    events = _Events()
+    opened = await browser_tools.browser_open(conv, site + "/form.html", events)
+    assert opened["success"], opened
+    observed = await browser_tools.browser_observe(conv, events)
+    assert observed["success"], observed
+    large = _mark(observed, "radio", "Large")
+    topping = _mark(observed, "combobox", "Topping")
+
+    radio = await browser_tools.browser_act(conv, "select", large["id"], "", events)
+    assert radio["success"], radio
+    assert await _eval(conv, "document.querySelector('input[value=large]').checked") is True
+
+    no_text = await browser_tools.browser_act(conv, "select", topping["id"], "", events)
+    assert no_text["success"] is False and "needs the option's text" in no_text["error"]
+
+    picked = await browser_tools.browser_act(conv, "select", topping["id"], "cheese", events)
+    assert picked["success"], picked
+    assert await _eval(conv, "document.querySelector('select[name=topping]').value") == "cheese"
 
 
 # ── B3: the iframe follows ─────────────────────────────────────────────────

@@ -121,7 +121,15 @@ export function TakeoverLiveSurface({
   })
   const surfaceRef = useRef<HTMLDivElement | null>(null)
 
-  const emitInput = (payload: Record<string, unknown>) => {
+  // The run changed: show THAT run's newest frame from the store. Live
+  // 2026-10-12: a new run's first frame arrived ~100 ms before the panel
+  // switched to it, so the frame filter dropped it; a static page sends no
+  // other, and the previous run's page stayed on screen.
+  useEffect(() => {
+    setFrame(watch && runId ? getLiveRun(runId)?.frame ?? null : null)
+  }, [runId, watch])
+
+  const emitInput =(payload: Record<string, unknown>) => {
     if (typeof window === "undefined" || !interactive) return
     window.dispatchEvent(
       new CustomEvent("iris:takeover_input", {

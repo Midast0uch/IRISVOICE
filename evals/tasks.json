@@ -140,6 +140,18 @@
      "reply_patterns": ["root|zone|domain|\\.int|\\.arpa|idn"]},
     {"id": "b10_mdn_html", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
      "prompt": "Open https://developer.mozilla.org/en-US/ in the live browser, use the site's search to look for 'fetch', open the Fetch API page, and tell me in one sentence what the Fetch API does.",
-     "reply_patterns": ["request|resource|network|http"]}
+     "reply_patterns": ["request|resource|network|http"]},
+    {"id": "g01_quote_author_birth", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
+     "prompt": "On https://quotes.toscrape.com, go to the author page of whoever wrote the quote that begins 'The world as we have created it' and tell me the birth date it shows.",
+     "reply_patterns": ["march 14,? 1879|14 march 1879"]},
+    {"id": "g02_country_andorra", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
+     "prompt": "What capital and population does https://www.scrapethissite.com/pages/simple/ list for Andorra?",
+     "reply_patterns": ["andorra la vella", "84,?000"]},
+    {"id": "g03_austen_humor", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
+     "prompt": "On https://quotes.toscrape.com, find a Jane Austen quote under the 'humor' tag and tell me what it says.",
+     "reply_patterns": ["intolerably stupid|imagination is very rapid"]},
+    {"id": "g04_hockey_1990_wins", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
+     "prompt": "On https://www.scrapethissite.com/pages/forms/, look up the Boston Bruins in the site's team list and tell me how many games they won in 1990.",
+     "reply_patterns": ["\\b44\\b"]}
   ]
 }

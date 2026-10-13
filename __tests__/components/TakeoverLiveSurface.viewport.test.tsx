@@ -119,3 +119,22 @@ describe("watch-mode image rect", () => {
     expect(last.y).toBeCloseTo(40 + (688 - h) / 2)
   })
 })
+
+describe("watch-mode run switch", () => {
+  afterEach(() => {
+    clearRun("r-old")
+    clearRun("r-new")
+  })
+
+  it("a panel moved to a new run shows that run's frame, not the old run's (live 2026-10-12)", () => {
+    recordFrame({ run_id: "r-old", viewport_w: 1366, viewport_h: 768, format: "jpeg", bytes: "AAAA" })
+    const { container, rerender } = render(<TakeoverLiveSurface watch runId="r-old" width="100%" height="100%" />)
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,AAAA")
+
+    // The new run's first frame lands before the panel switches to it. The frame
+    // listener drops it (wrong run), so only the store holds it.
+    recordFrame({ run_id: "r-new", viewport_w: 1366, viewport_h: 768, format: "jpeg", bytes: "BBBB" })
+    rerender(<TakeoverLiveSurface watch runId="r-new" width="100%" height="100%" />)
+    expect(container.querySelector("img")?.getAttribute("src")).toBe("data:image/jpeg;base64,BBBB")
+  })
+})

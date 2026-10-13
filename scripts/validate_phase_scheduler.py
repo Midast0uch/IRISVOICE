@@ -11,8 +11,7 @@ and exits with code 1.
 Phases:
   1. Run all contract tests  (tests/contract/test_rate_limit_error_contract.py,
                               tests/contract/test_quota_key_contract.py,
-                              tests/contract/test_contract_phase_manager.py,
-                              tests/contract/test_batch_contract.py)
+                              tests/contract/test_contract_phase_manager.py)
   2. Run all unit tests      (tests/unit/test_retry_after_parse.py,
                               tests/unit/test_backoff_sleeps.py, ...)
   3. Run all behavioural     (tests/behavioral/test_rate_limit_honesty.py,
@@ -74,10 +73,6 @@ def main() -> int:
         ["-q", "--tb=line", "backend/tests/contract/test_contract_phase_manager.py"],
     )
     failures += _run(
-        "batch contract",
-        ["-q", "--tb=line", "backend/tests/contract/test_batch_contract.py"],
-    )
-    failures += _run(
         "scheduler isolation (CT-3/CT-4)",
         ["-q", "--tb=line", "backend/tests/contract/test_scheduler_isolation.py"],
     )
@@ -95,7 +90,6 @@ def main() -> int:
         "backend/tests/unit/test_phase_math.py",
         "backend/tests/unit/test_amplitude_relaxation.py",
         "backend/tests/unit/test_gate_sync.py",
-        "backend/tests/unit/test_batch_dispatch.py",
     ]
     failures += _run("all units", ["-q", "--tb=line"] + _unit_files)
 
@@ -105,9 +99,6 @@ def main() -> int:
         "backend/tests/behavioral/test_rate_limit_honesty.py",
         "backend/tests/behavioral/test_bounded_fanout.py",
         "backend/tests/behavioral/test_local_provider_never_gated.py",
-        "backend/tests/behavioral/test_batch_attribution.py",
-        "backend/tests/behavioral/test_batch_parse_failure_fallback.py",
-        "backend/tests/behavioral/test_batch_never_holds_fast_child.py",
         "backend/tests/behavioral/test_gate_resets_on_admit.py",
         "backend/tests/behavioral/test_priority_lane_never_waits.py",
         "backend/tests/behavioral/test_shared_quota_is_coupled.py",
@@ -118,16 +109,9 @@ def main() -> int:
 
     # ── Phase 4: flag-on integration ──────────────────────────────────────
     print("\n── Flag-on integration ──")
-    _ec = _run("gate (flag-on)", [
+    failures += _run("gate (flag-on)", [
         "-q", "--tb=line", "backend/tests/unit/test_gate_sync.py",
     ], env_override={FLAG: "1"})
-    if _ec == 0:
-        failures += _run("attribution (flag-on)", [
-            "-q", "--tb=line", "backend/tests/behavioral/test_batch_attribution.py",
-        ], env_override={FLAG: "1"})
-    else:
-        print("  [gate (flag-on)]  SKIP (gate test failed)")
-        failures += 1
 
     # ── Phase 5: inter-request-gap stddev reduction (REQ-20 AC6 / REQ-22 AC7) ──
     print("\n── Inter-request gap spacing (REQ-22 AC6/AC7) ──")

@@ -13,7 +13,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from backend.memory.db import app_write
 from .store import CoordinateStore
@@ -46,8 +46,17 @@ class EpisodeIndexer:
     Failures are silently swallowed — episode storage MUST NOT be blocked.
     """
 
-    def __init__(self, conn: "sqlcipher3.Connection") -> None:
+    def __init__(
+        self,
+        conn: "sqlcipher3.Connection",
+        active_state: Optional[Callable[[str], Tuple[List[str], List[str]]]] = None,
+    ) -> None:
         self._conn = conn
+        # session_id -> (active node_ids, their space_ids). Every caller of
+        # index_episode passed no node_ids, so all 2,405 rows in the live store
+        # held "[]" (2026-10-12) and resonance re-ranking never had a session
+        # state to compare against. The indexer now reads the state itself.
+        self._active_state = active_state
 
     def index_episode(
         self,
@@ -77,6 +86,10 @@ class EpisodeIndexer:
             coordinate_hash:  Optional content hash for dedup (computed if not provided).
         """
         try:
+            if node_ids is None and self._active_state is not None:
+                node_ids, _spaces = self._active_state(session_id)
+                if space_ids is None:
+                    space_ids = _spaces
             idx_id = _short_uuid()
             nodes_json = json.dumps(node_ids or [])
             spaces_json = json.dumps(space_ids or [])

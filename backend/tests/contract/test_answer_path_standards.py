@@ -380,6 +380,54 @@ def test_dedup_read_uses_one_index_for_session_type_and_order(tmp_path):
         f"the dedup read sorts the rows again, plan: {plan} - the 56 s loop stall")
 
 
+# ── S83: the session's newest episode row is one index search ───────────────
+# (live 2026-10-12: resonance._load_session_nodes_by_space read every episode row
+# of the session and sorted them - 0.9 s cold, 8.2 s inside a live context
+# package.)
+
+_NEWEST_EPISODE = (
+    "SELECT node_ids FROM mycelium_episode_index WHERE session_id = ? "
+    "ORDER BY created_at DESC LIMIT 1"
+)
+
+
+def test_episode_index_newest_row_is_one_index_search(tmp_path):
+    """Measured 2026-10-12: the newest episode row of a session was found by
+    reading every row of that session and sorting them. An index over
+    (session_id, created_at) walks the session newest-first and stops at the
+    first row. The schema comes from the real initialise_mycelium_schema; the
+    session holds 500 rows and 300 rows belong to other sessions, so the
+    planner has a real choice."""
+    from backend.memory.db import initialise_mycelium_schema
+
+    conn = sqlite3.connect(str(tmp_path / "memory.db"))
+    try:
+        initialise_mycelium_schema(conn)
+        rows = [
+            (
+                f"idx{i}", f"ep{i}", "s" if i < 500 else f"o{i % 3}", '["n1"]',
+                '["sp"]', f"hash{i}", 1, 1000.0 + i,
+            )
+            for i in range(800)
+        ]
+        conn.executemany(
+            "INSERT INTO mycelium_episode_index (idx_id, episode_id, session_id, node_ids, "
+            "space_ids, coordinate_hash, source_channel, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+        conn.execute("ANALYZE")
+        plan = _plan(conn, _NEWEST_EPISODE, ("s",))
+    finally:
+        conn.close()
+    assert not any("TEMP B-TREE FOR ORDER BY" in p for p in plan), (
+        f"the newest episode row is found by sorting the whole session, plan: {plan} - "
+        "8.2 s inside a live context package (2026-10-12)")
+    assert any(p.startswith("SEARCH") and "session_id=?" in p for p in plan), (
+        f"the newest episode row must be one index search on session_id, plan: {plan}")
+
+
 # ── S82: a failed step's der_failure note is written off the DER loop ───────
 # (stack dumps 2026-10-12, conv-1573: the note ran inline on the loop thread
 # and held it 56 s before the recovery graft started.)

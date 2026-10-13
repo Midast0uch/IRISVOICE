@@ -15,14 +15,20 @@ card-bearing turn is never affected.
 """
 from __future__ import annotations
 
+import threading
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
 import pytest
 
 from backend.agent.artifact_policy import (
     MIN_TOOL_STEPS_FOR_CARD,
     card_suppressed,
+    card_suppressed_for_conversation,
     card_warranted,
     clear_card_gate_for_testing,
     is_artifact_ask,
+    suppress_card_for_conversation,
     suppress_card_for_turn,
     tool_step_count,
 )
@@ -360,4 +366,112 @@ def test_long_tool_result_is_never_offered_as_a_card():
     docs = store.list_for_conversation("c1", metadata_only=True)
     assert sorted(d["document_id"] for d in docs) == ["c", "d"]
     assert not any(str(d["title"]).startswith('{"success"') for d in docs)
+
+
+# ── a card-free turn EARNS its card at the fifth real tool call ────────────
+
+class _CapturingBus:
+    def __init__(self):
+        self.emitted = []
+
+    def emit(self, event, data=None, **kw):
+        self.emitted.append((event, data or {}))
+
+
+def _card_free_kernel(conversation_id):
+    """A bare AgentKernel with only the state the card release reads, and a
+    three-step queue: s1 done, s2 running (the calling node), s3 pending.
+    ``_persist_card_snapshot`` is a MagicMock so no card store is written."""
+    from backend.agent.agent_kernel import AgentKernel
+    from backend.agent.der_loop import DirectorQueue, QueueItem
+
+    k = AgentKernel.__new__(AgentKernel)
+    k.conversation_id = conversation_id
+    k._card_by_task = {}
+    k._active_card_id = None
+    k._CARD_REGISTRY_CAP = 200
+    k._persist_card_snapshot = MagicMock()
+    queue = DirectorQueue(
+        objective="find the author and fill the pizza form",
+        items=[
+            QueueItem(step_id="s1", step_number=1,
+                      description="look up the author", tool="web_search"),
+            QueueItem(step_id="s2", step_number=2,
+                      description="fill the pizza form", tool="browser_fill"),
+            QueueItem(step_id="s3", step_number=3,
+                      description="read the confirmation", tool="read_file"),
+        ],
+    )
+    queue.completed_ids.append("s1")
+    return k, queue
+
+
+def test_a_short_plan_earns_its_card_at_the_fifth_real_tool_call(monkeypatch):
+    """Owner decision 2026-10-12: a plan under the card bound starts card-free,
+    and its card appears at the MIN_TOOL_STEPS_FOR_CARD-th real tool call.
+
+    Live symptom: a three-step browser plan that made five real tool calls
+    showed no card in personal mode. Four calls keep the turn card-free; the
+    fifth releases the gate and starts the card once, with the step states so
+    far; a sixth call emits nothing more.
+    """
+    from backend.agent.event_bus import IRISStreamEvent
+
+    bus = _CapturingBus()
+    monkeypatch.setattr("backend.agent.event_bus.get_event_bus", lambda: bus)
+    k, queue = _card_free_kernel("c1")
+    suppress_card_for_conversation("c1", "t1")
+    k._suppressed_card_turn = "t1"
+    k._der_card_hold = {
+        "turn": "t1", "queue": queue,
+        "plan": SimpleNamespace(original_task="x", plan_title="p", steps=[]),
+        "session": "s", "calls": 0, "lock": threading.Lock(),
+    }
+    s2 = queue.items[1]
+
+    def starts():
+        return [d for (e, d) in bus.emitted if e is IRISStreamEvent.TASK_START]
+
+    for _ in range(MIN_TOOL_STEPS_FOR_CARD - 1):
+        k._der_count_tool_call(s2)
+    assert starts() == []
+    assert card_suppressed("t1")
+
+    k._der_count_tool_call(s2)
+    assert len(starts()) == 1
+    payload = starts()[0]
+    assert payload["task_id"] == "t1"
+    assert payload["card_id"] == "card_t1"
+    assert payload["card_relation"] == "new"
+    assert {s["id"]: s["status"] for s in payload["steps"]} == {
+        "s1": "done", "s2": "running", "s3": "pending",
+    }
+    assert not card_suppressed("t1")
+    assert not card_suppressed_for_conversation("c1")
+    assert k._suppressed_card_turn is None
+    k._persist_card_snapshot.assert_called_once()
+    assert k._persist_card_snapshot.call_args.kwargs["card_id"] == "card_t1"
+
+    k._der_count_tool_call(s2)
+    assert len(bus.emitted) == 1
+    assert k._persist_card_snapshot.call_count == 1
+
+
+def test_no_hold_means_no_release(monkeypatch):
+    """A turn with no card hold (a card-bearing or developer turn) is untouched:
+    the tool calls it makes never emit, never raise, never clear the gate."""
+    bus = _CapturingBus()
+    monkeypatch.setattr("backend.agent.event_bus.get_event_bus", lambda: bus)
+    k, queue = _card_free_kernel("c1")
+    suppress_card_for_conversation("c1", "t1")
+    k._suppressed_card_turn = "t1"
+    k._der_card_hold = None
+
+    for _ in range(6):
+        k._der_count_tool_call(queue.items[1])
+
+    assert bus.emitted == []
+    assert card_suppressed("t1")
+    assert k._suppressed_card_turn == "t1"
+    k._persist_card_snapshot.assert_not_called()
 

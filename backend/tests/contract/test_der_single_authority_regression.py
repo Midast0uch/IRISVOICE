@@ -88,34 +88,6 @@ def test_critical_failure_routes_through_split_not_graft():
     assert captured["children"][0].params == {}
 
 
-def test_graft_recovery_helper_returns_goal_only():
-    """Even if _der_graft_recovery_plan is called, it must NOT assign a tool."""
-    from backend.agent import agent_kernel
-
-    kernel = MagicMock()
-    kernel._memory_interface = MagicMock()
-    kernel._memory_interface.episodic.retrieve_failures.return_value = []
-    kernel._memory_interface.episodic.retrieve_similar.return_value = []
-
-    def _infer(prompt, **kw):
-        return SimpleNamespace(
-            raw_text='{"steps": [{"step_id": "r1", "description": "retry safely", '
-                     '"tool": "read_file", "params": {"path": "x"}}]}'
-        )
-
-    kernel.infer.side_effect = _infer
-
-    with patch("backend.agent.tool_registry.get_all_specs", return_value=[]):
-        steps = agent_kernel.AgentKernel._der_graft_recovery_plan.__get__(
-            kernel, agent_kernel.AgentKernel
-        )(objective="fix config", failed_item=MagicMock(), error_msg="boom", _session="s")
-
-    assert steps, "graft helper should still produce recovery steps"
-    # The LLM's "tool"/"params" MUST be ignored — goal only.
-    assert steps[0].tool is None, "graft helper must not assign a tool"
-    assert steps[0].params == {}, "graft helper must not assign params"
-
-
 def test_plan_next_step_returns_goal_only():
     """Bypass B: explorer continuation MUST return a goal, not a tool."""
     from backend.agent import agent_kernel

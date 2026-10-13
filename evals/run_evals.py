@@ -558,7 +558,7 @@ def _summary(results: list) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRIS execution pass-rate harness")
-    ap.add_argument("--group", action="append", choices=["coding", "research", "browser"], default=[])
+    ap.add_argument("--group", action="append", choices=["coding", "research", "browser", "browser_goal"], default=[])
     ap.add_argument("--task", action="append", default=[], help="task id (repeatable)")
     ap.add_argument("--record-baseline", action="store_true")
     ap.add_argument("--record-standard", action="store_true",

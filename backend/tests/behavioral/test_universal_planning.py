@@ -86,9 +86,3 @@ def test_ask_first_mode_only_prefix():
     assert k._needs_planning("tool: search for cats") is True
     assert k._needs_planning("search for cats") is False
     assert k._needs_planning("hi") is False
-
-
-def test_is_chitchat_detects_acknowledgements():
-    k = _make_kernel()
-    for msg in ["got it", "sure thing", "sounds good", "agreed", "of course", "alright"]:
-        assert k._is_chitchat(msg) is True

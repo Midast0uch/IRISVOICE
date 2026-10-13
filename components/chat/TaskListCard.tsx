@@ -396,7 +396,7 @@ export default function TaskListCard({
     const id = setInterval(() => setElapsedSec((s) => s + 1), 1000)
     return () => clearInterval(id)
   }, [isWorking])
-  const timerLabel = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`
+  const timerLabel = `${Math.floor(elapsedSec / 60)}:${String(Math.floor(elapsedSec) % 60).padStart(2, "0")}`
 
   // REQ-14 verb column — ONE registry source shared with the CLI renderer,
   // extended with phase rotation for the working step (see PHASE_VERB).
@@ -619,8 +619,8 @@ export default function TaskListCard({
             {!isWorking && elapsedSec === 0 && typeof durationSec === "number" && durationSec > 0 && (
               <span className="iris-tc-time" title="Total task duration">
                 ⏱ {durationSec >= 3600
-                  ? `${Math.floor(durationSec / 3600)}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, "0")}:${String(durationSec % 60).padStart(2, "0")}`
-                  : `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`}
+                  ? `${Math.floor(durationSec / 3600)}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, "0")}:${String(Math.floor(durationSec) % 60).padStart(2, "0")}`
+                  : `${Math.floor(durationSec / 60)}:${String(Math.floor(durationSec) % 60).padStart(2, "0")}`}
               </span>
             )}
             {/* Session 246 (@taskcard): the card's ID lives in the footer —

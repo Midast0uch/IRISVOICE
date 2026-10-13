@@ -20,22 +20,6 @@ class _InferResult:
         self.raw_text = raw_text
 
 
-def test_graft_recovery_plan_parses_steps():
-    k = _make_kernel()
-    graft_json = (
-        '{"steps": [{"step_id": "r1", "description": "retry via alt tool", '
-        '"tool": "web_search", "params": {"q": "x"}, "depends_on": []}]}'
-    )
-    k.infer = MagicMock(return_value=_InferResult(graft_json))
-    from backend.agent.der_loop import QueueItem
-
-    failed = QueueItem(step_id="s2", step_number=2, description="broken", tool="x")
-    grafted = k._der_graft_recovery_plan("objective", failed, "boom", "sess")
-    assert len(grafted) == 1
-    assert grafted[0].step_id == "r1"
-    assert grafted[0].depends_on == []  # not auto-bound to the failed step
-
-
 def test_handle_step_failure_grafts_when_budget_remains():
     k = _make_kernel()
     graft_json = '{"steps": [{"step_id": "r1", "description": "recover", "tool": "x"}]}'

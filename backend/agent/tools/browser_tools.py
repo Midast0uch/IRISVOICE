@@ -365,6 +365,13 @@ async def fit_live_viewport(run_id: str, width: Any, height: Any) -> Optional[di
     async def _fit() -> Optional[dict]:
         for entry in list(_RT.sessions.values()):
             if getattr(entry.session, "_job_id", None) == run_id:
+                # An agent action holds the page: the size is stored above and
+                # the next observe applies it (_do_observe). Waiting here held
+                # the WS handler 20 s and then dropped the fit for good - the
+                # page stayed 1366x768 in a tall panel (live run
+                # browser-c9f117159a4f, 2026-10-12).
+                if entry.session._action_lock.locked():
+                    return None
                 return await entry.session.fit_viewport_to_panel(w, h)
         return None
 
@@ -617,6 +624,10 @@ async def _do_observe(conv: str, want_image: bool, emit: Optional[Emit]) -> Dict
     entry, problem = _need_session(conv, emit)
     if entry is None:
         return _fail(problem)
+    # The panel's shape before the marks are taken (a resize after them would
+    # move every box). A no-op when the page already has it.
+    if _PANEL_SIZE:
+        await entry.session.fit_viewport_to_panel(_PANEL_SIZE["width"], _PANEL_SIZE["height"])
     res = await entry.session.observe(marked_screenshot=want_image, emit=emit)
     if not res["ok"]:
         return _fail(res["error"])

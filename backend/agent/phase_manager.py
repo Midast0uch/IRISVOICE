@@ -473,21 +473,6 @@ def _compute_gate(
             )
             return 0.0  # feature disabled (T3.8)
 
-        # T6.8: flush expired batch groups from the DER cycle.
-        #
-        # Isolated in its OWN try/except: this runs before the priority check and
-        # before registration, so without it an unrelated batching error would
-        # propagate to the outer fail-open handler and take the ENTIRE gate
-        # offline — every call admitted with wait=0, no oscillator registered, and
-        # nothing but a warning to show for it. Batching is auxiliary; gating is
-        # the feature. A batcher fault must never disable the scheduler.
-        try:
-            from backend.agent.batch_dispatch import get_batcher as _get_batcher
-
-            _get_batcher().flush_expired()
-        except Exception as _b_exc:
-            logger.debug("[phase_manager] batcher flush_expired skipped: %s", _b_exc)
-
         _cc = call_class()
 
         # priority lane (REQ-14 AC2 / T6.4)

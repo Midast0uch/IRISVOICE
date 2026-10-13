@@ -1695,7 +1695,8 @@ class BrowserSession:
         needs_element = action in ("click", "type", "select")
         if needs_element and element_id is None:
             return {"ok": False, "error": f"{action} needs an element_id from browser_observe"}
-        if action in ("type", "select") and not (text or ""):
+        # select checks its text in _perform: a radio or checkbox needs none.
+        if action == "type" and not (text or ""):
             return {"ok": False, "error": f"{action} needs text"}
         if action == "type" and len(text) > _MAX_TYPE_CHARS:
             return {"ok": False, "error": f"text too long for one type action (max {_MAX_TYPE_CHARS} chars)"}
@@ -1857,6 +1858,25 @@ class BrowserSession:
                 await locator.focus(timeout=_ACTION_TIMEOUT_MS)  # focus, not click: no double-activate
             await page.keyboard.press((text or "Enter").strip() or "Enter")
         elif action == "select":
+            # A radio button or checkbox is chosen by clicking it. Live
+            # 2026-10-12 (httpbin pizza form): the model sent "select" to the
+            # size radios twice - "select needs text", then "not a <select>
+            # element" - before it clicked.
+            kind = await locator.evaluate(
+                "e => e.tagName === 'SELECT' ? 'select'"
+                " : (e.getAttribute('role') || e.type || '').toLowerCase()",
+                timeout=_ACTION_POINT_TIMEOUT_MS)
+            if kind in ("radio", "checkbox"):
+                if box is None:
+                    await locator.click(timeout=_ACTION_TIMEOUT_MS)
+                else:
+                    cx = box["x"] + box["width"] / 2
+                    cy = box["y"] + box["height"] / 2
+                    await page.mouse.move(cx, cy, steps=8)
+                    await page.mouse.click(cx, cy)
+                return
+            if not text:
+                raise ValueError("select needs the option's text")
             try:
                 await locator.select_option(label=text, timeout=_ACTION_TIMEOUT_MS)
             except Exception:  # noqa: BLE001 — the option may be named by value

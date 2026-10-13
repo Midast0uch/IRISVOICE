@@ -1,7 +1,5 @@
 """Phase 3 — Recovery & Safety Hardening (3.1–3.5).
 
-3.1 (M.3.3): graft recovery prompt receives past-failure + proven-approach
-             memory and an AVAILABLE TOOLS list.
 3.2 (N.4 + O.6 + RC11): TopologyViolationException triggers targeted recovery
              (Caducean reset + MODE_CHANGED event + one retry) instead of the
              blanket ReAct fallback; recovery failure falls back to ReAct.
@@ -10,99 +8,7 @@
 3.5 (M2): non-critical failures are stored in PACMAN (zone="failure") and signal
              Caducean (action=1 -> failure accumulator y).
 """
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-
-# ── 3.1 — Memory-aware graft recovery ────────────────────────────────────────
-
-def _graft_kernel(retrieve_failures, retrieve_similar, specs):
-    kernel = MagicMock()
-    kernel._memory_interface = MagicMock()
-    kernel._memory_interface.episodic.retrieve_failures.return_value = retrieve_failures
-    kernel._memory_interface.episodic.retrieve_similar.return_value = retrieve_similar
-
-    captured = {}
-
-    def _infer(prompt, **kw):
-        captured["prompt"] = prompt
-        captured["raw"] = (
-            '{"steps": [{"step_id": "r1", "description": "retry", '
-            '"tool": "read_file", "params": {}}]}'
-        )
-        return SimpleNamespace(raw_text=captured["raw"])
-
-    kernel.infer.side_effect = _infer
-    return kernel, captured
-
-
-def test_graft_prompt_includes_failure_memory():
-    """M.3.3: graft recovery MUST receive past failure context."""
-    from backend.agent import agent_kernel
-
-    kernel, captured = _graft_kernel(
-        retrieve_failures=[{"task_summary": "edit binary config",
-                            "failure_reason": "corrupted file"}],
-        retrieve_similar=[],
-        specs=[SimpleNamespace(name="read_file")],
-    )
-    failed = SimpleNamespace(description="edit binary config", tool="write_file")
-
-    with patch("backend.agent.tool_registry.get_all_specs",
-               return_value=[SimpleNamespace(name="read_file")]):
-        steps = agent_kernel.AgentKernel._der_graft_recovery_plan.__get__(
-            kernel, agent_kernel.AgentKernel
-        )(objective="fix config", failed_item=failed, error_msg="boom", _session="s")
-
-    assert steps, "graft should produce recovery steps"
-    assert "PAST FAILURES" in captured["prompt"], captured["prompt"]
-    assert "AVOID: edit binary config" in captured["prompt"]
-
-
-def test_graft_prompt_includes_alternative_approaches():
-    """M.3.3: graft recovery MUST receive proven alternative approaches."""
-    from backend.agent import agent_kernel
-
-    kernel, captured = _graft_kernel(
-        retrieve_failures=[],
-        retrieve_similar=[{
-            "task_summary": "read config safely",
-            "tool_sequence": [{"tool": "read_file"}, {"tool": "write_file"}],
-        }],
-        specs=[SimpleNamespace(name="read_file")],
-    )
-    failed = SimpleNamespace(description="edit binary config", tool="write_file")
-
-    with patch("backend.agent.tool_registry.get_all_specs",
-               return_value=[SimpleNamespace(name="read_file")]):
-        steps = agent_kernel.AgentKernel._der_graft_recovery_plan.__get__(
-            kernel, agent_kernel.AgentKernel
-        )(objective="fix config", failed_item=failed, error_msg="boom", _session="s")
-
-    assert steps
-    assert "ALTERNATIVE PROVEN APPROACHES" in captured["prompt"], captured["prompt"]
-    assert "read_file -> write_file" in captured["prompt"]
-
-
-def test_graft_works_with_empty_memory():
-    """M.3.3: graft MUST still work when memory store is empty."""
-    from backend.agent import agent_kernel
-
-    kernel, captured = _graft_kernel(
-        retrieve_failures=[],
-        retrieve_similar=[],
-        specs=[],
-    )
-    failed = SimpleNamespace(description="edit binary config", tool="write_file")
-
-    with patch("backend.agent.tool_registry.get_all_specs", return_value=[]):
-        steps = agent_kernel.AgentKernel._der_graft_recovery_plan.__get__(
-            kernel, agent_kernel.AgentKernel
-        )(objective="fix config", failed_item=failed, error_msg="boom", _session="s")
-
-    assert steps, "graft must still produce steps with empty memory"
-    assert "PAST FAILURES" not in captured["prompt"]
-    assert "ALTERNATIVE PROVEN APPROACHES" not in captured["prompt"]
 
 
 # ── 3.2 — Caducean exit -> targeted recovery ─────────────────────────────────

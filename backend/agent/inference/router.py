@@ -277,7 +277,7 @@ class InferenceRouter:
         # D1: real usage from the LAST generate() call, or None when the
         # transport/provider didn't report it. Per-kernel (this router is not
         # a singleton — see AgentKernel.__init__), so there is no cross-session
-        # leakage. Callers (AgentKernel, ToolDecisionBox, batch_dispatch) read
+        # leakage. Callers (AgentKernel, ToolDecisionBox) read
         # this immediately after generate() returns to credit the real token
         # count instead of an estimate.
         self.last_usage: Optional[Dict[str, int]] = None

@@ -1,25 +1,19 @@
 """T3 (Wave 0) + Wave 1.5 evidence: per-turn LLM call count, 5-step FULL task.
 
-Offline measurement of the DER loop's per-turn LLM call count, with and
-without sub-loop batching (T25 / REQ-7), on two task shapes:
+Offline measurement of the DER loop's per-turn LLM call count on two task
+shapes:
 
-  no_splits   : 5 steps, all verified (sanity: both modes must agree)
+  no_splits   : 5 steps, all verified
   with_splits : 5 steps, step 3 FAILS -> _split_step -> 3 sub-loop children
-                (one full batch group, BATCH_MAX_CHILDREN=3)
 
-Modes:
-  baseline : get_batcher patched to never group (offer/flush -> None) so
-             children fall through to the pre-T25 per-child resolve path
-             (agent_kernel._der_route_subloop_children 7413-7416). Each child
-             resolves with its own router.generate call.
-  batched  : real batcher; children group -> ONE dispatch_batch call; each
-             child is pre-seeded with item.result and short-circuits at
-             agent_kernel._der_run_step_execution:8270 (no resolve call).
+Split children run as NODES (agent_kernel._der_route_subloop_children queues
+them; the batcher that once answered them with one text call is removed), so
+each child resolves with its own router.generate call. The with_splits shape
+must therefore cost MORE calls than no_splits - the children are real work.
 
 The counting router wraps kernel._router and counts EVERY router.generate
-call: planner (_plan_task:4284), per-step resolve (tool_decision.py:297),
-and batched dispatch (batch_dispatch.py:259). Response discriminator:
-  user msg contains "<subloop id="      -> batched call (return per-child tags)
+call: planner (_plan_task) and per-step resolve (tool_decision.py).
+Response discriminator:
   user msg contains "tool-selection"    -> resolve call (return tool JSON)
   otherwise                             -> planner call (return 5-step plan)
 
@@ -31,7 +25,7 @@ import re
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Running as a script puts scripts/ on sys.path, not the repo root. Insert
 # the repo root so `import backend` resolves the same way pytest does.
@@ -57,26 +51,10 @@ _PLAN_JSON = json.dumps({
 })
 
 
-class _StubBatcher:
-    """Never groups: mirrors the pre-T25 batcher state (offer returns None,
-    no join point is ever flushed). Children fall through to per-child path."""
-    def offer(self, child, quota_id=None):
-        return None
-
-    def flush(self, join_point=None):
-        return None
-
-    def flush_expired(self):
-        return []
-
-    def abandon(self, join_point=None):
-        pass
-
-
 class _CountingRouter:
     def __init__(self):
         self.calls = 0
-        self.by_branch = {"planner": 0, "resolve": 0, "batch": 0, "other": 0}
+        self.by_branch = {"planner": 0, "resolve": 0, "other": 0}
 
     def generate(self, role_or_model, messages, tools=None, **kw):
         self.calls += 1
@@ -84,16 +62,6 @@ class _CountingRouter:
             (m.get("content", "") or "") for m in (messages or [])
             if m.get("role") == "user"
         )
-        if "<subloop id=" in user:
-            self.by_branch["batch"] += 1
-            ids = re.findall(r'<subloop id="([^"]+)"', user)
-            return (
-                "\n".join(
-                    f'<subloop id="{i}">\nresult for {i}\n</subloop>' for i in ids
-                ),
-                "",
-                [],
-            )
         if "tool-selection" in user:
             self.by_branch["resolve"] += 1
             # Derive UNIQUE params from the goal so the kernel's dispatch
@@ -142,7 +110,6 @@ def _build_kernel(router):
     k._der_last_u_mag = 0.0
     k._der_crawl_attempts = {}
     k._cancel_requested = SimpleNamespace(is_set=lambda: False)
-    k._selected_reasoning_model = "local-model"
     # Real _der_finalize_step re-verifies internally (agent_kernel.py:9122) and
     # FORCES step_success=False if _verify_step_result returns "FAILED" — a real
     # verifier would mark our stub outputs as failed and split every step.
@@ -159,8 +126,8 @@ def _build_kernel(router):
     return k
 
 
-def _run_shape(router, with_splits, batched):
-    """Drive the real DER loop for one (shape, mode) pair; return calls."""
+def _run_shape(router, with_splits):
+    """Drive the real DER loop for one shape; return calls."""
     from backend.agent.agent_kernel import AgentKernel
     from backend.agent.der_loop import DirectorQueue, QueueItem
 
@@ -221,9 +188,8 @@ def _run_shape(router, with_splits, batched):
         else:
             _finalize(item, res, ok)
 
-    # Execute the sub-loop children the split routed into the queue. In
-    # baseline mode they have NO pre-seeded result -> each resolves (1 call).
-    # In batched mode they carry item.result -> short-circuit (0 calls).
+    # Execute the sub-loop children the split routed into the queue. They
+    # carry no pre-seeded result -> each resolves (1 call).
     for child in queue.items[len(items):]:
         k._der_run_step_execution(child, ctx, k.session_id, "turn-1", plan_ns)
 
@@ -231,60 +197,25 @@ def _run_shape(router, with_splits, batched):
 
 
 def main():
-    from backend.agent import agent_kernel
-    from backend.agent.batch_dispatch import reset_batcher_for_testing
-
-    results = {}
-
     # ---- Shape 1: no splits ---------------------------------------------
-    for mode, batched in (("baseline", False), ("batched", True)):
-        router = _CountingRouter()
-        if batched:
-            reset_batcher_for_testing()
-            calls, der_calls = _run_shape(router, with_splits=False,
-                                          batched=True)
-        else:
-            with patch("backend.agent.agent_kernel.get_batcher",
-                       return_value=_StubBatcher()):
-                calls, der_calls = _run_shape(router, with_splits=False,
-                                              batched=False)
-        results[("no_splits", mode)] = calls
-        print(f"[MEASURE] shape=no_splits mode={mode} calls={calls}")
+    no_splits, der_calls = _run_shape(_CountingRouter(), with_splits=False)
+    print(f"[MEASURE] shape=no_splits calls={no_splits} der_calls={der_calls}")
 
     # ---- Shape 2: with splits -------------------------------------------
-    for mode, batched in (("baseline", False), ("batched", True)):
-        router = _CountingRouter()
-        if batched:
-            reset_batcher_for_testing()
-            calls, der_calls = _run_shape(router, with_splits=True, batched=True)
-            print(f"[MEASURE] shape=with_splits mode=batched "
-                  f"calls={calls} der_calls={der_calls}")
-        else:
-            with patch("backend.agent.agent_kernel.get_batcher",
-                       return_value=_StubBatcher()):
-                calls, der_calls = _run_shape(router, with_splits=True,
-                                              batched=False)
-            print(f"[MEASURE] shape=with_splits mode=baseline calls={calls}")
-        results[("with_splits", mode)] = calls
+    with_splits, der_calls = _run_shape(_CountingRouter(), with_splits=True)
+    print(f"[MEASURE] shape=with_splits calls={with_splits} "
+          f"der_calls={der_calls}")
 
-    # ---- Assertions ------------------------------------------------------
-    no_b = results[("no_splits", "baseline")]
-    no_t = results[("no_splits", "batched")]
-    sp_b = results[("with_splits", "baseline")]
-    sp_t = results[("with_splits", "batched")]
-
-    print(f"[MEASURE] reduction_with_splits={sp_b - sp_t}")
+    # ---- Assertion -------------------------------------------------------
+    # Split children are nodes: each resolves with its own call, so a split
+    # turn must cost more calls than a clean one.
+    print(f"[MEASURE] extra_calls_with_splits={with_splits - no_splits}")
 
     ok = True
-    if no_b != no_t:
+    if not (with_splits > no_splits):
         ok = False
-        print(f"[MEASURE] FAIL: no_splits baseline({no_b}) != batched({no_t})")
-    if not (sp_t < sp_b):
-        ok = False
-        print(f"[MEASURE] FAIL: batched({sp_t}) not below baseline({sp_b})")
-    if not (sp_b - sp_t >= 1):
-        ok = False
-        print(f"[MEASURE] FAIL: reduction {sp_b - sp_t} < 1")
+        print(f"[MEASURE] FAIL: with_splits({with_splits}) not above "
+              f"no_splits({no_splits}) - split children did not run as nodes")
 
     print("T3_BASELINE_OK" if ok else "T3_BASELINE_FAIL")
     return 0 if ok else 1

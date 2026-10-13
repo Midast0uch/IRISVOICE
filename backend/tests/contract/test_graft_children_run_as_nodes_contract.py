@@ -17,9 +17,9 @@ Pinned here, through the REAL seams:
 """
 
 import types
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
-from backend.agent import agent_kernel, batch_dispatch
+from backend.agent import agent_kernel
 from backend.agent.agent_kernel import AgentKernel
 from backend.agent.der_loop import DirectorQueue, QueueItem
 
@@ -60,13 +60,7 @@ def test_split_children_are_queued_without_a_preseeded_answer():
     children = [_child(0), _child(1), _child(2)]
     queue = DirectorQueue(objective="obj")
 
-    # Spy on the real batch dispatcher: if the children reach it, the real
-    # function still runs and calls the router, so the guard sees the call.
-    with patch(
-        "backend.agent.batch_dispatch.dispatch_batch",
-        wraps=batch_dispatch.dispatch_batch,
-    ) as spy:
-        k._der_route_subloop_children(children, queue, "sess", "turn")
+    k._der_route_subloop_children(children, queue, "sess", "turn")
 
     queued = {it.step_id for it in queue.items}
     assert queued == {"s2_s0", "s2_s1", "s2_s2"}, f"all children must be queued, got {queued}"
@@ -76,7 +70,6 @@ def test_split_children_are_queued_without_a_preseeded_answer():
             f"answer (result={child.result!r})"
         )
     assert router.calls == [], "split children must not reach the router"
-    spy.assert_not_called()
 
 
 def test_failed_children_settle_the_parent():
@@ -163,3 +156,82 @@ def test_node_error_names_the_blocker():
     )
     assert "step call limit reached (12 calls)" in blocker, blocker
     assert "the Poetry page is open" not in blocker, blocker
+
+
+class _NoopToolBox:
+    """Tool-box stand-in for the failure triage consult: every call is a no-op."""
+
+    def note_failure(self, **kwargs):
+        return None
+
+    def recovery_strategy(self, **kwargs):
+        return None
+
+    def reset_failure_counters(self, *args, **kwargs):
+        return None
+
+
+def _failed_step_kernel():
+    """Kernel stand-in for _der_handle_step_failure: the real method runs, its
+    collaborators are no-ops, and the split operator is a spy."""
+    k = AgentKernel.__new__(AgentKernel)
+    k._memory_interface = None
+    k._der_work_units = 100
+    k._get_tool_box = lambda: _NoopToolBox()
+    k._split_step = MagicMock(return_value=[_child(0)])
+    k._der_amend_graph = MagicMock(return_value=True)
+    return k
+
+
+def test_a_queued_recovery_step_blocks_the_graft_split():
+    """Ripple map 2026-10-12: the node router queued recovery_s2 for a dead web
+    fetch, and the graft split ran beside it - two repairs for one failure.
+    While a recovery step for the failed step is queued, the failure must not
+    split."""
+    k = _failed_step_kernel()
+    parent = QueueItem(
+        step_id="s2", step_number=2, description="open the Poetry category",
+        expected_output="the Poetry page is open",
+    )
+    recovery = QueueItem(
+        step_id="recovery_s2", step_number=2, description="open the Poetry category again",
+        expected_output="the Poetry page is open", recovery_of="s2",
+    )
+    queue = DirectorQueue(objective="obj")
+    queue.add_item(parent)
+    queue.add_item(recovery)
+    plan = types.SimpleNamespace(
+        steps=[parent], original_task="obj", plan_title="t", strategy="standard",
+    )
+
+    k._der_handle_step_failure(
+        parent, queue, plan, "sess", "turn", None,
+        step_result="I opened the page.\n[node error: step call limit reached (12 calls)]",
+    )
+
+    assert not k._split_step.called, "a queued recovery step must block the graft split"
+    assert queue.graft_attempts == 0, queue.graft_attempts
+
+
+def test_a_failure_with_no_queued_recovery_still_splits():
+    """Control for the test above: with no recovery step queued, the same
+    critical failure still takes the graft split. Pins that the guard only
+    blocks the split it is meant to block."""
+    k = _failed_step_kernel()
+    parent = QueueItem(
+        step_id="s2", step_number=2, description="open the Poetry category",
+        expected_output="the Poetry page is open",
+    )
+    queue = DirectorQueue(objective="obj")
+    queue.add_item(parent)
+    plan = types.SimpleNamespace(
+        steps=[parent], original_task="obj", plan_title="t", strategy="standard",
+    )
+
+    k._der_handle_step_failure(
+        parent, queue, plan, "sess", "turn", None,
+        step_result="I opened the page.\n[node error: step call limit reached (12 calls)]",
+    )
+
+    assert k._split_step.called, "with no queued recovery, the critical failure must split"
+    assert queue.graft_attempts == 1, queue.graft_attempts
