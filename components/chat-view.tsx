@@ -61,11 +61,9 @@ import {
   loadHistory,
   setWorkdir as setTerminalWorkdir,
 } from "@/components/terminal/terminalScrollback";
-import { RichDocument } from "@/components/chat/RichDocument";
 import { DocumentPanel } from "@/components/chat/DocumentPanel";
 import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useTaskProgress } from "@/hooks/useTaskProgress";
-import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 
 // Notification types for the universal notification system
@@ -215,6 +213,10 @@ export interface DocRender {
   /** REQ-22 (2026-09-23 live): card header identity — first markdown heading
    * derived from the body at ingest; a closed card must never read blank. */
   title?: string
+  /** Artifact identity the agent chose (document, code, data, diagram, page, image) and its
+   * one-line summary: the chat card picks its icon and an inline picture from `kind`. */
+  kind?: string
+  summary?: string
   /** ms since epoch this card was made or last updated by the agent (live cards only; the
    * artifact card's "just now"). Absent after a history reload. */
   createdAt?: number
@@ -820,10 +822,6 @@ export function ChatWing({
     taskProgress.isWorking,
     isChatTyping,
   ])
-  // Crawl state (drives the plan card's source list). Owned by CrawlProvider in
-  // app/layout.tsx, ABOVE this component, so the list survives a panel unmount
-  // mid-run (REQ-12 AC3) instead of resetting when the user drags the widget.
-  const { state: crawlState } = useCrawlContext()
   // Context-window usage (drives ContextPill)
   // max: 0 means "no window known yet" — it is NOT a value, and the pill
   // renders "—" for it. This was a hardcoded 128000, which was a lie: 128k is
@@ -1429,6 +1427,9 @@ export function ChatWing({
         /** Card header label supplied by the backend (the artifact fallback names
          * the card from the user's ask when the body carries no heading). */
         title?: string
+        /** Artifact kind + one-line summary (create_artifact) - the chat card's icon. */
+        kind?: string
+        summary?: string
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
@@ -1457,6 +1458,8 @@ export function ChatWing({
         title: (() => {
           const given = typeof detail.title === "string" ? detail.title.trim() : ""
           if (given) return given
+          // An image body is its URL, never text to title from.
+          if ((detail.format || "") === "image") return "Screenshot"
           const m = (detail.content || "").match(/^\s*#\s+(.+)$/m)
           if (m) return m[1].trim().slice(0, 60)
           const first = (detail.content || "")
@@ -1465,6 +1468,8 @@ export function ChatWing({
             .find((l) => l.trim().length >= 3)
           return first ? first.trim().slice(0, 60) : "Document"
         })(),
+        kind: typeof detail.kind === "string" && detail.kind.trim() ? detail.kind.trim().toLowerCase() : undefined,
+        summary: typeof detail.summary === "string" && detail.summary.trim() ? detail.summary.trim() : undefined,
         createdAt: Date.now(),
         reformatted: detail.reformatted || false,
         // Partial emits are a stream, not a revision — suppress the badge.
@@ -1547,6 +1552,8 @@ export function ChatWing({
           sources?: { url: string; title: string }[]
           har_path?: string | null
           created_at?: number
+          kind?: string | null
+          summary?: string | null
         }>
       } | undefined
       const docs = detail?.documents
@@ -3179,7 +3186,6 @@ ${message.text}`;
               questionCardFor={questionCardFor}
               liveTurnById={liveTurnById}
               taskProgress={taskProgress}
-              crawlState={crawlState}
               copiedMessageId={copiedMessageId}
               currentTtsMessageId={currentTtsMessageId}
               ttsWordIndex={ttsWordIndex}

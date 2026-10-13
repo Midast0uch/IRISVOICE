@@ -4,7 +4,6 @@ import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Xur } from "@/components/Xur"
 import { Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, ExternalLink, RefreshCw, Pencil, AlertCircle, Info } from 'lucide-react'
-import { RichDocument } from "@/components/chat/RichDocument"
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage"
 import { TurnParts } from "@/components/chat/turn/TurnParts"
 import { ArtifactChip } from "@/components/chat/lens/ArtifactChip"
@@ -14,9 +13,7 @@ import type { AskItem } from "@/lib/turns/asks"
 import { partsOf } from "@/lib/turns/turnStore"
 import { diffsOf, type EditDiff, type ToolResultDiffData } from "@/lib/diffs/api"
 import type { TurnRecord } from "@/lib/turns/turnStore"
-import type { TaskProgress } from "@/hooks/useTaskProgress"
 import type { SendMessageFunction } from "@/hooks/useIRISWebSocket"
-import type { CrawlState } from "@/hooks/useCrawl"
 import type { Message, Conversation, ContentType } from "@/components/chat-view"
 
 const MESSAGE_THRESHOLDS = {
@@ -44,8 +41,6 @@ export interface TurnViewProps {
   pendingQuestions: Map<string, { questionId: string; text: string; options?: string[]; allowOther?: boolean; timeoutSeconds?: number; turnId?: string }>
   questionCardFor: (q: { questionId: string; text: string; options?: string[]; allowOther?: boolean; timeoutSeconds?: number; turnId?: string }) => React.JSX.Element
   liveTurnById: Map<string, TurnRecord>
-  taskProgress: TaskProgress
-  crawlState: CrawlState
   copiedMessageId: string | null
   currentTtsMessageId: string | null
   ttsWordIndex: number
@@ -58,7 +53,6 @@ export interface TurnViewProps {
   expandedThinking: Set<string>
   setExpandedThinking: React.Dispatch<React.SetStateAction<Set<string>>>
   setDocumentModalMessage: React.Dispatch<React.SetStateAction<Message | null>>
-  setExpandedDocId: React.Dispatch<React.SetStateAction<string | null>>
   getContentType: (message: Message) => ContentType
   isMessageExpanded: (messageId: string) => boolean
   toggleMessageExpanded: (messageId: string) => void
@@ -70,7 +64,6 @@ export interface TurnViewProps {
   handleResendUserMessage: (messageIndex: number, convId: string, revisedText?: string) => void
   handleRetryPrompt: (errorMessageIndex: number, convId: string) => void
   renderWithLinks: (text: string) => React.ReactNode
-  requestDocumentBody: (documentId: string) => void
   /** IRIS asks of this turn that have no task card to sit in: drawn here, in the turn. */
   turnAsks?: AskItem[]
   askActions?: AskActions
@@ -94,8 +87,6 @@ export function TurnView({
   pendingQuestions,
   questionCardFor,
   liveTurnById,
-  taskProgress,
-  crawlState,
   copiedMessageId,
   currentTtsMessageId,
   ttsWordIndex,
@@ -108,7 +99,6 @@ export function TurnView({
   expandedThinking,
   setExpandedThinking,
   setDocumentModalMessage,
-  setExpandedDocId,
   getContentType,
   isMessageExpanded,
   toggleMessageExpanded,
@@ -120,7 +110,6 @@ export function TurnView({
   handleResendUserMessage,
   handleRetryPrompt,
   renderWithLinks,
-  requestDocumentBody,
   turnAsks,
   askActions,
   hasCard,
@@ -172,7 +161,7 @@ export function TurnView({
   //
   // A document is what the AGENT stored via a `show` payload. Those
   // arrive as DOCUMENT_RENDER, are keyed by documentId, and render
-  // through <RichDocument> (the prism card) further down. Everything
+  // as an <ArtifactChip> further down. Everything
   // else is conversation and stays in the thread, in full, with
   // truncate/expand for length.
   const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video') && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
@@ -211,28 +200,25 @@ export function TurnView({
       />
     )}
 
-    {/* Inline RichDocument cards for this turn. T15
-        (reply-surface-contract REQ-3 AC3): cards render ABOVE
+    {/* Artifact chips for this turn. T15
+        (reply-surface-contract REQ-3 AC3): chips render ABOVE
         the supportive bubble so the artifact leads and the
         conversational line follows. Joined on
         doc.turnId === message.id (same key the message itself
         carries — see handleTextResponse chat-view.tsx:1033).
-        Sources-carrier logic is identical to the previous
-        bottom-stacked block; only the placement changed.
-        A websearch turn emits multiple `show` payloads (one
-        per crawler_query step as a JSON card, then the final
-        markdown synthesis), and only the markdown card carries
-        the merged sources for the turn — same-turn siblings
-        contribute to that carrier's source list. Bodyless
+        EVERY artifact is the one titled ArtifactChip (kind icon,
+        title, meta, Open; an image shows its picture): a finished
+        one, and a streaming (partial) one in its "writing…" state.
+        The full body opens only in the lens / panel. Bodyless
         entries (a store miss or a truncated row) degrade to
-        "no card" rather than an empty glass rectangle. */}
+        "no card" rather than an empty rectangle. */}
     {(() => {
       const _allDocs = activeConversation?.documents || []
       if (message.sender !== 'assistant') return null
       // Join on turn: live messages carry id === turn_id
       // (anchor rule in handleTextResponse), rehydrated
       // ones carry the DB row id and expose the turn via
-      // message.turn_id. Matching BOTH keeps a prism card
+      // message.turn_id. Matching BOTH keeps a card
       // attached to its turn after a history reload —
       // without this the card fell to the orphan pile the
       // moment openHistory() replaced the messages
@@ -243,8 +229,8 @@ export function TurnView({
           (d.turnId === message.id || d.turnId === message.turn_id) &&
           // REQ-17 T28: a rehydrated card may have NO in-memory
           // body (metadata-only hydration) but its document_id
-          // is resolvable — admit it so the card renders and the
-          // body fetches on expand. Truly empty docs still drop.
+          // is resolvable — admit it so the chip renders and the
+          // body fetches when the lens opens. Truly empty docs still drop.
           ((d.content || '').trim().length > 0 || !!d.documentId),
       )
       if (_myTurnDocs.length === 0) return null
@@ -252,120 +238,14 @@ export function TurnView({
       // _isEmptyResultDoc, is gone. Whether a reply is a card is
       // decided once, by the agent's create_artifact call —
       // reply-surface Phase A removed the backend copy.)
-      // Build the per-turn source map once (markdown carrier
-      // merges sources from same-turn siblings).
-      const _turnSources = new Map<string, { url: string; title: string }[]>()
-      for (const d of _allDocs) {
-        if (!d.turnId) continue
-        const cur = _turnSources.get(d.turnId) || []
-        const merged = [...cur]
-        for (const s of d.sources || []) {
-          if (!merged.some((m) => m.url === s.url)) merged.push(s)
-        }
-        _turnSources.set(d.turnId, merged)
-      }
-      const carrierId =
-        _myTurnDocs.find((d) => d.format === 'markdown')?.id ??
-        _myTurnDocs.find(
-          (d) =>
-            (d.sources && d.sources.length > 0) ||
-            (d.turnId && d.turnId === taskProgress.turnId),
-        )?.id ??
-        null
-      return _myTurnDocs.map((doc) => {
-        const isMarkdown = doc.format === 'markdown'
-        const isSourcesCarrier = doc.id === carrierId
-        const docSources: {
-          url: string
-          title: string
-          status?: "planned" | "reading" | "read" | "blocked" | "parked"
-          discovered?: boolean
-          reason?: string
-          jobId?: string
-          capturePage?: number
-        }[] | undefined =
-          isSourcesCarrier
-            ? doc.turnId && doc.turnId === taskProgress.turnId &&
-              crawlState.sources.length > 0
-              ? crawlState.sources.map((s) => ({
-                  url: s.url,
-                  title: s.title || s.host || s.url,
-                  status: s.status,
-                  discovered: s.discovered,
-                  reason: s.reason,
-                  jobId: s.jobId ?? undefined,
-                  capturePage: s.capturePage ?? undefined,
-                }))
-              : isMarkdown
-                ? _turnSources.get(doc.turnId || '') || doc.sources
-                : doc.sources
-            : undefined
-        // A finished artifact is a compact titled card that opens the lens. A streaming one
-        // (partial) and the live sources list of a running research stay inline, as before.
-        const liveSources =
-          isSourcesCarrier && !!doc.turnId && doc.turnId === taskProgress.turnId && crawlState.sources.length > 0
-        if (!doc.partial && !liveSources) {
-          return (
-            <div key={`doc-${doc.id}`} className="my-3 relative">
-              <ArtifactChip doc={doc} note={doc.updated ? "updated" : undefined} />
-              {doc.error && (
-                <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-              )}
-            </div>
-          )
-        }
-        return (
-          <div key={`doc-${doc.id}`} className="my-3 relative">
-            {doc.updated && (
-              <span
-                className="absolute -top-2 right-2 z-10 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider"
-                style={{
-                  color: glowColor,
-                  border: `1px solid ${glowColor}55`,
-                  background: "rgba(10,11,22,0.75)",
-                }}
-              >
-                Updated
-              </span>
-            )}
-            <RichDocument
-              content={doc.content}
-              format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
-              title={doc.title}
-              glowColor={glowColor}
-              alternatives={doc.alternatives}
-              trust={doc.trust}
-              partial={doc.partial}
-              onFormatChange={(newFormat) =>
-                sendMessage?.('reformat_document', {
-                  document_id: doc.documentId,
-                  format: newFormat,
-                  turn_id: doc.turnId,
-                  original_format: doc.format,
-                  trust: doc.trust,
-                })
-              }
-              onExpand={() => setExpandedDocId(doc.id)}
-              expandable={
-                (doc.content || '').trim().length === 0 &&
-                !!doc.documentId
-              }
-              // Peek on a bodyless rehydrated card triggers
-              // the same lazy body fetch the panel does (F11).
-              onPeek={
-                doc.documentId
-                  ? () => requestDocumentBody(doc.documentId!)
-                  : undefined
-              }
-              sources={docSources}
-              harPath={doc.harPath}
-            />
-            {doc.error && (
-              <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-            )}
-          </div>
-        )
-      })
+      return _myTurnDocs.map((doc) => (
+        <div key={`doc-${doc.id}`} className="my-3 relative">
+          <ArtifactChip doc={doc} note={doc.updated ? "updated" : undefined} />
+          {doc.error && (
+            <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
+          )}
+        </div>
+      ))
     })()}
 
     {/* T21 (reply-surface-contract REQ-11 AC1/AC3): question

@@ -6,7 +6,7 @@
  * its scripts and its frame allows nothing.
  */
 import "@testing-library/jest-dom"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render } from "@testing-library/react"
 import { RichDocument } from "@/components/chat/RichDocument"
 
 jest.mock("@/contexts/BrandColorContext", () => ({
@@ -39,8 +39,8 @@ jest.mock("lucide-react", () => {
 const PAGE = "<p id='agent-page'>hi</p><img src=x onerror=\"window.__pwned=1\">"
 
 function show(trust: string) {
+  // RichDocument is the lens / panel viewer now and renders open (no unfold step).
   const out = render(<RichDocument content={PAGE} format="html" trust={trust} />)
-  fireEvent.click(screen.getByLabelText("Expand card"))
   return out.container
 }
 

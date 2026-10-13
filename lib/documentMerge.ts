@@ -26,6 +26,9 @@ export interface HydratedDoc {
    * body, so without this a reloaded card showed no title at all (owner report
    * 2026-09-25). */
   title?: string | null
+  /** Artifact kind + summary (Phase A identity), so a reloaded card keeps its icon. */
+  kind?: string | null
+  summary?: string | null
 }
 
 export interface MergedRenderedDoc {
@@ -38,6 +41,8 @@ export interface MergedRenderedDoc {
   turnId?: string
   /** Card header label (REQ-22). */
   title?: string
+  kind?: string
+  summary?: string
   error: string | null
   trust?: string
   sources?: { url: string; title: string }[]
@@ -80,6 +85,8 @@ export function mergeRenderedDocuments(
       // payload's copy is derived from a bounded preview. Falling back to the
       // payload's is what keeps the label after a reload (REQ-22).
       title: existing?.title || d.title || undefined,
+      kind: existing?.kind || d.kind || undefined,
+      summary: existing?.summary || d.summary || undefined,
       error: null,
       trust: existing?.trust,
       sources: d.sources ?? existing?.sources ?? [],

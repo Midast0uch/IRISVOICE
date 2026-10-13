@@ -93,6 +93,31 @@ _LAUNCH_ARGS = [
 ]
 BLOCKED_CRAWL_RESOURCES = frozenset({"media", "font"})
 
+# Cold page opens on this machine (A/B, 4 rounds x 5 sites, 2026-10-13): the
+# previous args took 166.5 (two 45-60 s timeouts) / 15.6 / 1.7 / 1.9 s per
+# round; with ad/analytics hosts failing fast 5.3 / 1.6 / 1.6 / 1.6 s. Their
+# parser-blocking scripts (gtag, analytics, ads, pixels) held DOMContentLoaded
+# for tens of seconds. A resolver rule, not a route: a Playwright route
+# switches the HTTP cache off. (A second --disable-features switch was tried
+# and dropped: Chromium keeps one value, so it replaced Playwright's own list,
+# and it measured no faster.)
+_TRACKER_HOSTS = (
+    "googletagmanager.com", "google-analytics.com", "googleadservices.com",
+    "doubleclick.net", "googlesyndication.com", "facebook.net",
+    "cloudflareinsights.com", "hotjar.com", "segment.io", "segment.com",
+)
+_SPEED_ARGS = [
+    "--host-resolver-rules=" + ", ".join(
+        f"MAP {pat} ~NOTFOUND" for h in _TRACKER_HOSTS for pat in (h, f"*.{h}")),
+]
+
+
+def _netlog_probe_args() -> list:
+    """TEMP probe (2026-10-13, remove after the in-app slow-navigation hunt):
+    IRIS_BROWSER_NETLOG=<path> makes the app's Chromium write its net-log."""
+    path = os.environ.get("IRIS_BROWSER_NETLOG")
+    return [f"--log-net-log={path}", "--net-log-capture-mode=Default"] if path else []
+
 
 def _proxy_args() -> list:
     """``["--no-proxy-server"]`` unless the user set a proxy.
@@ -441,7 +466,8 @@ async def _start_browser() -> None:
         # that accept only ``headless`` — retry bare rather than crash the pool.
         try:
             browser = await pw.chromium.launch(
-                headless=True, args=_LAUNCH_ARGS + _proxy_args())
+                headless=True, args=_LAUNCH_ARGS + _SPEED_ARGS + _proxy_args()
+                + _netlog_probe_args())
         except TypeError:
             browser = await pw.chromium.launch(headless=True)
     except Exception:

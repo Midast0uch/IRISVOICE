@@ -5,7 +5,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Components } from "react-markdown"
 import { useBrandColor } from "@/contexts/BrandColorContext"
-import { Expand, ChevronDown } from "lucide-react"
+import { ChevronDown } from "lucide-react"
 import DOMPurify from "dompurify"
 import { CardChassis } from "@/components/chat/CardChassis"
 
@@ -74,24 +74,6 @@ interface RichDocumentProps {
   glowColor?: string
   alternatives?: string[]
   onFormatChange?: (newFormat: string) => void
-  onExpand?: () => void
-  /** REQ-13 AC5 (reply-surface-contract T18b): true while the body is
-   * streaming in. A partial card renders OPEN (not collapsed) so the fill is
-   * visible, and the caller suppresses the "Updated" badge. */
-  partial?: boolean
-  /** REQ-17 (reply-surface-contract T28): the document exists server-side but
-   * its body is not in memory (rehydrated, metadata-only). The sticky expand
-   * affordance then shows even before the body arrives — the caller fetches
-   * the body when the user expands. Audit 2026-09-22 (F11): the chevron also
-   * shows for these cards (it used to be Expand-icon-only) — peeking triggers
-   * the same lazy body fetch the panel does. */
-  expandable?: boolean
-  /** Called once when an expandable-but-bodyless card is unfolded — the parent
-   * triggers the lazy body fetch so the peek fills with content. */
-  onPeek?: () => void
-  /** Controls the default collapsed state; the inline thread card collapses
-   * (REQ-6), a DocumentPanel body does not. */
-  defaultCollapsed?: boolean
   // Trust-routing W3: untrusted (web/crawler-sourced) HTML is sanitized with
   // DOMPurify. Either way an HTML body renders in a sandboxed iframe (R5);
   // only "trusted" HTML may run scripts there.
@@ -160,11 +142,6 @@ export function RichDocument({
   glowColor: glowColorProp,
   alternatives = [],
   onFormatChange,
-  onExpand,
-  partial = false,
-  expandable = false,
-  onPeek,
-  defaultCollapsed = true,
   trust,
   sources,
   harPath,
@@ -248,37 +225,20 @@ export function RichDocument({
     return () => ro.disconnect()
   }, [truncatedContent, format])
 
-  // REQ-6 AC5 (specs/reply-surface-contract): a card with NO body renders
-  // header-only — no chevron, no Expand affordance, preserving the existing
-  // "no chrome at all" intent for an empty artifact.
+  // A viewer with NO body renders header-only: "no chrome at all" for an empty artifact.
   const hasBody = truncatedContent.trim().length > 0
 
   return (
     <CardChassis
       veinColor={glowColor}
-      // REQ-6 (specs/reply-surface-contract, T12): collapsed to the header row
-      // BY DEFAULT (AC1). The chassis chevron is the in-place PEEK affordance
-      // (AC2/AC4); it reveals the body capped at COLLAPSED_MAX_HEIGHT = 460
-      // (AC7), where the existing "Show more" lift still applies. The Expand
-      // icon below stays as the second disclosure tier -> DocumentPanel
-      // (AC3/AC4). No new component, no new visual language (AC6).
-      // REQ-13 AC5 (T18b): a PARTIAL (streaming) card renders OPEN — the whole
-      // point of a stream is to watch the body fill.
-      // REQ-6 AC5 + audit 2026-09-22 (F11): a truly bodyless artifact renders
-      // header-only with no chevron; but a REHYDRATED card (expandable — body
-      // exists server-side) gets the chevron, and unfolding it fires onPeek so
-      // the lazy body fetch fills the peek in place instead of forcing the
-      // panel open just to look.
-      collapsible={hasBody || expandable}
-      defaultCollapsed={partial ? false : defaultCollapsed}
-      onCollapsedChange={(collapsed) => {
-        if (!collapsed && expandable && !hasBody) onPeek?.()
-      }}
+      // The inline prism card is gone (every artifact in the chat is an ArtifactChip). This
+      // is the VIEWER body the lens / panel opens: always open, never a second collapsed card.
+      collapsible={false}
       aria-label={title ? `${title} — ${format} document` : `${format} document`}
       header={
         <>
           {/* Audit 2026-09-23 (REQ-22): the card header was EMPTY until the
-              trust pill / Expand icon — a collapsed card showed no name at
+              trust pill — a collapsed card showed no name at
               all, so a stored document read as a blank gray bar. The title
               is passed by the caller (from the document's first heading). */}
           {title && (
@@ -308,20 +268,6 @@ export function RichDocument({
             >
               web
             </span>
-          )}
-          {onExpand && (hasBody || expandable) && (
-            <button
-              onClick={onExpand}
-              className="ml-auto p-1 rounded transition-all duration-150 hover:brightness-125 opacity-60 hover:opacity-100"
-              style={{
-                color: "rgba(255,255,255,0.55)",
-                backgroundColor: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.08)",
-              }}
-              title="Expand to panel"
-            >
-              <Expand size={11} />
-            </button>
           )}
         </>
       }
@@ -354,15 +300,12 @@ export function RichDocument({
             ) : format === "image" ? (
               <>
               {/* A screenshot. `content` is the URL of the document's own blob.
-                  Click opens it full-size in the panel via the same expand path
-                  every other card uses, so an image is not a special case the
-                  user has to learn. */}
+                  Shown full-size here: the chat chip opens this viewer. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={content}
                 alt={imageAlt}
-                onClick={onExpand}
-                className={`w-full h-auto rounded${onExpand ? " cursor-zoom-in" : ""}`}
+                className="w-full h-auto rounded"
                 style={{ border: `1px solid ${glowColor}22`, display: "block" }}
                 // A screenshot that fails to load must SAY so. Left alone the
                 // browser draws a broken-image glyph or nothing at all, which
@@ -579,18 +522,7 @@ export function RichDocument({
             </div>
           )}
 
-      {/* REQ-6 AC5 end of the has-body body: when `content` is empty a truly
-          bodyless artifact still gets null children (header-only, no chrome).
-          An expandable (rehydrated) card shows a placeholder instead — its
-          peek is what triggers the body fetch. */}
       </div>
-      ) : expandable ? (
-        <div
-          className="rich-doc-body px-3 py-2.5 text-[10px] italic"
-          style={{ color: "rgba(255,255,255,0.35)" }}
-        >
-          Stored body not in memory yet — it loads when you unfold this card.
-        </div>
       ) : null}
 
       {/* The body used the browser's default scrollbar — a ~17px opaque bar on

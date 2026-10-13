@@ -3,7 +3,7 @@
 import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Xur } from "@/components/Xur"
-import { RichDocument } from "@/components/chat/RichDocument"
+import { ArtifactChip } from "@/components/chat/lens/ArtifactChip"
 import { PermissionCard } from "@/components/chat/PermissionCard"
 import { TurnView } from "@/components/chat/TurnView"
 import { TaskCardEntry } from "@/components/chat/TaskCardEntry"
@@ -19,7 +19,6 @@ import type { ChatTimelineEntry } from "@/lib/chatview-turn-timeline"
 import type { TurnRecord } from "@/lib/turns/turnStore"
 import type { TaskProgress } from "@/hooks/useTaskProgress"
 import type { SendMessageFunction } from "@/hooks/useIRISWebSocket"
-import type { CrawlState } from "@/hooks/useCrawl"
 import type { Message, Conversation, ContentType } from "@/components/chat-view"
 import type { ConversationChip } from "@/types/iris"
 
@@ -55,7 +54,6 @@ export interface TimelineProps {
   questionCardFor: (q: { questionId: string; text: string; options?: string[]; allowOther?: boolean; timeoutSeconds?: number; turnId?: string }) => React.JSX.Element
   liveTurnById: Map<string, TurnRecord>
   taskProgress: TaskProgress
-  crawlState: CrawlState
   copiedMessageId: string | null
   currentTtsMessageId: string | null
   ttsWordIndex: number
@@ -118,7 +116,6 @@ export function Timeline({
   questionCardFor,
   liveTurnById,
   taskProgress,
-  crawlState,
   copiedMessageId,
   currentTtsMessageId,
   ttsWordIndex,
@@ -360,8 +357,6 @@ export function Timeline({
                 pendingQuestions={legacyQuestions}
                 questionCardFor={questionCardFor}
                 liveTurnById={liveTurnById}
-                taskProgress={taskProgress}
-                crawlState={crawlState}
                 copiedMessageId={copiedMessageId}
                 currentTtsMessageId={currentTtsMessageId}
                 ttsWordIndex={ttsWordIndex}
@@ -374,7 +369,6 @@ export function Timeline({
                 expandedThinking={expandedThinking}
                 setExpandedThinking={setExpandedThinking}
                 setDocumentModalMessage={setDocumentModalMessage}
-                setExpandedDocId={setExpandedDocId}
                 getContentType={getContentType}
                 isMessageExpanded={isMessageExpanded}
                 toggleMessageExpanded={toggleMessageExpanded}
@@ -386,7 +380,6 @@ export function Timeline({
                 handleResendUserMessage={handleResendUserMessage}
                 handleRetryPrompt={handleRetryPrompt}
                 renderWithLinks={renderWithLinks}
-                requestDocumentBody={requestDocumentBody}
                 turnAsks={askCardOf.has(message.id) || (message.turn_id ? askCardOf.has(message.turn_id) : false) ? undefined : asksByTurn.get(message.id) ?? (message.turn_id ? asksByTurn.get(message.turn_id) : undefined)}
                 askActions={askActions}
                 hasCard={hasCardFor(message)}
@@ -417,29 +410,9 @@ export function Timeline({
             if (_orphans.length === 0) return null
             return _orphans.map((doc) => (
               <div key={`orphan-${doc.id}`} className="my-3 relative">
-                <RichDocument
-                  content={doc.content}
-                  format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
-                  glowColor={glowColor}
-                  alternatives={doc.alternatives}
-                  trust={doc.trust}
-                  onFormatChange={(newFormat) =>
-                    sendMessage?.('reformat_document', {
-                      document_id: doc.documentId,
-                      format: newFormat,
-                      turn_id: doc.turnId,
-                      original_format: doc.format,
-                      trust: doc.trust,
-                    })
-                  }
-                  onExpand={() => setExpandedDocId(doc.id)}
-                  expandable={
-                    (doc.content || '').trim().length === 0 &&
-                    !!doc.documentId
-                  }
-                  sources={doc.sources}
-                  harPath={doc.harPath}
-                />
+                {/* The same titled chip as in a turn (kind icon, title, meta, Open; the
+                    picture for an image), finished or streaming - never the prism card. */}
+                <ArtifactChip doc={doc} note={doc.updated ? "updated" : undefined} />
               </div>
             ))
           })()}

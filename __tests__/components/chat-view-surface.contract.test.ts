@@ -6,7 +6,7 @@
  * detection itself is KEPT (drives isDocumentMode and other routing) — only
  * the chrome was removed.
  *
- * Ordering: the prism doc-join block must sit physically ABOVE the assistant
+ * Ordering: the artifact-chip doc-join block must sit physically ABOVE the assistant
  * bubble's content render, so the card leads and the supportive line follows.
  *
  * Source-level on purpose (same pattern as cardChassis.coverage.test.tsx and
@@ -44,7 +44,7 @@ describe("CT-5 — no content-type badge chrome in chat bubbles", () => {
   })
 })
 
-describe("REQ-3 AC3 — card leads, supportive bubble follows (T15)", () => {  const docJoinIdx = SRC.indexOf("Inline RichDocument cards for this turn. T15")
+describe("REQ-3 AC3 — card leads, supportive bubble follows (T15)", () => {  const docJoinIdx = SRC.indexOf("Artifact chips for this turn. T15")
   const bubbleIdx = SRC.indexOf("Message content with smart length handling")
 
   it("both markers exist in the source", () => {
@@ -66,8 +66,8 @@ describe("REQ-3 AC3 — card leads, supportive bubble follows (T15)", () => {  c
 })
 
 describe("REQ-13 AC5 (T18b) — the partial card channel", () => {
-  const RICH_DOC = readFileSync(
-    path.resolve(__dirname, "..", "..", "components", "chat", "RichDocument.tsx"),
+  const CHIP = readFileSync(
+    path.resolve(__dirname, "..", "..", "components", "chat", "lens", "ArtifactChip.tsx"),
     "utf8",
   )
 
@@ -76,13 +76,11 @@ describe("REQ-13 AC5 (T18b) — the partial card channel", () => {
     expect(SRC).toMatch(/updated: detail\.partial \? false : /)
   })
 
-  it("DocRender carries partial and RichDocument receives it", () => {
-    expect(SRC).toMatch(/partial=\{doc\.partial\}/)
-  })
-
-  it("RichDocument exposes the partial prop and renders partial cards open", () => {
-    expect(RICH_DOC).toMatch(/partial\?: boolean/)
-    expect(RICH_DOC).toMatch(/defaultCollapsed=\{partial \? false : defaultCollapsed\}/)
+  it("DocRender carries partial and the ArtifactChip shows it as a writing state (no inline prism card)", () => {
+    expect(SRC).toMatch(/<ArtifactChip doc=\{doc\}/)
+    expect(SRC).not.toMatch(/<RichDocument/)
+    expect(CHIP).toMatch(/partial\?: boolean/)
+    expect(CHIP).toMatch(/writing…/)
   })
 })
 
@@ -124,10 +122,6 @@ describe("CT-9 — question cards dismiss reliably (REQ-12, T22)", () => {
 })
 
 describe("CT-13 — hydrated card body fetches on expand (REQ-17, T27/T28)", () => {
-  const RICH_DOC = readFileSync(
-    path.resolve(__dirname, "..", "..", "components", "chat", "RichDocument.tsx"),
-    "utf8",
-  )
   const PANEL = readFileSync(
     path.resolve(__dirname, "..", "..", "components", "chat", "DocumentPanel.tsx"),
     "utf8",
@@ -142,10 +136,9 @@ describe("CT-13 — hydrated card body fetches on expand (REQ-17, T27/T28)", () 
     expect(WS).toMatch(/case "document_body"/)
   })
 
-  it("body-less but store-backed cards stay in the timeline (fetchable on expand)", () => {
+  it("body-less but store-backed cards stay in the timeline (fetchable when the lens opens)", () => {
     expect(SRC).toMatch(/\(\(d\.content \|\| ''\)\.trim\(\)\.length > 0 \|\| !!d\.documentId\)/)
-    expect(RICH_DOC).toMatch(/hasBody \|\| expandable/)
-    expect(SRC).toMatch(/expandable=/)
+    expect(SRC).toMatch(/requestDocumentBody/)
   })
 
   it("the panel offers loading / unavailable / retry states", () => {

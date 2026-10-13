@@ -5,8 +5,8 @@ import { Copy, Download, X, FileText } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { RichDocument } from "./RichDocument"
 // T11a (REQ-2 AC6): the expanded document panel renders on the SAME Liquid Ink
-// chassis as the inline `RichDocument` card it expands from, so expanding a
-// document does not change the surface mid-interaction. CT-10 pins this import.
+// chassis as the `RichDocument` viewer the lens opens, so both full views share one
+// surface. CT-10 pins this import.
 import { CardChassis } from "@/components/chat/CardChassis"
 
 interface DocumentPanelProps {
@@ -34,7 +34,7 @@ interface DocumentPanelProps {
  * (copy / download / close / format switcher) is the chassis header; the
  * document body is the chassis body and scrolls inside the panel. The chassis
  * supplies the surface, vein and padding, so the expanded view is visually
- * continuous with the inline card.
+ * continuous with the lens viewer.
  */
 export function DocumentPanel({
   content,
@@ -204,7 +204,6 @@ export function DocumentPanel({
           glowColor={glowColor}
           alternatives={[]}
           trust={trust}
-          defaultCollapsed={false}
         />
       )}
     </CardChassis>

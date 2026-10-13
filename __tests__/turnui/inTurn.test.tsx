@@ -181,9 +181,77 @@ describe.each(MODES)("artifacts open in the lens — %s mode", (_m, isDeveloper)
     expect(p.content).toContain("The reserve stays at 256")
   })
 
-  it("a streaming (partial) document stays inline so its fill is visible", () => {
+  // Owner 2026-10-13: no artifact falls back to the inline prism card. A streaming one is the SAME
+  // chip in a "writing…" state, with a live meta line; its body opens only in the lens.
+  it("a streaming (partial) document is the same chip in a writing state, never the prism card", () => {
     const { container } = mount({ documents: [{ ...DOC, partial: true }] })
-    expect(container.querySelector('[data-artifact-chip="doc-1"]')).toBeNull()
+    const chip = container.querySelector('[data-artifact-chip="doc-1"]')!
+    expect(chip).toHaveTextContent("Router budget plan")
+    expect(chip.querySelector("[data-artifact-meta]")).toHaveTextContent(/^document · \d+ words · writing…$/)
+    expect(container.querySelector('[data-testid="chassis-surface"]')).toBeNull()
+    expect(container.textContent).not.toContain("budget = window")
+  })
+})
+
+// Live 2026-10-13 (conv-1584): a screenshot reached the chat as a bare prism bar (no title, no icon,
+// no picture). A finished image artifact is the titled chip WITH its picture, anchored or not.
+describe.each(MODES)("a screenshot artifact shows icon, title and picture — %s mode", (_m, isDeveloper) => {
+  const SHOT = { id: "D-shot", documentId: "D-shot", turnId: TURN, format: "image", kind: "image", title: "Screenshot - books.toscrape.com", content: "/api/documents/D-shot/image", alternatives: [], trust: "web", createdAt: Date.now() }
+
+  it("a card-free turn renders ONE chip: image icon, title, the picture, no prism chassis", () => {
+    const { container } = mountTimeline({ isDeveloper, turn: turnOf([startMsg(isDeveloper ? "developer" : "personal")]), documents: [SHOT] })
+    const chips = container.querySelectorAll("[data-artifact-chip]")
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toHaveTextContent("Screenshot - books.toscrape.com")
+    expect(chips[0].querySelector('[data-artifact-icon="image"]')).not.toBeNull()
+    expect(chips[0].querySelector("[data-artifact-open]")).toHaveTextContent("Open")
+    const img = chips[0].querySelector("img") as HTMLImageElement
+    expect(img).not.toBeNull()
+    expect(img.getAttribute("src")).toBe("/api/documents/D-shot/image")
+    expect(container.querySelector('[data-testid="chassis-surface"]')).toBeNull()
+  })
+
+  it("an orphan finished artifact (its turn has no message) is the same titled chip, not the bare prism card", () => {
+    const { container } = mountTimeline({ isDeveloper, turn: turnOf([startMsg(isDeveloper ? "developer" : "personal")]), documents: [{ ...SHOT, turnId: "turn-gone" }] })
+    const chips = container.querySelectorAll("[data-artifact-chip]")
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toHaveTextContent("Screenshot - books.toscrape.com")
+    expect(chips[0].querySelector("img")).not.toBeNull()
+    expect(container.querySelector('[data-testid="chassis-surface"]')).toBeNull()
+  })
+
+  it("an older stored row with no title reads Screenshot, and its picture URL is rebuilt from the document id", () => {
+    const { container } = mountTimeline({ isDeveloper, turn: turnOf([startMsg(isDeveloper ? "developer" : "personal")]), documents: [{ ...SHOT, title: undefined, kind: undefined, content: "" }] })
+    const chip = container.querySelector("[data-artifact-chip]")!
+    expect(chip).toHaveTextContent("Screenshot")
+    expect(chip.querySelector("img")!.getAttribute("src")).toBe("/api/documents/D-shot/image")
+  })
+})
+
+// No artifact of ANY format or state renders as the inline prism card (the bare chassis surface):
+// finished, streaming and orphaned ones are all one titled chip with its kind icon.
+describe.each(MODES)("every artifact is a chip, none is a prism card — %s mode", (_m, isDeveloper) => {
+  const BODY: Record<string, { kind: string; content: string }> = {
+    markdown: { kind: "document", content: ["# Plan", "", "some words here"].join("\n") },
+    html: { kind: "page", content: "<p>hi</p>" },
+    table: { kind: "data", content: ["| a | b |", "|---|---|", "| 1 | 2 |"].join("\n") },
+    json: { kind: "data", content: "{\"a\":1}" },
+    diagram: { kind: "diagram", content: "graph TD; A-->B" },
+    text: { kind: "code", content: "print(1)" },
+  }
+  const cases = Object.keys(BODY).flatMap((format) => [false, true].flatMap((partial) => [TURN, "turn-gone"].map((turnId) => [format, partial, turnId] as const)))
+
+  it.each(cases)("format %s partial=%s turn=%s renders one chip with its kind icon and title", (format, partial, turnId) => {
+    const { kind, content } = BODY[format]
+    const doc = { id: "d-x", documentId: "D-x", turnId, format, kind, title: "My artifact", content, alternatives: [], partial, createdAt: Date.now() }
+    const { container } = mountTimeline({ isDeveloper, turn: turnOf([startMsg(isDeveloper ? "developer" : "personal")]), documents: [doc] })
+    const chips = container.querySelectorAll("[data-artifact-chip]")
+    expect(chips).toHaveLength(1)
+    expect(chips[0]).toHaveTextContent("My artifact")
+    expect(chips[0].querySelector(`[data-artifact-icon="${kind}"]`)).not.toBeNull()
+    expect(chips[0].querySelector("[data-artifact-open]")).toHaveTextContent("Open")
+    expect(chips[0].querySelector("[data-artifact-meta]")!.textContent!.includes("writing…")).toBe(partial)
+    expect(container.querySelector('[data-testid="chassis-surface"]')).toBeNull()
   })
 })
 

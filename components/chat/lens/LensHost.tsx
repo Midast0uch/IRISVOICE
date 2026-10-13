@@ -123,7 +123,6 @@ export function LensHost({ documents, conversationId, sendMessage, glowColor, on
               trust: doc.trust,
             })
           }
-          defaultCollapsed={false}
           sources={sources}
           harPath={doc.harPath}
         />

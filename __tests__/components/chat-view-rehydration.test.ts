@@ -38,6 +38,13 @@ describe('mergeRenderedDocuments (document re-hydration)', () => {
     expect(merged.map((d) => d.documentId).sort()).toEqual(['a', 'b'])
   })
 
+  it('keeps the artifact kind + summary so a reloaded card shows its icon', () => {
+    const out = mergeRenderedDocuments([], [{ document_id: 'i', format: 'image', kind: 'image', summary: 'A screenshot' }])
+    expect(out[0]).toMatchObject({ kind: 'image', summary: 'A screenshot' })
+    const live = mergeRenderedDocuments(out, [{ document_id: 'i', format: 'image' }])
+    expect(live[0].kind).toBe('image')
+  })
+
   it('ignores documents without a document_id', () => {
     const out = mergeRenderedDocuments([], [{ format: 'markdown' } as any])
     expect(out).toHaveLength(0)

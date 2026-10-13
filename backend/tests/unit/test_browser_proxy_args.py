@@ -77,3 +77,22 @@ def test_windows_proxy_enabled_keeps_system_proxy(no_proxy_env):
 def test_windows_auto_config_url_keeps_system_proxy(no_proxy_env):
     _fake_winreg(no_proxy_env, {"AutoConfigURL": "http://wpad.example/wpad.dat"})
     assert _proxy_args() == []
+
+
+def test_the_launch_fails_tracker_hosts_fast():
+    """Measured 2026-10-13 (A/B, 4 cold rounds x 5 sites): the previous args
+    166.5 (two timeouts) / 15.6 / 1.7 / 1.9 s per round; with ad/analytics
+    hosts resolving to not-found 5.3 / 1.6 / 1.6 / 1.6 s. The rule rides the
+    ONE launch; it is a resolver rule, not a route (a route switches the HTTP
+    cache off), and no second --disable-features switch is passed (Chromium
+    keeps one value, so it would replace Playwright's own list)."""
+    import inspect
+
+    from backend.vision import browser_pool as bp
+
+    assert not any(a.startswith("--disable-features") for a in bp._SPEED_ARGS)
+    rules = next(a for a in bp._SPEED_ARGS if a.startswith("--host-resolver-rules="))
+    for host in ("googletagmanager.com", "google-analytics.com", "doubleclick.net"):
+        assert f"MAP *.{host} ~NOTFOUND" in rules and f"MAP {host} ~NOTFOUND" in rules
+    src = inspect.getsource(bp)
+    assert "args=_LAUNCH_ARGS + _SPEED_ARGS + _proxy_args()" in src
