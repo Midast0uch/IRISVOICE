@@ -170,9 +170,8 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
    route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
                    browser_next (shadow, element ids as options)
    approve job --- tool_approval (shadow, post-hoc)
-   guard job ----- click_safety (shadow + refuse-only sample) | needs_action
-                   | use_thinking
-   judge_step ---- review_verdict | escalate_incomplete
+   guard job ----- click_safety (shadow + refuse-only sample) | needs_action (ENFORCED: node mode)
+   judge_step ---- review_verdict | escalate_incomplete (ENFORCED)
    judge_goal ---- done | sufficient | depth_met
    judge_call ---- call_closing (REFUSED: measurement only)
    shape job ----- presentation | narration
@@ -202,6 +201,8 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 - HTTP uses one pooled keep-alive client (`httpx.Client`, timeout
   `IRIS_D1_TIMEOUT_S`, default 20 s). `IRIS_D1_N_PROBS` (default 512) is how many top
   token logprobs the server returns at the answer slot.
+- After d1 is resident, `_boot_load_d1` proves the shared server multimodal once (`[D1BOOT] vision verdict proved in N s`); a proven verdict does not expire (a failed vision call drops it). Before 2026-10-13 a 300 s re-probe sent a 1x1 PNG inside turns and held the one-slot server 13.6 s while the node's `tool_choice` decision waited 9.8 s.
+- d1 starts with `--cache-ram 0` (`local_model_manager._build_server_cmd`, d1-3b models only): Oracle prompts share about 4 tokens, so the host prompt cache never paid, yet it kept every prompt. After one eval run it held 592 prompts / 1.6 GB, each decision spent 240-380 ms on the cache update (3-6 ms after boot), and its per-request listing wrote about 10 MB/min to the backend log. After: no cache updates; a whole backend run logged 6.5 MB.
 
 ---
 
@@ -212,7 +213,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 A consumer is one decision point (one question asked at one place in the app).
 Each has an id, a declared decision type and criteria, and one job.
 
-`CONSUMER_DECLARATIONS` (`decision_engine.py`) declares the type of every consumer below. `CONSUMERS` is the smaller set of 14 ids the owner can switch on; `tool_approval`, `click_safety`, `browser_next`, `user_feedback` and the event consumers are declared but are not members of it.
+`CONSUMER_DECLARATIONS` (`decision_engine.py`) declares the type of every consumer below. `CONSUMERS` is the smaller set of 13 ids the owner can switch on; `tool_approval`, `click_safety`, `browser_next`, `user_feedback` and the event consumers are declared but are not members of it.
 
 | Consumer | Job | Type | Incumbent that decides today | Where |
 |---|---|---|---|---|
@@ -226,8 +227,7 @@ Each has an id, a declared decision type and criteria, and one job.
 | `escalate_incomplete` | judge_step | noul | incomplete-result keyword list | `der_loop` |
 | `done`, `sufficient` | judge_goal | noul | Brain done-bit / sufficiency gate | `monitor_shadow` |
 | `depth_met` | judge_goal | noul | the loop's run grade | `surface_shadow`, run-grade point |
-| `needs_action` | guard | noul | goal heuristics | `tool_decision` |
-| `use_thinking` | guard | noul | ~40-phrase trigger list | `agent_kernel` |
+| `needs_action` | guard | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; enforced it may move REACT -> DIRECT |
 | `presentation` | shape | choice | reply-surface rules | `agent_kernel` reply surface |
 | `narration` | shape | choice | deterministic beat rule | `agent_kernel` |
 | `web_intent` | interpret | noul | duplicated web-trigger keyword lists | `explorer` |
@@ -248,7 +248,7 @@ Rules of the registry:
   of `CONSUMERS`. `tool_approval`, `click_safety`, `browser_next`, `user_feedback` and
   the event consumers cannot be switched on by that flag.
 - Retired and absent: `mode`, `on_track`, `has_gaps`, `retry_same`. `tier0_classify`
-  is a recorded non-fit (a sub-millisecond rule would become a ~150 ms model call).
+  is a recorded non-fit (a sub-millisecond rule would become a ~150 ms model call). `use_thinking` (removed 2026-10-13, owner: models think natively, Mercury ignores the thinking flag, and its only callers were dead dispatch paths; `_needs_thinking` keeps its phrase rule).
 
 ### 3.2 Jobs (`ORACLE_JOBS`)
 
@@ -369,7 +369,7 @@ identity = model_id | readout_mode | criteria_hash
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp instead: `tc-frame-v8` (post-hoc tool_choice
   parity rows), `tc-decide-v3` (Oracle-decided rows), `tool_approval/v3`,
-  `browser_next/v1`. The report and the fit take `--scope CONSUMER=STAMP` to measure
+  `browser_next/v1`, `needs_action/v1`. The report and the fit take `--scope CONSUMER=STAMP` to measure
   one cohort and never blend two.
 
 ### 3.6 Enforcement allow-list
@@ -482,11 +482,23 @@ slip; the pick was `DELEGATE` or `NONE`; the tool is not in the node's allowed s
 enforced but the calibrated confidence is below the threshold; sampled below
 `IRIS_ORACLE_FORCE_MIN`, or sampled on a side-effect tool.
 
-Other call sites read the same chokepoint (`needs_action`, `use_thinking`,
+Other call sites read the same chokepoint (`needs_action`,
 `sufficient`, `depth_met`, `done`, `escalate_incomplete`, `web_intent`,
 `recovery_strategy`, `presentation`). `ToolDecisionBox.resolve()` and
 `explorer.propose()` also gate on `decides("tool_choice")` but have no production
 caller; the DER node path is the live deciding path.
+
+### 4.1 needs_action: the step mode
+
+Each DER step runs DIRECT (one text answer, no tools) or REACT (the tool loop). The rule `external_reference.mode_for_goal` picks DIRECT only for a goal that opens with a question word; a REACT step that needs no tool pays a full tool-loop call and makes zero calls.
+
+**Label.** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v1`, `label_source` `outcome`): a tool call that worked means a tool was needed (True); done with zero calls means it was not (False); anything else writes no row. `brain_bool` is the rule's answer (True: the rule chose REACT).
+
+**Decision.** With `needs_action` enforced, before the tool loop starts the Oracle is asked; a 'no tool' answer whose calibrated confidence clears the threshold moves the step to DIRECT. The rule's own DIRECT choices are never changed. A step moved to DIRECT writes no outcome row, so later cohorts see fewer of those cases.
+
+**Question.** 'Does this step need to use a tool such as the browser, a file, a web search or a command?' (Yes: it needs the browser, a file, a search or a command / No: it only writes or reasons about information that is already available). On 16 hand-labelled step goals with real d1 the old wording ('requires calling a tool') scored 11/16 - it said no to opening a URL, editing a file, listing a folder and saving a file - and this wording 16/16.
+
+**Earned 2026-10-13.** Two full eval rounds: 235 rows, 216 distinct (164 correct / 52 wrong), OOF AUROC 0.8043, ECE 0.0404, threshold 0.80 calibrated, 109 rows above, precision 0.9174, Wilson 0.8505.
 
 ---
 
@@ -593,7 +605,7 @@ How the numbers are made:
 
 ## 7. Performance and measurables
 
-Figures in 7.1 are as of 2026-10-12 unless dated. Table 7.2 is the read-only measurement of 2026-10-13 (`consumer_enforcement_report.py`, nothing written; the bar record and calibration files on disk are still those of 2026-10-11).
+Figures in 7.1 are as of 2026-10-12 unless dated. Table 7.2 is the measurement of 2026-10-13 evening after two full eval rounds; the bar record and calibration were written that evening with `--scope needs_action=needs_action/v1 --scope tool_choice=tc-decide-v3`.
 
 ### 7.1 Headline
 
@@ -617,23 +629,24 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 
 | Consumer | Distinct rows (correct/wrong) | OOF AUROC | OOF ECE | Threshold (rows above, precision, Wilson) | Measured status | Gap |
 |---|---|---|---|---|---|---|
-| `tool_choice` (scope `tc-decide-v3`) | 478 (377/101) | 0.7442 | 0.0438 | 0.7502 (310, 0.900, 0.8616) | meets the bar; ON | - |
+| `tool_choice` (scope `tc-decide-v3`) | 688 (568/120) | 0.7617 | 0.0187 | 0.7215 (524, 0.9008, 0.8722) | meets the bar; ON | - |
 | `tool_choice` (scope `tc-frame-v8`, parity) | 673 (495/178) | 0.8002 | 0.0154 | 0.6193 (396, 0.9015, 0.8682) | meets the bar | - |
-| `escalate_incomplete` | 393 (335/58) | 0.8308 | 0.0183 | 0.6214 (334, 0.9102, 0.8747) | meets the bar; ON since 2026-10-13 | - |
-| `user_feedback` | 140 (123/17) | 0.885 | 0.0491 | 0.5758 (130, 0.9154, 0.8548) | meets the bar; cannot be switched on (not in `CONSUMERS`) | - |
-| `narration` | 332 (266/66) | 0.7571 | 0.0501 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0501 > 0.05 |
-| `review_verdict` | 1137 (530/607) | 0.6271 | 0.0372 | 0.776 (61, 0.9508, 0.8651) | sampled rung | AUROC < 0.65 |
+| `escalate_incomplete` | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON since 2026-10-13 | - |
+| `needs_action` (scope `needs_action/v1`) | 216 (164/52) | 0.8043 | 0.0404 | 0.80 (109, 0.9174, 0.8505) | meets the bar; ON since 2026-10-13 | - |
+| `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow | ECE 0.0544 > 0.05 |
+| `narration` | 332 (266/66) | 0.7571 | 0.0539 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0539 > 0.05 |
+| `review_verdict` | 1381 (665/716) | 0.6271 | 0.0217 | 0.7732 (86, 0.9302, 0.856) | sampled rung | AUROC < 0.65 |
 | `browser_next` | 126 (71/55) | 0.7059 | 0.095 | none | shadow | no threshold reaches precision 0.90 on 50 rows |
-| `tool_approval` | 1484 (867/617) | 0.5739 | 0.0092 | none | shadow | AUROC < 0.65 |
+| `tool_approval` | 1880 (1094/786) | 0.5821 | 0.0146 | none | shadow | AUROC < 0.65 |
 | `depth_met` | 401 (153/248) | 0.3983 | 0.0658 | none | shadow | AUROC < 0.65 |
-| `web_intent` | 183 (144/39) | 0.4925 | 0.0001 | none | shadow | AUROC < 0.65 |
+| `web_intent` | 199 (157/42) | 0.4895 | 0.0 | none | shadow | AUROC < 0.65 |
 | `call_closing` | 657 (122/535) | 0.4951 | 0.0 | none | shadow, refused by design | AUROC < 0.65 |
 | `click_safety` | 92 (89/3) | 0.3034 | 0.0003 | 0.9595 | shadow | rows < 100 (and 3 wrong: minority < 5%) |
 | `mode` (retired) 77, `depth_route` 27, `event_family` 21, `done` 20, `presentation` 13, `event_type:*` 1-13 | below 100 | - | - | none | shadow | rows < 100 |
-| `needs_action`, `use_thinking` | 0 | - | - | none | shadow | no live caller (below) |
+| `needs_action` (old wording, before 2026-10-13) | 0 | - | - | none | - | no live caller then (section 4.1) |
 | `recovery_strategy`, `sufficient` | 0 on d1 | - | - | none | shadow | failure-only paths (below) |
 
-Enforcement today: `tool_choice` and `escalate_incomplete` are on (`.env` `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete`, switched on 2026-10-13; the log reads `deciding=['escalate_incomplete@0.6177', 'tool_choice@0.7902']`). Enforced, the `escalate_incomplete` question runs inline at each step settle (78-300 ms) and the keyword list still decides below the threshold. The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and null); the hardened numbers are in the calibration file (`oof` block). `escalate_incomplete`, `narration` and `user_feedback` are labelled by agreement with their incumbent, so meeting the bar means "agrees with the rule", not "is right".
+Enforcement today: `tool_choice`, `escalate_incomplete` and `needs_action` are on (`.env` `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action`). Enforced, the `escalate_incomplete` question runs inline at each step settle and the `needs_action` question before each REACT step (each about 80-300 ms); below the threshold the incumbent still decides. A live test of the `escalate_incomplete` yes-path (real d1): it escalated 3 incomplete results (2 the keyword list misses), stayed out of a keyword trap, and escalated one complete answer at raw 0.58 (calibrated 0.654) - the cost of a wrong yes is a move to full mode (time, not correctness). The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and null); the hardened numbers are in the calibration file (`oof` block). `escalate_incomplete`, `narration` and `user_feedback` are labelled by agreement with their incumbent, so meeting the bar means "agrees with the rule", not "is right".
 
 ### 7.3 Cost per decision
 
@@ -658,7 +671,7 @@ Enforcement today: `tool_choice` and `escalate_incomplete` are on (`.env` `IRIS_
 
 ### 7.4 Why the other consumers do not meet the bar (2026-10-13)
 
-- **`needs_action`, `use_thinking`: no live caller.** `needs_action` is asked only inside `ToolDecisionBox.resolve()`, which has no production caller; the live node path (`choose_node_tool`) returns on `NONE` without asking it. `use_thinking` is asked only inside `_needs_thinking`, called from `_dispatch_api` / `_dispatch_openai_compat`, which have no caller since the transport moved to `inference/transport.py` (the live transport always sends `enable_thinking=True`). They cannot earn rows until a live path asks them.
+- **`needs_action`: given a live home 2026-10-13** (section 4.1) and switched on after two eval rounds. **`use_thinking`: removed** (section 3.1).
 - **`recovery_strategy`, `sufficient`: failure-only paths.** 183 `recovery_strategy` rows and 5 `sufficient` rows exist, none on the d1 identity with a label; both are asked only after a step fails.
 - **`depth_met`: a rule's output as the reference.** The reference is the loop grade (`grade == "pass"`), a deterministic function of envelope match, open facts and coverage that are not in the model's input; the `judge_goal` job also drops `coverage` (`grade` is the reference and must stay out) and cuts `evidence` first. 85% of references are True. AUROC 0.40 means its confidence ranks errors backwards.
 - **`web_intent`: a noisy reference.** The reference is a substring keyword list (`explorer.py`) that misses requests with a URL ("Open https://..."); 88% of references are "no". Many Oracle "yes" answers that are scored wrong are right.
@@ -675,7 +688,7 @@ Enforcement today: `tool_choice` and `escalate_incomplete` are on (`.env` `IRIS_
 
 | Flag | Default | Effect |
 |---|---|---|
-| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,escalate_incomplete`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
+| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,escalate_incomplete,needs_action`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
 | `IRIS_ORACLE_FORCE_MIN` | 0.9 | raw confidence a SAMPLED tool pick needs to be binding |
 | `IRIS_ORACLE_SAMPLE` | on | `0` kills all sampling |
 | `IRIS_ORACLE_SAMPLE_FRACTION` | 0.05 | sampled share for every samplable consumer |
@@ -700,7 +713,7 @@ server or serve another model: every consumer returns to its incumbent.
 python scripts/consumer_enforcement_report.py [--json] [--write] [--scope tool_choice=tc-decide-v3 ...]   # repeat --scope; never --write unscoped
 
 # fit the calibration map and threshold (offline); --dry-run writes nothing
-python scripts/fit_oracle_calibration.py [--dry-run] [--scope tool_choice=tc-decide-v3]
+python scripts/fit_oracle_calibration.py [--dry-run] [--scope tool_choice=tc-decide-v3 --scope needs_action=needs_action/v1]
 
 # reliability table, ECE/Brier, coverage curve, recommended threshold (read-only;
 # refuses below 50 rows; exit 3 = insufficient data, 4 = store unreadable)
