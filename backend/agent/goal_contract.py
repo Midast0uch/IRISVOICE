@@ -166,6 +166,34 @@ def _checked_after_change(result: str) -> bool:
     )
 
 
+# A fact that asks for a CHANGE to a named file ("Make the tests in t.py pass
+# by implementing f in d.py", "Fix the bug in x.py", "Save it to notes.txt").
+_CHANGE_ASK_RE = re.compile(
+    r"(?:^|[.!?]\s+)\s*(?:please\s+)?(?:make|implement|fix|add|write|create|edit|update|change|"
+    r"refactor|rename|remove|delete|save|append|replace)\b", re.IGNORECASE)
+_FILE_NAME_RE = re.compile(
+    r"\b\w[\w-]*\.(?:py|js|ts|tsx|jsx|json|md|txt|csv|html|css|ya?ml|toml|cfg|ini|sh|rs|go|java|c|cpp|h)\b",
+    re.IGNORECASE)
+
+
+def _asks_for_change(fact: str) -> bool:
+    return bool(_CHANGE_ASK_RE.search(fact or "") and _FILE_NAME_RE.search(fact or ""))
+
+
+def _changed_or_checked(result: str) -> bool:
+    """Outside evidence for a change fact: the step changed a file or ran the
+    code/tests and passed, and its last command did not fail. Naming the files
+    is not evidence: live c04 2026-10-13, a directory listing "covered" the
+    fact, the turn never edited durations.py, its final pytest FAILED, and the
+    run still graded pass and replied "I've completed the task"."""
+    if not result or _LAST_CMD_FAILED in result:
+        return False
+    from backend.agent.node_executor import _CHANGE_TOOLS
+
+    changed = any(tool in _CHANGE_TOOLS and ok == "ok" for tool, _t, ok in _ACTION_RE.findall(result))
+    return changed or _checked_after_change(result)
+
+
 @dataclass(frozen=True)
 class Contract:
     """The goal contract: floor (required) + ceiling (discovered) + version."""
@@ -378,6 +406,7 @@ def mark_coverage(
     _seen: Dict[str, None] = {}
     _lows = [_norm(_f) for _f in _required]
     _all_terms = [_distinctive_terms(_f) for _f in _required]
+    _change_asks = [_asks_for_change(_f) for _f in _required]
     for _i, _fact in enumerate(_required):
         _terms = _all_terms[_i]
         # A term another fact also holds ("year") cannot tell them apart.
@@ -407,7 +436,9 @@ def mark_coverage(
                     _hit = True
                     break
                 continue
-            if _names:
+            if _change_asks[_i]:
+                _found = _changed_or_checked(_res)
+            elif _names:
                 _found = _name_re.search(_low) is not None
             else:
                 _found = (any(_t in _low for _t in _match_terms)

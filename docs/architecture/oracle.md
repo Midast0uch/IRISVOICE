@@ -619,7 +619,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 |---|---|---|---|---|---|---|
 | `tool_choice` (scope `tc-decide-v3`) | 478 (377/101) | 0.7442 | 0.0438 | 0.7502 (310, 0.900, 0.8616) | meets the bar; ON | - |
 | `tool_choice` (scope `tc-frame-v8`, parity) | 673 (495/178) | 0.8002 | 0.0154 | 0.6193 (396, 0.9015, 0.8682) | meets the bar | - |
-| `escalate_incomplete` | 393 (335/58) | 0.8308 | 0.0183 | 0.6214 (334, 0.9102, 0.8747) | meets the bar; not on | - |
+| `escalate_incomplete` | 393 (335/58) | 0.8308 | 0.0183 | 0.6214 (334, 0.9102, 0.8747) | meets the bar; ON since 2026-10-13 | - |
 | `user_feedback` | 140 (123/17) | 0.885 | 0.0491 | 0.5758 (130, 0.9154, 0.8548) | meets the bar; cannot be switched on (not in `CONSUMERS`) | - |
 | `narration` | 332 (266/66) | 0.7571 | 0.0501 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0501 > 0.05 |
 | `review_verdict` | 1137 (530/607) | 0.6271 | 0.0372 | 0.776 (61, 0.9508, 0.8651) | sampled rung | AUROC < 0.65 |
@@ -633,7 +633,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `needs_action`, `use_thinking` | 0 | - | - | none | shadow | no live caller (below) |
 | `recovery_strategy`, `sufficient` | 0 on d1 | - | - | none | shadow | failure-only paths (below) |
 
-Enforcement today: only `tool_choice` is on, so only `tool_choice` decides. The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and null); the hardened numbers are in the calibration file (`oof` block). `escalate_incomplete`, `narration` and `user_feedback` are labelled by agreement with their incumbent, so meeting the bar means "agrees with the rule", not "is right".
+Enforcement today: `tool_choice` and `escalate_incomplete` are on (`.env` `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete`, switched on 2026-10-13; the log reads `deciding=['escalate_incomplete@0.6177', 'tool_choice@0.7902']`). Enforced, the `escalate_incomplete` question runs inline at each step settle (78-300 ms) and the keyword list still decides below the threshold. The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and null); the hardened numbers are in the calibration file (`oof` block). `escalate_incomplete`, `narration` and `user_feedback` are labelled by agreement with their incumbent, so meeting the bar means "agrees with the rule", not "is right".
 
 ### 7.3 Cost per decision
 
@@ -675,7 +675,7 @@ Enforcement today: only `tool_choice` is on, so only `tool_choice` decides. The 
 
 | Flag | Default | Effect |
 |---|---|---|
-| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
+| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,escalate_incomplete`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
 | `IRIS_ORACLE_FORCE_MIN` | 0.9 | raw confidence a SAMPLED tool pick needs to be binding |
 | `IRIS_ORACLE_SAMPLE` | on | `0` kills all sampling |
 | `IRIS_ORACLE_SAMPLE_FRACTION` | 0.05 | sampled share for every samplable consumer |
