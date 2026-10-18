@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -188,6 +189,103 @@ def _emit_row(row: Optional[dict]) -> None:
     )
 
 
+# ── web_intent/v2: the TURN-OUTCOME label (oracle.md 7.5, 2026-10-17) ──────
+# The v1 reference was the keyword list (parity) - a noisy rule that misses
+# requests with a URL; measured live at 266 distinct rows the consumer sat at
+# oof AUROC 0.4909 with 88% "no" references, and many Oracle "yes" answers
+# scored wrong were RIGHT. The honest label is WHAT THE TURN NEEDED, joined at
+# turn end by turn_id (the same shape as review_outcome_label's step join):
+#   truth = "yes" when the request names a URL (by rule - the keyword list's
+#           blind spot stops being label noise), else
+#   truth = "yes" when the turn ran a web tool that succeeded and passed,
+#   truth = "no"  when the turn answered without the web and passed,
+#   no label when the turn failed (the row keeps its parity reference; a
+#           failed turn says nothing about whether the web was needed).
+# The row is HELD from consult to turn grade, then written ONCE by the same
+# sink. Bounded: drop-oldest per turn, and the drop is counted.
+_WEB_PENDING: "OrderedDict[str, List[dict]]" = OrderedDict()
+_WEB_PENDING_CAP = 128
+_WEB_DROPPED = 0
+_WEB_PENDING_LOCK = threading.Lock()
+_URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+
+
+def defer_web_intent_row(row: dict, goal: str) -> None:
+    """Hold one consult row until its turn grades. Never raises.
+
+    ``goal`` rides the PENDING ENTRY (not the row) for the URL-by-rule label;
+    the row itself never grows a goal field.
+    """
+    global _WEB_DROPPED
+    try:
+        tid = str(row.get("turn_id") or "")
+        if not tid:
+            _emit_row(row)  # no join key -> parity is the only reference
+            return
+        _WEB_PENDING.setdefault(tid, []).append({"row": row, "goal": str(goal or "")})
+        _WEB_PENDING.move_to_end(tid)
+        while len(_WEB_PENDING) > _WEB_PENDING_CAP:
+            _, dropped = _WEB_PENDING.popitem(last=False)
+            _WEB_DROPPED += len(dropped)
+    except Exception:  # noqa: BLE001 — a label never blocks a consult
+        try:
+            _emit_row(row)
+        except Exception:  # noqa: BLE001 — not even a bad row may raise
+            pass
+
+
+def resolve_web_intent_turn(turn_id: str, passed: bool, web_used: bool) -> int:
+    """Stamp this turn's held rows with the web-need truth and emit them.
+
+    Called by the kernel at turn grade, where the grade and the completed
+    steps' envelopes are in hand. Returns the count labelled; unlabelled rows
+    (failed turns) are still emitted on their parity reference. Never raises.
+    """
+    tid = str(turn_id or "")
+    if not tid:
+        return 0
+    try:
+        with _WEB_PENDING_LOCK:
+            entries = _WEB_PENDING.pop(tid, None) or []
+    except Exception:  # noqa: BLE001
+        entries = []
+    labelled = 0
+    for ent in entries:
+        row = ent.get("row") or {}
+        truth = None
+        if _URL_RE.search(ent.get("goal") or ""):
+            truth = "yes"
+        elif passed:
+            truth = "yes" if web_used else "no"
+        if truth is not None:
+            # chosen is the STRING "yes"/"no" (labels, not bools), so the
+            # outside label is the string truth - decision_label compares
+            # str(chosen) == str(outside_label).
+            row["outside_label"] = truth
+            row["label_source"] = "outcome"
+            labelled += 1
+        _emit_row(row)
+    return labelled
+
+
+def web_intent_pending_stats() -> dict:
+    """Counters for the report/log. Never raises."""
+    with _WEB_PENDING_LOCK:
+        return {
+            "turns_pending": len(_WEB_PENDING),
+            "rows_pending": sum(len(v) for v in _WEB_PENDING.values()),
+            "dropped_overflow": _WEB_DROPPED,
+        }
+
+
+def reset_web_intent_pending() -> None:
+    """Test seam."""
+    global _WEB_DROPPED
+    with _WEB_PENDING_LOCK:
+        _WEB_PENDING.clear()
+        _WEB_DROPPED = 0
+
+
 def register_web_intent_consumer() -> bool:
     """Register the web_intent consumer's criteria (REQ-15 AC15.3). Idempotent.
 
@@ -230,8 +328,20 @@ def _default_engine():
         return None
 
 
+def _scope_now_values() -> Dict[str, str]:
+    """The Oracle measurement scope as plain VALUES, read on the CALLER'S
+    thread (a lane thread's own context says nothing). Never raises."""
+    try:
+        from backend.agent.decision_engine import scope_now
+
+        return dict(scope_now() or {})
+    except Exception:  # noqa: BLE001 — scope is best-effort, never fatal
+        return {}
+
+
 def _score_web_intent(
-    goal: str, engine: Any, keyword: Optional[bool]
+    goal: str, engine: Any, keyword: Optional[bool],
+    scope: Optional[Dict[str, str]] = None,
 ) -> Optional[Any]:
     """Score the goal, write the calibration row, return the Noul (or None).
 
@@ -240,6 +350,10 @@ def _score_web_intent(
     what the keyword path would have decided beside the engine's verdict.
     Without that reference the row has no label, so this consumer could never be
     scored however many times it ran. Never raises.
+
+    ``scope`` is the measurement scope captured AT SUBMIT TIME on the CALLER'S
+    thread (this function runs on the oracle_shadow lane, whose context says
+    nothing); it falls back to the live context for direct callers.
     """
     try:
         register_web_intent_consumer()
@@ -251,9 +365,17 @@ def _score_web_intent(
             return None
         verdict = bool(noul.true(0.5))
         if keyword is not None:
-            from backend.agent.decision_engine import scope_now as _scope_now
-
-            _emit_row({
+            _scope = dict(scope) if scope else dict(_scope_now_values() or {})
+            # DIAGNOSTIC (2026-10-17): the row does not store the goal (the
+            # whole frame for this consumer), so a live cohort cannot be
+            # replayed without it. One DEBUG record per consult, keyed by
+            # turn_id so the goal joins EXACTLY to its row (the row lands at
+            # turn grade, minutes later - a timestamp join cannot work).
+            logger.debug(
+                "[web_intent] goal turn=%s: %r",
+                _scope.get("turn_id") or "?", goal,
+            )
+            defer_web_intent_row({
                 "consumer_id": WEB_INTENT_CONSUMER,
                 "engine": getattr(engine, "model_id", None) or "decision-engine",
                 # Labels, not bools: the report compares like with like, and
@@ -268,9 +390,12 @@ def _score_web_intent(
                 "probability": round(float(noul.probability), 4),
                 "engine_latency_ms": getattr(noul, "engine_latency_ms", None),
                 "shadow": True,
+                # v2 (2026-10-17, oracle.md 7.5): the cohort stamp. v1 rows
+                # carry no criteria_version; the report scopes to v2 only.
+                "criteria_version": "web_intent/v2",
                 # REQ-6 AC6.3a (T5.0): the scope ids ride the row.
-                **_scope_now(),
-            })
+                **_scope,
+            }, goal)
         return noul
     except Exception as e:  # noqa: BLE001 — fall back to the keywords
         logger.debug("[web_intent] engine scoring failed: %r", e)
@@ -317,16 +442,25 @@ def _engine_web_intent(
 
 
 def _shadow_web_intent(goal: str, engine: Any, keyword: Optional[bool]) -> None:
-    """Score + write the row on the ``oracle_shadow`` lane (never on the caller)."""
+    """Score + write the row on the ``oracle_shadow`` lane (never on the caller).
+
+    The scope is read HERE, on the caller's thread, AS VALUES: the lane's own
+    thread context says nothing (the der_loop precedent, measured live
+    2026-10-17: every web_intent/v2 row arrived with an EMPTY scope - no
+    turn_id - so the turn-outcome hold could never engage and every row fell
+    to immediate parity emission."""
+    _scope = _scope_now_values()
     try:
         from backend.utils.durability_queue import lane
 
         if not lane("oracle_shadow").submit(
-            "web_intent", lambda: _score_web_intent(goal, engine, keyword)
+            "web_intent",
+            lambda: _score_web_intent(goal, engine, keyword, scope=_scope),
         ):
             logger.warning("[web_intent] shadow row dropped (lane full)")
-    except Exception as e:  # noqa: BLE001 — a shadow never raises
+    except Exception as e:  # noqa: BLE001 - a shadow never raises
         logger.warning("[web_intent] shadow submit failed: %r", e)
+
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:

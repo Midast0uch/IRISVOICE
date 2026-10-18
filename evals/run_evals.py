@@ -190,7 +190,7 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
     record: dict = {
         "reply": "", "documents": [], "event_counts": {}, "tools": [],
         "permissions": 0, "questions": 0, "timed_out": False, "ws_error": None,
-        "shell_syntax_errors": 0,
+        "shell_syntax_errors": 0, "turn_id": None,
     }
     prompt = task["prompt"].replace("{workdir}", str(workdir) if workdir else "")
 
@@ -249,6 +249,12 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
 
             if mtype == "ping":
                 await ws.send(json.dumps({"type": "pong", "payload": {}}))
+            elif mtype == "turn.start":
+                # The turn id is known from the FIRST frame: the reply can ride
+                # a legacy courier (text_response) and arrive BEFORE turn.end,
+                # so waiting for turn.end to capture it loses it (measured:
+                # c10's reply came as text_response with turn.end unseen).
+                record["turn_id"] = payload.get("turn_id") or record.get("turn_id")
             elif mtype == "permission:request":
                 # The eval works only inside its own throwaway copy, so every
                 # request is granted; `confirm` covers the destructive tier.
@@ -287,6 +293,9 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
                     # (backend/agent/turn_protocol.py SCHEMA["end"]). A
                     # cancelled or errored turn is an ERROR REPLY so the task
                     # fails honestly rather than hanging to the deadline.
+                    # turn_id is captured for the depth_met verdict report
+                    # (POST /api/eval/verdict after the hidden tests).
+                    record["turn_id"] = payload.get("turn_id")
                     _status = payload.get("status")
                     if _status == "cancelled":
                         record["reply"] = "[IRIS error] turn cancelled"
@@ -375,10 +384,22 @@ def _load_tasks(groups: list, ids: list) -> list:
 
 
 def _preflight(tasks: list, check_model: bool) -> str | None:
-    try:
-        _http("GET", "/health", timeout=5)
-    except Exception as exc:
-        return f"backend is not answering on {HTTP_BASE}: {exc}"
+    # A HEALTHY backend can be slow to answer HERE: /health blocks while the
+    # boot chain runs, and phonon-2's cold load saturates the hard disk for
+    # ~100 s. On 2026-10-16 two runs were aborted at this line with the backend
+    # perfectly healthy - it answered in 226 ms moments later. So retry, and
+    # give each attempt the same 30 s the readiness wait uses. Bounded at ~105 s.
+    last_exc = None
+    for _ in range(3):
+        try:
+            _http("GET", "/health", timeout=30)
+            last_exc = None
+            break
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(5)
+    if last_exc is not None:
+        return f"backend is not answering on {HTTP_BASE}: {last_exc}"
     if check_model and _tool_role_is_local() and not _port_open(LOCAL_MODEL_PORT):
         return (f"the tool role is bound to a local model, but nothing accepts "
                 f"connections on 127.0.0.1:{LOCAL_MODEL_PORT}. Load the model in the "
@@ -455,12 +476,25 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 leaks = sorted(_repo_status() - before)
                 if leaks:
                     notes.append(f"LEAK into IRIS repo: {leaks[:5]}")
+            # depth_met/v3 (oracle.md 7.5): report the turn's verdict so the
+            # backend labels its HELD depth_met shadow rows with what actually
+            # happened (the hidden tests) instead of the loop's own grade - a
+            # rule over inputs the model never sees (measured oof AUROC 0.40).
+            # Best-effort: a failed POST never fails the task.
+            if rec.get("turn_id"):
+                try:
+                    _http("POST", "/api/eval/verdict",
+                          {"turn_id": rec["turn_id"], "passed": bool(passed)},
+                          timeout=10)
+                except Exception:
+                    pass
             web_used = any(h in t.lower() for t in rec["tools"] for h in _WEB_TOOL_HINTS) or any(
                 k.startswith("crawler_") for k in rec["event_counts"])
 
             results.append({
                 "id": task["id"], "group": task["group"], "passed": passed,
                 "seconds": seconds, "reply_s": reply_s, "notes": notes, "conversation_id": conv_id,
+                "turn_id": rec.get("turn_id"),
                 "workdir": str(workdir) if workdir else None,
                 "tools": rec["tools"], "web_used": web_used,
                 "permissions": rec["permissions"], "questions": rec["questions"],

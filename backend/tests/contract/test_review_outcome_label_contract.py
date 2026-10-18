@@ -313,3 +313,101 @@ def test_the_row_keeps_both_references(monkeypatch):
     # and the row is now scored against ground truth
     assert row["outside_label"] is False
     assert row["label_source"] == "outcome"
+
+
+# ── the REVERSE path: the step settles BEFORE the row is built ──────────────
+#
+# Measured live 2026-10-16: a coding run logged "flushed unsettled review rows
+# = 5". The cause is a RACE, not a missing join key. The row is built on
+# lane("oracle_shadow") - der_loop._shadow_review_verdict submits `_job`, and
+# `_job` calls this module's sink on a WORKER thread - while `stamp` runs on the
+# turn thread in `_der_finalize_step`. The settle can win. Before the fix such a
+# row was held with no step left to settle it, and `sweep` flushed it on PARITY:
+# the outcome label was lost and nothing on the row said so.
+
+def test_a_row_arriving_after_the_step_settled_is_still_stamped(monkeypatch):
+    """THE RACE. The late row must be stamped ON ARRIVAL, not left to `sweep`."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    written = []
+    # the step settles first: the lane has not built the row yet
+    assert rol.stamp("s7", "FAILED") == 0
+    row = _row(step="s7", chosen="pass", brain="pass")
+    assert rol.defer(row, written.append) is True
+    assert len(written) == 1, "the late row must be WRITTEN, not held"
+    assert written[0] is row
+    assert row["outside_label"] is False, "FAILED makes `pass` wrong"
+    assert row["label_source"] == "outcome"
+    assert rol.sweep() == 0, "nothing may be left for sweep"
+
+
+def test_the_reverse_path_keeps_the_parity_pair(monkeypatch):
+    """The recovered row is still a shadow PAIR: the outside label is ADDED, the
+    parity reference is not overwritten."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    assert rol.stamp("s8", "VERIFIED") == 0
+    row = _row(step="s8", chosen="refine", brain="pass")
+    rol.defer(row, lambda r: None)
+    assert row["brain_choice"] == "pass"
+    assert row["chosen"] == "refine"
+    assert row["outside_label"] is False  # VERIFIED makes `refine` wrong
+    assert row["label_source"] == "outcome"
+
+
+def test_the_reverse_path_is_counted_and_the_ordinary_path_is_not(monkeypatch):
+    """`recovered_after_settle` counts the loss that was SAVED. A row that
+    arrives before its step settles is the ordinary order and must not count."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    rol.defer(_row(step="s9"), lambda r: None)
+    assert rol.stamp("s9", "VERIFIED") == 1
+    assert rol.stats()["recovered_after_settle"] == 0
+    assert rol.stamp("s10", "VERIFIED") == 0   # settles first
+    rol.defer(_row(step="s10"), lambda r: None)
+    assert rol.stats()["recovered_after_settle"] == 1
+
+
+def test_the_settled_memory_is_bounded_and_the_first_settle_wins(monkeypatch):
+    """`_SETTLED` must not leak, and a repeat settle must not rewrite the
+    outcome already remembered for that id."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    for i in range(rol._SETTLED_CAP + 25):
+        rol.stamp(f"late{i}", "VERIFIED")
+    assert len(rol._SETTLED) <= rol._SETTLED_CAP
+    rol.reset()
+    rol.stamp("dup", "VERIFIED")
+    rol.stamp("dup", "FAILED")  # a second settle must NOT overwrite the first
+    row = _row(step="dup", chosen="pass", brain="pass")
+    rol.defer(row, lambda r: None)
+    assert row["outside_label"] is True  # VERIFIED, not FAILED
+
+
+def test_an_unverified_late_outcome_still_emits_the_row_unstamped(monkeypatch):
+    """No ground truth -> no label, even on the reverse path. The row is a real
+    measurement on its parity reference and must not be dropped."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    written = []
+    assert rol.stamp("s12", "UNVERIFIED") == 0
+    row = _row(step="s12")
+    assert rol.defer(row, written.append) is True
+    assert written == [row]
+    assert "outside_label" not in row
+    assert "label_source" not in row
+
+
+def test_sweep_still_flushes_and_counts_a_row_with_no_outcome(monkeypatch):
+    """The loss path stays a real path: a row whose step genuinely never settled
+    is still written on parity, and the loss is COUNTED."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    written = []
+    rol.defer(_row(step="never"), written.append)
+    assert rol.sweep() == 1
+    assert len(written) == 1
+    assert "outside_label" not in written[0]
+    assert rol.stats()["flushed_parity"] == 1
+
+
+def test_flag_off_remembers_no_outcome(monkeypatch):
+    """Flag off is still a TOTAL no-op: a stamp creates no state at all."""
+    assert rol.enabled() is False
+    assert rol.stamp("s11", "VERIFIED") == 0
+    assert len(rol._SETTLED) == 0
+    assert rol.defer(_row(step="s11"), lambda r: None) is False

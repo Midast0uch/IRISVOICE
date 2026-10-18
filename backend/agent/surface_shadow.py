@@ -302,6 +302,24 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
         if row is not None and outside_label is not None:
             row["outside_label"] = bool(outside_label)
             row["label_source"] = "outcome"
+        if row is not None and consumer_id == "depth_met":
+            # depth_met/v3 (oracle.md 7.5, 2026-10-17): the row is HELD for the
+            # turn's EXTERNAL verdict (the eval harness's hidden tests; a user
+            # correction for live turns) instead of written on the loop grade -
+            # the grade is a deterministic rule over inputs the model never
+            # sees, and grading against it held the consumer at oof AUROC 0.40
+            # (confidence ranked errors BACKWARDS). Held rows are written once,
+            # with the verdict as their outside label, by report_verdict; the
+            # map is bounded and the drop counted. try/except: a label never
+            # blocks a consult - on any failure the row writes exactly as
+            # before.
+            try:
+                from backend.agent import turn_verdict_label as _tvl
+
+                if _tvl.defer(row, emit_row):
+                    return
+            except Exception:  # noqa: BLE001 — fall through to the plain emit
+                pass
         emit_row(row)
 
     try:

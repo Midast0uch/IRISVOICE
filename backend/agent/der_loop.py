@@ -1202,8 +1202,36 @@ class Reviewer:
     # ── REQ-13 AC13.1 (T17): the review_verdict consumer, SHADOW mode ──────
     REVIEW_CONSUMER = "review_verdict"
     REVIEW_LABELS = ("pass", "refine", "veto")
+    # v4 (2026-10-17, owner: "fix whatever is wrong so it passes enforcement").
+    # The measured chain of defects, each found by replaying REAL live frames
+    # (logged by the frame diagnostic below) through the live d1:
+    #   v1: bare question + raw result[:120] evidence (a dict repr - the
+    #       pytest outcome lives at the TAIL and a head cut throws it away)
+    #       -> d1 read no signal, hedged 'refine' 78%, oof AUROC 0.5113.
+    #   v3: the Brain's plan-quality rubric + envelope evidence -> the rubric
+    #       directed attention at the step PROSE ("Answer refine when the
+    #       step is vague"), live step descriptions are terse, so d1
+    #       correctly called them vague: refine 83%, all wrong under
+    #       GROUND_TRUTH, oof AUROC 0.343 (confidence ranked BACKWARDS).
+    #   v4: EVIDENCE-ONLY frame + this instruction. The step prose and the
+    #       problem-shaped OBJECTIVE ("the test fails, find the bug") were
+    #       the noise; the envelope evidence is the signal. Replay on 37
+    #       REAL frames from a 10/10 run (nearly all VERIFIED steps):
+    #       full frame AUROC 0.60, evidence-only 0.9636 (pass rows conf mean
+    #       0.758 vs refine rows 0.553; failing evidence -> refine 0.673;
+    #       empty evidence -> refine 0.502). The consumer is
+    #       TIER_REFUSE_ONLY (measurement-only, never acts); what it
+    #       measures is whether d1 can rank the step's settled outcome from
+    #       the trajectory evidence - and that is exactly what the frame
+    #       now carries and nothing else.
+    # This is the consumer's CRITERIA: the row stamp below moved to v4 and
+    # the report measures the new cohort on its own rows, never blended.
     REVIEW_INSTRUCTION = (
-        "Should this completed step pass, be refined, or be vetoed?"
+        "The recent results show how the work is going. "
+        "Answer pass when the results are on track and the step is ready to "
+        "do its part as-is. Answer refine when the results show the work "
+        "needs another pass. Answer veto when the step would repeat a "
+        "failure the results already show."
     )
 
     def _shadow_review_verdict(
@@ -1247,12 +1275,33 @@ class Reviewer:
             except Exception:  # noqa: BLE001 — criteria are best-effort here
                 pass
 
+            # v4 frame: EVIDENCE ONLY (2026-10-17). The v3 replay on REAL
+            # frames isolated the noise: with the step description and the
+            # problem-shaped OBJECTIVE in frame ("the test fails, find the
+            # bug"), d1 hedged 'refine' on good steps under EVERY instruction
+            # (AUROC 0.30-0.60) - the prose reads as vague work to a 3B model
+            # and the objective's problem statement reads as failure. The
+            # envelope evidence alone carries the outcome-predictive signal
+            # (on-track results -> the step verifies; failing results -> it
+            # does not): evidence-only replay AUROC 0.9636 on the same 37
+            # real frames. The consumer is measurement-only (TIER_REFUSE_ONLY)
+            # and the outcome label grades exactly this prediction, so the
+            # frame carries the signal and nothing else. The 1152 cap =
+            # judge_review's 288-id budget x 4 (the d1 backend caps at the
+            # same number; the frame renders ~620 max).
             goal = (
-                f"STEP: {(item.description or '')[:300]}\n"
-                f"OBJECTIVE: {(getattr(item, 'objective_anchor', '') or '')[:200]}\n"
                 f"RECENT RESULTS: "
-                f"{' | '.join((s.result or '')[:120] for s in completed_steps[-3:])}"
-            )[:800]
+                f"{' | '.join(_review_evidence_line(s) for s in completed_steps[-3:])}"
+            )[:1152]
+            # DIAGNOSTIC (2026-10-17): decision rows do not store the rendered
+            # frame, so a live cohort cannot be replayed. This line is the
+            # cheap permanent mitigation: one DEBUG record per review shows
+            # what the engine actually read, keyed by step_id so a frame joins
+            # exactly to its settled outcome. Off the answer path (lane).
+            logger.debug(
+                "[Reviewer] shadow frame step=%s: %r",
+                getattr(item, "step_id", "?"), goal[:400],
+            )
             sink = self._shadow_sink
             if callable(sink):
                 # AC6.3a: the scope must be read AT SUBMIT TIME as VALUES. A
@@ -1330,6 +1379,38 @@ class Reviewer:
                     else getattr(brain_verdict, "value", str(brain_verdict))
                 ),
                 "shadow": True,
+                # criteria_version (session 364's mechanism; whitelisted in
+                # tool_bridge._DECISION_META_KEYS): the hand-maintained tag that
+                # scopes a cohort, so the enforcement report can measure THIS
+                # frame rule on its own rows (--scope review_verdict=...) and
+                # never blend them with the old judge_step rows. Without it
+                # every review row landed unstamped and the consumer
+                # could not be measured at all after a frame change.
+                # review_verdict/v1 = the dedicated `judge_review` job
+                # (budget 200), frame STEP[:300] + OBJECTIVE[:200] + RECENT
+                # RESULTS rendered LAST - measured live at 99 outcome rows:
+                # oof AUROC 0.5113, d1 hedged 'refine' on 78% of rows because
+                # the labels were undefined in its one-line question and the
+                # evidence rendered last.
+                # review_verdict/v2 = written and withdrawn 2026-10-16 ("frame
+                # + outcome label") on a belief that was REFUTED the same day
+                # (the label does not decide c08/c09 outcomes). 62 obsolete
+                # rows carry it; v2 is never reused.
+                # review_verdict/v3 = the Brain's plan-quality rubric + the
+                # full frame (STEP/TOOL/OBJECTIVE + envelope evidence).
+                # Measured live at 175 rows: the rubric directed d1's
+                # attention at the step PROSE, live descriptions are terse,
+                # d1 answered refine 83% (all wrong under GROUND_TRUTH) and
+                # the confidence ranked BACKWARDS - oof AUROC 0.343.
+                # review_verdict/v4 (2026-10-17, owner: "fix whatever is wrong
+                # so it passes enforcement") = EVIDENCE-ONLY frame (envelope
+                # lines, nothing else) + the evidence-direct instruction.
+                # Replay on 37 REAL live frames: AUROC 0.9636 (pass rows conf
+                # 0.758 vs refine rows 0.553; failing evidence -> refine
+                # 0.673; empty evidence -> refine 0.502). The outcome label
+                # (IRIS_ORACLE_REVIEW_OUTCOME=1) is ON for this cohort;
+                # label_source splits the curves inside it.
+                "criteria_version": "review_verdict/v4",
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).
@@ -1606,6 +1687,35 @@ class Reviewer:
 # T14 (REQ-8 + REQ-11): StepFindingsAccumulator — per-run strict projection
 # with semantic cross-source verification.
 # ─────────────────────────────────────────────────────────────────────────────
+def _review_evidence_line(s) -> str:
+    """One completed step's evidence for the review_verdict frame (v4).
+
+    The envelope LINE when the step carries one (status at the head, outcome
+    at the tail of its head+tail summary), else the raw result head. A long
+    line is capped head+tail - never a head-only amputation - for the same
+    physical reason tool_envelope._bound_summary gives: the outcome of a tool
+    run (pytest's "2 failed, 1 passed") lives at the END of its output.
+    Measured on the v1 live shape (raw result[:120], a dict repr): d1 read no
+    signal at all and answered a constant verdict (oof AUROC 0.5113); the
+    same cases with envelope lines rank 1.0000 (replay, real d1, 2026-10-17).
+    Never raises.
+    """
+    try:
+        ev = getattr(s, "envelope", None)
+        if ev is not None:
+            ln = str(ev.line())
+            if ln:
+                # 200 keeps 3 lines + STEP + OBJECTIVE inside judge_review's
+                # 1152-char cap; head 150 + tail 45 keeps both signal ends.
+                return ln if len(ln) <= 200 else f"{ln[:150]} [...] {ln[-45:]}"
+    except Exception:  # noqa: BLE001 — evidence degrades to the raw result
+        pass
+    try:
+        return str(getattr(s, "result", "") or "")[:120]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _values_equivalent(a, b) -> bool:
     """REQ-11 AC3 semantic reconciliation for the discrepancy gate.
 

@@ -110,7 +110,7 @@ logger = logging.getLogger(__name__)
 
 # Per-session update counter for homeostatic relaxation cadence (REQ-1 AC2).
 # Keyed by session_id, incremented each time _der_finalize_step processes a
-# non-exception step. Reset is implicit — a new session starts at 0.
+# non-exception step. Reset is implicit â€” a new session starts at 0.
 _update_counters: Dict[str, int] = {}
 _update_counters_lock = threading.Lock()
 
@@ -119,12 +119,12 @@ _update_counters_lock = threading.Lock()
 # agent_kernel.py "run multiple parallel_safe steps concurrently"), so the
 # check-and-claim of that budget MUST be atomic. Without this lock two steps
 # that hit the same dead host at the same moment can both read "not yet
-# opened" and each enqueue a recovery — two crews for one broken door, though
+# opened" and each enqueue a recovery â€” two crews for one broken door, though
 # the rule allows one. Module-level so it is shared by every kernel instance.
 _der_recovery_lock = threading.Lock()
 
 
-# ── Physics side lane helpers (see AgentKernel._der_submit_physics). Module
+# â”€â”€ Physics side lane helpers (see AgentKernel._der_submit_physics). Module
 # level on purpose: a kernel stand-in that binds only some methods must still
 # run the read a barrier guards, so the barrier cannot live on the class.
 def _turn_in_flight(fn):
@@ -187,7 +187,7 @@ def _der_physics_settle(owner, session_id: str) -> None:
     Caducean state (split width, stuck-streak topology override, plan
     expansion under COMPRESS). It waits until this session's newest update
     has moved the integrator (``fold.ready``; FIFO, so every earlier update
-    moved it first) — not for that job's bookkeeping. Past
+    moved it first) â€” not for that job's bookkeeping. Past
     DER_PHYSICS_FOLD_WAIT_S the decision proceeds on the last settled
     position; the update itself is never cancelled.
     """
@@ -219,7 +219,7 @@ def _der_physics_settle(owner, session_id: str) -> None:
 
 _STEP_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
 
-# ── Parallel nodes (owner 2026-10-04) ──────────────────────────────────────
+# â”€â”€ Parallel nodes (owner 2026-10-04) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # A node CLAIMS a resource only one node may drive at a time when it first
 # uses it, and holds it until the node ends: one browser page per
 # conversation, one desktop screen. Everything else (search, files, reasoning)
@@ -561,9 +561,9 @@ def _der_topology_halt(owner, session_id: str) -> None:
 
     The rec==3 raise inside the physics job never reached the loop: finalize's
     broad except (later the lane job) swallowed it, and every shape-decision
-    read sits inside an advisory try — so _der_execute_with_recovery's targeted
+    read sits inside an advisory try â€” so _der_execute_with_recovery's targeted
     recovery never ran in production (MCM pin_22b078571d73, option B). Called
-    on the loop thread OUTSIDE any broad except. Reads only a LANDED update —
+    on the loop thread OUTSIDE any broad except. Reads only a LANDED update â€”
     never waits (S3: the answer path does not wait for its physics); a later
     landing is caught at the next boundary. Raises once per update, so the
     recovery run does not halt again on the same stale state.
@@ -626,8 +626,8 @@ def _der_fold_envelope(item, fold) -> None:
         env.suggestion = "stop"
 
 
-# ── DER Loop constants (spec: agent_loop_requirements.md Gap 11) ───────────
-# Canonical values live in der_constants.py — re-exported here for spec
+# â”€â”€ DER Loop constants (spec: agent_loop_requirements.md Gap 11) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Canonical values live in der_constants.py â€” re-exported here for spec
 # compliance so module-level code that imports from agent_kernel finds them.
 try:
     from backend.agent.der_constants import (
@@ -686,7 +686,7 @@ except Exception:
 
 # Session 247: turn wall-clock safety net (seconds). Defined UNCONDITIONALLY
 # (outside the der_constants import guard) so it exists on both import paths.
-# See the DER main loop — last-resort bound only; the sufficiency gate and
+# See the DER main loop â€” last-resort bound only; the sufficiency gate and
 # zero-yield cutoff are the rational stops, this catches everything else.
 _DER_TURN_BUDGET_S = float(os.environ.get("IRIS_DER_TURN_BUDGET_S", "600"))
 
@@ -698,11 +698,11 @@ _DER_TURN_BUDGET_S = float(os.environ.get("IRIS_DER_TURN_BUDGET_S", "600"))
 # what satisfies oracle.md 17.2's "being wrong is cheap or gated".
 _DEPTH_PUSH_MAX = int(os.environ.get("IRIS_DEPTH_PUSH_MAX", "3"))
 
-# REQ-1 AC8 (T2b, Decision 13 — revised 2026-08-19): the user-facing copy for
+# REQ-1 AC8 (T2b, Decision 13 â€” revised 2026-08-19): the user-facing copy for
 # the child steps of a sub-loop split. `branchLabel` is free text on the
-# wire — CardChassis's ChassisBranchBadge renders whatever string arrives
+# wire â€” CardChassis's ChassisBranchBadge renders whatever string arrives
 # here, so the wording is owned in this ONE constant, not inlined at each
-# emit site. NEVER "Sub-Loop" / "Detour" — those remain internal identifiers
+# emit site. NEVER "Sub-Loop" / "Detour" â€” those remain internal identifiers
 # (sub_loop_split / is_subloop) and are UNCHANGED; this is the user-facing
 # label only.
 DER_SUBLOOP_BRANCH_LABEL = "Diving Deeper"
@@ -718,7 +718,7 @@ class TaskContext:
     """
 
     task_id: str  # unique per user message
-    user_message: str  # original user request — never lost
+    user_message: str  # original user request â€” never lost
     session_id: str
     conversation_history: List[Dict]  # snapshot of memory at task start
     conversation_id: str = "default"
@@ -758,11 +758,11 @@ class TaskContext:
     @staticmethod
     def _bounded_excerpt(text: str, cap: int = 6000) -> str:
         """Session 247 (synthesis starvation, conv-44): the old
-        ``result_text[:200]`` here chopped the brain's evidence to a URL —
+        ``result_text[:200]`` here chopped the brain's evidence to a URL â€”
         live: 3 usable pages crawled, browser tabs full of content, and the
         synthesis still said "the tool did not retrieve the paper's content"
         because its entire view of the crawl was 200 characters. This is NOT
-        pacman (pacman_store/recall were 0 that run) — it was a prompt-size
+        pacman (pacman_store/recall were 0 that run) â€” it was a prompt-size
         guard left far too tight. Head+tail excerpt keeps the prompt bounded
         while the brain actually sees the crawl: intro sentences AND the
         closing citation block."""
@@ -790,7 +790,7 @@ def _resolve_effective_key(
     blanket fallback attaches, e.g., a Cerebras key to a Cohere provider
     instance, which then 401s at call time even though the keyring is correct.
 
-    Pure function — unit-testable without constructing an AgentKernel.
+    Pure function â€” unit-testable without constructing an AgentKernel.
     """
     if api_key:
         return api_key
@@ -801,7 +801,7 @@ def _resolve_effective_key(
 
 # Formatting rules appended to every prompt that produces USER-FACING prose.
 #
-# Models do not reliably structure a long answer on their own — a multi-tool
+# Models do not reliably structure a long answer on their own â€” a multi-tool
 # result came back as one unbroken block, which is unreadable in a chat thread
 # (2026-08-16). The reply is rendered as markdown, so ask for the structure
 # explicitly, and scale it: a one-line answer must NOT grow headings.
@@ -813,7 +813,7 @@ _READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a 
   - `-` bullets for lists of findings
   - a markdown table for field/value pairs (specs, settings, counts)
   - `backticks` for paths, commands, filenames and code
-  - a blank line between blocks — never run sections together
+  - a blank line between blocks â€” never run sections together
 - Structure only where it aids reading. Do not pad a short answer to fill it.
 - Report what the tools actually returned. If something was not returned, say
   so plainly rather than filling the gap."""
@@ -924,7 +924,7 @@ def _remember_turn_urls(kernel, step_result, _where: str = "") -> int:
             kernel._der_crawled_urls = _cu
         return len(_fetched)
     except Exception:
-        return 0  # URL memory is advisory — never block the loop
+        return 0  # URL memory is advisory â€” never block the loop
 
 
 def _recovery_candidates(step_result, env_sources, visited):
@@ -932,9 +932,9 @@ def _recovery_candidates(step_result, env_sources, visited):
 
     Returns ``(dead, hosts, cands)``:
 
-      ``dead``  — addresses the step attempted but did not fetch successfully
-      ``hosts`` — the distinct hosts those dead addresses belong to
-      ``cands`` — unvisited, same-host recovery targets: the page's outlinks
+      ``dead``  â€” addresses the step attempted but did not fetch successfully
+      ``hosts`` â€” the distinct hosts those dead addresses belong to
+      ``cands`` â€” unvisited, same-host recovery targets: the page's outlinks
                   plus the parent directory of each dead address
 
     PURE: no state, no side effects, no I/O. Extracted deliberately so the
@@ -942,7 +942,7 @@ def _recovery_candidates(step_result, env_sources, visited):
     while they converge into one lane. Two copies of this logic would drift, and
     a drift here means one lane recovers pages the other thinks are already done.
 
-    Returns empty values when nothing is recoverable — callers must treat that as
+    Returns empty values when nothing is recoverable â€” callers must treat that as
     "no recovery", never as an error.
     """
     import re as _re_c
@@ -1005,9 +1005,9 @@ def _recovery_candidates(step_result, env_sources, visited):
     return _dead, _hosts, _cands
 
 
-# ── Parallel-node scheduler helpers (module level on purpose: stand-in
+# â”€â”€ Parallel-node scheduler helpers (module level on purpose: stand-in
 # kernels bind only some methods - a helper on the class would be auto-stubbed
-# and the loop would silently skip the real code). `self` is the kernel. ──
+# and the loop would silently skip the real code). `self` is the kernel. â”€â”€
 
 
 def _der_start_node(self, item, run_step, inflight, finished, *, verdict, phase) -> None:
@@ -1084,7 +1084,7 @@ def _der_take_finished(self, finished, inflight, block: bool = False,
         if isinstance(_exc, RateLimitedError):
             logger.warning(
                 "[DER] Step %s rate-limited by provider %s after %d attempts "
-                "— recording FAILED (no DER-layer retry)",
+                "â€” recording FAILED (no DER-layer retry)",
                 item.step_number, _exc.provider_id, _exc.attempts,
             )
             return (item, f"RateLimitedError(provider={_exc.provider_id}, "
@@ -1180,7 +1180,7 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
             except Exception as _frag_exc:  # noqa: BLE001 - a note never blocks recovery
                 logger.warning("[DER] der_failure note for %s failed: %r",
                                item.step_id, _frag_exc)
-            # Step failed after retry — mark, abort downstream, graft.
+            # Step failed after retry â€” mark, abort downstream, graft.
             self._der_handle_step_failure(
                 item, queue, plan, _session, _turn_id, context_package,
                 step_result=step_result,
@@ -1198,13 +1198,13 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
                 logger.warning("[DER] split settle after failure of %s failed: %r",
                                item.step_id, _settle_exc)
             # AC5.6 (session-319 fix): the failure/abort path never
-            # reached the completion grade site — `_der_report_run_grade`
+            # reached the completion grade site â€” `_der_report_run_grade`
             # is only called from finalize-complete (which needs
             # queue.is_complete()) and continuation-done, so a run that
             # died on a failed step reported NO grade at all (conv-102
             # and the T21 probe both logged zero "run grade" lines).
             # Grade here when no PENDING work remains: failed, aborted
-            # and vetoed steps all count as settled — that is the honest
+            # and vetoed steps all count as settled â€” that is the honest
             # reading of "this run is over". Deduped by turn inside the
             # helper, so the normal completion path cannot double-report.
             try:
@@ -1225,7 +1225,7 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
                 pass
             return _tokens_used  # grafted steps are now in the queue
 
-    # ── Phase 4: finalize this step via the shared helper ──
+    # â”€â”€ Phase 4: finalize this step via the shared helper â”€â”€
     _tokens_used = self._der_finalize_step(
         item,
         step_result,
@@ -1246,7 +1246,7 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
         from_voice,
     )
 
-    # ── Partial-artifact completion (live 2026-09-25) ────────────────
+    # â”€â”€ Partial-artifact completion (live 2026-09-25) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # A step is ONE tool call, so a step naming several files writes only
     # one. Detect the remainder and graft a step per missing file BEFORE
     # the loop settles, so the user gets the files that were asked for.
@@ -1323,7 +1323,7 @@ class AgentKernel:
         # exits cleanly without emitting further events for this conversation.
         self._cancel_requested = threading.Event()
 
-        # W6 (T27-T29): per-conversation DER lock — prevents concurrent DER
+        # W6 (T27-T29): per-conversation DER lock â€” prevents concurrent DER
         # execution on the same conversation. Accessed via _conversation_der_locks
         # class-level dict keyed by conversation_id.
         self._der_active = False
@@ -1340,7 +1340,7 @@ class AgentKernel:
         self._tool_bridge: Optional[AgentToolBridge] = (
             None  # Will be initialized lazily
         )
-        # For brain↔executor logging
+        # For brainâ†”executor logging
         self._inter_model_communicator: Optional[InterModelCommunicator] = None
 
         # State management
@@ -1352,22 +1352,22 @@ class AgentKernel:
         # NOTE (2026-08-16): `_model_provider`, `_selected_reasoning_model` and
         # `_selected_tool_execution_model` used to be assigned here and kept in
         # sync by hand from half a dozen call sites. They are now READ-ONLY
-        # PROPERTIES derived from the process-wide role-binding table — see
+        # PROPERTIES derived from the process-wide role-binding table â€” see
         # their definitions below. A stale copy of the user's model choice is
         # not a bug that can be fixed here; it is a bug that can only be made
         # impossible, by there being no copy.
 
-        # OpenAI-compatible endpoint — covers lmstudio, llamafile, vllm, or any custom server.
+        # OpenAI-compatible endpoint â€” covers lmstudio, llamafile, vllm, or any custom server.
         # Set via configure_lmstudio() (legacy name kept) or configure_openai_compat().
         # Defaults to LM Studio's default port; overridden when the user saves settings.
         self._lmstudio_endpoint: str = "http://localhost:1234"
 
-        # In-process `LocalModelManager` binding — non-None when iris_gateway
+        # In-process `LocalModelManager` binding â€” non-None when iris_gateway
         # has loaded a model via the in-process path. `_get_lmstudio_client()`
         # checks this before creating a real HTTP client; when set AND the
         # provider is `iris_local`, inference goes through the manager's
         # `InProcessOpenAIAdapter` with zero network hops.
-        # In-process `LocalModelManager` binding — non-None when iris_gateway
+        # In-process `LocalModelManager` binding â€” non-None when iris_gateway
         # has loaded a model via the in-process path. `_get_lmstudio_client()`
         # checks this before creating a real HTTP client; when set AND the
         # provider is `iris_local`, inference goes through the manager's
@@ -1376,7 +1376,7 @@ class AgentKernel:
 
         # T17 (REQ-1 AC1.3): in-flight goal references, keyed by conversation
         # id. Set at plan start; follow-up voice turns mutate the live goal
-        # through this — never fork into a new plan. Initialized lazily so
+        # through this â€” never fork into a new plan. Initialized lazily so
         # test doubles built via `__new__` (which never call __init__) still
         # find the attribute.
         self._active_goals = getattr(self, "_active_goals", None) or {}
@@ -1403,12 +1403,12 @@ class AgentKernel:
         # Internet access is now a global app-wide flag (see
         # set_global_internet_access / get_global_internet_access below).
 
-        # Swarm compound collaboration (default: False — enabled via UI toggle)
+        # Swarm compound collaboration (default: False â€” enabled via UI toggle)
         self._swarm_enabled: bool = False
         self._swarm_coordinator = None
         self._context_control_handler = None
 
-        # ── Inference behaviour fields (wired from inference_mode card) ──
+        # â”€â”€ Inference behaviour fields (wired from inference_mode card) â”€â”€
         self._thinking_style: str = "balanced"  # concise | balanced | thorough
         self._response_length: str = "medium"  # short | medium | long
         self._reasoning_effort: str = "balanced"  # fast | balanced | accurate
@@ -1421,38 +1421,38 @@ class AgentKernel:
         # cached PROJECT.md content
         self._developer_context: Optional[str] = None
 
-        # ── Model context window registry ──────────────────────────────────
-        # Maps (provider, model_name_substring) → context window in tokens.
+        # â”€â”€ Model context window registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Maps (provider, model_name_substring) â†’ context window in tokens.
         # Used by resolve_context_window() so memory, conversation history,
-        # and MCM budgets are never hardcoded — they adapt to the model.
+        # and MCM budgets are never hardcoded â€” they adapt to the model.
         self._context_window_overrides: dict[str, int] = {}
 
-        # ── REQ-3 (T2): backend-declared task-card identity registry ────────
+        # â”€â”€ REQ-3 (T2): backend-declared task-card identity registry â”€â”€â”€â”€â”€â”€â”€â”€
         # Maps DER task_id -> card_id so the SAME task's early-skeleton and
         # DER-queue task:start emits (and every lifecycle event after it)
-        # resolve to one Liquid Ink card instead of two. Bounded — this is a
+        # resolve to one Liquid Ink card instead of two. Bounded â€” this is a
         # per-kernel-lifetime dict, not per-turn, so it must not grow forever
         # (see _register_card's eviction).
         self._card_by_task: dict[str, str] = {}
         self._active_card_id: Optional[str] = None
         self._CARD_REGISTRY_CAP: int = 200
 
-        # Domain 4.5 — proactive skill creation.
-        # Tracks how many times each normalized tool-name sequence (joined with "→")
+        # Domain 4.5 â€” proactive skill creation.
+        # Tracks how many times each normalized tool-name sequence (joined with "â†’")
         # has been used this session.  When a pattern hits the threshold, the agent
         # is prompted to codify it as a SKILL.md.
         self._session_tool_patterns: dict[str, int] = {}
         self._skill_trigger_threshold: int = 3
-        # Patterns already prompted this session — avoid repeating the prompt.
+        # Patterns already prompted this session â€” avoid repeating the prompt.
         self._prompted_skill_patterns: set[str] = set()
 
-        # Cached OpenAI client for LM Studio — created once, reused on every call.
+        # Cached OpenAI client for LM Studio â€” created once, reused on every call.
         # Rebuilding _OpenAI() per-call recreates the full httpx connection pool,
         # adding unnecessary overhead on every message.  Invalidated in
         # configure_lmstudio() whenever the endpoint URL changes.
         self._lmstudio_client: Optional[Any] = None
 
-        # Main event loop — captured during startup so background threads can
+        # Main event loop â€” captured during startup so background threads can
         # dispatch coroutines via run_coroutine_threadsafe.
         self._broadcast_loop: Optional[Any] = None
 
@@ -1462,7 +1462,7 @@ class AgentKernel:
         # Auto-apply a provider configured in iris_config.json so the agentic /
         # DER loop does not silently fall back to a local OpenAI-compatible model
         # when a cloud provider is already configured.  Local-only setups (no
-        # provider / no key) are left uninitialized — the existing wait-for-user
+        # provider / no key) are left uninitialized â€” the existing wait-for-user
         # (Models-card APPLY / model_selection confirm_card) behaviour is preserved.
         self._router = InferenceRouter(load_config())
         # Context window (2026-09-27): the router asks us for the window of the
@@ -1481,8 +1481,8 @@ class AgentKernel:
         # turn blocked inside ONE operation never re-evaluated it and the
         # 600 s budget never fired (chain client w1 ran 19+ min while the
         # backend logged nothing for 18). The check is a bound method of THIS
-        # kernel — the router is per-kernel (not a singleton), so there is no
-        # cross-session leakage — and it reads per-turn state set in
+        # kernel â€” the router is per-kernel (not a singleton), so there is no
+        # cross-session leakage â€” and it reads per-turn state set in
         # _execute_plan_der. Modeled on set_window_resolver directly above.
         self._router.set_turn_budget_check(self._turn_choke_check)
         # In-process local models (2026-09-27). The gateway attaches the local
@@ -1502,7 +1502,7 @@ class AgentKernel:
             from .local_model_manager import get_local_model_manager
 
             self._router.set_inprocess_manager(get_local_model_manager())
-        except Exception as _mgr_err:  # noqa: BLE001 — a missing manager is not fatal
+        except Exception as _mgr_err:  # noqa: BLE001 â€” a missing manager is not fatal
             logger.debug(
                 "[AgentKernel] in-process manager attach skipped: %s", _mgr_err
             )
@@ -1543,7 +1543,7 @@ class AgentKernel:
         self._vps_config = VPSConfig(enabled=False)
         self._vps_gateway = None
         logger.info(
-            "[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)"
+            "[AgentKernel] VPS Gateway deferred (lazy init â€” awaiting user VPS configuration)"
         )
 
         try:
@@ -1579,7 +1579,7 @@ class AgentKernel:
             self._personality = None
 
         try:
-            # Initialize Inter-Model Communicator for brain↔executor logging (Bug 5 fix)
+            # Initialize Inter-Model Communicator for brainâ†”executor logging (Bug 5 fix)
             logger.info("[AgentKernel] Initializing Inter-Model Communicator...")
             if self._model_router:
                 model_conversation = ModelConversation()
@@ -1602,7 +1602,7 @@ class AgentKernel:
         # Memory Foundation integration
         self._memory_interface: Optional[Any] = None
 
-        # MCM Protocol Orchestrator — wired after set_memory_interface()
+        # MCM Protocol Orchestrator â€” wired after set_memory_interface()
         self._mcm_orch = None
 
         # Trust-routing (plan W2): whether the current turn touched external/
@@ -1612,7 +1612,7 @@ class AgentKernel:
         # _execute_plan_der) and set when an external tool runs.
         self._turn_touched_external: bool = False
 
-        # ── DER Loop components ────────────────────────────────────────────
+        # â”€â”€ DER Loop components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
         # for spec compliance (Gap 11). Canonical values live in der_constants.
         self._task_classifier = None
@@ -1635,7 +1635,7 @@ class AgentKernel:
             self._reviewer = _Reviewer(adapter=self, memory_interface=None)
             # REQ-13 AC13.1 (T17): hand the Reviewer the decision engine so its
             # `review_verdict` shadow rows actually FLOW. Without this the
-            # consumer is INERT — the machinery and its tests exist, but the
+            # consumer is INERT â€” the machinery and its tests exist, but the
             # call site never arrived, so no calibration data accumulates and
             # TG-6's parity clause can never be met. Resolving the singleton
             # here is the same thing the ToolDecisionBox does (`_de`), and it
@@ -1644,7 +1644,7 @@ class AgentKernel:
                 from backend.agent.decision_engine import get_decision_engine
 
                 self._reviewer.set_review_engine(get_decision_engine())
-            except Exception as _rv_eng_err:  # noqa: BLE001 — advisory
+            except Exception as _rv_eng_err:  # noqa: BLE001 â€” advisory
                 logger.debug(
                     f"[AgentKernel] Reviewer engine unavailable: {_rv_eng_err}"
                 )
@@ -1660,14 +1660,14 @@ class AgentKernel:
 
             self._mode_detector = _MD()
             # The `mode` Oracle consumer was REMOVED 2026-10-10 (owner): the
-            # detector keeps its keyword classifier only — no engine wiring, no
+            # detector keeps its keyword classifier only â€” no engine wiring, no
             # row sink (see mode_detector.py).
             logger.info("[AgentKernel] ModeDetector initialized (DER)")
         except Exception as _md_err:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
 
         # REQ-6 AC2 (T9): fire the bounded, latched, background LFM warm-up so
-        # the first user turn runs at warm latency. Non-blocking — a daemon
+        # the first user turn runs at warm latency. Non-blocking â€” a daemon
         # thread does the load; a failure leaves the normal cold path intact.
         try:
             from backend.agent.semantic_gate import ensure_warm_start
@@ -1678,7 +1678,7 @@ class AgentKernel:
 
         # REQ-14 AC14.1 / REQ-29 (T18, T46-T49): install the shadow-row sink.
         # The monitor and surface consumer modules emit their rows to a
-        # module-level sink, and NOTHING installed one in production — every
+        # module-level sink, and NOTHING installed one in production â€” every
         # row fell through to a log line, so no calibration row ever persisted
         # and TG-6's parity clause plus Wave 7's >=100-row flip bar were
         # structurally unreachable. The sink is the SAME single-writer ledger
@@ -1721,7 +1721,7 @@ class AgentKernel:
                 "[AgentKernel] shadow row sink installed "
                 "(monitor + surface + web_intent)"
             )
-        except Exception as _sink_err:  # noqa: BLE001 — advisory
+        except Exception as _sink_err:  # noqa: BLE001 â€” advisory
             logger.warning(
                 f"[AgentKernel] shadow row sink install failed: {_sink_err}"
             )
@@ -1742,7 +1742,7 @@ class AgentKernel:
         rows, so the enforcement gate was unreachable without it.
 
         The parity pair (`chosen` vs `brain_bool`) rides the ledger's decision
-        block — that is what lets a reader compute precision and ECE for a
+        block â€” that is what lets a reader compute precision and ECE for a
         consumer that never dispatches a tool of its own.
 
         Never raises: an observer must never block a step (AC14.4 shape).
@@ -1769,7 +1769,7 @@ class AgentKernel:
 
                 if _rol.defer(row, self._shadow_row_sink):
                     return  # held; the settle path writes it
-            except Exception:  # noqa: BLE001 — a label never blocks a row
+            except Exception:  # noqa: BLE001 â€” a label never blocks a row
                 logger.debug("[AgentKernel] review outcome defer failed")
             bridge = getattr(self, "_tool_bridge", None)
             if bridge is None or not hasattr(bridge, "record_decision"):
@@ -1783,25 +1783,25 @@ class AgentKernel:
                     meta["engine"] = str(
                         getattr(get_decision_engine(), "model_id", "") or ""
                     )
-                except Exception:  # noqa: BLE001 — attribution is best-effort
+                except Exception:  # noqa: BLE001 â€” attribution is best-effort
                     meta["engine"] = ""
             bridge.record_decision(
                 meta, "shadow",
                 session_id=str(getattr(self, "session_id", "") or "shadow"),
             )
-        except Exception as exc:  # noqa: BLE001 — a row never blocks a step
+        except Exception as exc:  # noqa: BLE001 â€” a row never blocks a step
             logger.debug("[AgentKernel] shadow row sink failed: %r", exc)
 
     # The consumer that EXPOSES a row instead of emitting it through a module
     # sink: `Reviewer.last_shadow_verdict`. It was populating on every turn and
-    # NOTHING wrote it — the Reviewer's own docstring says the row exists "for
+    # NOTHING wrote it â€” the Reviewer's own docstring says the row exists "for
     # the kernel's EXISTING single writer", and no caller did the writing. So
     # `review_verdict` could score forever and never produce a calibration row.
     # Measured live 2026-09-26: the log showed `Oracle decide
     # consumer=review_verdict` while the ledger held no row for it. The same
     # defect class as the missing monitor/surface sink, one layer further out.
     # (`ModeDetector.last_mode_shadow` was the other exposed row until the
-    # `mode` consumer was REMOVED 2026-10-10, owner — see mode_detector.py.)
+    # `mode` consumer was REMOVED 2026-10-10, owner â€” see mode_detector.py.)
     _EXPOSED_ROW_ATTRS = ("last_shadow_verdict",)
 
     def _forward_consumer_rows(self, *holders: Any) -> None:
@@ -1821,7 +1821,7 @@ class AgentKernel:
                         continue
                     setattr(holder, attr, None)
                     self._shadow_row_sink(row)
-                except Exception as exc:  # noqa: BLE001 — an observer never blocks
+                except Exception as exc:  # noqa: BLE001 â€” an observer never blocks
                     logger.debug(
                         "[AgentKernel] forwarding %s failed: %r", attr, exc
                     )
@@ -1858,7 +1858,7 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
             self._mcm_orch = None
 
-    # ── Trust-routing helpers (plan W2) ────────────────────────────────────
+    # â”€â”€ Trust-routing helpers (plan W2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _pacman_zone_for_turn(self) -> Optional[str]:
         """Zone for fragments produced by the current turn.
 
@@ -1883,11 +1883,11 @@ class AgentKernel:
 
     def clear_conversation(self, conversation_id: Optional[str] = None) -> None:
         """
-        Clear the agent context for a conversation — both the in-memory
+        Clear the agent context for a conversation â€” both the in-memory
         conversation history and the persistent store.  Called on 'new
         conversation' or thread switch cleanup so the next turn starts blank.
 
-        Never raises — logs warning on failure.
+        Never raises â€” logs warning on failure.
         """
         _cid = conversation_id or getattr(self, "conversation_id", None)
         # Reset in-memory history immediately so a reused kernel instance
@@ -1912,8 +1912,8 @@ class AgentKernel:
                 f"[AgentKernel] clear_conversation({_cid}) failed: {exc}"
             )
 
-    # ── T17 (REQ-1 AC1.3): follow-up mutation wiring ────────────────
-    # A voice/text interruption lands on the LIVE GoalAnatomy — never a side
+    # â”€â”€ T17 (REQ-1 AC1.3): follow-up mutation wiring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # A voice/text interruption lands on the LIVE GoalAnatomy â€” never a side
     # plan. Each mutation is logged in memory_anchors so the audit trail
     # shows who changed what.
 
@@ -1921,7 +1921,7 @@ class AgentKernel:
         """Return the currently-active goal for this conversation, or None.
 
         Lazy lookup: a test double built via __new__ never runs __init__, so
-        the slot may be unset. Treat that as "no in-flight goal" — callers
+        the slot may be unset. Treat that as "no in-flight goal" â€” callers
         decided at plan time what this conversation is doing.
         """
         return getattr(self, "_active_goals", {}).get(conversation_id)
@@ -1935,7 +1935,7 @@ class AgentKernel:
         """Follow-up on the ACTIVE goal: merge new requirements into it.
 
         Per REQ-1 AC3 the user can revise an in-flight task mid-plan. Parser:
-        parse the new instruction into (fields, target, guardrails, anchors) —
+        parse the new instruction into (fields, target, guardrails, anchors) â€”
         anything else is semantic state. A mutation must land on the SAME
         GoalAnatomy instance (the `is` identity check is the contract)."""
         goal = self._get_active_goal_for(conversation_id)
@@ -1956,7 +1956,7 @@ class AgentKernel:
         for t in known:
             if t not in prev_fields:
                 prev_fields.append(t)
-        # GoalAnatomy.mutate() returns self — in-place, never a branch.
+        # GoalAnatomy.mutate() returns self â€” in-place, never a branch.
         goal.mutate(fields=prev_fields)
         return True
 
@@ -2010,7 +2010,7 @@ class AgentKernel:
                     self._conversation_memory.clear()
                     for _m in ctx.messages:
                         # NOTE: ConversationMemory.add_message has no turn_id
-                        # parameter (session 247) — passing one raised
+                        # parameter (session 247) â€” passing one raised
                         # TypeError and made EVERY restore fail silently
                         # (best-effort except), so resumed threads came up
                         # with empty history. turn_id is store-side
@@ -2039,16 +2039,16 @@ class AgentKernel:
         """Add this inference call's cost to the pill's real counter (D1 fix).
 
         The ContextPill reads ``self._tokens_used`` (see ``_emit_context_usage``),
-        but nothing ever incremented it from a LIVE call — only
+        but nothing ever incremented it from a LIVE call â€” only
         ``restore_context_from_store`` ever set it (from a persisted snapshot),
         so a brand-new or freshly-restored turn stayed frozen at whatever it
         was restored to, through an entire real turn.
 
         *usage* is the REAL per-call usage dict parsed by the transport
-        (``InferenceRouter.last_usage`` — prompt/completion/total tokens from
+        (``InferenceRouter.last_usage`` â€” prompt/completion/total tokens from
         the provider's own response). It always wins when present. Only when
         the provider/local model omits usage entirely do we fall back to the
-        char/4 heuristic — and that fallback is logged as an estimate so real
+        char/4 heuristic â€” and that fallback is logged as an estimate so real
         and estimated increments are never silently blended.
         """
         try:
@@ -2063,7 +2063,7 @@ class AgentKernel:
                 "[AgentKernel._accrue_tokens] +%d (%s, source=%s) tokens_used=%d",
                 _add, _kind, source or "?", self._tokens_used,
             )
-        except Exception as _e:  # pragma: no cover — accounting must never break a turn
+        except Exception as _e:  # pragma: no cover â€” accounting must never break a turn
             logger.debug("[AgentKernel._accrue_tokens] failed: %s", _e)
 
     def infer(
@@ -2076,7 +2076,7 @@ class AgentKernel:
         """
         Thin inference adapter used by Reviewer (and other DER components).
         Returns an object with a `.raw_text` attribute.
-        Never raises — returns empty-text object on any backend failure.
+        Never raises â€” returns empty-text object on any backend failure.
         Routes through the same backend as the agentic loop.
         """
 
@@ -2124,7 +2124,7 @@ class AgentKernel:
 
         # T8c (REQ-10 AC5): emit an episodic memory event so the card's memory
         # slot renders REAL episodic retrieval (never fabricated). Fire-and-
-        # forget and OFF the inference hot path — a bus failure must never
+        # forget and OFF the inference hot path â€” a bus failure must never
         # affect the returned context.
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -2274,7 +2274,7 @@ class AgentKernel:
                     f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}"
                 )
             elif not self._vps_config.enabled:
-                # VPS disabled — clear any existing gateway to stop health checks
+                # VPS disabled â€” clear any existing gateway to stop health checks
                 self._vps_gateway = None
                 logger.info("[AgentKernel] VPS Gateway disabled by user config")
             else:
@@ -2297,7 +2297,7 @@ class AgentKernel:
           http://localhost:1234/v1     -> http://localhost:1234
           http://localhost:1234/v1/    -> http://localhost:1234
         None or empty string returns "".
-        _get_lmstudio_client() always appends /v1 itself — never double-append.
+        _get_lmstudio_client() always appends /v1 itself â€” never double-append.
         """
         if not endpoint:
             return ""
@@ -2313,7 +2313,7 @@ class AgentKernel:
         OpenAI-compatible server URL (LM Studio, llamafile, vllm, llama-server, etc.).
         """
         self._lmstudio_endpoint = self._normalise_endpoint(endpoint)
-        self._lmstudio_client = None  # invalidate cached client — endpoint changed
+        self._lmstudio_client = None  # invalidate cached client â€” endpoint changed
         self._sync_context_window()
         logger.info(
             f"[AgentKernel] OpenAI-compatible endpoint configured: {self._lmstudio_endpoint}"
@@ -2325,11 +2325,11 @@ class AgentKernel:
         """Configure any OpenAI-compatible inference server.
 
         Passing endpoint=None clears the endpoint (e.g. after model unload).
-        Safe to call with None — never raises AttributeError.
+        Safe to call with None â€” never raises AttributeError.
 
         Sets the ENDPOINT only. It used to also assign ``_model_provider``, but
         that field is now derived from the role binding, and this function is
-        not a binding authority — the swarm/local handlers that call it wire the
+        not a binding authority â€” the swarm/local handlers that call it wire the
         router themselves (``_handle_swarm_action``, the local-load path). The
         assignment was vestigial and could disagree with actual routing: it
         reported ``"uninitialized"`` after an unload while the router happily
@@ -2342,7 +2342,7 @@ class AgentKernel:
                 f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}"
             )
         else:
-            logger.info("[AgentKernel] Endpoint cleared — kernel is uninitialized")
+            logger.info("[AgentKernel] Endpoint cleared â€” kernel is uninitialized")
 
     def configure_ollama(self, endpoint: str) -> None:
         """Configure the Ollama native API endpoint (provider == 'local')."""
@@ -2368,9 +2368,9 @@ class AgentKernel:
             f"[AgentKernel] Remote API configured: base_url={self._api_base_url}"
         )
 
-    # ── Context window resolution ──────────────────────────────────────────
+    # â”€â”€ Context window resolution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Every model has a maximum context window.  Memory, conversation history,
-    # and MCM budgets should be derived from it — never hardcoded.
+    # and MCM budgets should be derived from it â€” never hardcoded.
 
     def _sync_context_window(self) -> None:
         """Propagate the resolved context window to memory config + peers."""
@@ -2414,7 +2414,7 @@ class AgentKernel:
         ("mistral", "mistral-medium", 32_000),
         ("mistral", "mistral-small", 32_000),
         ("mistral", "mixtral", 32_000),
-        # Cerebras — value confirmed by the user 2026-07-28.
+        # Cerebras â€” value confirmed by the user 2026-07-28.
         # NOTE: no provider-wide ("cerebras", "", N) fallback on purpose. An
         # unlisted model must fall through to the conservative 8k default rather
         # than inherit 256k: the budget is sized at window*0.9, so a default that
@@ -2424,7 +2424,7 @@ class AgentKernel:
         # Qwen 3.8 27B replaces gemma as the Cerebras offering 2026-09-04.
         # Catalog context is 64k free / 128k paid.
         # CORRECTED 2026-09-05: this is 64_000, not the 128_000 paid tier.
-        # Evidence, not an assumption — api.cerebras.ai answers every request
+        # Evidence, not an assumption â€” api.cerebras.ai answers every request
         # with 402 "Payment required to access this resource. Visit your
         # billing tab." (type=payment_required_error), i.e. no paid plan is
         # active, so only the 64k free-tier window is actually served.
@@ -2438,14 +2438,14 @@ class AgentKernel:
         # purpose (windows unverified) and take the safe 8k default.
         ("cerebras", "qwen-3.8-27b", 64_000),
         # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
-        # bare-substring provider-wide fallback — it matched EVERY model from
+        # bare-substring provider-wide fallback â€” it matched EVERY model from
         # OpenRouter, which fronts models from 4k to 2M windows. A blanket
         # 32_000 meant an 8k-window model got a budget sized for 32k, so DER
         # kept issuing steps while every call silently truncated (REQ-2 AC6,
         # the exact case row 1 of the silent-failure table in specs/PHASES.md
         # describes). This was briefly grandfathered into an allow-list in
         # test_no_raised_provider_default; that was wrong and has been
-        # reverted — the guard now admits no exceptions. An unlisted
+        # reverted â€” the guard now admits no exceptions. An unlisted
         # openrouter model now falls through to the conservative 8_192
         # default (case 4 below), tagged source="default" per REQ-2 AC4:
         # under-provisioning is safe, over-provisioning truncates silently.
@@ -2453,8 +2453,8 @@ class AgentKernel:
         # _context_window_overrides (highest precedence, REQ-2 AC3).
         # Open question: the correct long-term fix is resolving OpenRouter's
         # window from its API metadata (authoritative, REQ-2 AC2) rather than
-        # any table guess — see specs/phase-1-foundation/requirements.md OQ.
-        # LM Studio / IRIS Local — common local models
+        # any table guess â€” see specs/phase-1-foundation/requirements.md OQ.
+        # LM Studio / IRIS Local â€” common local models
         ("lmstudio", "lfm-2-8b", 32_768),
         ("lmstudio", "llama-3", 8_192),
         ("lmstudio", "llama-3.1", 128_000),
@@ -2465,7 +2465,7 @@ class AgentKernel:
         ("iris_local", "lfm-2-8b", 32_768),
         ("iris_local", "llama-3", 8_192),
         ("iris_local", "llama-3.1", 128_000),
-        # Ollama — common local models
+        # Ollama â€” common local models
         ("local", "llama3.1", 128_000),
         ("local", "llama3", 8_192),
         ("local", "mistral", 32_768),
@@ -2473,14 +2473,14 @@ class AgentKernel:
         ("local", "phi3", 128_000),
         ("local", "gemma2", 8_192),
         # Ollama CLOUD models. Every value below was read from the running
-        # Ollama server's own /api/show `context_length` on 2026-08-16 — not
+        # Ollama server's own /api/show `context_length` on 2026-08-16 â€” not
         # from a model card, a blog post, or memory. The catalog above this
         # file was once ~80% fabricated, so anything unverifiable is simply
         # absent here rather than guessed.
         #
         # Why these were missing and what it cost: an OLLAMA-kind provider maps
         # to the provider string "local" (see _provider_string_for_instance),
-        # and no "local" entry matched any cloud id — so gpt-oss:120b-cloud
+        # and no "local" entry matched any cloud id â€” so gpt-oss:120b-cloud
         # resolved to the conservative 8192 default and DER got a 4000-token
         # budget against a real 131072 window. Observed live: a 3-step task
         # stopped after step 2 with "Token budget exhausted (6091/4000)" while
@@ -2489,7 +2489,7 @@ class AgentKernel:
         # Deliberately NOT listed: kimi-k2.5:cloud and kimi-k2-thinking:cloud.
         # Ollama's own /api/show returns an error for both, so no authoritative
         # window exists to record. They fall through to the 8192 default, which
-        # under-provisions rather than truncates — the safe direction, per the
+        # under-provisions rather than truncates â€” the safe direction, per the
         # cerebras note above.
         ("local", "gpt-oss", 131_072),
         ("local", "nemotron-3-nano", 262_144),
@@ -2516,7 +2516,7 @@ class AgentKernel:
     # Known vision-capable API models. Keyed (provider_id, model_substring),
     # mirroring _KNOWN_CONTEXT_WINDOWS's shape and matching rule directly
     # above: substring match is case-insensitive, first match wins. Sibling
-    # table for specs/unified-vision-routing REQ-1 AC2 — this is DATA only,
+    # table for specs/unified-vision-routing REQ-1 AC2 â€” this is DATA only,
     # not a raise site. A model id that matches no row here is simply absent
     # from the table; the "unknown -> False" behaviour of REQ-1 AC5 is owned
     # by supports_vision() (backend/agent/inference/router.py), which must
@@ -2524,20 +2524,20 @@ class AgentKernel:
     #
     # provider_id follows the same vocabulary as _KNOWN_CONTEXT_WINDOWS: the
     # literal instance id registered for an API ProviderInstance (e.g.
-    # "openai", "anthropic" — see PROVIDER_PRESETS in
+    # "openai", "anthropic" â€” see PROVIDER_PRESETS in
     # backend/agent/inference/provider.py), not the ProviderKind enum value.
     _KNOWN_VISION_MODELS: list[tuple[str, str]] = [
-        # OpenAI — the GPT-4o family and later multimodal generations accept
+        # OpenAI â€” the GPT-4o family and later multimodal generations accept
         # image input natively.
         ("openai", "gpt-4o"),
         ("openai", "gpt-4-turbo"),
         ("openai", "gpt-4.5"),
-        # Anthropic — every Claude 3 and later model accepts image input.
+        # Anthropic â€” every Claude 3 and later model accepts image input.
         ("anthropic", "claude-3"),
         ("anthropic", "claude-opus"),
         ("anthropic", "claude-sonnet"),
         ("anthropic", "claude-haiku"),
-        # Gemini — multimodal since 1.5. No "gemini" id exists in
+        # Gemini â€” multimodal since 1.5. No "gemini" id exists in
         # PROVIDER_PRESETS today (no dedicated Google preset is registered
         # yet); this row is forward-compatible with a directly-configured
         # Gemini-compatible API provider registered under instance id
@@ -2548,23 +2548,23 @@ class AgentKernel:
         ("gemini", "gemini"),
     ]
 
-    # ── Active-model state: DERIVED from the router, never stored ─────────
+    # â”€â”€ Active-model state: DERIVED from the router, never stored â”€â”€â”€â”€â”€â”€â”€â”€â”€
     #
     # These three read like plain attributes because ~120 call sites across the
-    # backend read them that way, and that is fine — reading is safe. What is
+    # backend read them that way, and that is fine â€” reading is safe. What is
     # not safe is STORING them, which is what they used to do.
     #
     # The role-binding table and the provider registry are process-wide
     # singletons (REQ-5): one table, shared by every kernel's router. The user's
     # live choice lives there and nowhere else. Every recurring "I picked cohere
     # and it went back to cerebras" report traced to some path re-applying a
-    # stored copy of that choice — startup config replay, peer inheritance, a
+    # stored copy of that choice â€” startup config replay, peer inheritance, a
     # module-global snapshot, persisted session field_values. Each was fixed
     # individually and the bug came back through the next copy.
     #
     # Deriving them removes the category. There is no copy to go stale, no sync
-    # to forget, and a new conversation kernel — or a subagent, or a swarm
-    # worker — sees the live binding at construction because it shares the
+    # to forget, and a new conversation kernel â€” or a subagent, or a swarm
+    # worker â€” sees the live binding at construction because it shares the
     # table rather than inheriting a snapshot of it.
     #
     # To CHANGE the active model, bind the role: `kernel.set_role_binding(...)`.
@@ -2598,7 +2598,7 @@ class AgentKernel:
     def _selected_tool_execution_model(self) -> Optional[str]:
         """Model id serving the ``tool_execution`` role, or None when unbound.
 
-        Independent of :attr:`_selected_reasoning_model` by construction — the
+        Independent of :attr:`_selected_reasoning_model` by construction â€” the
         two roles are separate bindings. Brain and Tool can sit on different
         providers, which is the property the swarm and subagent work builds on.
         """
@@ -2624,7 +2624,7 @@ class AgentKernel:
         multi-tool answers it matters most for (2026-08-16).
 
         *floor* keeps a caller's own minimum when it needs more room than the
-        setting implies — the setting raises a cap, it should not starve a
+        setting implies â€” the setting raises a cap, it should not starve a
         prompt that genuinely needs length.
         """
         _mapped = {"short": 1024, "medium": 4096, "long": 8192}.get(
@@ -2667,10 +2667,10 @@ class AgentKernel:
         """Resolve *role*'s effective context window, tagging the source that won.
 
         Precedence (REQ-2, design D-2):
-          1. override      — user-set ``_context_window_overrides`` (highest)
-          2. authoritative — the ACTUAL loaded local ``n_ctx`` (source of truth)
-          3. table         — ``(provider, substring)`` registry lookup
-          4. default       — conservative 8k, logged and tagged as a default
+          1. override      â€” user-set ``_context_window_overrides`` (highest)
+          2. authoritative â€” the ACTUAL loaded local ``n_ctx`` (source of truth)
+          3. table         â€” ``(provider, substring)`` registry lookup
+          4. default       â€” conservative 8k, logged and tagged as a default
 
         The authoritative branch MUST run before the substring table: a loaded
         model's real ``n_ctx`` outranks a name-based guess. The old code ran the
@@ -2682,13 +2682,13 @@ class AgentKernel:
         reasoning binding unconditionally, so a turn's whole budget was sized by
         the Brain even for the steps that execute on the Tool binding
         (``infer(role="EXECUTION")``). With Brain on a 256k model and Tool on an
-        8k one, that budgets ~230k against a model that truncates at 8k — the
+        8k one, that budgets ~230k against a model that truncates at 8k â€” the
         silent-truncation failure this table's conservative default exists to
         prevent, reintroduced through the back door. Callers that care which
         model will actually receive the tokens must say so.
         """
         # REQ-1 AC1: the ACTIVE binding is authoritative. These properties
-        # resolve it directly (2026-08-16) — they used to be stored fields that
+        # resolve it directly (2026-08-16) â€” they used to be stored fields that
         # could disagree with the binding, which is why this block once read the
         # router explicitly and treated them as a stale fallback.
         if role == "reasoning":
@@ -2709,7 +2709,7 @@ class AgentKernel:
             return ResolvedWindow(self._context_window_overrides[model], "override")
 
         # 2. Authoritative: the live local model manager's ACTUAL loaded n_ctx.
-        #    This is the source of truth for a locally-run model — it was
+        #    This is the source of truth for a locally-run model â€” it was
         #    launched with a specific n_ctx, and a substring guess would
         #    under/over-size the budget vs the real window.
         #
@@ -2719,7 +2719,7 @@ class AgentKernel:
         #    for "local" fired for Ollama (which has no LocalModelManager and
         #    always fell through) and NEVER for a real local model. A model
         #    loaded at 32768 then fell past the substring table to the 8192
-        #    default — the same silent truncation the gpt-oss entry below was
+        #    default â€” the same silent truncation the gpt-oss entry below was
         #    added to fix, reintroduced by REQ-4's id namespacing.
         if provider in ("local", "lmstudio", "iris_local"):
             try:
@@ -2752,7 +2752,7 @@ class AgentKernel:
             except Exception:
                 pass
 
-        # 3. Table — (provider, substring) registry lookup, case-insensitive.
+        # 3. Table â€” (provider, substring) registry lookup, case-insensitive.
         model_lower = model.lower().strip()
         for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:
             if reg_provider == provider and (
@@ -2760,7 +2760,7 @@ class AgentKernel:
             ):
                 return ResolvedWindow(tokens, "table")
 
-        # 4. Local model manager profiles — config-derived guess. Treated as the
+        # 4. Local model manager profiles â€” config-derived guess. Treated as the
         #    table tier: better than the 8k default, but not the live loaded value.
         try:
             from .local_model_manager import LocalModelManager
@@ -2775,11 +2775,11 @@ class AgentKernel:
         except Exception:
             pass
 
-        # 5. Safe default — 8k for unknown models. Tagged so it is VISIBLE, not silent.
-        #    REQ-1 AC3: WARN-level, naming provider+model+source — loudly, not silently.
+        # 5. Safe default â€” 8k for unknown models. Tagged so it is VISIBLE, not silent.
+        #    REQ-1 AC3: WARN-level, naming provider+model+source â€” loudly, not silently.
         logger.warning(
             "[AgentKernel] WARN source=default: no context window known for "
-            f"provider={provider} model={model} — falling back to 8192"
+            f"provider={provider} model={model} â€” falling back to 8192"
         )
         return ResolvedWindow(8_192, "default")
 
@@ -2792,7 +2792,7 @@ class AgentKernel:
         The source tag is available via ``resolve_context_window_with_source()``.
 
         Defaults to ``reasoning`` because that is the model the user thinks of as
-        "the model" — it answers, and it is the right ContextPill denominator.
+        "the model" â€” it answers, and it is the right ContextPill denominator.
         Use ``resolve_turn_context_window()`` for anything sizing a budget that
         BOTH roles will spend against.
         """
@@ -2806,7 +2806,7 @@ class AgentKernel:
         on different models the only safe ceiling is the SMALLER window: budget
         for the larger one and every call to the smaller silently truncates.
 
-        This follows the rule stated throughout the window table — under-sizing
+        This follows the rule stated throughout the window table â€” under-sizing
         is safe, over-sizing is the bug. A Brain/Tool split must not be able to
         reintroduce the overcommit by the back door (2026-08-16).
         """
@@ -2823,7 +2823,7 @@ class AgentKernel:
         if _tool != _reasoning:
             logger.info(
                 "[AgentKernel] turn window = min(reasoning=%d, tool_execution=%d) "
-                "= %d — Brain and Tool are on different models, so the budget is "
+                "= %d â€” Brain and Tool are on different models, so the budget is "
                 "capped by the smaller window to avoid silent truncation",
                 _reasoning, _tool, min(_reasoning, _tool),
             )
@@ -2843,10 +2843,10 @@ class AgentKernel:
         REQ-12 (Wave 9): makes the ContextPill live on EVERY model response,
         not just inside the DER loop. Single emitter so DER and non-DER paths
         share the SAME event contract (same shape, same `resolve_context_window()`
-        denominator, same `self._tokens_used` numerator) — they intertwine via
+        denominator, same `self._tokens_used` numerator) â€” they intertwine via
         the contract, not duplicated logic.
 
-        - `max_tokens` = resolve_context_window() (the model in use) — never a
+        - `max_tokens` = resolve_context_window() (the model in use) â€” never a
           hardcoded 128k.
         - `used_tokens` = self._tokens_used, the kernel's real per-thread count,
           restored from the context store per conversation_id (agent_kernel.py:547).
@@ -2872,7 +2872,7 @@ class AgentKernel:
                 session_id=self.session_id,
             )
         except Exception:
-            pass  # EventBus is optional — no crash if it fails
+            pass  # EventBus is optional â€” no crash if it fails
 
     @staticmethod
     def _extract_chunk_text(chunk):
@@ -2916,7 +2916,7 @@ class AgentKernel:
         as well as other OpenAI-compatible servers listed in _OPENAI_COMPAT_PROVIDERS.
         """
         # Direct LM Studio check: self._model_provider == "lmstudio" is the most
-        # common OpenAI-compat provider — always handled by the openai client path.
+        # common OpenAI-compat provider â€” always handled by the openai client path.
         return self._model_provider in self._OPENAI_COMPAT_PROVIDERS
 
     def _is_api_provider(self) -> bool:
@@ -2943,7 +2943,7 @@ class AgentKernel:
         Called by `iris_gateway` immediately after the manager loads a model
         via the in-process path. Once set, ``_get_lmstudio_client()`` returns
         the manager's ``InProcessOpenAIAdapter`` instead of a real openai
-        HTTP client whenever the provider is ``iris_local`` — eliminating
+        HTTP client whenever the provider is ``iris_local`` â€” eliminating
         the port-8082 subprocess round-trip and the Windows hang that
         motivated this refactor.
 
@@ -2989,7 +2989,7 @@ class AgentKernel:
             if mgr is None or not mgr.is_loaded():
                 return None
             return f"http://127.0.0.1:{LocalModelManager.PORT}/v1"
-        except Exception as _e:  # noqa: BLE001 — fall through to the configured path
+        except Exception as _e:  # noqa: BLE001 â€” fall through to the configured path
             logger.debug("[AgentKernel] local base lookup failed: %s", _e)
             return None
 
@@ -2998,16 +2998,16 @@ class AgentKernel:
 
         Two paths:
 
-        1. **In-process adapter** — when the provider is ``iris_local`` and
+        1. **In-process adapter** â€” when the provider is ``iris_local`` and
            a `LocalModelManager` has been bound via
            ``configure_inprocess_local()`` with a loaded model. Returns the
            manager's ``InProcessOpenAIAdapter``, which duck-types the
            openai client surface but routes straight to the in-process
            ``Llama`` instance. No HTTP, no subprocess, no port 8082.
 
-        2. **Real openai HTTP client** — all other cases. Created once and
+        2. **Real openai HTTP client** â€” all other cases. Created once and
            cached so every inference call reuses the same httpx connection
-           pool (saves ~5–20 ms per call on localhost).
+           pool (saves ~5â€“20 ms per call on localhost).
 
         Invalidated by ``configure_lmstudio()`` / ``configure_inprocess_local()``
         when the binding changes.
@@ -3018,7 +3018,7 @@ class AgentKernel:
             adapter = mgr.get_inprocess_client()
             if adapter is not None:
                 return adapter
-            # Manager was bound but model isn't loaded → fall through to
+            # Manager was bound but model isn't loaded â†’ fall through to
             # HTTP path (which will 404 cleanly instead of silently hanging).
 
         # Path 1.5: the app's OWN local model server (2026-09-27).
@@ -3069,7 +3069,7 @@ class AgentKernel:
                 timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
             )
             logger.info(
-                f"[AgentKernel] Created LM Studio client → {self._lmstudio_endpoint}/v1"
+                f"[AgentKernel] Created LM Studio client â†’ {self._lmstudio_endpoint}/v1"
             )
         return self._lmstudio_client
 
@@ -3082,7 +3082,7 @@ class AgentKernel:
         the model to load in the background, so it is already hot by the time the user
         sends their first message.
 
-        Called from a daemon thread — never blocks the caller.
+        Called from a daemon thread â€” never blocks the caller.
         """
         import threading
 
@@ -3091,7 +3091,7 @@ class AgentKernel:
             try:
                 model = self._selected_reasoning_model or "local-model"
                 logger.info(
-                    f"[AgentKernel] Pre-warming LM Studio model '{model}' at {self._lmstudio_endpoint} …"
+                    f"[AgentKernel] Pre-warming LM Studio model '{model}' at {self._lmstudio_endpoint} â€¦"
                 )
                 client = self._get_lmstudio_client()
                 client.chat.completions.create(
@@ -3104,7 +3104,7 @@ class AgentKernel:
                 elapsed = time.perf_counter() - t0
                 logger.info(
                     f"[AgentKernel] LM Studio pre-warm complete in {elapsed:.2f}s "
-                    f"— model is hot and ready"
+                    f"â€” model is hot and ready"
                 )
             except Exception as e:
                 elapsed = time.perf_counter() - t0
@@ -3130,7 +3130,7 @@ class AgentKernel:
         prev = self._launcher_mode
         self._launcher_mode = mode
         self._developer_context = None  # invalidate cached context
-        logger.info(f"[AgentKernel] Launcher mode changed: {prev} → {mode}")
+        logger.info(f"[AgentKernel] Launcher mode changed: {prev} â†’ {mode}")
 
     def _effective_launcher_mode(self) -> str:
         """The launcher mode from the persisted config, the single source of truth.
@@ -3168,7 +3168,7 @@ class AgentKernel:
                 return self._developer_context
             here = here.parent
         logger.warning(
-            "[AgentKernel] PROJECT.md not found — developer context unavailable"
+            "[AgentKernel] PROJECT.md not found â€” developer context unavailable"
         )
         self._developer_context = ""
         return ""
@@ -3297,7 +3297,7 @@ class AgentKernel:
 
         base += f"\n\nToday's date: {_dt.date.today().strftime('%A, %d %B %Y')}."
 
-        # [RESPONSE FORMAT] — ONE TRIGGER (reply-surface audit, Phase A).
+        # [RESPONSE FORMAT] â€” ONE TRIGGER (reply-surface audit, Phase A).
         # A card appears only when the model calls create_artifact. The five
         # earlier rules (a length rule, a `show` storage rule, a markdown
         # demotion, a keyword fallback mint, a web-format question) each guessed
@@ -3332,7 +3332,7 @@ class AgentKernel:
         return base
 
     # ------------------------------------------------------------------
-    # Domain 4.5 — Proactive skill creation
+    # Domain 4.5 â€” Proactive skill creation
     # ------------------------------------------------------------------
 
     def _maybe_trigger_skill_creation(
@@ -3350,7 +3350,7 @@ class AgentKernel:
           1. Trigger iff >= 3 DISTINCT tools AND similarity to existing skills
              < 0.85 (workflow_capture.should_capture).
           2. Self-test: every step names a tool registered in tool_registry
-             (no unknown tools) — a safe structural replay, no real execution
+             (no unknown tools) â€” a safe structural replay, no real execution
              (workflow_capture.self_test_skill).
           3. Register the verified skill in semantic memory
              (workflow_capture.register_verified_skill), mirroring
@@ -3382,7 +3382,7 @@ class AgentKernel:
             )
             if name:
                 names.append(name)
-        pattern_key = " → ".join(names)
+        pattern_key = " â†’ ".join(names)
         if pattern_key in self._prompted_skill_patterns:
             return
         self._prompted_skill_patterns.add(pattern_key)
@@ -3521,9 +3521,9 @@ class AgentKernel:
         cutting latency from ~30s to ~5s on Qwen3-9B.
 
         Respects the user's _thinking_style setting:
-          concise   → never use thinking
-          balanced  → heuristic trigger-based (default)
-          thorough  → always use thinking
+          concise   â†’ never use thinking
+          balanced  â†’ heuristic trigger-based (default)
+          thorough  â†’ always use thinking
         """
         style = getattr(self, "_thinking_style", "balanced")
         if style == "concise":
@@ -3611,14 +3611,14 @@ class AgentKernel:
         """Split model output into (thinking: str, response: str).
 
         Handles three forms of chain-of-thought output:
-        1. <think>…</think> XML tags  (Qwen3 thinking mode)
-        2. <thinking>…</thinking> XML tags  (DeepSeek-style)
+        1. <think>â€¦</think> XML tags  (Qwen3 thinking mode)
+        2. <thinking>â€¦</thinking> XML tags  (DeepSeek-style)
         3. Untagged preamble paragraphs where the model narrates its reasoning
-           ("Okay, the user is asking…", "Let me think…", etc.) before a blank
+           ("Okay, the user is askingâ€¦", "Let me thinkâ€¦", etc.) before a blank
            line that separates it from the real answer.
 
         Returns:
-            (thinking, clean_response) — thinking is an empty string when none found.
+            (thinking, clean_response) â€” thinking is an empty string when none found.
         """
         import re
 
@@ -3659,7 +3659,7 @@ class AgentKernel:
         _, clean = AgentKernel._parse_thinking(text)
         return clean
 
-    # Action/tool intent markers — prompts containing these need the DER
+    # Action/tool intent markers â€” prompts containing these need the DER
     # planning/tool loop. Everything else (simple questions, factual lookups,
     # conversation) takes the fast direct-response path (1 Cerebras call, no
     # "Working on it" filler, no rate-limit burst).
@@ -3675,7 +3675,7 @@ class AgentKernel:
         "analyze", "compare", "calculate", "convert",
     )
 
-    # Follow-up / anaphora markers — these signal the user is continuing a
+    # Follow-up / anaphora markers â€” these signal the user is continuing a
     # PRIOR task ("now do it for the sales team", "yes, schedule that",
     # "what about the other one"). They carry no action verb of their own but
     # are clearly NOT standalone questions, so they must route to DER (the safe
@@ -3707,7 +3707,7 @@ class AgentKernel:
         if words & set(self._ANAPHORA_PRONOUNS) and not any(
             v in t for v in self._ACTION_VERBS
         ):
-            # "do it", "change that", "what about them" — continuation.
+            # "do it", "change that", "what about them" â€” continuation.
             if any(m in t for m in ("do", "change", "update", "edit", "what about",
                                     "how about", "send", "for", "with", "the")):
                 return True
@@ -3751,7 +3751,7 @@ class AgentKernel:
     @property
     def _gate(self):
         """Lazy SemanticLogicGate instance (T7, REQ-1/REQ-8). No model load at
-        construction — the ontology (Tier 2) is wired via memory_interface."""
+        construction â€” the ontology (Tier 2) is wired via memory_interface."""
         from backend.agent.semantic_gate import SemanticLogicGate
 
         if getattr(self, "__gate", None) is None:
@@ -3777,7 +3777,7 @@ class AgentKernel:
 
     def _needs_planning(self, text: str, context=None) -> bool:
         """
-        Planner gate — the semantic logic gate (REQ-1, T7, T13).
+        Planner gate â€” the semantic logic gate (REQ-1, T7, T13).
 
         ``compile_dag().requires_der_kernel`` is the structured planning
         decision (REQ-8): Tier 0 (deterministic rules) -> Tier 2 (coordinate-
@@ -3802,7 +3802,7 @@ class AgentKernel:
             developer=self._effective_launcher_mode() == "developer",
         )
         # REQ-5 AC1 (T8): stash the compiled graph for the [LAYERS] emit
-        # (off the hot path — the TurnMetrics stamp copies a few attrs).
+        # (off the hot path â€” the TurnMetrics stamp copies a few attrs).
         self._last_gate_graph = graph
         return bool(graph.requires_der_kernel)
 
@@ -3839,9 +3839,9 @@ class AgentKernel:
             broadcast_loop=self._broadcast_loop,
         )
 
-    # ── Token estimation ─────────────────────────────────────────────────────
-    # Rough but fast: 1 token ≈ 4 chars. Real tokenizer adds <5% accuracy gain
-    # but costs 10-50ms per call — not worth it for windowing decisions.
+    # â”€â”€ Token estimation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Rough but fast: 1 token â‰ˆ 4 chars. Real tokenizer adds <5% accuracy gain
+    # but costs 10-50ms per call â€” not worth it for windowing decisions.
     _CHARS_PER_TOKEN: int = 4
 
     # Context budget for direct responses. Keeps the most recent history
@@ -3859,28 +3859,28 @@ class AgentKernel:
     def _assemble_direct_context(self, text: str, context: List[Dict]) -> List[Dict]:
         """
         Build the message list for _respond_direct using all three memory layers
-        from the Context Engineering spec (CONTEXT_ENGINEERING.md §1–3):
+        from the Context Engineering spec (CONTEXT_ENGINEERING.md Â§1â€“3):
 
-          Layer 1 — Mycelium coordinate graph  → already in system_prompt via
+          Layer 1 â€” Mycelium coordinate graph  â†’ already in system_prompt via
                                                   _build_system_prompt()
-          Layer 2 — Episodic store             → injected here as memory block
-          Layer 3 — Working memory / history   → token-aware full context, NOT
+          Layer 2 â€” Episodic store             â†’ injected here as memory block
+          Layer 3 â€” Working memory / history   â†’ token-aware full context, NOT
                                                   a hard-capped roll window
 
         The result is unlimited effective memory: the agent sees all context
         that fits in the budget. When history exceeds the budget, the oldest
-        messages are trimmed — but episodic summaries from Mycelium still carry
+        messages are trimmed â€” but episodic summaries from Mycelium still carry
         the gist of older sessions forward (Layer 2).
 
         Design rules (from spec):
-          • Never drop the current user turn
-          • First non-system message must be "user" (Qwen3 / most models)
-          • Episodic block is a system-adjacent user↔assistant exchange so it
+          â€¢ Never drop the current user turn
+          â€¢ First non-system message must be "user" (Qwen3 / most models)
+          â€¢ Episodic block is a system-adjacent userâ†”assistant exchange so it
             doesn't break the alternating pattern
         """
         system_prompt = self._build_system_prompt()
 
-        # ── Layer 2: episodic injection ───────────────────────────────────
+        # â”€â”€ Layer 2: episodic injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         episodic_prefix: List[Dict] = []
         try:
             if self._memory_interface is not None and hasattr(
@@ -3889,7 +3889,7 @@ class AgentKernel:
                 ep_ctx = self._memory_interface.episodic.assemble_episodic_context(text)
                 if ep_ctx and ep_ctx.strip():
                     # Inject as a pseudo-exchange so the message pattern stays
-                    # [system, user, assistant, user, assistant, …, user]
+                    # [system, user, assistant, user, assistant, â€¦, user]
                     episodic_prefix = [
                         {
                             "role": "user",
@@ -3897,13 +3897,13 @@ class AgentKernel:
                         },
                         {
                             "role": "assistant",
-                            "content": "Understood — I have that context.",
+                            "content": "Understood â€” I have that context.",
                         },
                     ]
         except Exception as _ep_exc:
             loud_error(_ep_exc, "episodic.assemble_episodic_context")
 
-        # ── Layer 3: Option B — DB-backed semantic context (Pacman retrieval) ──
+        # â”€â”€ Layer 3: Option B â€” DB-backed semantic context (Pacman retrieval) â”€â”€
         # Instead of a blind rolling-window crop, we retrieve the most relevant
         # conversation fragments stored by fragment_and_store().  Falls back to
         # the plain rolling window when no chunks exist yet (first turn, fresh DB).
@@ -3916,7 +3916,7 @@ class AgentKernel:
         ep_tokens = self._count_tokens(episodic_prefix)
         current_tokens = len(text) // self._CHARS_PER_TOKEN
 
-        # ── 3a: semantic chunk retrieval from DB ──────────────────────────
+        # â”€â”€ 3a: semantic chunk retrieval from DB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         chunk_prefix: List[Dict] = []
         try:
             if (
@@ -3937,11 +3937,11 @@ class AgentKernel:
                     max_context_tokens=_ctx_budget323,
                 )
                 # Session-323 (PACMAN membrane): reference-zone chunks carry
-                # external web text — pulled separately and wrapped in an
+                # external web text â€” pulled separately and wrapped in an
                 # explicit <reference_memory> tag so the reasoning prompt can
                 # tell untrusted recall from trusted/tool recall. The DIRECT
                 # read path (get_rendered_documents by conversation_id) stays
-                # UNFILTERED — a read is a fetch, not a recall.
+                # UNFILTERED â€” a read is a fetch, not a recall.
                 _ref_chunks323: List[str] = []
                 try:
                     _ref_chunks323 = self._memory_interface.episodic.retrieve_context_chunks(
@@ -3973,7 +3973,7 @@ class AgentKernel:
                         },
                         {
                             "role": "assistant",
-                            "content": "Understood — I have those context fragments.",
+                            "content": "Understood â€” I have those context fragments.",
                         },
                     ]
         except Exception as _ch_exc:
@@ -3988,7 +3988,7 @@ class AgentKernel:
             - current_tokens
         )
 
-        # ── 3b: recency anchor — last N raw turns ─────────────────────────
+        # â”€â”€ 3b: recency anchor â€” last N raw turns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         history = list(context)
         # Remove current user turn from tail if already appended
         if (
@@ -4026,7 +4026,7 @@ class AgentKernel:
                 history.pop(0)
             history_block = history
 
-        # ── Assemble final message list ───────────────────────────────────
+        # â”€â”€ Assemble final message list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         messages: List[Dict] = [{"role": "system", "content": system_prompt}]
         messages.extend(episodic_prefix)  # Layer 2: episodic summaries
         messages.extend(chunk_prefix)  # Layer 3a: semantic DB chunks
@@ -4040,7 +4040,7 @@ class AgentKernel:
         ):
             messages.append({"role": "user", "content": text})
 
-        # ── Telemetry: log context assembly metrics ─────────────────────
+        # â”€â”€ Telemetry: log context assembly metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             _sys_chars = len(system_prompt) if system_prompt else 0
             _ep_chars = sum(len(m.get("content", "")) for m in episodic_prefix)
@@ -4066,7 +4066,7 @@ class AgentKernel:
         except Exception:
             pass
 
-        # ── MCM Protocol: MITO tag injection + DCP prune ─────────────────
+        # â”€â”€ MCM Protocol: MITO tag injection + DCP prune â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if self._mcm_orch is not None:
             try:
                 messages = self._mcm_orch.pre_call(messages, text)
@@ -4103,7 +4103,7 @@ class AgentKernel:
         # 3. Collapse consecutive same-role non-system messages, and merge
         # non-first system messages into the first. mito_inject (pos 1) and
         # pacman_recall (pos 2) each add a system block beside the base
-        # prompt, so the wire list routinely carries 2-3 systems — which
+        # prompt, so the wire list routinely carries 2-3 systems â€” which
         # strict chat templates (Cerebras, llama.cpp) reject with 400
         # "System message must be at the beginning" (live 2026-09-04: killed
         # a direct answer plus topic + data extraction). Tolerant providers
@@ -4134,7 +4134,7 @@ class AgentKernel:
                 # After system, any role is fine
                 sanitized.append(m)
             elif sanitized[-1]["role"] != m["role"]:
-                # Alternating roles — OK
+                # Alternating roles â€” OK
                 sanitized.append(m)
             # else: skip consecutive same-role non-system (keeps first of run)
 
@@ -4181,9 +4181,9 @@ class AgentKernel:
         or auto-detected provider type.
 
         Context uses all three memory layers (see CONTEXT_ENGINEERING.md):
-          Layer 1: Mycelium coordinates → system prompt
-          Layer 2: Episodic store       → memory block prefix
-          Layer 3: Full history         → token-aware (not a hard roll window)
+          Layer 1: Mycelium coordinates â†’ system prompt
+          Layer 2: Episodic store       â†’ memory block prefix
+          Layer 3: Full history         â†’ token-aware (not a hard roll window)
 
         Returns: response text string.
         """
@@ -4227,7 +4227,7 @@ class AgentKernel:
         # so no existing caller changes.
         _tools = self._get_openai_tools(text) if tools is not False else []
 
-        # Local dispatch wrapper — routes to the correct backend provider and
+        # Local dispatch wrapper â€” routes to the correct backend provider and
         # returns (response_text, thinking_text, tool_calls).
         def _call(_msgs: List[Dict], _tools_arg: Optional[List[Dict]]) -> Tuple[str, str, List[Dict]]:
             _text, _thinking, _tool_calls = self._router.generate(
@@ -4279,7 +4279,7 @@ class AgentKernel:
                 except Exception:
                     _params = {"__raw_arguments__": _args_raw}
                 # REQ-16 AC16.2 (T20): this ReAct loop picks tools with native
-                # function calling, OUTSIDE ToolDecisionBox.resolve() — so the
+                # function calling, OUTSIDE ToolDecisionBox.resolve() â€” so the
                 # engine never saw this traffic and the reliability curve was
                 # built on a biased subset. Shadow-score the same choice here
                 # (engine pick vs the tool the Brain actually called) and write
@@ -4394,7 +4394,7 @@ class AgentKernel:
                         proposed_tool=_name,
                         tool_description=(_crit or {}).get(_name) or "",
                         # v2: the arguments the Brain executed and the menu it
-                        # was offered — the evidence the v1 frame lacked.
+                        # was offered â€” the evidence the v1 frame lacked.
                         args=_params if isinstance(_params, dict) else None,
                         offered_tools=[(t.get("function") or {}).get("name")
                                        for t in (_tools or [])] or None,
@@ -4453,12 +4453,12 @@ class AgentKernel:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         tools: Optional[List[Dict]] = None,
     ) -> Tuple[str, str, List[Dict]]:
-        """Remote API provider — direct httpx streaming (Chutes, OpenAI, etc.).
+        """Remote API provider â€” direct httpx streaming (Chutes, OpenAI, etc.).
 
         Uses httpx directly instead of _llm.complete() to avoid thread-pool hangs.
         Returns (response_text, thinking_text).
 
-        Raises RuntimeError on API errors — no silent error swallowing.
+        Raises RuntimeError on API errors â€” no silent error swallowing.
         """
         import json as _json
         import time as _perf_t
@@ -4470,7 +4470,7 @@ class AgentKernel:
         sel = self._selected_reasoning_model or "local-model"
         if sel in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
             raise RuntimeError(
-                "No reasoning model configured. Set a model in Settings → "
+                "No reasoning model configured. Set a model in Settings â†’ "
                 "Model Selection (e.g. Cerebras gemma-4-31b) before sending messages."
             )
 
@@ -4479,7 +4479,7 @@ class AgentKernel:
             "Content-Type": "application/json",
         }
         # REQ-1 (specs/local-model-lifecycle-sync): never emit `Authorization:
-        # Bearer ` with an empty value — httpx rejects it as an illegal header
+        # Bearer ` with an empty value â€” httpx rejects it as an illegal header
         # and the kernel crashes with `Illegal header value b'Bearer '`. The
         # router raises ProviderNotReadyError(missing_api_key) before this
         # path, but guard here too so a direct call fails closed.
@@ -4510,7 +4510,7 @@ class AgentKernel:
             )
         except Exception as _think_exc:  # noqa: BLE001 -- never fail on a hint
             logger.debug("[thinking] hint not applied: %s", _think_exc)
-        # ── Telemetry: log API request shape (not content) ──────────
+        # â”€â”€ Telemetry: log API request shape (not content) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             _msg_count = len(messages)
             _total_chars = sum(len(str(m.get("content", ""))) for m in messages)
@@ -4551,7 +4551,7 @@ class AgentKernel:
                                 except Exception:
                                     pass
                                 logger.warning(
-                                    "[DispatchAPI] 429 rate-limit (attempt %d/3) — retrying",
+                                    "[DispatchAPI] 429 rate-limit (attempt %d/3) â€” retrying",
                                     _attempt + 1,
                                 )
                                 continue
@@ -4592,7 +4592,7 @@ class AgentKernel:
                                     continue
                                 _delta = _choices[0].get("delta", {})
 
-                                # Reasoning content — field name varies by provider
+                                # Reasoning content â€” field name varies by provider
                                 _r = _delta.get("reasoning_content") or _delta.get("reasoning")
                                 if _r:
                                     _reasoning_buf.append(_r)
@@ -4606,7 +4606,7 @@ class AgentKernel:
                                     if chunk_callback:
                                         chunk_callback(_c)
 
-                                # Tool calls (function calling) — accumulate across
+                                # Tool calls (function calling) â€” accumulate across
                                 # streaming deltas by index.
                                 for _tc_item in (_delta.get("tool_calls") or []):
                                     _idx = _tc_item.get("index", 0)
@@ -4701,7 +4701,7 @@ class AgentKernel:
                                 _wait = min(1.0 * (2 ** _attempt), 30.0)
                             _wait = max(0.0, min(_wait, 60.0))  # hard cap 60s
                             logger.warning(
-                                "[DispatchAPI] 429 rate-limit (attempt %d/3) — "
+                                "[DispatchAPI] 429 rate-limit (attempt %d/3) â€” "
                                 "waiting %.1fs for reset window",
                                 _attempt + 1,
                                 _wait,
@@ -4742,7 +4742,7 @@ class AgentKernel:
             _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
 
-            # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
+            # â”€â”€ FIX (session 154): Invoke chunk_callback on non-streaming path â”€â”€
             # When the LLM provider returns the full reply in one shot (Cerebras,
             # Cohere batch mode, etc.), chunk_callback is never called, so the
             # TTS sentence_queue only receives the None sentinel and the
@@ -4766,12 +4766,12 @@ class AgentKernel:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         tools: Optional[List[Dict]] = None,
     ) -> Tuple[str, str, List[Dict]]:
-        """LM Studio / local OpenAI-compatible endpoint — direct httpx streaming.
+        """LM Studio / local OpenAI-compatible endpoint â€” direct httpx streaming.
 
         Similar to _dispatch_api but uses _lmstudio_endpoint and LM Studio's
         Extra-body template hints. Returns (response_text, thinking_text).
 
-        Raises RuntimeError on API errors — no silent error swallowing.
+        Raises RuntimeError on API errors â€” no silent error swallowing.
         """
         import json as _json
         import time as _perf_t
@@ -4840,7 +4840,7 @@ class AgentKernel:
                                 except Exception:
                                     pass
                                 logger.warning(
-                                    "[DispatchLMStudio] 429 rate-limit (attempt %d/3) — retrying",
+                                    "[DispatchLMStudio] 429 rate-limit (attempt %d/3) â€” retrying",
                                     _attempt + 1,
                                 )
                                 continue
@@ -4946,7 +4946,7 @@ class AgentKernel:
                                 )
                                 if _resp.status_code == 429:
                                     logger.warning(
-                                        "[DispatchLMStudio] 429 rate-limit (attempt %d/3) — retrying",
+                                        "[DispatchLMStudio] 429 rate-limit (attempt %d/3) â€” retrying",
                                         _attempt + 1,
                                     )
                                     if _attempt < 2:
@@ -5017,7 +5017,7 @@ class AgentKernel:
             _elapsed_ns = _perf_t.perf_counter() - _t0
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed_ns)
 
-            # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
+            # â”€â”€ FIX (session 154): Invoke chunk_callback on non-streaming path â”€â”€
             # Same fix as _dispatch_api: when LM Studio returns the full reply
             # in one shot, chunk_callback is never called, so the TTS
             # sentence_queue only receives the None sentinel. Send the full
@@ -5058,7 +5058,7 @@ class AgentKernel:
             messages[-1].get("content", "") if messages else ""
         )
 
-        # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
+        # â”€â”€ FIX (session 154): Invoke chunk_callback on non-streaming path â”€â”€
         # Local in-process models generate the full reply at once. Without
         # this call, the TTS pipeline never sees the response text.
         if chunk_callback and reply:
@@ -5090,7 +5090,7 @@ class AgentKernel:
         if text.count("```") >= 2:
             return True
         # Three or more bullet / numbered list items
-        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*•]\s|^\s*\d+\.\s", ln))
+        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*â€¢]\s|^\s*\d+\.\s", ln))
         if list_items >= 3:
             return True
         # Long, dense multi-paragraph text (>10 non-empty lines, avg >8 words/line)
@@ -5101,7 +5101,7 @@ class AgentKernel:
                 return True
         return False
 
-    # ── Tool definitions for OpenAI-compatible function calling ─────────────
+    # â”€â”€ Tool definitions for OpenAI-compatible function calling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _ensure_tool_bridge(self) -> None:
         """Lazy-initialize the tool bridge on first access.
@@ -5109,7 +5109,7 @@ class AgentKernel:
         The bridge is created as a background task (its initialize() is async
         and wires MCP/server connections); tools from its in-process dict are
         available immediately.  This MUST run before ANY code reads
-        ``self._tool_bridge.get_available_tools()`` — ``_plan_task`` builds the
+        ``self._tool_bridge.get_available_tools()`` â€” ``_plan_task`` builds the
         planner's AVAILABLE TOOLS block from it, and a None bridge silently
         produces an empty tool list (planner then emits tool-less speak steps).
         """
@@ -5123,7 +5123,7 @@ class AgentKernel:
                         loop = asyncio.get_running_loop()
                         loop.create_task(self._tool_bridge.initialize())
                     except RuntimeError:
-                        # No running event loop — run synchronously
+                        # No running event loop â€” run synchronously
                         asyncio.run(self._tool_bridge.initialize())
                 logger.info("[AgentKernel] Tool bridge lazy-initialized")
             except Exception as e:
@@ -5144,14 +5144,14 @@ class AgentKernel:
         if not self._tool_bridge:
             return []
         # Single shared converter (tool_registry.to_function_schema). This used
-        # to be an inline copy, and ToolDecisionBox had no conversion at all —
+        # to be an inline copy, and ToolDecisionBox had no conversion at all â€”
         # so the same tools were valid on one code path and a 422 on the other.
         from backend.agent.tool_registry import to_function_schema
 
         openai_tools: List[Dict] = to_function_schema(
             self._tool_bridge.get_available_tools()
         )
-        # ── Web tools are NOT filtered out of the model's tool list ─────────
+        # â”€â”€ Web tools are NOT filtered out of the model's tool list â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # REMOVED 2026-10-07. This used to strip `search` and `crawler_query`
         # unless `_is_web_search_request(text)` was true, and that predicate
         # reduced to a 16-phrase substring list, because the Oracle can never
@@ -5184,7 +5184,7 @@ class AgentKernel:
         # search tool. The web toggle remains the user's control.
         return openai_tools
 
-    # ── ReAct agentic loop ───────────────────────────────────────────────────
+    # â”€â”€ ReAct agentic loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     # REQ-28: threshold above which the first-sentence rule below stops being
     # an acceptable spoken form. Same number prepare_spoken_text already uses
@@ -5347,22 +5347,22 @@ class AgentKernel:
         Full response is ALWAYS sent separately via text_response.
 
         Conversational-first design: IRIS speaks a short, natural summary.
-        The full response is always visible in ChatView — voice is a companion,
+        The full response is always visible in ChatView â€” voice is a companion,
         not a reader.  Thresholds keep spoken output under ~20-25 seconds.
 
-        No second LLM call — direct text processing keeps first-audio latency
+        No second LLM call â€” direct text processing keeps first-audio latency
         to synthesis time only (~1-2s warm, ~40s cold F5-TTS).
 
         Rules (applied after code/markdown is stripped):
-          ≤ 60 words  → spoken verbatim (always — short answers, confirmations)
-          61-120 words, conversational → spoken verbatim (user asked, answer given)
-          61-120 words, document-like → first sentence + "in the chat window"
-          > 120 words → first sentence to boundary (≤ 60 words) + "in the chat window"
+          â‰¤ 60 words  â†’ spoken verbatim (always â€” short answers, confirmations)
+          61-120 words, conversational â†’ spoken verbatim (user asked, answer given)
+          61-120 words, document-like â†’ first sentence + "in the chat window"
+          > 120 words â†’ first sentence to boundary (â‰¤ 60 words) + "in the chat window"
         """
         import re as _re
         from backend.voice.tts_normalizer import normalize_text
 
-        # Strip code fences and their content entirely — code is unreadable aloud
+        # Strip code fences and their content entirely â€” code is unreadable aloud
         cleaned = _re.sub(r"```[\s\S]*?```", "", full_response)
         # Strip inline code
         cleaned = _re.sub(r"`[^`]+`", "", cleaned)
@@ -5371,7 +5371,7 @@ class AgentKernel:
         # Strip bold/italic markers
         cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
         # Strip bullet dashes/asterisks at line start
-        cleaned = _re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=_re.MULTILINE)
+        cleaned = _re.sub(r"^\s*[-*â€¢]\s+", "", cleaned, flags=_re.MULTILINE)
         # Collapse whitespace
         cleaned = " ".join(cleaned.split())
 
@@ -5379,18 +5379,18 @@ class AgentKernel:
         is_doc = self._is_document_content(full_response)
         word_count = len(cleaned.split())
 
-        # Short response — always spoken verbatim (~0-15s at 150 wpm)
+        # Short response â€” always spoken verbatim (~0-15s at 150 wpm)
         if word_count <= 60:
             spoken = normalize_text(cleaned)
             if had_code:
                 spoken += " The full code is in the chat window."
             return spoken
 
-        # Medium conversational response — spoken in full if not document-like (~15-25s)
+        # Medium conversational response â€” spoken in full if not document-like (~15-25s)
         if word_count <= 120 and not is_doc and not had_code:
             return normalize_text(cleaned)
 
-        # Document, code, or long response — speak first sentence(s) up to 60 words
+        # Document, code, or long response â€” speak first sentence(s) up to 60 words
         words = cleaned.split()
         truncated = " ".join(words[:60])
         # Walk back to last sentence boundary to avoid mid-sentence cut
@@ -5410,7 +5410,7 @@ class AgentKernel:
         return spoken
 
     # ------------------------------------------------------------------
-    # Issue C.1 — structured speak/show response contract
+    # Issue C.1 â€” structured speak/show response contract
     # ------------------------------------------------------------------
 
     def _finalize_response(
@@ -5424,7 +5424,7 @@ class AgentKernel:
         the rule is enforced in ONE place instead of at nine separate returns.
         Three of those returns had each caused the same truncation bug in turn
         (``return speak``; the card branch owning the content; the speak-tool
-        ``spoken`` field) — the shape, not the individual returns, was the bug.
+        ``spoken`` field) â€” the shape, not the individual returns, was the bug.
 
         ``spoken`` is the agent's own TTS line when it supplied one. It is
         always assigned (empty when absent) so a previous turn's line can never
@@ -5432,7 +5432,7 @@ class AgentKernel:
         """
         # The prompt's ANSWER: format label, copied by the model, never reaches
         # the user: one leading label is dropped from the display text and the
-        # spoken line here — the single exit every reply path goes through
+        # spoken line here â€” the single exit every reply path goes through
         # (recorded live 2026-10-06, test_answer_marker_strip_contract).
         from backend.agent.artifact_policy import strip_leading_answer_marker
 
@@ -5453,12 +5453,12 @@ class AgentKernel:
 
         The DER path can hand back a TOOL RESULT as its final output. The speak
         tool returns ``{"status": "ok", "utterance_id": ..., "spoken": text}``
-        — JSON with neither ``speak`` nor ``show``, so
+        â€” JSON with neither ``speak`` nor ``show``, so
         ``parse_structured_response`` reports it as unstructured.
 
         When the envelope also carries a written answer (a longer
         text/content/response field), that is the display text and ``spoken``
-        stays the TTS line. Otherwise the spoken text is both — it is the only
+        stays the TTS line. Otherwise the spoken text is both â€” it is the only
         text there is, and it must be shown in full.
 
         Returns ``(response, None)`` when this is not a tool envelope, so the
@@ -5491,7 +5491,7 @@ class AgentKernel:
         ONE RULE, ONE EXIT (2026-08-17). Returns the text for the thread and
         assigns the TTS line to ``self._last_spoken_text``; a card renders only
         for a stored artifact. Every exit goes through
-        :meth:`_finalize_response` — three separate returns each caused the same
+        :meth:`_finalize_response` â€” three separate returns each caused the same
         truncation in turn, so the exits are now consolidated rather than
         patched individually.
 
@@ -5512,14 +5512,14 @@ class AgentKernel:
 
         The distinction that drives it is decided by the AGENT, not inferred
         here: ``show`` is the older spelling of ``create_artifact`` ("this is
-        something to keep — store it"), so it converts to the same call, renders
+        something to keep â€” store it"), so it converts to the same call, renders
         a card and the thread keeps the spoken line. Everything else is
         conversation and goes to the thread as text, in full, however long. The
         [RESPONSE FORMAT] prompt in :meth:`_build_system_prompt` is the other
         half of this contract; the two must be read together.
 
         Content lives in exactly one place. With a card, that place is the card
-        and the document store. Without one, it is the chat message — which is
+        and the document store. Without one, it is the chat message â€” which is
         why no path here may shorten it.
         """
         if not response:
@@ -5538,20 +5538,20 @@ class AgentKernel:
 
         speak, show = parse_structured_response(response)
 
-        # ── Tool-result envelope ──────────────────────────────────────────
+        # â”€â”€ Tool-result envelope â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # ROOT CAUSE of the last truncation (2026-08-16, fixed 2026-08-17):
         # a speak-tool result reaches here as {"status", "utterance_id",
         # "spoken"}. It has neither `speak` nor `show`, so it fell into the
-        # plain-text branch below and _supportive_text excerpted the RAW JSON —
+        # plain-text branch below and _supportive_text excerpted the RAW JSON â€”
         # an 887-char answer displayed and persisted as 55 chars.
         #
         # A handler for the "spoken" field DID exist, but it sat AFTER the
         # `show is None` return, so it could never run. That is why the earlier
         # spot-fix appeared to "return raw JSON": the branch it patched was
-        # dead. Unwrapping HERE — before any return — is the fix. The dead
+        # dead. Unwrapping HERE â€” before any return â€” is the fix. The dead
         # branch is gone.
         # Internal narration never reaches the user, on any lane. A leading
-        # planning paragraph is dropped when a real answer follows it — the
+        # planning paragraph is dropped when a real answer follows it â€” the
         # thread text AND a card body both (a report card used to open with
         # "The tool only returned a partial draft; it omitted full sections ...",
         # and a failed turn showed "Need to call read_file ... Let's run
@@ -5568,7 +5568,7 @@ class AgentKernel:
                 return self._finalize_response(_display, _spoken)
 
         if show is None:
-            # ── Plain-text response ─────────────────────────────────────────
+            # â”€â”€ Plain-text response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # A PLAIN REPLY IS THE ANSWER (reply-surface audit, Phase A). No
             # DOCUMENT_RENDER is emitted on this path - ever: not for length, not
             # for structure, not for a document-shaped body, and not because the
@@ -5581,7 +5581,7 @@ class AgentKernel:
             # create_artifact (or sends the older `show` payload, which
             # converts to the same call). The text goes to the thread unchanged.
             # REQ-15: the `presentation` decision-engine consumer runs as an
-            # ASYNC OBSERVER off the reply path — its verdict is recorded for
+            # ASYNC OBSERVER off the reply path â€” its verdict is recorded for
             # calibration, never consulted for the live surface ("plain").
             self._observe_surface_async(response, turn_id, live_surface="plain")
             self._log_surface(
@@ -5596,7 +5596,7 @@ class AgentKernel:
             # fallback (:4036) covers the common plain case.
             return self._finalize_response(response, speak)
 
-        # ── `show` is the older spelling of create_artifact ─────────────────
+        # â”€â”€ `show` is the older spelling of create_artifact â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # A `show` payload converts to the SAME call the tool makes, so a card
         # has one door: create_artifact stores on the real DocumentDataStore and
         # emits DOCUMENT_RENDER with title, kind, summary, language, format,
@@ -5669,8 +5669,8 @@ class AgentKernel:
                 logger.warning("[AgentKernel] speak broadcast failed: %s", exc)
             # CONTENT LIVES IN EXACTLY ONE PLACE (2026-08-16, user rule).
             #
-            # A document render is for an ARTIFACT — search results, generated
-            # markdown, a plan, code — something stored in the document store to
+            # A document render is for an ARTIFACT â€” search results, generated
+            # markdown, a plan, code â€” something stored in the document store to
             # be opened again later. When one is rendered, the card owns the
             # content and the chat keeps the agent's conversational line, so the
             # thread is not a wall of duplicated markdown.
@@ -5684,7 +5684,7 @@ class AgentKernel:
             # asks "did a card really render?" rather than assuming one did.
             # Bubble = the agent's `speak` line (specs/reply-surface-contract
             # REQ-3 / T3): the card owns the content, the bubble carries the
-            # conversational line — never an excerpt of the card body. Only
+            # conversational line â€” never an excerpt of the card body. Only
             # when the emit itself failed does the full show content fall
             # back into the thread (it is the only copy then).
             if getattr(self, "_last_render_emitted", False):
@@ -5708,7 +5708,7 @@ class AgentKernel:
         # content; returning the raw JSON here would speak it and show it as
         # the assistant's message.
         #
-        # The speak-tool "spoken" handler that used to sit here was DEAD CODE —
+        # The speak-tool "spoken" handler that used to sit here was DEAD CODE â€”
         # reaching it required `show` to be a dict AND the same JSON to carry a
         # top-level "spoken", which the speak tool never produces. Its real
         # payload is unwrapped at the top of this function now.
@@ -5735,7 +5735,7 @@ class AgentKernel:
         )
         return self._finalize_response(show.get("content") or "")
 
-    # ── W4: canonical document-data storage ────────────────────────────────
+    # â”€â”€ W4: canonical document-data storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _get_document_store(self):
         """Return the DocumentDataStore for this kernel's memory DB, or None."""
         try:
@@ -5752,7 +5752,7 @@ class AgentKernel:
 
         Tolerant of shape: prefers '--- Source: <url> ---' markers (observed in
         live crawler output) and falls back to any http(s) URL. Returns [] on
-        failure — never raises into the store path (design risk: malformed JSON
+        failure â€” never raises into the store path (design risk: malformed JSON
         -> empty sources, store still succeeds).
         """
         import re
@@ -5785,7 +5785,7 @@ class AgentKernel:
 
         Extracted as a pure function so the ceiling is directly assertable and
         so there is exactly ONE place that decides it. A caller passing
-        ``trust="trusted"`` for vision output is downgraded, not honoured —
+        ``trust="trusted"`` for vision output is downgraded, not honoured â€”
         provenance beats the caller's claim.
         """
         if content_origin in ("vision", "reconciled") and trust != "untrusted":
@@ -5808,14 +5808,14 @@ class AgentKernel:
         """Persist a document's canonical DATA (not its render) keyed by document_id.
 
         Two coordinated homes (plan W4):
-          * Mycelium (episodic.fragment_and_store) — semantically retrievable
+          * Mycelium (episodic.fragment_and_store) â€” semantically retrievable
             later via mcm_recall / pacman_recall, scoped by zone (trust).
-          * Immortus 4D chain (immortus_chain_append) — placed in the reasoning
+          * Immortus 4D chain (immortus_chain_append) â€” placed in the reasoning
             trajectory via coords_from->coords_to so it "finds its place".
 
         The rendered ``content`` is only a view derived on demand; the stored
         source of truth is the canonical {format, content, alternatives}.
-        All failures are swallowed — storage must never block the render.
+        All failures are swallowed â€” storage must never block the render.
         """
         import json
 
@@ -5831,7 +5831,7 @@ class AgentKernel:
         # REQ-18 AC2/AC3: provenance travels with the content, and vision-derived
         # content is never stored at a HIGHER trust than equivalent crawled web
         # content. The ceiling is enforced HERE, at the single choke point every
-        # document passes through, rather than at each call site — one guard
+        # document passes through, rather than at each call site â€” one guard
         # cannot be forgotten by a future caller. ContentOrigin previously lived
         # only inside frame_extraction.py and never reached the store at all, so
         # vision output was indistinguishable from DOM text once persisted.
@@ -5852,7 +5852,7 @@ class AgentKernel:
         canonical_text = json.dumps(canonical, ensure_ascii=False)
         zone = "reference" if trust == "untrusted" else "trusted"
 
-        # ── Immortus 4D chain coordinate (computed early; used by W8 seed + Immortus) ──
+        # â”€â”€ Immortus 4D chain coordinate (computed early; used by W8 seed + Immortus) â”€â”€
         # coords_from = the agent's actual reasoning-state coordinate at the
         # moment this document was produced (sourced from the Caducean
         # trajectory recorder). This is what lets W7/O1 do trajectory-proximity
@@ -5886,7 +5886,7 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data coord lookup failed: %s", exc)
 
-        # ── Wave 0/1 provenance linkage (REQ-5/REQ-13) ─────────────────────
+        # â”€â”€ Wave 0/1 provenance linkage (REQ-5/REQ-13) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Persist source_document_id / sources / har_path so documents rehydrate
         # with provenance. Tolerant of shape: malformed input -> empty sources,
         # store still succeeds (design risk).
@@ -5915,7 +5915,7 @@ class AgentKernel:
                     capture_path = os.path.join(
                         _captures_dir(), _safe_job(str(_cap_job))
                     )
-                except Exception:  # noqa: BLE001 — linkage is best-effort
+                except Exception:  # noqa: BLE001 â€” linkage is best-effort
                     capture_path = None
         source_tool = show.get("source_tool")
 
@@ -5948,7 +5948,7 @@ class AgentKernel:
                     except Exception:
                         pass
 
-        # ── DocumentDataStore: source-of-truth keyed by document_id (G4) ────
+        # â”€â”€ DocumentDataStore: source-of-truth keyed by document_id (G4) â”€â”€â”€â”€
         _doc_stored = False
         try:
             store = self._get_document_store()
@@ -5991,7 +5991,7 @@ class AgentKernel:
         )
 
         # Session 245 (live memory footer): surface the DOCUMENT STORE on the
-        # card's footer — a websearch's crawled content landing in
+        # card's footer â€” a websearch's crawled content landing in
         # document_data + episodic chunks is exactly the memory activity the
         # user wants to see while execution happens. outcome_type distinguishes
         # it from step stores / recall.
@@ -6012,10 +6012,10 @@ class AgentKernel:
         except Exception:
             pass  # never block the document store on an emit failure
 
-        # ── Mycelium: semantic/episodic store ──────────────────────────────
+        # â”€â”€ Mycelium: semantic/episodic store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # OFF THE CRITICAL PATH (2026-08-17, same rule as the pacman_fragment
         # mediator). Storing means embedding, and the CPU-only encoder costs
-        # ~5 s per 1 KB chunk — a 14-chunk document blocked the DER loop for
+        # ~5 s per 1 KB chunk â€” a 14-chunk document blocked the DER loop for
         # ~50-90 s per step. Measured live: three inter-step gaps of 88 s, 72 s
         # and 84 s accounted for 244 s of a 311 s turn, while the mediator's own
         # fragments (already async) filed in the background without stalling it.
@@ -6044,10 +6044,10 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Mycelium store failed: %s", exc)
 
-        # ── Mycelium: seed document data as a trust-routed context node (W8/O2) ──
+        # â”€â”€ Mycelium: seed document data as a trust-routed context node (W8/O2) â”€â”€
         # So trusted, frequently-referenced data can crystallize into a permanent
         # landmark at PERMANENCE_THRESHOLD. Trust routing is CellWall-enforced
-        # inside the interface — never bypassed. coords_from is the agent's real
+        # inside the interface â€” never bypassed. coords_from is the agent's real
         # reasoning-state coordinate ("x,y,xi,u"); the interface parses it.
         try:
             if mi is not None and hasattr(mi, "ingest_document_data"):
@@ -6064,14 +6064,14 @@ class AgentKernel:
 
 
         # OFF THE CRITICAL PATH. This is a durability/audit write, not part of
-        # producing the answer — but it ran INLINE on the DER thread after every
+        # producing the answer â€” but it ran INLINE on the DER thread after every
         # tool result. A live stack dump caught the thread parked in
         # ffi_immortus_chain_append -> SQLite right after a web search returned,
         # so a finished crawl looked hung and its UI events never surfaced.
         # `canonical_text` carries the full rendered document (for a crawl, the
         # page content), so the cost scales with how much the search found.
         #
-        # NOTE this is the SECOND such write on the same path — tool_bridge's
+        # NOTE this is the SECOND such write on the same path â€” tool_bridge's
         # _record_tool_event had the identical problem and was moved off-thread
         # first; fixing it simply revealed this one underneath. If a third
         # appears, the pattern (not the instance) is what needs addressing.
@@ -6144,7 +6144,7 @@ class AgentKernel:
             existing = mapping.get(document_id)
             if existing:
                 return existing
-            # 2026-09-22 (audit): after a reload the map is empty — the
+            # 2026-09-22 (audit): after a reload the map is empty â€” the
             # stored row can carry the id. Consult the store first.
             try:
                 store = self._get_document_store()
@@ -6161,7 +6161,7 @@ class AgentKernel:
                 for old in list(mapping)[:50]:
                     mapping.pop(old, None)
             return card_id
-        except Exception:  # noqa: BLE001 — ids must never block a render
+        except Exception:  # noqa: BLE001 â€” ids must never block a render
             return f"card_doc_{document_id}"
 
     def create_artifact(
@@ -6483,7 +6483,7 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] update_document failed: {exc}")
             return None
 
-    # ── W9 (O3): proactive structured-data capture from ANY tool result ──────
+    # â”€â”€ W9 (O3): proactive structured-data capture from ANY tool result â”€â”€â”€â”€â”€â”€
     # Plan W9: extend capture beyond `show` payloads to any tool result
     # (web_search, crawler_query, read_file, ...) so everything the agent
     # touches becomes reformat-able via the same DocumentDataStore. Scoped by a
@@ -6495,7 +6495,7 @@ class AgentKernel:
     @staticmethod
     def _json_default(obj: Any) -> Any:
         """json.dumps ``default=`` for tool-result payloads that carry
-        non-JSON-native objects (D4e — e.g. crawler CredibilityMap nested
+        non-JSON-native objects (D4e â€” e.g. crawler CredibilityMap nested
         inside a web_search/crawler_query result dict, which raised "Object
         of type CredibilityMap is not JSON serializable" and dropped the
         whole DER tool-result capture).
@@ -6561,10 +6561,10 @@ class AgentKernel:
         Trust-routing (W2/W3): external tools (web_search, crawler_query) are
         stored as ``untrusted``; everything else (e.g. read_file) as ``trusted``.
         Returns the new document_id, or None when the result was skipped by the
-        capture-worthiness gate. All failures are swallowed — capture must never
+        capture-worthiness gate. All failures are swallowed â€” capture must never
         block the tool result from reaching the agent.
         """
-        # ── ChatCard redesign (pin_9e97e21340e7): external/web tool results are
+        # â”€â”€ ChatCard redesign (pin_9e97e21340e7): external/web tool results are
         # captured into the document store (reformat-able). Capture is NOT a
         # render: a card appears only when the agent calls create_artifact (or
         # sends the older `show` payload, which converts to the same call).
@@ -6608,7 +6608,7 @@ class AgentKernel:
             logger.warning("[AgentKernel] tool-result capture failed: %s", exc)
             return None
         # pin: the capture-time deterministic DOCUMENT_RENDER (old pin
-        # 517dfcbda150) was REMOVED by user decision — it popped a card on EVERY
+        # 517dfcbda150) was REMOVED by user decision â€” it popped a card on EVERY
         # web-tool commit (every crawl mid-research), not just the final answer.
         return document_id
 
@@ -6626,7 +6626,7 @@ class AgentKernel:
 
         W5 (data-centric): the primary path retrieves the document's canonical
         data + stored variants by ``document_id`` (the frontend sends only
-        ``{document_id, target_format}`` — no client ``content``).  Deterministic
+        ``{document_id, target_format}`` â€” no client ``content``).  Deterministic
         first (G1): if ``target_format`` is already a stored variant, it is
         returned with **zero LLM calls**.  Only genuinely new formats invoke the
         LLM on the canonical data, and the result is cached as a new variant.
@@ -6641,7 +6641,7 @@ class AgentKernel:
         if not target_format:
             return None
 
-        # ── W5 primary path: retrieve by document_id ───────────────────────
+        # â”€â”€ W5 primary path: retrieve by document_id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if document_id:
             store = self._get_document_store()
             doc = store.get(document_id) if store is not None else None
@@ -6696,7 +6696,7 @@ class AgentKernel:
             content = doc.get("content", "")
             original_format = original_format or doc.get("format")
 
-        # ── LLM reformat path (W5 new format, or legacy content fallback) ───
+        # â”€â”€ LLM reformat path (W5 new format, or legacy content fallback) â”€â”€â”€
         if not content:
             return None
         prompt = (
@@ -6757,7 +6757,7 @@ class AgentKernel:
         self._record_reformat_edge(self._get_document_store(), original_format, target_format)
         return payload["content"]
 
-    # ── W10 (O4): pheromone-reinforced reformat + cross-modal synergy ────────
+    # â”€â”€ W10 (O4): pheromone-reinforced reformat + cross-modal synergy â”€â”€â”€â”€â”€â”€â”€â”€
     # Plan W10: reinforce the reformat action's pheromone edge when used, so
     # frequently-reformatted doc types become "sticky" (the agent can proactively
     # offer a reformat), and expose cross-modal views (vocalize / diagram) that
@@ -6803,7 +6803,7 @@ class AgentKernel:
 
         Reformats the stored document to ``target_format`` (reusing W5's
         data-centric reformat) and vocalizes the result via the SpeakTool
-        (existing TTS channel). Fire-and-forget — returns the speak status.
+        (existing TTS channel). Fire-and-forget â€” returns the speak status.
         """
         content = self.reformat_document(
             document_id=document_id,
@@ -6829,7 +6829,7 @@ class AgentKernel:
     ) -> Optional[str]:
         """Cross-modal synergy (W10/O4): return a diagram view of a document.
 
-        Reuses reformat_document's existing ``diagram`` (mermaid) format — the
+        Reuses reformat_document's existing ``diagram`` (mermaid) format â€” the
         "turn data into a diagram" synergy without a separate Vision generator.
         Returns the mermaid/diagram content, or None on failure.
         """
@@ -6852,7 +6852,7 @@ class AgentKernel:
         Queries the Immortus 4D chain by coordinate proximity (not embedding
         cosine) and returns the canonical document data for document entries
         (``nbl_outcome='document_render'``, ``file_path`` set). This is the novel
-        primitive: "data gathered while thinking like this."  Fire-and-forget —
+        primitive: "data gathered while thinking like this."  Fire-and-forget â€”
         returns [] on any failure.
         """
         try:
@@ -6896,7 +6896,7 @@ class AgentKernel:
         """
         Filter prompt-injection attempts before the task reaches the DER Director.
         Replaces coordinate-layer protocol markers with [filtered].
-        Applied ONLY here — not in WebSocket validators.
+        Applied ONLY here â€” not in WebSocket validators.
         """
         import re as _re
 
@@ -6958,7 +6958,7 @@ class AgentKernel:
 
         sections.append(f"TASK:\n{task}")
 
-        # ── Phase 2.1: full conversation history (no index slicing) ──
+        # â”€â”€ Phase 2.1: full conversation history (no index slicing) â”€â”€
         # The active thread is passed in its entirety so the planner can resolve
         # references like "do the websearch" / "the pricing of those" back to the
         # original query from earlier turns (fixes the toggle-restoration context
@@ -6986,14 +6986,14 @@ class AgentKernel:
                     + "\n".join(history_lines)
                 )
 
-        # ── Phase 2.1: PACMAN semantic recall from past sessions ──
+        # â”€â”€ Phase 2.1: PACMAN semantic recall from past sessions â”€â”€
         if episodic_context:
             sections.append(
                 f"RECALLED EPISODIC CONTEXT (PACMAN):\n{episodic_context}"
             )
 
         # REQ-8 AC8.2: visited-ledger block (pointers only).
-        # Degrades to no-block on any failure — never break planning
+        # Degrades to no-block on any failure â€” never break planning
         # (design.md Error Handling: ledger render failure degrades).
         try:
             _visited = self._der_visited_block()
@@ -7026,12 +7026,12 @@ class AgentKernel:
                 (getattr(self, "_der_crawled_urls", None) or {})
                 .get(conversation_id or self.conversation_id or "", ()) or ()
             )
-        except Exception:  # noqa: BLE001 — an observer never blocks a turn
+        except Exception:  # noqa: BLE001 â€” an observer never blocks a turn
             return []
 
     def _der_visited_block(self) -> str:
         """REQ-8 AC8.2: bounded VISITED ledger block for planning and
-        continuation prompts. Pointers only — URLs with the step that
+        continuation prompts. Pointers only â€” URLs with the step that
         fetched them (AC8.4 join keys); page bodies never enter prompts
         (AC8.3). Empty ledger renders as "" (callers omit the block).
         Most-recent-first with an explicit +N marker; refusal/exclusion
@@ -7057,7 +7057,7 @@ class AgentKernel:
             _ordered += sorted(_crawled - set(_stepmap))
             _ordered = _ordered[::-1][: _cap]
             _lines = [
-                "VISITED THIS TURN (do not re-fetch — known-only "
+                "VISITED THIS TURN (do not re-fetch â€” known-only "
                 "discovery = pivot: propose a different approach instead):"
             ]
             for _u in _ordered:
@@ -7099,7 +7099,7 @@ class AgentKernel:
                 return None
             _env = getattr(item, "envelope", None)
             if _env is None or list(getattr(_env, "sources", []) or []):
-                return None  # something usable came back — no recovery
+                return None  # something usable came back â€” no recovery
             _conv = self.conversation_id or ""
             _visited = set(
                 getattr(self, "_der_crawled_urls", {}).get(_conv, set())
@@ -7122,7 +7122,7 @@ class AgentKernel:
                 return None
             # Session-319: ATOMIC check-and-claim of the per-host-per-turn
             # budget. The old code read this ledger near the top of this method
-            # and wrote it here, with no lock in between — so under concurrent
+            # and wrote it here, with no lock in between â€” so under concurrent
             # parallel_safe steps two of them could both see "not yet opened"
             # and each enqueue a recovery for the SAME host. Owner decision
             # (session-319): ONE CREW PER BUILDING. The claim happens only now,
@@ -7134,7 +7134,7 @@ class AgentKernel:
                     _opened = set(_ro.get(_conv, set()))
                     _claim = {h for h in _hosts if h not in _opened}
                     if not _claim:
-                        # Another step claimed every host first — this step must
+                        # Another step claimed every host first â€” this step must
                         # not open a second crew for the same building.
                         return None
                     _ro[_conv] = _opened | _claim
@@ -7199,13 +7199,13 @@ class AgentKernel:
         Never raises.
 
         Session-331 (live T3): when a tool will WAIT for user consent, the
-        approval window must NOT be charged against the execution budget — a
+        approval window must NOT be charged against the execution budget â€” a
         gated call used to time out at 90s while the permission card's window
         is 120s, so the tool died before a human could approve it. The consent
         wait is not execution, so add the applicable permission window (plus a
         small margin) to the deadline whenever this call will actually gate.
         With Auto-approve ON (the default) nothing waits and the base deadline
-        stands unchanged — the common path pays nothing.
+        stands unchanged â€” the common path pays nothing.
         """
         try:
             from backend.agent.tool_envelope import tool_family as _tf
@@ -7263,7 +7263,7 @@ class AgentKernel:
 
         WHY: the recovery lane is useless if the browser is cold. The pool stops
         the shared browser after ``_IDLE_TIMEOUT`` (180s, browser_pool.py:55) and
-        the next vision use then pays a full cold start — the live log records
+        the next vision use then pays a full cold start â€” the live log records
         ``[browser_session] browser acquired in 32918ms (cold pool)``. Boot-time
         warming (main.py:777) only covers the first search after a restart, so
         every later search went cold again. Starting the warm AT DISPATCH means
@@ -7276,11 +7276,11 @@ class AgentKernel:
         try:
             from backend.vision.browser_pool import acquire_browser
         except Exception:
-            return  # vision not installed — nothing to warm
+            return  # vision not installed â€” nothing to warm
 
         async def _warm() -> None:
             try:
-                # Returns (browser, lease) — NOT a context manager. The lease
+                # Returns (browser, lease) â€” NOT a context manager. The lease
                 # must be released on every path or the pool's idle watchdog
                 # defers forever and the browser is never reclaimed.
                 _browser, lease = await acquire_browser()
@@ -7288,7 +7288,7 @@ class AgentKernel:
                     logger.debug("[DER] vision browser warmed (%s)", _why)
                 finally:
                     lease.release()
-            except Exception as _wexc:  # noqa: BLE001 — best effort by design
+            except Exception as _wexc:  # noqa: BLE001 â€” best effort by design
                 logger.debug("[DER] vision browser warm skipped: %s", _wexc)
 
         try:
@@ -7301,11 +7301,11 @@ class AgentKernel:
             # if THIS thread already owns a running loop.
             _aio_warm.get_running_loop().create_task(_warm())
         except Exception:
-            pass  # no loop available — recovery simply pays the cold start
+            pass  # no loop available â€” recovery simply pays the cold start
 
     def _der_report_run_grade(self, completed_items, _turn_id, _where):
         """Session-318 T19 (AC5.6 defect fix): done+GRADE reported once per
-        turn at completion, on EVERY terminal path — not just the
+        turn at completion, on EVERY terminal path â€” not just the
         continuation-done branch (conv-102 proved queue-exhaustion ends
         never take it: zero grade lines). Deduplicated by turn_id so the
         finalize-complete site and the continuation site never double-log.
@@ -7320,7 +7320,7 @@ class AgentKernel:
                 getattr(i, "envelope", None) for i in (completed_items or [])
             ]
             # Goal contract T10 (REQ-7/REQ-8): grade from coverage when a
-            # contract exists — C=1.0 no-blocked is a pass; any open
+            # contract exists â€” C=1.0 no-blocked is a pass; any open
             # unblocked fact caps below pass; all-blocked-and-named is a
             # partial (capped). Advisory: absent contract = legacy grade.
             _gc_state = getattr(self, "_goal_contract_state", None)
@@ -7362,8 +7362,63 @@ class AgentKernel:
                 try:
                     from backend.agent import review_outcome_label as _rol
 
-                    if _rol.sweep():
-                        logger.debug("[Oracle] flushed unsettled review rows")
+                    _swept_now = _rol.sweep()
+                    # MEASUREMENT (2026-10-16): the outcome label has TWO loss
+                    # paths and both must be VISIBLE, or a loss is inferred
+                    # rather than seen. `swept_parity_now` = rows flushed on
+                    # parity this turn because their step never settled;
+                    # `recovered_after_settle` = rows whose step settled BEFORE
+                    # the oracle_shadow lane built the row, saved by the reverse
+                    # path in `defer` (measured live: this was the actual loss -
+                    # "flushed unsettled review rows = 5" in one coding run).
+                    # Logged per turn while the flag is on, so the denominator
+                    # (turns) is countable too.
+                    if _rol.enabled():
+                        _rol_st = _rol.stats()
+                        logger.info(
+                            "[Oracle] review outcome label: swept_parity_now=%d "
+                            "swept_parity_total=%d recovered_after_settle=%d "
+                            "pending=%d",
+                            _swept_now,
+                            _rol_st.get("flushed_parity", 0),
+                            _rol_st.get("recovered_after_settle", 0),
+                            _rol_st.get("pending", 0),
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+                # web_intent/v2 TURN-OUTCOME label (oracle.md 7.5, 2026-10-17):
+                # the held consult rows are stamped with what the turn NEEDED,
+                # not the keyword list's parity. truth = "yes" when the request
+                # named a URL (by rule), else "yes" when a web tool succeeded
+                # and the turn passed, "no" when it passed without the web; a
+                # failed turn leaves its rows on parity. try/except: a label
+                # never blocks a turn.
+                try:
+                    from backend.agent import explorer as _exp_wi
+
+                    _web_used = False
+                    for _wi_it in (completed_items or []):
+                        _wi_t = str(getattr(_wi_it, "tool", "") or "")
+                        if (
+                            _wi_t == "search"
+                            or _wi_t == "crawler_query"
+                            or _wi_t.startswith("browser")
+                        ):
+                            _wi_env = getattr(_wi_it, "envelope", None)
+                            if _wi_env is not None and str(
+                                getattr(_wi_env, "status", "")
+                            ) == "success":
+                                _web_used = True
+                                break
+                    _wi_n = _exp_wi.resolve_web_intent_turn(
+                        _turn_id or "", _grade == "pass", _web_used
+                    )
+                    if _wi_n:
+                        logger.info(
+                            "[Oracle] web intent label: turn=%s labelled=%d "
+                            "web_used=%s grade=%s",
+                            _turn_id or "?", _wi_n, _web_used, _grade,
+                        )
                 except Exception:  # noqa: BLE001
                     pass
             except Exception:  # noqa: BLE001 - a label never blocks the turn
@@ -7478,13 +7533,25 @@ class AgentKernel:
                     "grade": _grade,
                     "coverage": _gc_c,
                     "open_facts": list(_gc_open[:6]),
-                    "evidence": _depth_ev_txt[:1200],
+                    # v3 (2026-10-17, oracle.md 7.5): 1000, not 1200 - the
+                    # dedicated judge_depth job (384 ids = 1536 chars) renders
+                    # evidence FIRST, then coverage, open_facts and the
+                    # criteria; 1000 + coverage + open facts + criteria fits
+                    # the budget so a max-length frame cannot clip the bar.
+                    "evidence": _depth_ev_txt[:1000],
                     # oracle-addendum 25.6.3: one change at a time, and the
                     # criteria version rides on EVERY row so a report can scope
                     # to (Oracle, Brain, criteria version). Bump it whenever the
                     # instruction or the frame SHAPE changes - a shape change is
                     # a new calibrated identity (oracle.md 8).
-                    "criteria_version": "depth_met/v2",
+                    # v3 (2026-10-17): the judge_depth job (evidence first,
+                    # coverage in, grade out) + the EXTERNAL verdict label -
+                    # the row is HELD for the eval harness's hidden-test
+                    # verdict (backend/agent/turn_verdict_label.py, reported
+                    # via POST /api/eval/verdict) instead of graded against
+                    # the loop's own rule, which the model cannot see the
+                    # inputs of (measured: oof AUROC 0.40, inverted).
+                    "criteria_version": "depth_met/v3",
                 }
 
                 def _depth_strong_judge() -> bool:
@@ -7531,15 +7598,33 @@ class AgentKernel:
                     engine=_ss_depth.AUTO_ENGINE,
                     enforced=_depth_enforced,
                     defer=True,  # ignored once enforced: a deciding consumer is waited for
-                    criteria_version="depth_met/v2",
+                    criteria_version="depth_met/v3",
                     acts=lambda c: oracle_acts("depth_met", c),
                     frame=_depth_frame,
                 )
                 # 25.6.3: the criteria version rides on every row (the key is on
                 # tool_bridge._DECISION_META_KEYS, or the ledger would drop it).
                 if _depth_row is not None:
-                    _depth_row["criteria_version"] = "depth_met/v2"
-                _ss_depth.emit_row(_depth_row)
+                    _depth_row["criteria_version"] = "depth_met/v3"
+                    # v3 (2026-10-18): an ENFORCED row is held for the EXTERNAL
+                    # verdict too - the same hold the deferred shadow path uses
+                    # (surface_shadow._submit_shadow). Enforced mode returns the
+                    # row INLINE, which bypassed the hold: measured live on the
+                    # first enforced run, every verdict POST was a MISS
+                    # (held_rows=0) and the deciding consumer's rows would have
+                    # stopped carrying the outcome label - the calibration
+                    # would stop measuring it honestly. brain_bool on an
+                    # enforced row is the engine's OWN verdict, so the outside
+                    # label (the eval verdict) is the only honest reference it
+                    # has. try/except: a label never blocks the grade.
+                    try:
+                        from backend.agent import turn_verdict_label as _tvl_d
+
+                        if not _tvl_d.defer(_depth_row, _ss_depth.emit_row):
+                            _ss_depth.emit_row(_depth_row)
+                    except Exception:  # noqa: BLE001
+                        _ss_depth.emit_row(_depth_row)
+
                 # Share the verdict with the CONTINUATION decision, which is the
                 # only place that can make the loop actually do more work. The
                 # grade returned by this function is DISPLAY-ONLY: all three call
@@ -7548,7 +7633,7 @@ class AgentKernel:
                 # LABEL; the behavioural push lives in _der_plan_next_step.
                 # Session 365 FIX: this read `_depth_noul.probability`, but
                 # `surface_bool` returns `(value, row)` and keeps the Noul
-                # private — `_depth_noul` was never bound anywhere, so this
+                # private â€” `_depth_noul` was never bound anywhere, so this
                 # raised NameError on EVERY grade site, the `except` below
                 # swallowed it, and the consequences were invisible:
                 # `_der_last_depth` was never set (so the enforcement push in
@@ -7617,9 +7702,9 @@ class AgentKernel:
                 logger.debug("[DER] depth_met shadow failed: %r", _depth_exc)
             # Session-326 (goal-contract terminal-signal diag): at every grade
             # chokepoint, settle the card. The grade helper was reachable from
-            # three call sites — _execute_plan_der (failure-settled),
+            # three call sites â€” _execute_plan_der (failure-settled),
             # _der_finalize_step (finalize-complete), and _der_plan_next_step
-            # (continuation-done) — but only _execute_plan_der's
+            # (continuation-done) â€” but only _execute_plan_der's
             # _emit_terminal_event emitted a card frame. Without this emit,
             # regressions where the possess motion ran without writing a
             # task:done event left the card in Active Execution forever while
@@ -7635,11 +7720,11 @@ class AgentKernel:
         """Settle the task card when the goal contract's grade fires.
 
         Session-326 (owner directive, 2026-09-12): the grade is the terminal
-        authority — the loop's "done" signal. The card is only a display. If
+        authority â€” the loop's "done" signal. The card is only a display. If
         the grade never reaches the card, a card stays Active Execution
         forever. ember.
 
-        Idempotent per turn: emits once, then marks emitted. Never raises —
+        Idempotent per turn: emits once, then marks emitted. Never raises â€”
         a display-frame must never block a terminal.
         """
         try:
@@ -7663,7 +7748,7 @@ class AgentKernel:
         except Exception:
             pass
         if not card_id:
-            # No card was created this turn — nothing to settle.
+            # No card was created this turn â€” nothing to settle.
             _emitted.add(_key)
             return
 
@@ -7695,12 +7780,12 @@ class AgentKernel:
         Builds RecallFilters from THIS node's record (node_type + both
         domain axes) and queries the shared chain with the widen-order
         (relationship -> type -> domain, winning scope logged). Returns
-        chain-row dicts, or [] on any failure — the step proceeds on live
+        chain-row dicts, or [] on any failure â€” the step proceeds on live
         state, never an error. Cross-conversation by default (AC1b):
         thread_id ranks, never filters.
 
         REQ-6 AC3 (semantic gate): the recall execution is the SHARED helper
-        ``run_filtered_recall`` (ontology_recall.py) — the gate's Tier 2 calls
+        ``run_filtered_recall`` (ontology_recall.py) â€” the gate's Tier 2 calls
         the same code path, so the widen-order and telemetry cannot drift.
 
         REQ-4 AC4.2 (K2): the recalled rows then pass a RELEVANCE GATE - same
@@ -7732,7 +7817,7 @@ class AgentKernel:
                 limit=CANDIDATE_POOL,  # the gate keeps at most 3 of these
             )
             if not _filters.has_any:
-                return []  # no ontology axes on this node — nothing to filter
+                return []  # no ontology axes on this node â€” nothing to filter
 
             _conn = resolve_mycelium_conn(self._memory_interface)
             if _conn is None:
@@ -7928,7 +8013,7 @@ class AgentKernel:
                     "criteria_version": "narration/shape-v2",
                 },
             )
-        except Exception as _e:  # noqa: BLE001 — a shadow never blocks a turn
+        except Exception as _e:  # noqa: BLE001 â€” a shadow never blocks a turn
             logger.debug("[AgentKernel] narration shadow failed: %r", _e)
 
     @staticmethod
@@ -7936,11 +8021,11 @@ class AgentKernel:
         """Map a fatal provider failure to (ErrorCode, user message).
 
         Billing (402) and auth (401) failures cannot heal inside the retry
-        loop — returning them immediately saves ~10 s of doomed retries and,
+        loop â€” returning them immediately saves ~10 s of doomed retries and,
         more importantly, tells the user the TRUE cause instead of the
         generic "planner returned no valid plan" (observed live 2026-09-05:
         Cerebras 402 surfaced as a planner failure on every prompt). Quota
-        errors (429) are NOT fatal — windows roll, retries stay. Returns None
+        errors (429) are NOT fatal â€” windows roll, retries stay. Returns None
         when the error is not a recognized fatal provider failure. Codes come
         from exceptions.ErrorCode (6000-range); the code name rides in the
         user string so every failure is greppable end to end.
@@ -7952,7 +8037,7 @@ class AgentKernel:
             return (
                 ErrorCode.PROVIDER_BILLING,
                 "[IRIS error] The AI provider refused the request "
-                "(402 Payment Required) — the planner never ran, so no "
+                "(402 Payment Required) â€” the planner never ran, so no "
                 "prompt reached a model. Switch provider in Models "
                 "(local / ClinePass) or check billing, then retry. "
                 "(code E_PROVIDER_BILLING)",
@@ -7975,7 +8060,7 @@ class AgentKernel:
         """Map the recorded plan failure to (ErrorCode, user message, fatal).
 
         Reads self._last_plan_failure as written by _plan_task. Fatal kinds
-        (billing/auth) must fail fast — retries cannot heal them. Everything
+        (billing/auth) must fail fast â€” retries cannot heal them. Everything
         else retries and reports specifically at exhaustion, so logs and UI
         always name the true cause instead of a vague planner error.
         """
@@ -8000,7 +8085,7 @@ class AgentKernel:
                 return (
                     ErrorCode.PROVIDER_QUOTA,
                     "[IRIS error] The AI provider is rate-limiting us (429) "
-                    "after 3 tries — wait a minute for the quota window, or "
+                    "after 3 tries â€” wait a minute for the quota window, or "
                     "switch provider. (code E_PROVIDER_QUOTA)",
                     False,
                 )
@@ -8016,7 +8101,7 @@ class AgentKernel:
                 return (
                     ErrorCode.PROVIDER_TIMEOUT,
                     "[IRIS error] The AI provider request timed out or never "
-                    "connected after 3 tries — check network/VPN/firewall, or "
+                    "connected after 3 tries â€” check network/VPN/firewall, or "
                     "switch provider. (code E_PROVIDER_TIMEOUT)",
                     False,
                 )
@@ -8058,10 +8143,10 @@ class AgentKernel:
         ``recall_query``: what episodic recall searches with, when ``text`` is
         not the user's request (a re-plan directive) - default ``text``.
         Mode + maturity-aware temperature:
-          debug/review  → 0.0  (deterministic — finding bugs, not exploring)
-          implement      → 0.1  (low — structured code generation)
-          research       → 0.3  (higher — exploratory synthesis)
-          default        → 0.1 if mature else 0.25
+          debug/review  â†’ 0.0  (deterministic â€” finding bugs, not exploring)
+          implement      â†’ 0.1  (low â€” structured code generation)
+          research       â†’ 0.3  (higher â€” exploratory synthesis)
+          default        â†’ 0.1 if mature else 0.25
         Falls back to a single-step plan on any model or parse failure.
         """
         from backend.core_models import ExecutionPlan, PlanStep
@@ -8079,7 +8164,7 @@ class AgentKernel:
         }
         temperature = _MODE_TEMPERATURES.get(mode, 0.1 if is_mature else 0.25)
 
-        # ── Phase 5: Caducean-governed planning temperature ──
+        # â”€â”€ Phase 5: Caducean-governed planning temperature â”€â”€
         # Modulate the base (mode-derived) temperature by the live Caducean
         # recommendation: COMPRESS (rec==1) -> more deterministic (lower temp);
         # EXPAND (rec==0) -> more exploratory (higher temp, capped); MAINTAIN
@@ -8119,7 +8204,7 @@ class AgentKernel:
         # that; the descriptions never did any work here. ~187 tokens.
         _tools_block = ""
         try:
-            # Ensure the tool bridge exists BEFORE reading the tool list — a
+            # Ensure the tool bridge exists BEFORE reading the tool list â€” a
             # fresh kernel has a None bridge (lazy-init only ran on the OpenAI
             # tools path), which silently yields an empty AVAILABLE TOOLS block
             # and the planner then emits tool-less speak steps (2026-08-12:
@@ -8142,7 +8227,7 @@ class AgentKernel:
         except Exception as _tb_exc:
             logger.debug("[AgentKernel._plan_task] tools block build failed: %s", _tb_exc)
 
-        # ── Phase 2.1: PACMAN semantic recall (best-effort, never blocks) ──
+        # â”€â”€ Phase 2.1: PACMAN semantic recall (best-effort, never blocks) â”€â”€
         episodic_context = ""
         try:
             if self._memory_interface is not None and hasattr(
@@ -8177,7 +8262,7 @@ class AgentKernel:
         full_prompt = (
             f"{system_prompt}\n\n{planning_prompt}\n\n"
             + (f"{_tools_block}\n\n" if _tools_block else "")
-            + "Respond with JSON only — no prose, no markdown fences:\n"
+            + "Respond with JSON only â€” no prose, no markdown fences:\n"
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
@@ -8187,14 +8272,14 @@ class AgentKernel:
         "RULES:\n"
         # T12 (REQ-10 AC10.1/AC10.2/AC10.10/AC10.12): planned-beat authoring.
         # Beats are short spoken lines (direction + time/scale expectations)
-        # for MULTI-SEGMENT tasks only — emit [] for single-step/trivial work.
+        # for MULTI-SEGMENT tasks only â€” emit [] for single-step/trivial work.
         # Kept to six lines by the session-260 sizing discipline: the parser
         # reads exactly these keys, nothing decorative.
         '- "beats": 1-3 one-line narration lines (why this direction, how long '
         'it takes). NEVER narrate mechanics (subtask splitting, tool names, '
         'file-by-file). Omit entirely ([]) for single-step tasks.\n'
         "- Vary phrasing, never the same opening twice. Good: "
-        '"Checking current sources — usually about half a minute." / '
+        '"Checking current sources â€” usually about half a minute." / '
         '"Comparing the two options, then reporting back." Bad: '
         '"I will now split this into subtasks."\n'
         "- Findings near completion belong in the reply, not beats. Name "
@@ -8222,7 +8307,7 @@ class AgentKernel:
         "\"the step before\". Example - compare A and B: s1 read A [\"start\"], "
         "s2 read B [\"start\"], s3 compare them [\"s1\",\"s2\"].\n"
         # T5 (specs/tool-result-envelope, KD-9): planner declares per-step
-        # criticality. One word per step — intent only, consumption confirms
+        # criticality. One word per step â€” intent only, consumption confirms
         # it at finalize (option C). Defaults to "supporting" when omitted.
         "- In 'criticality', state how load-bearing the step is: "
         '"load-bearing" (the task fails without it), "supporting" (helps but '
@@ -8233,7 +8318,7 @@ class AgentKernel:
         plan_raw: Optional[str] = None
         try:
             # Primary path: route planning through the unified InferenceRouter so
-            # API providers (Cerebras, OpenAI, …) are used — not just local/Ollama
+            # API providers (Cerebras, OpenAI, â€¦) are used â€” not just local/Ollama
             # models. Legacy LM Studio / Ollama branches below remain as fallbacks
             # for local-model configurations.
             try:
@@ -8303,7 +8388,7 @@ class AgentKernel:
         except Exception as _pe:
             logger.warning(f"[AgentKernel._plan_task] inference failed: {_pe}")
 
-        # Parse JSON → ExecutionPlan
+        # Parse JSON â†’ ExecutionPlan
         try:
             if plan_raw:
                 data = self._parse_planner_json(plan_raw)
@@ -8327,7 +8412,7 @@ class AgentKernel:
                                 description=str(raw_step.get("description", "")),
                                 # Phase 1 (D1.3): planner emits GOALS only. Tool
                                 # selection is a runtime, memory-conditioned policy
-                                # via explorer.propose — never pre-assigned here.
+                                # via explorer.propose â€” never pre-assigned here.
                                 tool=None,
                                 params={},
                                 critical=bool(raw_step.get("critical", True)),
@@ -8390,7 +8475,7 @@ class AgentKernel:
                 (plan_raw or "")[:600],
             )
 
-        # Fallback: return None to signal plan error (REQ-2 — no silent self-do)
+        # Fallback: return None to signal plan error (REQ-2 â€” no silent self-do)
         try:
             if getattr(self, "_last_plan_failure", None) is None:
                 # No router error and no parse attempt recorded (e.g. no
@@ -8412,7 +8497,7 @@ class AgentKernel:
 
         Entry lines speak only for known-long waits; every wait carries its
         stated budget so an expectation-miss line fires if crossed with no
-        result. Exit (TOOL_RESULT/ERROR site) stays silent — results voice
+        result. Exit (TOOL_RESULT/ERROR site) stays silent â€” results voice
         via the reply path.
         """
         try:
@@ -8435,7 +8520,7 @@ class AgentKernel:
                 budget_s=budget,
                 long_wait=long_wait,
             )
-        except Exception:  # noqa: BLE001 — narration never blocks tool runs
+        except Exception:  # noqa: BLE001 â€” narration never blocks tool runs
             pass
 
     def _end_tool_wait(self, wait_id: str) -> None:
@@ -8457,7 +8542,7 @@ class AgentKernel:
         the lane scheduler (pending, subsumable) and, while the lane is idle,
         synthesized immediately with the buffer held by the TTS manager.
         Playback consumes via take_held(); every other exit frees. Any skip
-        or failure degrades to on-admission synthesis — a beat never dies
+        or failure degrades to on-admission synthesis â€” a beat never dies
         for pre-synthesis. Never raises.
         """
         try:
@@ -8507,7 +8592,7 @@ class AgentKernel:
                             tts.free_held(ref)
                         except Exception:
                             pass
-        except Exception:  # noqa: BLE001 — narration never blocks the turn
+        except Exception:  # noqa: BLE001 â€” narration never blocks the turn
             pass
 
     def _admit_first_beat(self, plan, *, turn_id=None, session_id=None) -> None:
@@ -8557,14 +8642,14 @@ class AgentKernel:
             logger.info(
                 "[AgentKernel] first planned beat admitted (turn=%s)", turn_id
             )
-        except Exception as exc:  # noqa: BLE001 — narration never blocks the turn
+        except Exception as exc:  # noqa: BLE001 â€” narration never blocks the turn
             logger.debug("[AgentKernel] first beat admit skipped: %s", exc)
 
     def _is_web_search_request(self, text: str) -> bool:
         """Quick heuristic: does the user message explicitly request a web search?
 
         REQ-15 AC15.3 (T19): this method's private trigger list was a DUPLICATE
-        of ``explorer._WEB_INTENT_TRIGGERS``. Both are now one consumer —
+        of ``explorer._WEB_INTENT_TRIGGERS``. Both are now one consumer â€”
         delegated here so there is exactly one place the phrasing list lives,
         with the engine's ``web_intent`` judgment consulted first when an engine
         is available (AC15.4: the keywords remain the fallback).
@@ -8574,28 +8659,28 @@ class AgentKernel:
             # The engine is passed EXPLICITLY (2026-09-27). Without it the
             # consumer's verdict is never asked for, so web_intent writes no row
             # and can never reach the Wave 7 bar. `engine=None` still means "no
-            # engine" on purpose — this is the caller opting in.
+            # engine" on purpose â€” this is the caller opting in.
             # turn_key: one Oracle score per (turn, goal) - five call sites ask
             # about the same goal, twice a turn (Stage B, 2026-10-05).
             return bool(_is_web_intent(
                 text or "", engine=AUTO_ENGINE,
                 turn_key=getattr(self, "_current_turn_id", None),
             ))
-        except Exception:  # noqa: BLE001 — a failed check is simply "no"
+        except Exception:  # noqa: BLE001 â€” a failed check is simply "no"
             return False
 
     def _looks_informational(self, text: str) -> bool:
         """Conservative fact-seeking intent signal (used ONLY with web mode ON).
 
         _is_web_search_request() requires an explicit search phrase, which
-        misses factual questions that arrive without one — e.g. the frontend
+        misses factual questions that arrive without one â€” e.g. the frontend
         strips the "websearch:" prefix, so "what are the latest NASA Mars
         rover discoveries this month?" has no trigger phrase (T36 finding
         2026-08-09). This helper catches question-word / current-info
         phrasing so the DER-skip gate does not misroute them as chit-chat.
 
         Deliberately narrow: it must NOT match greetings or small talk
-        ("hello", "how are you", "tell me a joke") — those stay on the fast
+        ("hello", "how are you", "tell me a joke") â€” those stay on the fast
         path even when web mode is ON.
         """
         if not text:
@@ -8635,13 +8720,13 @@ class AgentKernel:
         prefix) must reach DER so the crawler path stays available. Chit-chat
         still skips DER regardless of web mode.
 
-        F6 interaction (2026-08-12): plan steps are GOALS ONLY — the parse
+        F6 interaction (2026-08-12): plan steps are GOALS ONLY â€” the parse
         hardcodes ``tool=None`` and the single resolver (explorer.propose)
         assigns tools at execution time. Therefore step.tool is ALWAYS None
         for production plans, and the empty string must NOT count as a
         "voice-only" tool. With "" in the speak set, every planned task was
         misread as voice-only and DER (task card + tool execution) was
-        skipped — an explicit "use the screenshot_page tool" prompt produced
+        skipped â€” an explicit "use the screenshot_page tool" prompt produced
         a trivial plan, no task card, and the empty fallback. Only
         EXPLICITLY marked speak steps are voice-only now.
         """
@@ -8670,10 +8755,10 @@ class AgentKernel:
 
         Produces an AWARE message instead of the old blind
         "IRIS couldn't generate a response. Please try again.":
-          - real upstream error detail → surface it (retry / switch model)
-          - search-intent turn + web OFF → advise toggling internet access
-          - search-intent turn + web ON → honest incomplete-search message
-          - otherwise → neutral rephrase guidance
+          - real upstream error detail â†’ surface it (retry / switch model)
+          - search-intent turn + web OFF â†’ advise toggling internet access
+          - search-intent turn + web ON â†’ honest incomplete-search message
+          - otherwise â†’ neutral rephrase guidance
         Never contains the phrase "couldn't generate" (contract: it must not
         reach a chat_message content on a healthy path).
         """
@@ -8691,7 +8776,7 @@ class AgentKernel:
             )
         if _searchy:
             return (
-                "I couldn't complete the web search for that — the search "
+                "I couldn't complete the web search for that â€” the search "
                 "returned nothing usable. Please try again, or ask me "
                 "without the web."
             )
@@ -8720,7 +8805,7 @@ class AgentKernel:
         conversation_id: Key for per-thread context persistence. If None,
                          falls back to self.conversation_id (or session_id).
         from_voice: when True the request came from the voice pipeline.
-          - Overrides mode detection → "voice_first"
+          - Overrides mode detection â†’ "voice_first"
           - Uses DER_TOKEN_BUDGETS["voice_first"] (15k tokens, under 20k)
           - Planning caps at 1 step for fast first-token response
         """
@@ -8733,7 +8818,7 @@ class AgentKernel:
         # Trust-routing W2: each new turn starts unmarked; the external flag is
         # set if a web/crawler tool runs during this turn.
         self.clear_turn_trust_flag()
-        # pin_517dfcbda150: the web-gather budget is per-task — it resets at the
+        # pin_517dfcbda150: the web-gather budget is per-task â€” it resets at the
         # turn boundary so a new task may gather up to _MAX_CRAWLS_PER_TASK
         # distinct (refined) queries again.
         self._der_crawl_attempts = {}
@@ -8748,9 +8833,9 @@ class AgentKernel:
         # _respond_direct. The DER path already receives it as a parameter.
         self._turn_session_id = session_id
 
-        # Resolve conversation_id — primary key for per-thread context.
+        # Resolve conversation_id â€” primary key for per-thread context.
         # getattr guard: a kernel may be constructed without __init__ (test
-        # stubs, partial init) — never raise on a missing attribute. The
+        # stubs, partial init) â€” never raise on a missing attribute. The
         # session_id fallback is the documented behavior (docstring above).
         _conv_id = conversation_id or getattr(self, "conversation_id", None) or session_id
         self.conversation_id = _conv_id
@@ -8782,7 +8867,7 @@ class AgentKernel:
         try:
             from backend.agent.decision_engine import set_scope as _de_set_scope
 
-            _de_set_scope(turn_id=turn_id)
+            _de_set_scope(turn_id=turn_id, step_id=None, node_exec_id=None)
         except Exception:  # noqa: BLE001 - scope is best-effort
             pass
         # Taxonomy events of this turn share one episode id (same as Wave E's task id).
@@ -8794,7 +8879,7 @@ class AgentKernel:
         # copy only; the seam getattr-guards it, so a missing handle is safe.
         self._active_turn_metrics = metrics
         # REQ-5 AC1 (T8): stamp the semantic-gate compilation onto this turn's
-        # [LAYERS] emit (off the hot path — attribute copies only).
+        # [LAYERS] emit (off the hot path â€” attribute copies only).
         self._stamp_gate_telemetry(metrics)
         # REQ-3 T8b AC5: per-turn prompt-token counter accumulated at each DER
         # step's context assembly (forgetting bound), recorded into TurnMetrics.
@@ -8838,7 +8923,7 @@ class AgentKernel:
         # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
         _t_start = time.perf_counter()
 
-        # Gate 3 T4 (REQ-2/D1): shell context is EPHEMERAL — it is assembled
+        # Gate 3 T4 (REQ-2/D1): shell context is EPHEMERAL â€” it is assembled
         # into THIS turn's outgoing context list below and never persisted to
         # conversation memory. Volatile environmental telemetry does not belong
         # in durable dialogue history: add_message() would re-send the block on
@@ -8852,7 +8937,7 @@ class AgentKernel:
             self._conversation_memory.add_message("user", text)
             logger.info(f"[AgentKernel] Processing text message: {text[:50]}...")
 
-            # Drain queued shell records at turn assembly — the next turn
+            # Drain queued shell records at turn assembly â€” the next turn
             # builds on real shell state, never a guess. Redaction/truncation
             # happened at record time; the aggregate budget was enforced in
             # drain(). A failed drain is degraded-but-working (design Error
@@ -8876,7 +8961,7 @@ class AgentKernel:
             # client_replace). If the user navigated away mid-task and then
             # returns to send a new message in the SAME conversation, the
             # stale _cancel_requested flag would otherwise halt the DER loop
-            # before executing any step → "no usable sources found" with zero
+            # before executing any step â†’ "no usable sources found" with zero
             # steps run.
             try:
                 _cancel = getattr(self, "_cancel_requested", None)
@@ -8884,7 +8969,7 @@ class AgentKernel:
                     _cancel.clear()
                     logger.info(
                         f"[AgentKernel] Cleared stale _cancel_requested for "
-                        f"conv={conversation_id} — new user turn supersedes prior soft-cancel"
+                        f"conv={conversation_id} â€” new user turn supersedes prior soft-cancel"
                     )
             except Exception:
                 pass
@@ -8892,7 +8977,7 @@ class AgentKernel:
             # Get conversation context
             context = self._conversation_memory.get_context()
             # Session 246 (@-card-mentions): referenced task-card snapshots
-            # arrive as a per-turn system block — visible to planning and
+            # arrive as a per-turn system block â€” visible to planning and
             # synthesis for THIS turn only. Appended to the LOCAL context list,
             # never add_message()'d, so conversation memory stays clean.
             if card_context:
@@ -8904,7 +8989,7 @@ class AgentKernel:
                     f"({len(card_context)} chars) conv={conversation_id}"
                 )
             # Gate 3 T4 (REQ-2 AC1): the shell block rides the SAME local
-            # channel as the @-card block — visible to planning and synthesis
+            # channel as the @-card block â€” visible to planning and synthesis
             # for THIS turn only, never add_message()'d.
             if _shell_block:
                 context = list(context) + [
@@ -8927,10 +9012,10 @@ class AgentKernel:
         # recalls episodes.
         _turn_end_settle(self)
 
-        # ── Direct path (default): skip planning for non-tool messages ──────────
+        # â”€â”€ Direct path (default): skip planning for non-tool messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Route shadow (REQ-18, T30): record the fork for every turn, ahead
         # of either branch so both route choices land in the log. The gate
-        # answer is computed ONCE here and reused by the branch below — the
+        # answer is computed ONCE here and reused by the branch below â€” the
         # shadow must add no work to the reply path (REQ-18 AC2/AC5).
         # REQ-24: the USER's own phrasing exists only here - the
         # tool-decision ladder sees model-rewritten step goals, so stash
@@ -8944,8 +9029,8 @@ class AgentKernel:
             web_mode=self._web_mode_on(),
         )
         # Planning only runs when the message explicitly requests a tool-backed
-        # action (search, open, create, etc.).  Everything else — greetings,
-        # questions, conversation — goes straight to _respond_direct() which
+        # action (search, open, create, etc.).  Everything else â€” greetings,
+        # questions, conversation â€” goes straight to _respond_direct() which
         # calls the model with no JSON schema overhead.
         if not _needs_planning:
             logger.info("[AgentKernel] Direct response path (no planning needed)")
@@ -8969,7 +9054,7 @@ class AgentKernel:
                 # handles it with structured logging and sends a visible
                 # error to the UI. No silent error swallowing.
                 raise
-            # Issue C.1: apply speak/show contract — emit document:render for
+            # Issue C.1: apply speak/show contract â€” emit document:render for
             # the `show` payload and reduce the stored/returned text to `speak`.
             response = self._process_structured_response(
                 response, turn_id=task_id, conversation_id=_conv_id
@@ -8985,7 +9070,7 @@ class AgentKernel:
                 except Exception as _mem_exc:
                     loud_error(_mem_exc, "conversation_memory.add_message (direct)")
             # Option B / Pacman: fragment this turn-pair into the vector DB so future
-            # context assembly can retrieve it semantically (PACMAN.md §Digestion).
+            # context assembly can retrieve it semantically (PACMAN.md Â§Digestion).
             # MCM orchestrator handles fragmentation + compression check when available.
             try:
                 if response:
@@ -9020,7 +9105,7 @@ class AgentKernel:
                 loud_error(_pac_exc, "pacman fragment_and_store")
             if response is None:
                 logger.error(
-                    "[AgentKernel] _respond_direct returned None — returning fallback"
+                    "[AgentKernel] _respond_direct returned None â€” returning fallback"
                 )
                 response = "I wasn't able to generate a response. Please check the model connection."
             metrics.path = "direct"
@@ -9032,7 +9117,7 @@ class AgentKernel:
             self._emit_context_usage()
             return response
 
-        # ── Internet-access gate check (runs before DER to save cost) ──────
+        # â”€â”€ Internet-access gate check (runs before DER to save cost) â”€â”€â”€â”€â”€â”€
         # If web tools are disabled and the user explicitly asked for a web
         # search, respond directly without engaging the expensive DER loop.
         # A request that names the live browser needs the web too: with
@@ -9048,7 +9133,7 @@ class AgentKernel:
                 "web features."
             )
 
-        # ── Thinking feedback: emit a filler utterance so the user hears ──
+        # â”€â”€ Thinking feedback: emit a filler utterance so the user hears â”€â”€
         # audio feedback while the agent is "thinking" (DER/ReAct path).
         # Gap-filler exception (REQ-10 AC10.13, T16): fires ONLY when speech
         # would otherwise be silent AND no beat is ready; never the same
@@ -9067,26 +9152,26 @@ class AgentKernel:
         except Exception as _filler_err:
             logger.debug("[AgentKernel] thinking filler emit skipped: %s", _filler_err)
 
-        # ── Lock gate (W6 T27-T29): prevent concurrent DER on same conversation ──
+        # â”€â”€ Lock gate (W6 T27-T29): prevent concurrent DER on same conversation â”€â”€
         if self._der_active:
             # DER is already running for this conversation. Answer chitchat directly
             # or ask the user to wait for complex tool-backed requests.
             if not self._needs_planning(text, context):
-                logger.info("[AgentKernel] DER active — answering chitchat directly")
+                logger.info("[AgentKernel] DER active â€” answering chitchat directly")
                 return self._respond_direct(
                     text, context,
                     chunk_callback=_wrapped_chunk_cb,
                     reasoning_callback=reasoning_callback,
                 )
-            logger.info("[AgentKernel] DER active — deferring complex request")
-            return "Still working on your previous request — one moment."
+            logger.info("[AgentKernel] DER active â€” deferring complex request")
+            return "Still working on your previous request â€” one moment."
 
-        # ── DER path: sanitize → classify → Mycelium → plan → execute ──────
+        # â”€â”€ DER path: sanitize â†’ classify â†’ Mycelium â†’ plan â†’ execute â”€â”€â”€â”€â”€â”€
         # Runs BEFORE the ReAct loop. Falls through to ReAct on any failure.
         _der_response: Optional[str] = None
         self._der_active = True
         _der_lock_cleanup = True  # cleared in finally
-        # Session 248: stage timing for the pre-plan pipeline — live runs show
+        # Session 248: stage timing for the pre-plan pipeline â€” live runs show
         # a ~20s silent stall between message receipt and TaskClassifier on
         # the FIRST DER-path message of a process (chitchat bypasses via
         # _respond_direct, so it never pays this). These logs make the lazy
@@ -9130,13 +9215,13 @@ class AgentKernel:
                 except Exception as _ctx_exc:
                     loud_error(_ctx_exc, "memory_interface.get_task_context_package")
 
-            # Mode detection — runs AFTER Mycelium fetch so mature graph data
+            # Mode detection â€” runs AFTER Mycelium fetch so mature graph data
             # can suppress clarification mode and improve confidence.
             # Result flows into _plan_task() (temperature) and _execute_plan_der()
             # (token budget via DER_TOKEN_BUDGETS[mode]).
             # Voice requests skip mode detection and lock to "voice_first" so
             # they always get the tight 15k token budget and single-step plan.
-            # Confidence defaults to 0.5 for voice — memory-derived when mature.
+            # Confidence defaults to 0.5 for voice â€” memory-derived when mature.
             if from_voice:
                 _mode_name = "voice_first"
                 _confidence = 0.70 if _is_mature else 0.50
@@ -9174,7 +9259,7 @@ class AgentKernel:
                 )
                 if _plan is not None:
                     break
-                # Billing/auth failures cannot heal in 5 s — fail fast with
+                # Billing/auth failures cannot heal in 5 s â€” fail fast with
                 # the true cause instead of burning retries on a dead key.
                 _classified = self._classify_plan_failure()
                 if _classified[2]:
@@ -9182,12 +9267,12 @@ class AgentKernel:
                 if _plan_attempt < 2:
                     # Planner failure is almost always the provider quota: the
                     # transport already burned its 3x30s retries, so the 60s
-                    # provider window has usually ROLLED by now — a short gap
+                    # provider window has usually ROLLED by now â€” a short gap
                     # and a fresh attempt lands in new quota. Without this, a
                     # single saturated minute returned "[IRIS error] The planner
                     # returned no valid plan" (observed live).
                     logger.info(
-                        "[process_text_message] planner attempt %d failed — "
+                        "[process_text_message] planner attempt %d failed â€” "
                         "retrying after quota-window gap",
                         _plan_attempt + 1,
                     )
@@ -9195,7 +9280,7 @@ class AgentKernel:
 
                     _time_mod.sleep(5)
             if _plan is None:
-                # REQ-2: planner failure → return ERROR, no silent self-do.
+                # REQ-2: planner failure â†’ return ERROR, no silent self-do.
                 # The failure kind (recorded by _plan_task) decides the
                 # message, so billing/auth/quota/timeout/parse/empty each
                 # report distinctly instead of one vague planner error.
@@ -9203,7 +9288,7 @@ class AgentKernel:
                 logger.warning("[process_text_message] %s code=%s", _msg, _code.name)
                 # Every other _emit_context_usage() site sits on a SUCCESS
                 # path, so a turn that died here emitted nothing and the
-                # ContextPill kept whatever it had — with the old hardcoded
+                # ContextPill kept whatever it had â€” with the old hardcoded
                 # 128000 initial state that meant it displayed 128k forever on
                 # a Cerebras 402 (billing) loop, which is precisely the case
                 # that fails fast above. The denominator costs no model call:
@@ -9213,7 +9298,7 @@ class AgentKernel:
                 self._emit_context_usage()
                 return _msg
 
-            # GAP 5 — strategy signal to Mycelium after planning
+            # GAP 5 â€” strategy signal to Mycelium after planning
             try:
                 if self._memory_interface:
                     self._memory_interface.mycelium_ingest_statement(
@@ -9223,7 +9308,7 @@ class AgentKernel:
             except Exception as _ing_exc:
                 loud_error(_ing_exc, "mycelium_ingest_statement")
 
-            # GAP 6 — register plan address when Mycelium is mature
+            # GAP 6 â€” register plan address when Mycelium is mature
             try:
                 if (
                     _is_mature
@@ -9239,19 +9324,19 @@ class AgentKernel:
             except Exception as _reg_exc:
                 loud_error(_reg_exc, "context_package.register_address")
 
-            # GAP 4 — route by strategy (do_it_myself → DER; others → ReAct)
+            # GAP 4 â€” route by strategy (do_it_myself â†’ DER; others â†’ ReAct)
             if _plan.strategy == "do_it_myself":
-                # ── Emit TASK_START early so the frontend sees the plan
+                # â”€â”€ Emit TASK_START early so the frontend sees the plan
                 # skeleton BEFORE the DER thread starts executing tools
-                # (fixes Q4 plan-late bug — without this, task:start and
+                # (fixes Q4 plan-late bug â€” without this, task:start and
                 # the first tool:call can arrive in the same WS batch,
                 # making the plan card appear to jump straight to "working").
                 # Voice-only DER bypass: skip DER/card for trivial chit-chat
                 # (plan with only speak steps and no websearch intent).
                 # Websearch prompts MUST go through DER so the frontend
                 # receives card/render events even when the plan has only
-                # speak steps — the DER loop resolves speak steps via
-                # ToolDecisionBox → _run_step_direct, which produces both
+                # speak steps â€” the DER loop resolves speak steps via
+                # ToolDecisionBox â†’ _run_step_direct, which produces both
                 # voice and card output.
                 # NOTE (2026-09-27): the "" in this tuple is gone. The docstring
                 # of _should_skip_der (F6, 2026-08-12) records why: production
@@ -9270,7 +9355,7 @@ class AgentKernel:
                 # internet-access toggle. With web mode ON, a factual
                 # question ("what are the latest NASA Mars rover
                 # discoveries this month?") must reach DER so the crawler
-                # path is available — even when the text heuristic misses
+                # path is available â€” even when the text heuristic misses
                 # (frontend strips the "websearch:" prefix). Chit-chat
                 # ("hello", "how are you") still skips DER on the fast path.
                 _web_on = get_global_internet_access()
@@ -9280,7 +9365,7 @@ class AgentKernel:
                 if _skip_der:
                     logger.info(
                         "[AgentKernel] voice-only/trivial plan (steps=%d, "
-                        "websearch=%s, web_on=%s, informational=%s) — skipping "
+                        "websearch=%s, web_on=%s, informational=%s) â€” skipping "
                         "DER/card, falling through to direct response",
                         len(_plan.steps),
                         _is_websearch,
@@ -9329,7 +9414,7 @@ class AgentKernel:
                         _der_response = ""
                 else:
                     # T12 (REQ-10 AC10.10): planning completed and the turn
-                    # proceeds to DER — the first planned beat speaks now.
+                    # proceeds to DER â€” the first planned beat speaks now.
                     # (Skipped entirely on the trivial-plan path above: short
                     # work stays fully voiced via the reply lane.)
                     try:
@@ -9371,11 +9456,11 @@ class AgentKernel:
                             len(_steps),
                             " | ".join(s["description"] for s in _steps)[:300],
                         )
-                        # ── Card gate (owner bound, 2026-09-25) ──────────────
+                        # â”€â”€ Card gate (owner bound, 2026-09-25) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         # Decided BEFORE the first task:start emit. Live
                         # 2026-09-25: the DER-internal decision ran AFTER this
                         # emit, so a card-free turn still showed a card whose
-                        # terminal events were then withheld — the card appeared
+                        # terminal events were then withheld â€” the card appeared
                         # and never reached DONE. Registering here (and again in
                         # DER, which also arms the persist gate) closes that gap.
                         try:
@@ -9418,7 +9503,7 @@ class AgentKernel:
                                 mode=_mode_name,
                                 steps=_steps,
                                 total_steps=len(_plan.steps),
-                                # REQ-14 (T23): initial plan announcement —
+                                # REQ-14 (T23): initial plan announcement â€”
                                 # revisions re-emit through the same merge-by-id
                                 # channel with origin "sub_loop_split" (REQ-4/13)
                                 # or "user_steering" (REQ-15).
@@ -9432,7 +9517,7 @@ class AgentKernel:
                             ),
                             session_id=session_id or self.session_id,
                         )
-                        # T4a (REQ-4 AC1): persist the card at task:start —
+                        # T4a (REQ-4 AC1): persist the card at task:start â€”
                         # upsert with terminal_state="running".
                         self._persist_card_snapshot(
                             card_id=_card_id,
@@ -9447,14 +9532,14 @@ class AgentKernel:
                     except Exception:
                         pass  # never block execution on an event emission failure
 
-                    # Session 247 FIX (recurring — see pin_5b79ddf5f112,
+                    # Session 247 FIX (recurring â€” see pin_5b79ddf5f112,
                     # pin_9e97e21340e7): the planner MODE name ("implement",
-                    # "debug", …) must size the TOKEN BUDGET only. It used to
+                    # "debug", â€¦) must size the TOKEN BUDGET only. It used to
                     # REPLACE task_class outright, which (a) sent
                     # _decide_mode down its unrecognized-class AGENTIC
-                    # default — the legacy card-less path with no card_id on
+                    # default â€” the legacy card-less path with no card_id on
                     # events, no terminal task:done, frozen verbs (live
-                    # conv-42) — and (b) made explorer.propose withhold web
+                    # conv-42) â€” and (b) made explorer.propose withhold web
                     # tools, since propose assigns them only for research
                     # classes. The classifier's label stays authoritative for
                     # every DECISION; the mode name rides along as
@@ -9528,12 +9613,12 @@ class AgentKernel:
                 # REQ-7 AC3 (T25): record the per-turn DER call count so the
                 # loop's actual call count is visible against the T3 baseline.
                 metrics.der_calls = getattr(self, "_der_turn_calls", 0)
-                # T11 (REQ-12): record the completed-step count — wired at the
+                # T11 (REQ-12): record the completed-step count â€” wired at the
                 # DER loop finalize (was declared-never-assigned before
                 # 2026-08-06, so [LAYERS] reported der_steps=0 while steps ran).
                 metrics.der_steps = getattr(self, "_der_step_count", 0)
                 # REQ-6 AC1/AC3 (T18): governance-source counts for the [LAYERS]
-                # line — which signal governed this turn's steering decisions
+                # line â€” which signal governed this turn's steering decisions
                 # (past-memory / live-state / both) and the alternation ratio
                 # (computed in to_log_line).
                 _gov = getattr(self, "_der_governance_counts", None) or {}
@@ -9541,7 +9626,7 @@ class AgentKernel:
                 metrics.gov_live = int(_gov.get("live", 0) or 0)
                 metrics.gov_both = int(_gov.get("both", 0) or 0)
                 # REQ-17 AC1 (T34): the REAL budget source (the source that
-                # won in resolve_context_window_with_source — override /
+                # won in resolve_context_window_with_source â€” override /
                 # authoritative / table / default), never a silent 8192.
                 try:
                     metrics.budget_source = (
@@ -9556,7 +9641,7 @@ class AgentKernel:
                 # 429 count: the rate meter's per-quota 429 frequency, summed
                 # across metered windows (the transport observes 429s there;
                 # the kernel never counts them itself). 0 when no metered
-                # quota exists or the meter is unavailable — never raises.
+                # quota exists or the meter is unavailable â€” never raises.
                 metrics.count_429 = 0
                 try:
                     from backend.agent.rate_meter import get_rate_meter
@@ -9573,7 +9658,7 @@ class AgentKernel:
                 except Exception:
                     metrics.count_429 = 0
                 # REQ-17 AC1 (T34): narration decisions this turn (0 when none).
-                # Counts the conversation's narration JSONL entries — read-only,
+                # Counts the conversation's narration JSONL entries â€” read-only,
                 # best-effort, never raises; a missing log file = 0.
                 try:
                     from backend.agent.narration import _NARRATION_LOG_DIR
@@ -9608,7 +9693,7 @@ class AgentKernel:
                     )
                 except Exception:
                     pass
-                # ── FIX (session 154): Invoke chunk_callback on DER path ──
+                # â”€â”€ FIX (session 154): Invoke chunk_callback on DER path â”€â”€
                 # The DER loop generates the full response via internal LLM
                 # calls but never invokes chunk_callback. Without this call,
                 # the TTS sentence_queue only receives the None sentinel,
@@ -9624,7 +9709,7 @@ class AgentKernel:
                     logger.info("[DER-TTS-FIX] chunk_callback invoked OK")
                 else:
                     logger.warning(
-                        f"[DER-TTS-FIX] SKIPPED — chunk_callback={chunk_callback}, "
+                        f"[DER-TTS-FIX] SKIPPED â€” chunk_callback={chunk_callback}, "
                         f"der_response={bool(_der_response)}"
                     )
                 # Issue C.1: apply speak/show contract before returning.
@@ -9737,7 +9822,7 @@ class AgentKernel:
                             # nor VPS will handle this request.  If ":" is in the model ID
                             # it is an Ollama model (e.g. "llama3.2:3b"); if VPS is wired
                             # the VPS block below handles it.  In those cases we MUST NOT
-                            # fall back — the stub is broken and produces garbage output.
+                            # fall back â€” the stub is broken and produces garbage output.
                             _sel_check = self._selected_reasoning_model
                             _ollama_will_handle = ":" in _sel_check
                             _vps_will_handle = bool(self._vps_gateway)
@@ -9768,12 +9853,12 @@ class AgentKernel:
                                     else ("Ollama" if _ollama_will_handle else "VPS")
                                 )
                                 logger.info(
-                                    f"[AgentKernel] Selected model '{_sel_check}' not in local cache — "
+                                    f"[AgentKernel] Selected model '{_sel_check}' not in local cache â€” "
                                     f"will route to {_dest}"
                                 )
                                 # reasoning_model stays None; inference block handles it
                     else:
-                        # No model selected — use default reasoning model
+                        # No model selected â€” use default reasoning model
                         reasoning_model = self._model_router.get_reasoning_model()
                         if reasoning_model:
                             default_model_id = getattr(
@@ -9803,13 +9888,13 @@ class AgentKernel:
                         )
                         return {"error": f"Failed to access fallback model: {e}"}
                 elif self._is_openai_compat():
-                    # LM Studio is configured — reasoning_model stays None; the LM Studio
+                    # LM Studio is configured â€” reasoning_model stays None; the LM Studio
                     # inference block below handles it via localhost:1234.
                     logger.info(
                         "[AgentKernel] No local model loaded; delegating planning to LM Studio"
                     )
                 elif self._vps_gateway:
-                    # VPS Gateway is configured — no local model required.
+                    # VPS Gateway is configured â€” no local model required.
                     # reasoning_model stays None; the VPS inference block below handles it.
                     logger.info(
                         "[AgentKernel] No local reasoning model; delegating planning to VPS Gateway"
@@ -9817,12 +9902,12 @@ class AgentKernel:
                 elif self._selected_reasoning_model and self._model_router:
                     # The user confirmed a model but it isn't in _model_router.models yet.
                     # Two sub-cases:
-                    # A) Ollama model — ID contains ":" (e.g. "llama3.2:3b")
-                    #    → handled in the Ollama inference block below.
+                    # A) Ollama model â€” ID contains ":" (e.g. "llama3.2:3b")
+                    #    â†’ handled in the Ollama inference block below.
                     #    NOTE: provider="local" means LFM local file, NOT Ollama.
                     #    Only ":" in the ID identifies an Ollama model.
                     # B) LFM HuggingFace model (provider="local", no ":" in ID)
-                    #    → trigger load_models() now so the model dict is populated.
+                    #    â†’ trigger load_models() now so the model dict is populated.
                     _sel = self._selected_reasoning_model
                     _is_ollama = ":" in _sel  # ONLY colon-format IDs go to Ollama
                     if _is_ollama:
@@ -9830,7 +9915,7 @@ class AgentKernel:
                             f"[AgentKernel] Ollama model '{_sel}' selected; "
                             "will infer via localhost:11434"
                         )
-                        # reasoning_model stays None — Ollama block below handles inference
+                        # reasoning_model stays None â€” Ollama block below handles inference
                     else:
                         # LFM lazy-load path (provider="local", model file on disk)
                         logger.info(
@@ -9856,14 +9941,14 @@ class AgentKernel:
                                 "error": (
                                     f"Local model '{_sel}' could not be loaded. "
                                     "Check that the model file exists in the models/ directory, "
-                                    "or switch to an Ollama or VPS model in Settings → Configure."
+                                    "or switch to an Ollama or VPS model in Settings â†’ Configure."
                                 )
                             }
                 else:
                     return {
                         "error": (
                             "No inference backend configured. "
-                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
+                            "Please go to Settings â†’ Configure and select a Local, VPS, or OpenAI model."
                         )
                     }
 
@@ -9930,7 +10015,7 @@ Respond with a JSON object:
                     except RuntimeError as e:
                         if "already running" in str(e):
                             logger.warning(
-                                "[AgentKernel] Event loop conflict — falling back to local model"
+                                "[AgentKernel] Event loop conflict â€” falling back to local model"
                             )
                             plan_response = None
                         else:
@@ -9967,9 +10052,9 @@ Respond with a JSON object:
                         f"[AgentKernel] LM Studio planning inference failed: {_lms_err}"
                     )
 
-            # Ollama local inference — runs when the model ID contains ":" which is
+            # Ollama local inference â€” runs when the model ID contains ":" which is
             # the Ollama format (e.g. "llama3.2:3b", "mistral:7b", "kimi-k2.5:cloud").
-            # NOTE: provider="local" means LFM local file — it does NOT go to Ollama.
+            # NOTE: provider="local" means LFM local file â€” it does NOT go to Ollama.
             # Only colon-format IDs are Ollama models.
             if (
                 plan_response is None
@@ -10028,12 +10113,12 @@ Respond with a JSON object:
                     elif _sel_err:
                         _err_msg = (
                             f"Model '{_sel_err}' could not be loaded. "
-                            "Check that the model file exists, or select a different model in Settings → Configure."
+                            "Check that the model file exists, or select a different model in Settings â†’ Configure."
                         )
                     else:
                         _err_msg = (
                             "No inference backend configured. "
-                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
+                            "Please go to Settings â†’ Configure and select a Local, VPS, or OpenAI model."
                         )
                     return {"error": _err_msg}
 
@@ -10096,7 +10181,7 @@ Respond with a JSON object:
                 return plan
             except json.JSONDecodeError:
                 # Model returned free-form text rather than JSON.
-                # Treat the entire response as the user-facing reply — do NOT use
+                # Treat the entire response as the user-facing reply â€” do NOT use
                 # "respond_to_user" as the action string because execute_step would
                 # return that keyword verbatim to the frontend.
                 logger.warning(
@@ -10155,7 +10240,7 @@ Respond with a JSON object:
         # (explorer.propose) can apply the capability-gated web fallback.
         self._der_task_class = _der_task_class
 
-        # REQ-19 (T20): one DerLinkWriter per DER run — writes structural
+        # REQ-19 (T20): one DerLinkWriter per DER run â€” writes structural
         # links (part_of / depends_on / relevant_to / failed_like) into the
         # SHARED mycelium link store at finalize. Wired here so it exists for
         # the whole plan; bound to this run's kernel (no cross-session shared
@@ -10201,7 +10286,7 @@ Respond with a JSON object:
             )
         except TopologyViolationException:
             logger.warning(
-                "[AgentKernel] TopologyViolation — attempting targeted recovery"
+                "[AgentKernel] TopologyViolation â€” attempting targeted recovery"
             )
             try:
                 # RC11 FIX: reset Caducean session state before recovery
@@ -10218,7 +10303,7 @@ Respond with a JSON object:
                     data={
                         "from_mode": "DER",
                         "to_mode": "DER_RECOVERY",
-                        "reason": "Topological violation — recovering",
+                        "reason": "Topological violation â€” recovering",
                     },
                     session_id=_session,
                 )
@@ -10227,7 +10312,7 @@ Respond with a JSON object:
                     data={
                         "from_mode": "DER",
                         "to_mode": "DER_RECOVERY",
-                        "reason": "Topological violation — recovering",
+                        "reason": "Topological violation â€” recovering",
                     },
                     session_id=_session,
                 )
@@ -10423,20 +10508,20 @@ Respond with a JSON object:
         budget_class: Optional[str] = None,
     ) -> str:
         """
-        DER execution cycle: Director → Reviewer → Explorer → repeat until complete.
+        DER execution cycle: Director â†’ Reviewer â†’ Explorer â†’ repeat until complete.
 
         The Director re-reads Mycelium each cycle via ContextPackage.
         The Reviewer gates each step (PASS / REFINE / VETO).
         The Explorer executes via _tool_bridge or direct model call.
         Mycelium signal hooks fire after every step and at outcome.
 
-        Never raises — wraps failures as step error text so the response
+        Never raises â€” wraps failures as step error text so the response
         always reaches the user.
         """
-        # Trust-routing W2: a plan run is one turn — start unmarked.
+        # Trust-routing W2: a plan run is one turn â€” start unmarked.
         self.clear_turn_trust_flag()
         # REQ-5 AC3: the amendment bound is PER TASK. _der_amendment_count lives
-        # on the kernel, which is cached per CONVERSATION — leaving it to
+        # on the kernel, which is cached per CONVERSATION â€” leaving it to
         # accumulate would permanently refuse every graft after the third
         # recovery in a conversation, silently killing DER's existing recovery
         # path. One plan run is one task, so the counter resets here.
@@ -10462,39 +10547,39 @@ Respond with a JSON object:
         _session = session_id or self.session_id
         # _turn_id threads the request turn id through EventBus emits and
         # escalation calls. It was previously referenced throughout this
-        # method but never defined — that NameError broke the DER escalation
+        # method but never defined â€” that NameError broke the DER escalation
         # path and forced the "[step N completed]" fallback. See Issue E fix.
         _turn_id = turn_id
         completed_items: List[Any] = []
         step_outputs: List[str] = []
         _der_start_time = time.perf_counter()
         # Wedge fix (session 363, pin_35af67d07c5f): the turn start lives on
-        # the INSTANCE too — _turn_choke_check is reached from the router and
+        # the INSTANCE too â€” _turn_choke_check is reached from the router and
         # the transports, which cannot see this local. _der_session and
         # _der_turn_active scope the check to THIS turn: without the active
         # flag a stale start time from a FINISHED turn would raise on a
         # healthy non-DER call that runs more than the budget after the turn
         # ended. _der_last_client_check throttles the WS lookup in
-        # _turn_choke_check — the stream chunk loops call it per SSE line.
+        # _turn_choke_check â€” the stream chunk loops call it per SSE line.
         self._der_start_time = _der_start_time
         self._der_session = _session
         self._der_turn_id = _turn_id
         self._der_turn_active = True
         self._der_last_client_check = 0.0
 
-        # Token budget — spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
-        # Tokens are estimated from step result length (4 chars ≈ 1 token).
+        # Token budget â€” spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
+        # Tokens are estimated from step result length (4 chars â‰ˆ 1 token).
         # Budget is a ceiling; the loop exits early if exceeded.
         # DER budget is derived from the MODEL'S ACTUAL CONTEXT WINDOW, not a
         # hardcoded per-mode cap. DER exists to execute tasks in alignment with
         # memory (Pacman filters tokens into the context window that then feeds
-        # coordinate memory.db) — so each model should be allowed to use its full
+        # coordinate memory.db) â€” so each model should be allowed to use its full
         # window for reasoning across steps. The flat DER_TOKEN_BUDGETS values
         # are kept only as a SAFETY FLOOR (never go below a sane minimum), never
         # as a ceiling. No upper cap: a 256k model gets ~230k of step budget, a
-        # 32k local model gets ~29k — each uses its real capacity.
+        # 32k local model gets ~29k â€” each uses its real capacity.
         # Sized by the SMALLEST window among the roles this turn will actually
-        # spend against — DER issues both reasoning calls and tool_execution
+        # spend against â€” DER issues both reasoning calls and tool_execution
         # calls, and a Brain/Tool split can put them on very different models.
         # Using the reasoning window alone budgeted ~230k for a turn whose tool
         # steps ran on an 8k model (2026-08-16).
@@ -10514,9 +10599,9 @@ Respond with a JSON object:
             derive_work_units_0(_model_window),
         )
 
-        # ── REQ-1: pre-flight — is the reasoning provider usable? ────────
+        # â”€â”€ REQ-1: pre-flight â€” is the reasoning provider usable? â”€â”€â”€â”€â”€â”€â”€â”€
         if not getattr(self, "_router", None):
-            logger.warning("[DER] pre-flight FAILED — no router configured")
+            logger.warning("[DER] pre-flight FAILED â€” no router configured")
             return "[DER unavailable] No inference router configured"
         try:
             _hc = self._router.health_check_provider("reasoning")
@@ -10525,7 +10610,7 @@ Respond with a JSON object:
         if not _hc.get("ok"):
             _reason = _hc.get("error", "no reason")
             logger.warning(
-                "[DER] pre-flight FAILED — reasoning provider unavailable: %s",
+                "[DER] pre-flight FAILED â€” reasoning provider unavailable: %s",
                 _reason,
             )
             return f"[DER unavailable] {_reason}"
@@ -10548,7 +10633,7 @@ Respond with a JSON object:
                 parallel_safe=is_parallel_safe(step.tool),
                 objective_anchor=plan.original_task,
                 # T5 (specs/tool-result-envelope): planner-declared
-                # criticality rides the queue item — intent only until the
+                # criticality rides the queue item â€” intent only until the
                 # finalize site confirms it (AC1.6).
                 declared_criticality=getattr(step, "criticality", "supporting") or "supporting",
                 coordinate_signal=(
@@ -10556,7 +10641,7 @@ Respond with a JSON object:
                     if context_package
                     else ""
                 ),
-                # REQ-3 (T8): EVERY node carries its compressed memory record —
+                # REQ-3 (T8): EVERY node carries its compressed memory record â€”
                 # top-level plan steps included, not just split children. The
                 # record's Understanding/Awareness/Direction fields are derived
                 # from the plan step itself (the node's initial position), and
@@ -10575,7 +10660,7 @@ Respond with a JSON object:
                     ruled_out="",
                     coordinate_ref=None,
                     coords_from="",
-                    # REQ-18 (T19): both domain axes resolved at construction —
+                    # REQ-18 (T19): both domain axes resolved at construction â€”
                     # topic from the step's own text via the mycelium registry,
                     # execution from the active winding. Registry-backed, never
                     # free text (AC2/AC3). The finalize site re-stamps with the
@@ -10602,10 +10687,10 @@ Respond with a JSON object:
                      "task_class": task_class},
         )
 
-        # ── Goal contract T4 (specs/goal-contract-coverage, REQ-1) ──
+        # â”€â”€ Goal contract T4 (specs/goal-contract-coverage, REQ-1) â”€â”€
         # Build the deterministic required-fact set once per turn, validate
-        # the plan against it (an omission is re-added by construction — the
-        # deterministic set stands alone — and logged with the fact text),
+        # the plan against it (an omission is re-added by construction â€” the
+        # deterministic set stands alone â€” and logged with the fact text),
         # and stamp required_facts on every step's node record. Advisory:
         # never break plan start on a contract failure.
         self._goal_contract_state = None
@@ -10652,7 +10737,7 @@ Respond with a JSON object:
                 "stalled": False,
                 "rho": 0.0,
                 # Wave 3 (T7/T8/T9/T10): amendment log, blocked list, REQ-7
-                # counters. All advisory — absent = legacy behavior.
+                # counters. All advisory â€” absent = legacy behavior.
                 "blocked": [],
                 "amendments": [],
                 "counters": {
@@ -10685,11 +10770,11 @@ Respond with a JSON object:
         # now a single runtime authority (explorer.propose), which routes web
         # intent to crawler_query via the registry's alias + capability system
         # (capability-gated fallback for research-class goals). No routing is
-        # lost — the registry already canonicalizes web aliases to crawler_query.
+        # lost â€” the registry already canonicalizes web aliases to crawler_query.
 
-        # ── Phase 3: initialize execution mode ────────────────────────
+        # â”€â”€ Phase 3: initialize execution mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Director decides mode dynamically based on task characteristics.
-        # Voice no longer caps to 1 step — Director decides based on content.
+        # Voice no longer caps to 1 step â€” Director decides based on content.
         voice_preference = getattr(self, "_voice_preference", "auto")
         initial_mode = DirectorQueue._decide_mode(
             task_class=task_class,
@@ -10705,11 +10790,11 @@ Respond with a JSON object:
             initial_mode.value, from_voice, task_class, _token_budget,
         )
 
-        # ── Card gate (owner bound, 2026-09-25) ──────────────────────────
+        # â”€â”€ Card gate (owner bound, 2026-09-25) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # A card is for MORE THAN THREE tool steps, and never for an artifact ask
         # (the artifact IS the visible result). Below the bound the turn still
         # runs through DER, the tools still fire and a real artifact still
-        # renders — only card-lifecycle events are withheld, by the WS bridge
+        # renders â€” only card-lifecycle events are withheld, by the WS bridge
         # and by _persist_card_snapshot, both keyed on artifact_policy's gate.
         try:
             from backend.agent.artifact_policy import (
@@ -10726,7 +10811,7 @@ Respond with a JSON object:
             # The card bound is a personal-mode rule (see _developer_mode).
             self._der_card_hold = None
             if card_warranted(items, plan.original_task or "") or _developer_mode(self):
-                # This turn may have a card — clear the conversation-scoped
+                # This turn may have a card â€” clear the conversation-scoped
                 # marker a previous short turn left behind.
                 self._suppressed_card_turn = None
                 clear_card_free_conversation(self.conversation_id)
@@ -10746,7 +10831,7 @@ Respond with a JSON object:
                     }
                 logger.info(
                     "[AgentKernel] task card suppressed: tool_steps=%d (bound "
-                    ">=%d) artifact_ask=%s turn=%s — the turn runs, the artifact "
+                    ">=%d) artifact_ask=%s turn=%s â€” the turn runs, the artifact "
                     "still renders",
                     tool_step_count(items),
                     MIN_TOOL_STEPS_FOR_CARD,
@@ -10756,7 +10841,7 @@ Respond with a JSON object:
         except Exception as _gate_exc:  # never block the turn on the gate
             logger.debug("[AgentKernel] card gate skipped: %s", _gate_exc)
 
-        # ── EventBus: emit task:start ──────────────────────────────────
+        # â”€â”€ EventBus: emit task:start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             bus = get_event_bus()
@@ -10764,7 +10849,7 @@ Respond with a JSON object:
             _card_id, _card_relation = self._resolve_card_identity(
                 _card_task_id, "initial"
             )
-            # T16 (REQ-12 AC4): card-lifecycle observability — relation decision
+            # T16 (REQ-12 AC4): card-lifecycle observability â€” relation decision
             # is logged here, off the inference hot path (this block only emits
             # an event; a log line can never block the user response).
             logger.info(
@@ -10791,7 +10876,7 @@ Respond with a JSON object:
                     mode=initial_mode.value,
                     steps=_start_steps,
                     total_steps=len(items),
-                    # REQ-14 (T23): execution-start announcement — still the
+                    # REQ-14 (T23): execution-start announcement â€” still the
                     # INITIAL plan; revisions re-emit with a distinct origin.
                     origin="initial",
                     # REQ-3 (T2): backend-declared card identity.
@@ -10817,9 +10902,9 @@ Respond with a JSON object:
                 terminal_state="running",
             )
         except Exception:
-            pass  # EventBus is optional — no crash if it fails
+            pass  # EventBus is optional â€” no crash if it fails
 
-        # C.1 LiveContextPackage — refreshes ContextPackage mid-loop so the
+        # C.1 LiveContextPackage â€” refreshes ContextPackage mid-loop so the
         # Director always reads current gradient_warnings + tier2_predictions.
         try:
             from backend.memory.live_context import LiveContextPackage
@@ -10832,7 +10917,7 @@ Respond with a JSON object:
         except Exception:
             _live_ctx = None  # graceful no-op if import fails
 
-        # Reviewer — falls back to PASS on any failure (membrane, not gate)
+        # Reviewer â€” falls back to PASS on any failure (membrane, not gate)
         reviewer = self._reviewer
 
         # WS disconnect helper - checks if the originating session still has
@@ -10844,7 +10929,7 @@ Respond with a JSON object:
         def _session_has_client() -> bool:
             return self._session_has_client_for(_session)
 
-        # ── REQ-15 (T25/T26): per-task steering state reset ─────────────
+        # â”€â”€ REQ-15 (T25/T26): per-task steering state reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._der_stop_requested = False
         self._der_pause_requested = False
         self._der_resume_requested = False
@@ -10872,7 +10957,7 @@ Respond with a JSON object:
         except Exception as _st_exc:
             logger.debug("[AgentKernel] stale-steering sweep skipped: %s", _st_exc)
 
-        # ── Parallel nodes (owner 2026-10-04): ONE scheduler for every node -
+        # â”€â”€ Parallel nodes (owner 2026-10-04): ONE scheduler for every node -
         # plan steps, split children, grafts, batch children. The DAG decides
         # WHAT is ready (depends_on); the "execution.der_nodes" phase domain
         # decides WHEN a ready node starts; the node's work runs on its own
@@ -10894,27 +10979,27 @@ Respond with a JSON object:
             not queue.is_complete()
             and not queue.hit_cycle_limit()
             and _tokens_used < _token_budget
-            # Session 247: TURN WALL-CLOCK — the last-resort safety net. The
+            # Session 247: TURN WALL-CLOCK â€” the last-resort safety net. The
             # sufficiency gate and zero-yield cutoff stop the *rational*
             # churn; this bounds the total so no future bug can ever again
             # hold a turn open for 30+ minutes (conv-41 ran 18 dispatch
             # rounds unbounded). Generous by design: 10 min of wall time is
             # far beyond any healthy websearch turn, so this only fires on
             # genuine pathology. When it trips, the loop exits to synthesis
-            # over completed steps — partial results reach the user.
+            # over completed steps â€” partial results reach the user.
             and (time.perf_counter() - _der_start_time) < _DER_TURN_BUDGET_S
             # REQ-15 AC3: an explicit stop aborts at the next step boundary.
             and not self._der_stop_requested
         ):
-            # ── DISCONNECT CHECK: stop early if client is gone ──────────────
+            # â”€â”€ DISCONNECT CHECK: stop early if client is gone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if not _session_has_client():
                 logger.info(
-                    f"[DER] Session {_session} has no connected clients — "
+                    f"[DER] Session {_session} has no connected clients â€” "
                     "recording partial outcome and stopping"
                 )
                 break
 
-            # ── DOMAIN 19: Caducean phase read ──
+            # â”€â”€ DOMAIN 19: Caducean phase read â”€â”€
             import math as _math
 
             _xi = 0.0
@@ -10924,7 +11009,7 @@ Respond with a JSON object:
                 _xi = ffi_caducean_get_xi(_session)
             except Exception as _ffi_exc:
                 loud_error(_ffi_exc, "ffi_caducean_get_xi")
-            _phase = 0  # 0=[0,π/2], 1=[π/2,π], 2=[π,3π/2], 3=[3π/2,2π]
+            _phase = 0  # 0=[0,Ï€/2], 1=[Ï€/2,Ï€], 2=[Ï€,3Ï€/2], 3=[3Ï€/2,2Ï€]
             if _xi >= 3.0 * _math.pi / 2.0:
                 _phase = 3
             elif _xi >= _math.pi:
@@ -10932,9 +11017,9 @@ Respond with a JSON object:
             elif _xi >= _math.pi / 2.0:
                 _phase = 1
 
-            # ── Parallel nodes: settle a finished node first (in finish order,
+            # â”€â”€ Parallel nodes: settle a finished node first (in finish order,
             # on this thread), else start the next ready one; with nothing to
-            # start, wait for a node in flight to finish. ──
+            # start, wait for a node in flight to finish. â”€â”€
             _fin = _der_take_finished(self, _finished, _inflight, block=False)
             if _fin is None:
                 # IRIS_DER_PARALLEL=0: one node at a time (the off switch and
@@ -10963,8 +11048,8 @@ Respond with a JSON object:
             queue.cycle_count += 1
             verdict = None
 
-            # ── REQ-15 (T25/T26): consume mid-task steering at the NEXT step
-            # boundary (AC1 — never mid-step). A steering revision replaces
+            # â”€â”€ REQ-15 (T25/T26): consume mid-task steering at the NEXT step
+            # boundary (AC1 â€” never mid-step). A steering revision replaces
             # the remaining plan (AC2); a stop aborts here (AC3); a pause
             # suspends here until resume/stop (AC4). budget_deadline bounds
             # the re-plan's LLM call by the turn budget (pin_ced7b0dc3b8f).
@@ -10979,7 +11064,7 @@ Respond with a JSON object:
                 if _steer.get("stop"):
                     break
                 if _steer.get("revised"):
-                    # The pulled item belongs to the dropped plan — re-pull
+                    # The pulled item belongs to the dropped plan â€” re-pull
                     # from the revised queue on the next iteration. Nodes of
                     # the dropped plan still in flight stop at their next call.
                     for _rec in _inflight.values():
@@ -10991,11 +11076,11 @@ Respond with a JSON object:
                     )
                     if _suspend == "stop":
                         break
-                    # resumed: the pulled item was never executed — re-pull
+                    # resumed: the pulled item was never executed â€” re-pull
                     # it from the (unchanged) queue.
                     continue
 
-            # ── C.1 LIVE CONTEXT REFRESH ────────────────────────────────────
+            # â”€â”€ C.1 LIVE CONTEXT REFRESH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Re-read Mycelium coordinate signals for the current sub-step.
             # Updates gradient_warnings + tier2_predictions on context_package.
             # < 50ms SLA; silently no-ops on any error.
@@ -11003,7 +11088,7 @@ Respond with a JSON object:
                 _live_ctx.refresh(item, completed_items)
                 context_package = _live_ctx.package  # always valid
 
-            # ── C.4 MID-LOOP EPISODIC RETRIEVAL ────────────────────────────
+            # â”€â”€ C.4 MID-LOOP EPISODIC RETRIEVAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Query the episodic store for the *current sub-task*, not the
             # parent task.  Injects a hint into item.coordinate_signal so the
             # Reviewer and Explorer both see "I solved this sub-problem before
@@ -11084,7 +11169,7 @@ Respond with a JSON object:
                             # the summary, so the Explorer repeats a known-good path.
                             _seq = ep.get("tool_sequence", [])
                             if _seq:
-                                _approach = " → ".join(
+                                _approach = " â†’ ".join(
                                     s.get("tool", "?") for s in _seq[:5]
                                 )
                                 _hint_parts.append(f"PROVEN APPROACH: {_approach}")
@@ -11094,10 +11179,10 @@ Respond with a JSON object:
                             item.coordinate_signal = (
                                 _prior + f"\nSUB-TASK HINT: {_hints}"
                             ).strip()
-                    # ── REQ-20 AC3 (T21): the filtered ontology neighborhood
+                    # â”€â”€ REQ-20 AC3 (T21): the filtered ontology neighborhood
                     # is a first-class step input. Query the DER chain with
                     # THIS node's type + both domain axes and surface the
-                    # relevant neighbor records into the step context — the
+                    # relevant neighbor records into the step context â€” the
                     # relevant neighborhood, not the whole graph. Zero-hit
                     # widens (relationship -> type -> domain, logged) and
                     # falls back to the live-state-only step (never an error).
@@ -11118,24 +11203,24 @@ Respond with a JSON object:
                     except Exception as _nb_exc:
                         loud_error(_nb_exc, "ontology_recall_neighborhood")
 
-                    # ── REQ-3 T8 AC1/AC3: the node's compressed memory record is
+                    # â”€â”€ REQ-3 T8 AC1/AC3: the node's compressed memory record is
                     # a FIRST-CLASS step input (not opt-in). If this item carries
                     # a NodeRecord (every node does from split/creation on), its
-                    # Understanding/Awareness/Direction + the compressed Σ
+                    # Understanding/Awareness/Direction + the compressed Î£
                     # position are injected into the step input alongside the
                     # episodic hints. When the store has no record for the
                     # node's coordinate, the step proceeds on the live state
                     # alone and is marked memory-sparse in the observability log
-                    # (AC3) — never an error.
+                    # (AC3) â€” never an error.
                     try:
                         _rec = getattr(item, "node_record", None) or getattr(
                             item, "footprint", None
                         )
                         # REQ-6 AC1 (T18): OBSERVE which signal governed this
-                        # step's steering — past-memory (compressed node
+                        # step's steering â€” past-memory (compressed node
                         # record present) vs live-state (memory-sparse: no
-                        # record, the decision runs on the live Σ alone). A
-                        # record present AND live Σ consumed is the "both"
+                        # record, the decision runs on the live Î£ alone). A
+                        # record present AND live Î£ consumed is the "both"
                         # (equal-signals) edge. No hardcoded authority (AC2).
                         try:
                             self._der_record_governance(
@@ -11170,7 +11255,7 @@ Respond with a JSON object:
                                 _rec_parts.append(f"BRANCH COORDS: {_rec.coords_from}")
                             # REQ-4 AC4 (T16b): the fold-back observations from
                             # this node's sub-loop children are first-class
-                            # step context (REQ-3 AC1) — the parent's next
+                            # step context (REQ-3 AC1) â€” the parent's next
                             # decision reads what the children resolved.
                             if getattr(_rec, "folded_back", None):
                                 _rec_parts.append(
@@ -11182,10 +11267,10 @@ Respond with a JSON object:
                                     _prior + "\nNODE RECORD: " + "; ".join(_rec_parts)
                                 ).strip()
 
-                            # ── REQ-5 AC1/AC3 (T17): SURFACE the branch
+                            # â”€â”€ REQ-5 AC1/AC3 (T17): SURFACE the branch
                             # candidates to the deciding step. Retrieval ranks
                             # the relevant branches (physics + evidence) and
-                            # puts ALL of them in front of the step — never
+                            # puts ALL of them in front of the step â€” never
                             # pre-selecting one by score. The step decides with
                             # both branches in view; the chosen one is recorded
                             # at commit (_der_record_coupling_decision).
@@ -11205,7 +11290,7 @@ Respond with a JSON object:
                                         + " | ".join(_cand_parts)
                                     ).strip()
                                     # remember for the commit-time decision
-                                    # record (AC2/AC4) — bounded provenance.
+                                    # record (AC2/AC4) â€” bounded provenance.
                                     try:
                                         item._coupled_candidates = list(_cands)
                                     except Exception:
@@ -11215,24 +11300,24 @@ Respond with a JSON object:
                                     "[DER] branch surfacing failed: %s", _surf_exc
                                 )
 
-                            # ── REQ-3 T8b AC4/AC5/AC6: wire the FORGETTING. The
+                            # â”€â”€ REQ-3 T8b AC4/AC5/AC6: wire the FORGETTING. The
                             # step's working context (coordinate_signal) is bounded
                             # to a fraction of the REQ-1 resolved window (OQ-6:
-                            # derived, never a literal) — content beyond the bound is
+                            # derived, never a literal) â€” content beyond the bound is
                             # DROPPED from the working context and re-read later
                             # only when retrieval selects the node record. The
                             # per-step prompt token count is recorded so the
                             # reduction is a measured number (AC5). AC6: if the
                             # node's chain write FAILED (durability drop counter),
-                            # the working context is the ONLY copy — do NOT bound
+                            # the working context is the ONLY copy â€” do NOT bound
                             # (forget) it. Extracted to _der_bound_step_context so
                             # the contract test drives the REAL code (T8b).
                             self._der_bound_step_context(item)
                         else:
-                            # AC3: memory-sparse — no record, proceed on live state.
+                            # AC3: memory-sparse â€” no record, proceed on live state.
                             logger.info(
                                 "[DER] step memory-sparse step_id=%s (no node record "
-                                "for this coordinate) — proceeding on live state",
+                                "for this coordinate) â€” proceeding on live state",
                                 getattr(item, "step_id", "?"),
                             )
                     except Exception as _rec_exc:
@@ -11240,7 +11325,7 @@ Respond with a JSON object:
             except Exception as _explore_exc:
                 loud_error(_explore_exc, "explorer_sub_episodes")
 
-            # ── REVIEWER PHASE ─────────────────────────────────────────────
+            # â”€â”€ REVIEWER PHASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if reviewer is not None:
                 # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper):
                 # bind the step id into the measurement scope for THIS review.
@@ -11256,7 +11341,7 @@ Respond with a JSON object:
                     _de.set_scope(
                         step_id=getattr(item, "step_id", None) or None,
                     )
-                except Exception:  # noqa: BLE001 — measurement never blocks
+                except Exception:  # noqa: BLE001 â€” measurement never blocks
                     logger.debug("[DER] review scope bind failed")
                 try:
                     verdict, feedback = reviewer.review(
@@ -11280,7 +11365,7 @@ Respond with a JSON object:
                         f"(count={item.veto_count}, reason={feedback})"
                     )
                     # DER Phase 0 (D0.2): a VETO means the action was NEVER executed.
-                    # Do NOT emit a tool-outcome record (that would be a lie — a
+                    # Do NOT emit a tool-outcome record (that would be a lie â€” a
                     # success=False edge for a tool that never ran). The veto decision is
                     # logged for audit only; it is not a tool outcome.
                     logger.debug(
@@ -11293,7 +11378,7 @@ Respond with a JSON object:
                         continue
                     else:
                         queue.mark_vetoed(item.step_id)
-                        # ── REQ-8 AC3: emit learning signal for avoided step ──
+                        # â”€â”€ REQ-8 AC3: emit learning signal for avoided step â”€â”€
                         try:
                             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
                             get_event_bus().emit(
@@ -11315,7 +11400,7 @@ Respond with a JSON object:
                     logger.info(f"[DER] Step {item.step_number} REFINED")
                     # Session-321 (Reviewer claim-coverage): a REFINE whose
                     # text steers to read/compose sets the read tool
-                    # directly — the same reroute shape the T6B guard uses.
+                    # directly â€” the same reroute shape the T6B guard uses.
                     # Clearing the tool and hoping the resolver picks read
                     # is words-only; an explicit tool set is enforcement.
                     # get_rendered_documents is idempotent and side-effect
@@ -11335,7 +11420,7 @@ Respond with a JSON object:
                             f"Reviewer REFINE to get_rendered_documents",
                         )
 
-            # ── EXPLORER PHASE ─────────────────────────────────────────────
+            # â”€â”€ EXPLORER PHASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Emit TOOL_CALL event for the frontend / TaskKernel
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -11357,7 +11442,7 @@ Respond with a JSON object:
                 )
             except Exception:
                 pass
-            # T13 (REQ-10 AC10.11): the tool started — open its narratable
+            # T13 (REQ-10 AC10.11): the tool started â€” open its narratable
             # wait (entry line only for known-long waits; miss fires from
             # the scheduler worker if the stated budget is crossed).
             try:
@@ -11370,7 +11455,7 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-            # ── RC1 FIX: pre-execution validation (catches tool:null / missing
+            # â”€â”€ RC1 FIX: pre-execution validation (catches tool:null / missing
             # params before runtime). Invalid steps route to graft with the
             # REQ-6 (soft-cancel): if the user switched away from this conversation,
             # stop issuing further steps. An in-flight tool subprocess is allowed to
@@ -11384,7 +11469,7 @@ Respond with a JSON object:
                 )
                 break
 
-            # validation error instead of executing-and-failing. ──
+            # validation error instead of executing-and-failing. â”€â”€
             if item.tool:
                 from backend.agent.tool_registry import validate_tool_call
                 _valid, _val_err = validate_tool_call(item.tool, item.params or {})
@@ -11410,13 +11495,13 @@ Respond with a JSON object:
                     )
                     continue
 
-            # ── EXPLORER PHASE: execute primary step with resilience (Phase 1.1) ──
+            # â”€â”€ EXPLORER PHASE: execute primary step with resilience (Phase 1.1) â”€â”€
             # retry_with_backoff_sync retries transient errors (ConnectionError /
             # TimeoutError / OSError) with exponential backoff and fails fast on
             # permanent errors (ValueError / PermissionError / etc). _der_run_step
             # returns (result, success) rather than raising, so _run_step re-raises
             # a classified exception to drive the retry decision. The sync twin is
-            # used because _der_run_step_execution calls asyncio.run() internally —
+            # used because _der_run_step_execution calls asyncio.run() internally â€”
             # nesting asyncio.run would raise RuntimeError in the executor thread.
             from backend.agent.resilience import retry_with_backoff_sync
 
@@ -11429,7 +11514,7 @@ Respond with a JSON object:
                 # RateLimitedError is raised (not returned) by
                 # _der_run_step_execution when the transport exhausted its own
                 # 429 retries. It must NOT be retried at the DER layer (REQ-4
-                # AC1) — re-raise so retry_with_backoff_sync's NO_RETRY_ERRORS
+                # AC1) â€” re-raise so retry_with_backoff_sync's NO_RETRY_ERRORS
                 # check surfaces it immediately.
                 if isinstance(_res, RateLimitedError):
                     raise _res
@@ -11438,10 +11523,10 @@ Respond with a JSON object:
                     raise ConnectionError(_err)  # transient -> retry
                 raise ValueError(_err)  # permanent -> fail fast
 
-            # ── Parallel nodes (owner 2026-10-04): the node's work runs on its
+            # â”€â”€ Parallel nodes (owner 2026-10-04): the node's work runs on its
             # own thread (it always did - a bounded daemon thread, session 269);
             # the loop no longer joins it here but goes on to the next ready
-            # node. _der_post_step settles each node when it finishes. ──
+            # node. _der_post_step settles each node when it finishes. â”€â”€
             _der_start_node(self, item, _run_step, _inflight, _finished,
                                  verdict=verdict, phase=_phase)
             continue
@@ -11472,7 +11557,7 @@ Respond with a JSON object:
                          "steps_done": len(completed_items)},
             )
 
-        # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
+        # â”€â”€ OUTCOME RECORDING (ordered per spec: clear â†’ stats â†’ episode)
         # NOTE: _store_task_episode internally calls mycelium_record_outcome
         # and mycelium_crystallize_landmark, so we do NOT duplicate them here.
         # DER Phase 0 (D0.6): coarsen outcome from verified_fraction, not a binary
@@ -11493,7 +11578,7 @@ Respond with a JSON object:
         # success = clean run plus verified answer; partial = the answer
         # carries verified content despite failed steps; failure = nothing
         # verified. failed_steps still ride the terminal event, so per-step
-        # honesty never moves — only the run verdict does.
+        # honesty never moves â€” only the run verdict does.
         if _frac >= 0.8 and not queue.failed_ids:
             outcome = "success"
         elif _frac >= 0.3:
@@ -11501,13 +11586,13 @@ Respond with a JSON object:
         else:
             outcome = "failure"
 
-        # ── REQ-15 AC3 (T25): an explicit stop persists the lifecycle as
-        # `cancelled` (REQ-9 LIFECYCLE_CANCELLED) and reports honestly —
+        # â”€â”€ REQ-15 AC3 (T25): an explicit stop persists the lifecycle as
+        # `cancelled` (REQ-9 LIFECYCLE_CANCELLED) and reports honestly â€”
         # never a fabricated success or failure.
         if getattr(self, "_der_stop_requested", False):
             outcome = "cancelled"
 
-        # ── T6 (REQ-5 / D8): task lifecycle reaches its terminal state HERE,
+        # â”€â”€ T6 (REQ-5 / D8): task lifecycle reaches its terminal state HERE,
         # derived from the same honest queue state as the outcome label, and is
         # persisted BEFORE the terminal task:done/task:fail event. completed /
         # partial / failed are decided by execution state (queue terminals +
@@ -11534,10 +11619,10 @@ Respond with a JSON object:
             _t = _ledger.transition(_task_id, _term)
             if not _ledger.persist():
                 logger.warning(
-                    "[DER] task lifecycle persistence FAILED (state=%s) — durable completion not claimed",
+                    "[DER] task lifecycle persistence FAILED (state=%s) â€” durable completion not claimed",
                     _term,
                 )
-        except Exception as _lc_exc:  # noqa: BLE001 — lifecycle must never block the user response
+        except Exception as _lc_exc:  # noqa: BLE001 â€” lifecycle must never block the user response
             _write_counters.bump("ledger.lifecycle_write_failed")
             logger.warning("[DER] task lifecycle write FAILED: %s", _lc_exc)
 
@@ -11556,10 +11641,10 @@ Respond with a JSON object:
         # id is captured now because the next turn may change it.
         _te_card_id = getattr(self, "_active_card_id", None)
 
-        # ── EventBus: emit task:done / task:fail ────────────────────────
+        # â”€â”€ EventBus: emit task:done / task:fail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # T11 (REQ-12): record the completed-step count on the kernel so the
         # caller's TurnMetrics block (metrics.der_steps) reads a real number.
-        # len(completed_items) is authoritative here — it is appended only in
+        # len(completed_items) is authoritative here â€” it is appended only in
         # _der_finalize_step, one per actually-completed step.
         self._der_step_count = len(completed_items)
         #
@@ -11581,7 +11666,7 @@ Respond with a JSON object:
                     data={
                         "task_id": _lifecycle_task_id,
                         "outcome": outcome,
-                        # REQ-15 AC3 (T25): a stop is explicit — the user sees it.
+                        # REQ-15 AC3 (T25): a stop is explicit â€” the user sees it.
                         "cancelled": outcome == "cancelled",
                         "steps_completed": len(completed_items),
                         "total_steps": len(plan.steps),
@@ -11611,7 +11696,7 @@ Respond with a JSON object:
                 )
                 # T4a (REQ-4 AC1): persist the terminal state. Mirrors the same
                 # outcome == "success" condition used to pick TASK_DONE vs
-                # TASK_FAIL above — no separate terminal-state taxonomy invented.
+                # TASK_FAIL above â€” no separate terminal-state taxonomy invented.
                 _envelope = self._card_envelope(_lifecycle_task_id)
                 self._persist_card_snapshot(
                     card_id=_envelope.get("card_id"),
@@ -11624,7 +11709,7 @@ Respond with a JSON object:
                     terminal_state="done" if outcome == "success" else "fail",
                 )
             except Exception:
-                pass  # EventBus is optional — no crash if it fails
+                pass  # EventBus is optional â€” no crash if it fails
 
         try:
             if self._memory_interface:
@@ -11634,7 +11719,7 @@ Respond with a JSON object:
         except Exception as _exc:
             loud_error(_exc, "mycelium_clear_session")
 
-        # ── C5: turn-end bookkeeping on the memory lane (2026-10-01) ──────────
+        # â”€â”€ C5: turn-end bookkeeping on the memory lane (2026-10-01) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Card footprint, plan stats, the episode (+ Mycelium outcome and
         # landmark crystallization) and skill capture ran HERE, before the
         # reply's synthesis: 2-8.5 s per coding task (stack dumps: inside
@@ -11720,7 +11805,7 @@ Respond with a JSON object:
 
             _turn_end_submit(self, _session, _turn_end_job)
 
-        # ── EventBus: emit der:done ────────────────────────────────────
+        # â”€â”€ EventBus: emit der:done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -11757,7 +11842,7 @@ Respond with a JSON object:
         # REQ-12 (Wave 9): emit final context usage for the DER task.
         # Covers the "zero steps executed" case (plan rejected before any
         # step ran) where the per-step emit never fired. Uses the real
-        # per-thread self._tokens_used — never 0 for an active thread.
+        # per-thread self._tokens_used â€” never 0 for an active thread.
         # All return paths below are preceded by this single emit.
         self._emit_context_usage(
             step_number=len(completed_items),
@@ -11791,7 +11876,7 @@ Respond with a JSON object:
             if _synthesis:
                 _emit_terminal_event()
                 return self._goal_contract_name_blocked(_synthesis)
-            # LLM synthesis unavailable (e.g. model rate-limited — the very
+            # LLM synthesis unavailable (e.g. model rate-limited â€” the very
             # failure that broke the step) -> deterministic fallback so the user
             # is NEVER left with silence (Part B).
             _emit_terminal_event()
@@ -11806,7 +11891,7 @@ Respond with a JSON object:
             # naturally.
             self._der_stamp_session_exit(True)
             # AC3.6 defense-in-depth (session-334, live T3): the loop-level
-            # continuation gate in _der_plan_next_step is bypassable — COMPRESS
+            # continuation gate in _der_plan_next_step is bypassable â€” COMPRESS
             # (rec==1) skips it, a non-AGENTIC/FULL mode skips it, and a planner
             # JSON-parse failure returns None. Measured 2026-09-17: grade=capped
             # with 1 open unblocked required fact still produced "I've completed
@@ -11826,13 +11911,13 @@ Respond with a JSON object:
             # FAILURE for a turn that succeeded. Live conv-145 ("create a file
             # eyes_note3.md ... then read it back to me"): write_file and
             # read_file both returned success, the file on disk matched the
-            # request, no step failed — and the contract still reported one open
+            # request, no step failed â€” and the contract still reported one open
             # required fact (counters: seeded=1 mapped=0 readded=1 covered=0), so
-            # this branch appended "I couldn't fully complete the task — still
+            # this branch appended "I couldn't fully complete the task â€” still
             # open: ..." to a correct, successful answer. A success claim is only
             # FALSE when a step failed, so the suppression now also requires
             # that. The mismatch is still recorded (WARNING above) and the fact
-            # stays in the contract — nothing is hidden, and no false success
+            # stays in the contract â€” nothing is hidden, and no false success
             # can slip through, because any failed or missing step keeps the
             # original suppression.
             _open_ok = bool(completed_items) and not list(
@@ -11840,7 +11925,7 @@ Respond with a JSON object:
             )
             if len(_gc_open_final) > 0 and not _open_ok:
                 logger.warning(
-                    "[goal-contract] finalize with %d open unblocked fact(s) — "
+                    "[goal-contract] finalize with %d open unblocked fact(s) â€” "
                     "suppressing success claim: %r",
                     len(_gc_open_final), str(_gc_open_final[0])[:160],
                 )
@@ -11850,7 +11935,7 @@ Respond with a JSON object:
                 )
                 # Session-345 (live, conv-135): suppression must not hide what
                 # WAS gathered. With completed steps on record, synthesize the
-                # partial answer and append the open fact line — the fixed
+                # partial answer and append the open fact line â€” the fixed
                 # string alone told the user nothing about the data the crawl
                 # actually found. The failure path takes over if synthesis
                 # itself is unavailable (deterministic close).
@@ -11867,12 +11952,12 @@ Respond with a JSON object:
                 if _partial:
                     return (
                         _partial.strip()
-                        + "\n\nI couldn't fully complete the task — still open: "
+                        + "\n\nI couldn't fully complete the task â€” still open: "
                         + _open_facts_txt
                         + "\nWhat would you like me to do next?"
                     )
                 return (
-                    "I couldn't fully complete the task — required work is "
+                    "I couldn't fully complete the task â€” required work is "
                     f"still open: {_open_facts_txt}\n"
                     "What would you like me to do next?"
                 )
@@ -11908,7 +11993,7 @@ Respond with a JSON object:
                     plan, completed_items, queue
                 )
             )
-        # ── Zero steps (or zero usable outputs) ──────────────────────────
+        # â”€â”€ Zero steps (or zero usable outputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # The crawl plan produced no executable URLs (all blocked/filtered
         # by BOT_BLOCKED_DOMAINS, or the LLM couldn't generate any). Return
         # a descriptive message so _plan_task's post-processing can surface
@@ -11917,13 +12002,13 @@ Respond with a JSON object:
         self._der_stamp_session_exit(False)
         _emit_terminal_event()
         return (
-            f"[DER] {plan.strategy} — "
+            f"[DER] {plan.strategy} â€” "
             f"{len(completed_items)}/{len(plan.steps)} steps completed.  "
             f"error: no usable sources found for '{getattr(plan, 'title', '') or getattr(plan, 'plan_title', '') or plan.original_task[:40]}'.  "
             + self._build_crawl_failure_explanation(plan)
         )
 
-    # ── Phase 1.4: failure handling + plan grafting ──────────────────────
+    # â”€â”€ Phase 1.4: failure handling + plan grafting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @staticmethod
     def _task_start_payload(
@@ -11945,7 +12030,7 @@ Respond with a JSON object:
         """The ``task:start`` payload contract (REQ-14 / T23; REQ-3 / T1).
 
         ONE construction point for every ``task:start`` emit so the
-        merge-by-id contract keys (useTaskProgress.ts:210-227 —
+        merge-by-id contract keys (useTaskProgress.ts:210-227 â€”
         task_id / description / plan_title / mode / steps / total_steps)
         stay identical across sites, plus ``origin`` distinguishing the
         initial announcement from revisions: ``"initial"`` (both initial
@@ -11953,14 +12038,14 @@ Respond with a JSON object:
         (REQ-15), or ``"amendment"``. REQ-18's trace reads ``origin`` to
         attribute a revision.
 
-        T1 (REQ-3): ADDITIVE ONLY — ``card_id`` / ``card_relation`` /
+        T1 (REQ-3): ADDITIVE ONLY â€” ``card_id`` / ``card_relation`` /
         ``conversation_id`` are the three new keys; nothing about the seven
         keys above changed. Kept a @staticmethod on purpose: identity
         resolution (``_resolve_card_identity``, which needs kernel state)
         stays a separate, independently-testable step, and every caller
         resolves it before building this payload.
 
-        cli-workspace-unification T9a (REQ-5 AC1): ADDITIVE ONLY —
+        cli-workspace-unification T9a (REQ-5 AC1): ADDITIVE ONLY â€”
         ``agent_id`` (kernel session identity) and ``project_id`` (active
         project folder scope) join the same single construction point, so
         every emit site inherits the multi-agent Kanban tags for free. The
@@ -11968,10 +12053,10 @@ Respond with a JSON object:
         (no active project scope set on the kernel) consumers fall back to
         conversationId-only keying.
 
-        Session 244 (card↔response inline join): ADDITIVE ONLY —
+        Session 244 (cardâ†”response inline join): ADDITIVE ONLY â€”
         ``turn_id`` (the kernel's current response turn id,
         ``self._current_turn_id``) joins the payload so the frontend can
-        render a card INLINE with the assistant message it belongs to —
+        render a card INLINE with the assistant message it belongs to â€”
         the same join documents already use (message.id === turn_id).
         Absent on legacy replays; consumers fall back to bottom-stacking.
         """
@@ -12005,7 +12090,7 @@ Respond with a JSON object:
     @staticmethod
     def _effective_plan_title(plan: Any) -> str:
         """pin_07b780e7ce21: the objective title must arrive RELIABLY on every
-        ``task:start`` / card snapshot — the LLM planner sometimes omits
+        ``task:start`` / card snapshot â€” the LLM planner sometimes omits
         ``plan_title`` from its JSON, which left search cards with no dominant
         header (the frontend fell back to steps[0].description). When the
         planner title is empty, derive one from the original task so the
@@ -12020,7 +12105,7 @@ Respond with a JSON object:
         """T9a (REQ-5 AC1): the ``(agent_id, project_id)`` Kanban tags,
         resolved ONCE here so every ``task:start`` call site spreads the
         same dict. ``agent_id`` is the kernel session identity;
-        ``project_id`` is the active project folder scope — ``None`` until
+        ``project_id`` is the active project folder scope â€” ``None`` until
         a project scope is set on the kernel (consumers then fall back to
         conversationId-only keying per design.md Error Handling)."""
         return {
@@ -12032,7 +12117,7 @@ Respond with a JSON object:
     def _register_card(self, task_id: str, card_id: str) -> None:
         """Bind ``task_id -> card_id`` in the per-kernel registry (REQ-3/T2).
 
-        Bounded at ``_CARD_REGISTRY_CAP`` — evicts the oldest insertion first
+        Bounded at ``_CARD_REGISTRY_CAP`` â€” evicts the oldest insertion first
         (dict preserves insertion order) so a long-running kernel process
         cannot leak memory one entry per DER task forever.
         """
@@ -12049,26 +12134,26 @@ Respond with a JSON object:
 
         a. ``task_id`` already registered -> same card_id, "continues". This
            is the known double-emit case: the early LLM-plan skeleton then
-           the DER queue emit for one task (REQ-3 edge case — no flicker).
+           the DER queue emit for one task (REQ-3 edge case â€” no flicker).
         b. ``origin != "initial"`` and there is an active card -> register
            ``task_id`` against the ACTIVE card and continue it. Written as
            "not initial" ON PURPOSE, rather than an explicit membership test
            against sub_loop_split / user_steering / amendment: a non-initial
            origin is by definition a revision of a running task, so a future
            fifth origin still continues the card instead of silently
-           starting a new one. A sub-loop split CONTINUES the parent card —
+           starting a new one. A sub-loop split CONTINUES the parent card â€”
            a branch WITHIN a card, never a second card.
         c. otherwise -> a genuinely new task; mint ``card_{task_id}``,
            register it, make it the active card, return "new".
 
-        Never raises — a resolution failure logs and falls back to a fresh,
+        Never raises â€” a resolution failure logs and falls back to a fresh,
         unregistered card_id rather than breaking the task:start emit.
         """
         try:
             if not task_id:
                 logger.warning(
                     "[AgentKernel] card identity: empty task_id (origin=%s conv=%s) "
-                    "— minting an unregistered card; continuation will not track it",
+                    "â€” minting an unregistered card; continuation will not track it",
                     origin, self.conversation_id,
                 )
                 import uuid as _uuid
@@ -12103,7 +12188,7 @@ Respond with a JSON object:
                 task_id, origin, self.conversation_id, card_id,
             )
             return card_id, "new"
-        except Exception as _card_exc:  # noqa: BLE001 — never break a task emit
+        except Exception as _card_exc:  # noqa: BLE001 â€” never break a task emit
             logger.warning(
                 "[AgentKernel] card identity resolution failed "
                 "(task=%s origin=%s conv=%s): %s",
@@ -12120,12 +12205,12 @@ Respond with a JSON object:
         card's lifetime, not just ``task:start``. LOOKS UP (never registers)
         the card already bound to ``task_id`` and returns the pair to merge
         into a lifecycle emit dict (tool:call, tool:result, task:done/fail,
-        task:progress). Unknown id -> ``card_id`` is None — a wrong id is
+        task:progress). Unknown id -> ``card_id`` is None â€” a wrong id is
         worse than a missing one (REQ-10 AC5: unknown is inert, never an
         error). Never raises.
 
         REQ-10 (reply-surface-contract T20): prism cards resolve through
-        ``_prism_card_by_doc`` — pass ``document_id`` so the same envelope
+        ``_prism_card_by_doc`` â€” pass ``document_id`` so the same envelope
         machinery can address a document card's lifecycle.
         """
         try:
@@ -12139,14 +12224,14 @@ Respond with a JSON object:
     @staticmethod
     def _queue_steps_snapshot(queue) -> list:
         """T4a (REQ-4 AC1/AC5): the FULL, cumulative step list + derived
-        status, for card PERSISTENCE — distinct from the task:start WIRE
+        status, for card PERSISTENCE â€” distinct from the task:start WIRE
         payload, which for revision origins (user_steering/amendment)
         intentionally emits only the delta for the frontend's merge-by-id
         reducer (useTaskProgress.ts). A persisted card has no earlier
         partial payload to merge against, so persistence always walks
         ``queue.items`` (already cumulative by the time any revision emits)
         and derives status from completed_ids/failed_ids/vetoed_ids rather
-        than reusing the wire delta. Never raises — a malformed queue
+        than reusing the wire delta. Never raises â€” a malformed queue
         persists as "no steps" rather than breaking the emit it rides on.
         """
         try:
@@ -12209,8 +12294,8 @@ Respond with a JSON object:
         between call sites.
 
         NON-BLOCKING: hands the snapshot to
-        ``conversation_context_store.enqueue_card_write`` — a bounded,
-        coalescing background queue — rather than calling
+        ``conversation_context_store.enqueue_card_write`` â€” a bounded,
+        coalescing background queue â€” rather than calling
         ``store.save_card()`` (synchronous SQLite) directly. These emit
         sites run on the DER worker thread (iris_gateway.py's
         ``run_in_executor`` pool), not inside a coroutine, so there is no
@@ -12218,7 +12303,7 @@ Respond with a JSON object:
         offload.
 
         Missing ``card_id``/``conversation_id`` (unknown task_id, no active
-        card) is a no-op — there is nothing to persist. Never raises: a
+        card) is a no-op â€” there is nothing to persist. Never raises: a
         persistence failure must never block a card emit or a user
         response.
 
@@ -12272,17 +12357,17 @@ Respond with a JSON object:
                     terminal_state=terminal_state,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — persistence must never block a card emit
+        except Exception as exc:  # noqa: BLE001 â€” persistence must never block a card emit
             logger.debug(
                 "[AgentKernel] card persistence skipped (card_id=%s): %s",
                 card_id, exc,
             )
 
-    # ── REQ-15 (T25): mid-task steering channel ──────────────────────────
+    # â”€â”€ REQ-15 (T25): mid-task steering channel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _der_check_steering(self, _session, plan, queue, budget_deadline: Optional[float] = None) -> Optional[dict]:
         """REQ-15 AC1/AC2/AC3/AC6 (T25): consume pending steering at the NEXT
-        step boundary — never mid-step.
+        step boundary â€” never mid-step.
 
         Drains every record queued for the session since the last boundary
         and applies, in order:
@@ -12297,7 +12382,7 @@ Respond with a JSON object:
 
         AC6 (channel independence): stop/pause flags are latched BEFORE any
         (potentially slow) revision is applied, and a stop suppresses the
-        revision entirely — a stop is never delayed behind steering work.
+        revision entirely â€” a stop is never delayed behind steering work.
 
         AC5 (acknowledgement): every consumed record emits ``steering:ack``
         status="considered".
@@ -12351,8 +12436,8 @@ Respond with a JSON object:
                 steer_text, _session, plan, queue,
                 budget_deadline=budget_deadline,
             )
-        # ── Goal contract T7 (REQ-4 AC4.1): route user steering through
-        # amend — add/remove/repromote a floor fact in place, preserving task
+        # â”€â”€ Goal contract T7 (REQ-4 AC4.1): route user steering through
+        # amend â€” add/remove/repromote a floor fact in place, preserving task
         # identity. Advisory: runs even when the replan above did nothing.
         try:
             if steer_text and not stop:
@@ -12361,9 +12446,9 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # ── T9 (specs/tool-result-envelope REQ-5): stuck-streak gate at the
+        # â”€â”€ T9 (specs/tool-result-envelope REQ-5): stuck-streak gate at the
         # step boundary, in front of the same replan machinery. Skipped when
-        # the user just steered (a fresh revision replaced the plan — the
+        # the user just steered (a fresh revision replaced the plan â€” the
         # gate re-evaluates at the NEXT boundary) or when stopping.
         if not stop and not revised:
             if self._der_streak_gate(
@@ -12375,7 +12460,7 @@ Respond with a JSON object:
         for rec in records:
             self._emit_steering_ack(rec.channel, rec.message_id, "considered", _session)
 
-        # REQ-18 AC4 (T31): correlate every steering message received — channel,
+        # REQ-18 AC4 (T31): correlate every steering message received â€” channel,
         # acknowledged status, and the step boundary at which it was applied.
         try:
             from backend.agent.der_trace import get_der_trace
@@ -12415,7 +12500,7 @@ Respond with a JSON object:
         """specs/tool-result-envelope T6 (REQ-1 AC1.2): build the envelope
         ONCE at the finalize site, alongside the node-record stamping
         (outcome/expected_output/fraction/coords all in scope). raw_ref =
-        doc-store id ONLY (AC1.3 — Pacman chunk ids are async and never
+        doc-store id ONLY (AC1.3 â€” Pacman chunk ids are async and never
         waited on); criticality confirmed from consumption (AC1.6); coords
         pass through VERBATIM (AC1.5); per-envelope debug log (AC7.1).
         Never raises into the caller: any failure degrades to the minimal
@@ -12444,7 +12529,7 @@ Respond with a JSON object:
                         _prev_rec, "verified_fraction", None
                     )
             # Turn memory (AC3.1): envelopes + tool/params digests of
-            # PRIOR completed steps this run — derived from in-scope
+            # PRIOR completed steps this run â€” derived from in-scope
             # state, no new store.
             _seen_params: Dict[str, str] = {}
             _step_summaries: List[str] = []
@@ -12458,7 +12543,7 @@ Respond with a JSON object:
             # Session-323: exclude THIS step's own URLs from the novelty
             # comparison. _remember_turn_urls ran earlier in finalize (and at
             # dispatch for seeds), so _der_crawled_urls already holds the
-            # current step's addresses — comparing the result against a set
+            # current step's addresses â€” comparing the result against a set
             # containing itself makes every first gather read as
             # "repeat_of_gather" (live b323_web1 s1: fresh crawl, zero priors,
             # envelope still stamped repeat/circling). Novelty is vs PRIOR
@@ -12543,14 +12628,14 @@ Respond with a JSON object:
             # REQ-8 AC8.1: the step->URL map for VISITED join keys. The
             # envelope stamps its own (capped, marked) copy inside
             # build_envelope; refusal/exclusion logic always uses the FULL
-            # in-memory crawled set — caps bound views, never decisions.
+            # in-memory crawled set â€” caps bound views, never decisions.
             _sources: List[str] = []
             try:
                 _sources, _ = extract_sources(str(step_result or ""))
             except Exception:
                 _sources = []
             # Session-318 T18 (REQ-11 AC11.2/AC12.2): elapsed vs deadline.
-            # Slow completion logs a stall warning (advisory only — the
+            # Slow completion logs a stall warning (advisory only â€” the
             # deadline alone aborts). In-flight visibility rides the tools'
             # own progress emissions (e.g. crawl phases); this closes the
             # accounting side so every slow step is undeniable in logs.
@@ -12564,7 +12649,7 @@ Respond with a JSON object:
                 if _elapsed > max(float(STALL_WARN_S), 1.0):
                     logger.warning(
                         "[DER] step %s slow: %.1fs elapsed (stall threshold "
-                        "%.0fs) — advisory; deadline aborts, not this line",
+                        "%.0fs) â€” advisory; deadline aborts, not this line",
                         getattr(item, "step_id", "?"), _elapsed,
                         float(STALL_WARN_S),
                     )
@@ -12610,7 +12695,7 @@ Respond with a JSON object:
                 session_id=_session or "",
                 turn_id=_turn_id or "",
             )
-            # AC7.1: scoped per-envelope log line — enough to
+            # AC7.1: scoped per-envelope log line â€” enough to
             # reconstruct a run's stuck trajectory from logs alone.
             logger.debug(
                 "[envelope] conv=%s step=%s status=%s match=%s "
@@ -12635,7 +12720,7 @@ Respond with a JSON object:
                     item.step_id,
                     getattr(item, "declared_criticality", "supporting"),
                 )
-            # AC7.2 counters — bounded, per-kernel, advisory.
+            # AC7.2 counters â€” bounded, per-kernel, advisory.
             try:
                 _counters = getattr(self, "_envelope_counters", None)
                 if _counters is None:
@@ -12664,7 +12749,7 @@ Respond with a JSON object:
                 pass
             # Join registry for the retroactive criticality confirm and
             # pre-dispatch reroute reads (KD-10: reporter stamps, graph
-            # layers read). FIFO-capped — memory bounded.
+            # layers read). FIFO-capped â€” memory bounded.
             try:
                 _reg = dict(
                     getattr(self, "_der_envelope_registry", {})
@@ -12700,7 +12785,7 @@ Respond with a JSON object:
                 except Exception:
                     pass
                 # REQ-8 AC8.2 join keys: url -> step that fetched it.
-                # Additive only — `_der_crawled_urls` stays the refusal
+                # Additive only â€” `_der_crawled_urls` stays the refusal
                 # authority and is never reshaped here. FIFO-capped.
                 try:
                     _csm = dict(getattr(self, "_der_crawled_steps", {}))
@@ -12716,7 +12801,7 @@ Respond with a JSON object:
             except Exception:
                 pass
         except Exception as _env_exc:
-            # AC1.4: degrade to the minimal envelope — never break the
+            # AC1.4: degrade to the minimal envelope â€” never break the
             # DER loop for shaping.
             logger.warning(
                 "[envelope] build failed for step %s: %s",
@@ -12753,18 +12838,18 @@ Respond with a JSON object:
         _session: str,
         budget_deadline: Optional[float] = None,
     ) -> bool:
-        """T9 (specs/tool-result-envelope REQ-5 AC5.1–AC5.5): the stuck-streak
+        """T9 (specs/tool-result-envelope REQ-5 AC5.1â€“AC5.5): the stuck-streak
         gate, evaluated at the step boundary IN FRONT of the existing replan
-        machinery. O(envelope count) arithmetic (AC5.5) — the LLM replan
+        machinery. O(envelope count) arithmetic (AC5.5) â€” the LLM replan
         inside ``_der_apply_steering`` is paid ONLY when the gate fires.
 
         Detector: pure evaluate_streak over the settled envelopes' wrappers
         (consecutive repeat/empty/mismatch, or an idling run), with the
         existing Caducean TOPO_VIOLATION recommendation as the authoritative
-        override (AC5.3 — reuse the existing physics detection, KD-4).
+        override (AC5.3 â€” reuse the existing physics detection, KD-4).
 
         Advisory-gate principle: any failure in here is treated as
-        "below threshold" — a broken gate must not change loop semantics.
+        "below threshold" â€” a broken gate must not change loop semantics.
 
         Returns True when a replan revision was applied.
         """
@@ -12821,7 +12906,7 @@ Respond with a JSON object:
 
             # Goal contract T6 (REQ-3 AC3.4): feed the stall-rate signal
             # into the idling shape alongside the streak arithmetic. Advisory
-            # — a missing contract preserves the legacy streak behavior.
+            # â€” a missing contract preserves the legacy streak behavior.
             _gcov_state = getattr(self, "_goal_contract_state", None)
             _gcov_c = None
             _gcov_unmoved = 0
@@ -12874,13 +12959,13 @@ Respond with a JSON object:
             if not fire:
                 _counters["gate_blocked"] += 1
                 # AC3.3/AC7.2: a stop-suggestion the loop does NOT act on is
-                # a suggestion override — logged with its reason, counted.
+                # a suggestion override â€” logged with its reason, counted.
                 if _wrappers and _wrappers[-1].get("suggestion") == "stop":
                     _counters["suggest_overrides"] += 1
                     logger.info(
                         "[DER:streak-gate] suggestion override: step %s "
                         "suggested stop but streak arithmetic is below "
-                        "threshold — continuing current plan",
+                        "threshold â€” continuing current plan",
                         _wrappers[-1].get("step_id", "?"),
                     )
                 return False
@@ -12898,7 +12983,7 @@ Respond with a JSON object:
             queue.streak_gate_fires += 1
             _counters["gate_fired"] += 1
             # Goal contract (REQ-7 AC7.2): a coverage-stall fire is a
-            # coverage stall — count it on the contract so the stall rate
+            # coverage stall â€” count it on the contract so the stall rate
             # is tunable from measurement. Advisory, never raises.
             try:
                 _gc_stall = getattr(self, "_goal_contract_state", None)
@@ -12910,7 +12995,7 @@ Respond with a JSON object:
                     _gc_stall["counters"] = _gc_c
             except Exception:
                 pass
-            # AC5.4: audit — the triggering envelopes (step ids + wrapper
+            # AC5.4: audit â€” the triggering envelopes (step ids + wrapper
             # labels) are logged so the trigger is auditable post-run.
             _tail = _wrappers[-max(STUCK_STREAK_N, IDLE_STREAK_N, 1):]
             _audit = "; ".join(
@@ -12919,13 +13004,13 @@ Respond with a JSON object:
                 for w in _tail
             )
             logger.info(
-                "[DER:streak-gate] FIRED (%s) — triggering envelopes: %s",
+                "[DER:streak-gate] FIRED (%s) â€” triggering envelopes: %s",
                 reason, _audit,
             )
             _directive = (
                 f"Replan required: the run is stuck ({reason}). "
                 f"Triggering steps: {_audit}. Revise the remaining plan to "
-                "break the streak — do NOT repeat a completed step; read "
+                "break the streak â€” do NOT repeat a completed step; read "
                 "the already-gathered documents instead."
             )
             return self._der_apply_steering(
@@ -12934,7 +13019,7 @@ Respond with a JSON object:
             )
         except Exception as _gate_exc:
             logger.debug(
-                "[DER:streak-gate] evaluation failed — treated as below "
+                "[DER:streak-gate] evaluation failed â€” treated as below "
                 "threshold (advisory gate): %s", _gate_exc,
             )
             return False
@@ -12947,17 +13032,17 @@ Respond with a JSON object:
 
         Re-plans from the steering text (single-step fallback on failure),
         REMOVES every not-yet-terminal queue item (they are REPLACED, not
-        failed — ``queue.failed_ids`` stays honest), appends the revised steps
+        failed â€” ``queue.failed_ids`` stays honest), appends the revised steps
         as fresh items, and re-emits ``task:start`` with
         ``origin="user_steering"`` carrying the revised step list (REQ-14 AC1
         revision signal; REQ-18 AC3 origin).
 
         ``budget_deadline`` (session 269, pin_ced7b0dc3b8f): the re-plan is
-        an UNBOUNDED LLM call made INSIDE the loop body — the turn budget's
+        an UNBOUNDED LLM call made INSIDE the loop body â€” the turn budget's
         while-condition can never reach a hang here. conv-81's last event was
         the steering ack, then silence for 29 minutes. When a deadline is
         supplied, the re-plan runs on a daemon thread bounded by it; a
-        timeout keeps the CURRENT plan (the revision is advisory — skipping
+        timeout keeps the CURRENT plan (the revision is advisory â€” skipping
         it degrades the turn, it never kills it).
 
         Returns True when a revision was actually applied.
@@ -12982,7 +13067,7 @@ Respond with a JSON object:
                 _timeout_s = budget_deadline - time.perf_counter()
                 if _timeout_s <= 0:
                     logger.warning(
-                        "[DER] Session %s steering skipped — turn budget "
+                        "[DER] Session %s steering skipped â€” turn budget "
                         "already exhausted", _session,
                     )
                     return False
@@ -12994,7 +13079,7 @@ Respond with a JSON object:
                             _plan_text, session_id=_session, mode=_mode,
                             recall_query=_recall,
                         )
-                    except BaseException as _exc:  # noqa: BLE001 — boxed, re-raised below
+                    except BaseException as _exc:  # noqa: BLE001 â€” boxed, re-raised below
                         _box["exc"] = _exc
 
                 import threading as _threading
@@ -13008,7 +13093,7 @@ Respond with a JSON object:
                 if _t.is_alive():
                     logger.warning(
                         "[DER] Session %s steering re-plan exceeded the "
-                        "remaining turn budget (%.0fs) — keeping the current "
+                        "remaining turn budget (%.0fs) â€” keeping the current "
                         "plan", _session, _timeout_s,
                     )
                     return False
@@ -13024,7 +13109,7 @@ Respond with a JSON object:
                 )
             if _rev is None or not getattr(_rev, "steps", None):
                 logger.info(
-                    "[DER] Session %s steering produced no plan — keeping "
+                    "[DER] Session %s steering produced no plan â€” keeping "
                     "the current plan", _session,
                 )
                 return False
@@ -13099,7 +13184,7 @@ Respond with a JSON object:
             )
             # T4a (REQ-4 AC1): persist the revised card. The WIRE payload
             # above intentionally carries only `_fresh` (the delta the
-            # frontend merges) — the STORED snapshot must stay the FULL
+            # frontend merges) â€” the STORED snapshot must stay the FULL
             # cumulative step list (queue.items, already extended with
             # _fresh), or a restore would show only the newest steps.
             self._persist_card_snapshot(
@@ -13128,10 +13213,10 @@ Respond with a JSON object:
             logger.debug("[DER] steering revision failed: %s", _steer_exc)
             return False
 
-    # ── REQ-5 (specs/dag-node-execution-model): bounded mid-execution
-    # amendment ─────────────────────────────────────────────────────────────
+    # â”€â”€ REQ-5 (specs/dag-node-execution-model): bounded mid-execution
+    # amendment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # The executing graph may be EXTENDED between steps based on outcomes
-    # already observed (AC1). Planner-driven ONLY (design D6) — a node
+    # already observed (AC1). Planner-driven ONLY (design D6) â€” a node
     # proposing its own successor would reintroduce hidden control flow.
     # Amendments append fresh steps; they never re-execute satisfied nodes
     # (AC2) and the existing step budget / token accounting stays
@@ -13153,7 +13238,7 @@ Respond with a JSON object:
 
         Returns True when the amendment was applied. Refused amendments are
         recorded with their cause (REQ-5 AC5, REQ-9 AC3) and execution
-        continues on the existing graph — never a hang, never a silent skip.
+        continues on the existing graph â€” never a hang, never a silent skip.
         """
         from backend.agent.nodes.telemetry import log_amendment
 
@@ -13161,20 +13246,20 @@ Respond with a JSON object:
         # and a kernel built via __new__ (as the DER test doubles and some
         # recovery paths do) has no conversation_id. A bare access raised
         # AttributeError inside the graft's try/except, silently turning
-        # "amend the graph" into "recovery failed" — telemetry must never be
+        # "amend the graph" into "recovery failed" â€” telemetry must never be
         # able to cost a graft.
         _task_id = getattr(self, "conversation_id", None) or _session
         try:
             if not new_steps:
                 return False
             # REQ-19 (T34): a turn whose card already reached its terminal state
-            # is CLOSED — recovery must not extend the graph after the answer is
+            # is CLOSED â€” recovery must not extend the graph after the answer is
             # public. The settle emitter (_der_emit_card_settle) marks that
             # moment in _der_card_terminal_emitted; without this guard the graft
             # loop kept crawling long after the reply (live conv-139/141: ~40
             # minutes of activity the user read as a second agent). Refusal is
             # the documented safe path: the cause is recorded and the existing
-            # graph keeps running — never a hang, never a silent skip.
+            # graph keeps running â€” never a hang, never a silent skip.
             _settled = getattr(self, "_der_card_terminal_emitted", None) or ()
             if _settled and (
                 (_turn_id and _turn_id in _settled)
@@ -13195,7 +13280,7 @@ Respond with a JSON object:
                     detail=f"used={_used} bound={self._AMENDMENT_BOUND}",
                 )
                 return False
-            # AC4: the task budget is authoritative — an amendment cannot
+            # AC4: the task budget is authoritative â€” an amendment cannot
             # exceed it. (Amendments add steps; if the budget is already
             # exhausted, adding work would violate the ceiling.)
             if _token_budget > 0 and _tokens_used >= _token_budget:
@@ -13208,7 +13293,7 @@ Respond with a JSON object:
 
             # AC2: satisfied nodes are preserved. New steps may only depend on
             # already-terminal ids (completed/vetoed/failed); a dependency on a
-            # pending node that may never run would stall the graph — refuse
+            # pending node that may never run would stall the graph â€” refuse
             # (REQ-5 edge: amendment that removes/consumes a live node is
             # rejected, recorded, execution unchanged).
             from backend.agent.der_loop import QueueItem
@@ -13230,7 +13315,7 @@ Respond with a JSON object:
                     )
                     return False
 
-            # Append the fresh steps — completed work is untouched (AC2).
+            # Append the fresh steps â€” completed work is untouched (AC2).
             _base = len(queue.items) + 1
             _fresh: List["QueueItem"] = []
             for _i, _s in enumerate(new_steps):
@@ -13272,13 +13357,13 @@ Respond with a JSON object:
                 len(_fresh), _used + 1, _task_id,
             )
 
-            # Revision signal so the frontend card reflects the extended plan —
+            # Revision signal so the frontend card reflects the extended plan â€”
             # SAME payload shape as steering (no new event types; REQ-3 AC4).
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
                 _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
-                # REQ-3 (T2): "amendment" is a fourth, undocumented origin —
+                # REQ-3 (T2): "amendment" is a fourth, undocumented origin â€”
                 # handled generically by the "not initial" rule in
                 # _resolve_card_identity rather than special-cased here.
                 _card_id, _card_relation = self._resolve_card_identity(
@@ -13321,7 +13406,7 @@ Respond with a JSON object:
                     conversation_id=self.conversation_id,
                     session_id=_session,
                 )
-                # T4a (REQ-4 AC1): persist the amended card — full
+                # T4a (REQ-4 AC1): persist the amended card â€” full
                 # cumulative queue.items (already extended with _fresh
                 # above), not the wire delta (same reasoning as the
                 # user_steering site).
@@ -13338,7 +13423,7 @@ Respond with a JSON object:
             except Exception:
                 pass  # never block an amendment on an emit failure
             return True
-        except Exception as _amend_exc:  # noqa: BLE001 — refusal, never a crash
+        except Exception as _amend_exc:  # noqa: BLE001 â€” refusal, never a crash
             log_amendment(
                 task_id=_task_id, kind="refused",
                 cause="error", detail=str(_amend_exc)[:200],
@@ -13429,7 +13514,7 @@ Respond with a JSON object:
     def _emit_steering_ack(self, channel, message_id, status, _session) -> None:
         """REQ-15 AC5 (T26): visible acknowledgement that a steering message
         landed ("queued") or was considered at a step boundary ("considered").
-        Best-effort — never blocks or breaks the loop."""
+        Best-effort â€” never blocks or breaks the loop."""
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -13453,12 +13538,12 @@ Respond with a JSON object:
         Persists the in-progress state (ledger lifecycle ``paused`` + a
         ``task:paused`` event), then waits for a ``resume`` or ``stop``
         record. Steer records arriving while suspended STAY queued and are
-        applied at the next boundary after resume — they are never dropped.
+        applied at the next boundary after resume â€” they are never dropped.
         Idempotent resume: ``completed_ids``/``vetoed_ids``/``failed_ids``
         ARE the persisted in-progress state; ``next_ready`` skips them, so
         no completed side effect is duplicated on resume.
 
-        Returns "resume" or "stop". Runs on the DER worker thread — the
+        Returns "resume" or "stop". Runs on the DER worker thread â€” the
         bounded poll (time.sleep) never blocks the event loop.
         """
         from backend.agent.der_execution_ledger import ExecutionLedger
@@ -13470,7 +13555,7 @@ Respond with a JSON object:
         # and a kernel built via __new__ (as the DER test doubles and some
         # recovery paths do) has no conversation_id. A bare access raised
         # AttributeError inside the graft's try/except, silently turning
-        # "amend the graph" into "recovery failed" — telemetry must never be
+        # "amend the graph" into "recovery failed" â€” telemetry must never be
         # able to cost a graft.
         _task_id = getattr(self, "conversation_id", None) or _session
         try:
@@ -13495,7 +13580,7 @@ Respond with a JSON object:
                 session_id=_session,
             )
         except Exception:
-            pass  # EventBus optional — never block the loop
+            pass  # EventBus optional â€” never block the loop
 
         inbox = get_steering_inbox()
         self._der_resume_requested = False
@@ -13532,7 +13617,7 @@ Respond with a JSON object:
                     pass
                 return "resume"
             try:
-                _time.sleep(0.2)  # poll — DER runs on a worker thread
+                _time.sleep(0.2)  # poll â€” DER runs on a worker thread
             except Exception:
                 break
         return "stop"
@@ -13551,7 +13636,7 @@ Respond with a JSON object:
         # (e.g. "the provider rate window was already saturated (recent 429s)
         # ... retry the search shortly") precisely so the failure is reported
         # honestly. This function used to discard it and always emit the
-        # bot-blocked guess below — so a user hitting a 60-second rate limit
+        # bot-blocked guess below â€” so a user hitting a 60-second rate limit
         # was told to REPHRASE THEIR QUERY, which cannot help and sends them
         # down the wrong path. Only fall back to the generic text when the
         # planner did not say why.
@@ -13571,13 +13656,13 @@ Respond with a JSON object:
         )
         return _msg[:400]
 
-    # ── REQ-4 (specs/dag-node-execution-model): outcome-driven routing ─────
+    # â”€â”€ REQ-4 (specs/dag-node-execution-model): outcome-driven routing â”€â”€â”€â”€â”€
     # The DER seam the node model adds: when a step fails with a typed reason,
     # consult the router BEFORE the graft/split handler. A recovery node that
-    # advertises the reason runs in place of the failing node — no branch is
+    # advertises the reason runs in place of the failing node â€” no branch is
     # written in the failing node's module (design D4). Returns the recovered
     # step result on success, None when routing is disabled / declined / no
-    # candidate — in which case the caller proceeds exactly as today (REQ-7
+    # candidate â€” in which case the caller proceeds exactly as today (REQ-7
     # AC4/AC5 kill-switch parity).
     def _der_enqueue_recovery(
         self, item, recovery, step_result, _session, _turn_id, outcome, tool, queue,
@@ -13585,8 +13670,8 @@ Respond with a JSON object:
         """Session-319 (owner decision: "the job board"): enqueue a recovery step
         instead of running it inline.
 
-        Returns ``None`` ALWAYS. The failing step must settle honestly — it really
-        did fail — and the recovery then runs later as its OWN step, carrying its
+        Returns ``None`` ALWAYS. The failing step must settle honestly â€” it really
+        did fail â€” and the recovery then runs later as its OWN step, carrying its
         own envelope. That is what AC9.5/AC9.6 require: recovery is a separate
         step, and the brain never waits on it.
 
@@ -13705,7 +13790,7 @@ Respond with a JSON object:
                 candidates=[recovery.name],
                 selected=recovery.name,
             )
-        except Exception as _enq_exc:  # noqa: BLE001 — must never break the loop
+        except Exception as _enq_exc:  # noqa: BLE001 â€” must never break the loop
             logger.warning(
                 "[DER:recovery] enqueue failed for %s: %s",
                 getattr(item, "step_id", "?"), _enq_exc,
@@ -13731,7 +13816,7 @@ Respond with a JSON object:
             from backend.agent.tool_registry import get_node_spec, resolve_tool
 
             if not routing_enabled():
-                return None  # kill switch — today's path (REQ-7 AC4/AC5)
+                return None  # kill switch â€” today's path (REQ-7 AC4/AC5)
             tool = getattr(item, "tool", None)
             if not tool:
                 # A node step has no item.tool: route on the call that failed
@@ -13743,7 +13828,7 @@ Respond with a JSON object:
                 return None  # reasoning steps have no tool to route on
             spec = resolve_tool(tool)
             if spec is None:
-                return None  # undeclared legacy tool — adapter path (REQ-7 AC1)
+                return None  # undeclared legacy tool â€” adapter path (REQ-7 AC1)
             node_spec = get_node_spec(tool)
             if node_spec is None:
                 return None  # tool exists but never declared node metadata
@@ -13760,7 +13845,7 @@ Respond with a JSON object:
                 node=tool,
                 outcome=outcome,
                 # REQ-8 AC1/AC2: a recovery node may not exceed the tier the
-                # user approved for THIS step — the failing node's own tier.
+                # user approved for THIS step â€” the failing node's own tier.
                 approved_tier=node_spec.permission_tier,
             )
             decision = get_node_router().route(req)
@@ -13768,16 +13853,16 @@ Respond with a JSON object:
                 return None  # honest no-candidate (REQ-4 AC6) or blocked
             if decision.blocked_by in ("permission", "terminal", "bound"):
                 # REQ-8 edge: a permission-blocked route is surfaced, never
-                # taken silently — the caller proceeds on today's path and the
+                # taken silently â€” the caller proceeds on today's path and the
                 # normal failure handling (graft / ask) applies.
                 return None
 
             recovery = decision.selected
-            # ── Session-319 (owner decision: "the job board") ───────────────
+            # â”€â”€ Session-319 (owner decision: "the job board") â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # ENQUEUE the recovery as its OWN STEP instead of running it inline.
             #
             # WHY: the inline form below blocks the failing step for the whole
-            # recovery — including a measured ~33 s Chromium cold start — which
+            # recovery â€” including a measured ~33 s Chromium cold start â€” which
             # violates AC9.6 ("the brain never waits on the recovery lane"), and
             # it builds no envelope of its own, so the recovery is invisible to
             # the ledger. Queuing fixes both: the failing step settles honestly
@@ -13791,7 +13876,7 @@ Respond with a JSON object:
                 item, recovery, step_result, _session, _turn_id,
                 outcome, tool, queue,
             )
-        except Exception as _route_err:  # noqa: BLE001 — routing must never break the loop
+        except Exception as _route_err:  # noqa: BLE001 â€” routing must never break the loop
             logger.warning("[DER] routing consultation failed: %s", _route_err)
             return None
 
@@ -13815,21 +13900,21 @@ Respond with a JSON object:
         """
         queue.mark_failed(item.step_id)
         aborted = queue.abort_descendants(item.step_id)
-        # ── REQ-17 AC17.1 + REQ-11 AC11.1/AC11.2 (T21/T14 wiring) ──────────
+        # â”€â”€ REQ-17 AC17.1 + REQ-11 AC11.1/AC11.2 (T21/T14 wiring) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # This is the ONE failure-triage seam: a step that failed after its
         # retry lands here from both loop sites (the main step loop and the
         # extra-step loop). Two things must happen BEFORE the recovery
         # sub-graph is planned below:
         #   (a) seed the failure veto, so the graft child cannot re-pick the
         #       tool that just failed (AC11.2). The veto is keyed on
-        #       `objective_anchor` — the overall task goal, which graft
-        #       children inherit (der_loop.py:230) — and the resolve() call
+        #       `objective_anchor` â€” the overall task goal, which graft
+        #       children inherit (der_loop.py:230) â€” and the resolve() call
         #       site passes it, so the veto is actually reachable.
         #   (b) consult the `recovery_strategy` triage consumer (AC17.1). It is
         #       SHADOW: the row is recorded and the counters / the existing
         #       graft path still decide (AC17.2), so a confident `retry_same`
         #       can never route a repeat the counters would have escalated.
-        # Best-effort — an advisory triage must never block a recovery.
+        # Best-effort â€” an advisory triage must never block a recovery.
         try:
             _triage_box = self._get_tool_box()
             _triage_tool = str(_step_tool(item) or "")
@@ -13845,13 +13930,13 @@ Respond with a JSON object:
                 error_snippet=str(step_result or "")[:200],
                 objective=_triage_obj,
             )
-        except Exception as _triage_err:  # noqa: BLE001 — advisory only
+        except Exception as _triage_err:  # noqa: BLE001 â€” advisory only
             logger.debug("[DER] failure triage consult failed: %r", _triage_err)
         # AC2.1/AC9.3 (session-319 fix): a failed step must still teach turn
         # memory the addresses it touched. Finalize (which used to be the only
         # writer) is skipped on this path, so without this call a partially
         # successful crawl that was then judged FAILED contributed nothing and
-        # the next step re-fetched the same URLs — the owner's reported symptom.
+        # the next step re-fetched the same URLs â€” the owner's reported symptom.
         try:
             _n_urls = _remember_turn_urls(self, step_result, "step-failure")
             if _n_urls:
@@ -13864,7 +13949,7 @@ Respond with a JSON object:
             pass
         # Goal contract T9 (REQ-5 AC5.1): the failure path SKIPS finalize, so
         # the finalize-site blocking twin never runs here. A FAILED settle
-        # with a terminal typed reason blocks the facts it was working on —
+        # with a terminal typed reason blocks the facts it was working on â€”
         # same helper, same denominator semantics. Advisory, never raises.
         try:
             _gc_reason = str(getattr(item, "error_type", "") or "")
@@ -13875,10 +13960,10 @@ Respond with a JSON object:
         except Exception:
             pass
         # Goal contract T15 / REQ-11 AC11.3-AC11.5: a fail-fast or blocked
-        # step must TEACH — the failure path skips finalize, so none of its
+        # step must TEACH â€” the failure path skips finalize, so none of its
         # learning hooks run here. Gated on blocked reasons only (fail-fast +
         # blocked steps, never ordinary retries): verified_label FAILED feeds
-        # the causal scorer (_der_score_step_outcome → edge scoring + AVOID
+        # the causal scorer (_der_score_step_outcome â†’ edge scoring + AVOID
         # episode), task:learning emits the reviewer's signal, and the
         # failure-class graph walk gets its link. All best-effort, never
         # blocking; a fail-fast with no mediator records "none" via the
@@ -13953,14 +14038,14 @@ Respond with a JSON object:
                 len(aborted), item.step_id, aborted,
             )
         # Phase 2 (D2.1) + Spec D1.2: critical failure recovery uses the SAME
-        # unified _split_step operator as the physics trigger — NOT a separate
+        # unified _split_step operator as the physics trigger â€” NOT a separate
         # graft path that assigns tools directly. Children carry tool=None and
         # resolve via the single resolver (explorer.propose) when executed, so
         # there is exactly ONE tool-assignment authority (F6 / System Invariant).
         # D4/REQ-4 (specs/long-horizon-der-execution): classify the failure
         # BEFORE recursive fan-out at the FAILURE site too. The finalize site
         # classifies, but this handler previously split on ANY critical
-        # failure — a rate-limited crawl (transient) or an empty URL list
+        # failure â€” a rate-limited crawl (transient) or an empty URL list
         # (empty/permanent) recursively spawned graft children that re-ran the
         # same failing tool until the graft budget was exhausted (observed
         # live: 23-minute websearch loop under a saturated provider window).
@@ -13968,7 +14053,7 @@ Respond with a JSON object:
         # verification judged it wrong) splits: the step_result then carries
         # real content, not an error prefix. Mirror the finalize site: classify
         # only when the result LOOKS like an error (classify_failure never
-        # returns semantic — it falls through to permanent), and broaden the
+        # returns semantic â€” it falls through to permanent), and broaden the
         # error prefixes for failure-site shapes ("RateLimitedError(...)" /
         # "ConnectionError(...)" do not start with "error").
         _split_ok = True
@@ -14022,7 +14107,7 @@ Respond with a JSON object:
                 ):
                     _split_ok = False
                     logger.info(
-                        "[DER] step %s failure classified=%s — recorded, NOT split (D4)",
+                        "[DER] step %s failure classified=%s â€” recorded, NOT split (D4)",
                         item.step_id, _fail_class,
                     )
                     try:
@@ -14046,12 +14131,12 @@ Respond with a JSON object:
                         )
                     except Exception as _led_exc:  # noqa: BLE001
                         logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
-        except Exception:  # noqa: BLE001 — classification must never break recovery
+        except Exception:  # noqa: BLE001 â€” classification must never break recovery
             _split_ok = True
         # Item 3 (2026-09-24, owner-approved): an UNRECOVERABLE failure is not
         # grafted. Live conv-144: a read step failed with "[Errno 2] No such
-        # file or directory" and the loop grafted THREE times — every sub-loop
-        # failed the same way — because no retry can create a missing file. One
+        # file or directory" and the loop grafted THREE times â€” every sub-loop
+        # failed the same way â€” because no retry can create a missing file. One
         # honest failure is the correct outcome; the failure stays recorded and
         # shown (never hidden). Any error here falls through to the graft,
         # preserving the pre-existing behaviour exactly.
@@ -14059,15 +14144,15 @@ Respond with a JSON object:
             from backend.agent.tool_decision import _goal_records_terminal_failure
 
             _terminal_failure = _goal_records_terminal_failure(_res_text)
-        except Exception:  # noqa: BLE001 — classification must never break recovery
+        except Exception:  # noqa: BLE001 â€” classification must never break recovery
             _terminal_failure = False
         if _terminal_failure:
             logger.info(
-                "[DER] critical step %s failed with an unrecoverable cause — "
+                "[DER] critical step %s failed with an unrecoverable cause â€” "
                 "no graft, finalizing honestly: %s",
                 item.step_id, (_res_text or "")[:120],
             )
-            # ── FEED recovery_strategy ON THE TERMINAL PATH TOO (2026-09-27) ──
+            # â”€â”€ FEED recovery_strategy ON THE TERMINAL PATH TOO (2026-09-27) â”€â”€
             # The triage consult lives ONLY on the graft path above, so a
             # terminal failure recorded NO row for recovery_strategy. Measured
             # live: [WinError 3] on an invented path -> "unrecoverable cause -
@@ -14093,7 +14178,7 @@ Respond with a JSON object:
                     error_snippet=str(_res_text or "")[:200],
                     objective=_tt_obj,
                 )
-            except Exception as _tt_err:  # noqa: BLE001 — advisory only
+            except Exception as _tt_err:  # noqa: BLE001 â€” advisory only
                 logger.debug(
                     "[DER] terminal-failure triage consult failed: %r", _tt_err
                 )
@@ -14115,18 +14200,18 @@ Respond with a JSON object:
             and not _recovery_queued
             and queue.graft_attempts < DER_MAX_GRAFTS
         ):
-            # ── Session 247: GOAL-SUFFICIENCY GATE ──────────────────────────
+            # â”€â”€ Session 247: GOAL-SUFFICIENCY GATE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Before grafting another round of gather children, ask the one
             # question the loop never asked: do the findings ALREADY collected
             # satisfy the objective? Live evidence (conv-41, session 247): a
             # websearch task ran 18 dispatch rounds over 30+ minutes because
             # every verify_failed grafted more search steps even after the
-            # crawls had returned plenty of usable content — per-step
+            # crawls had returned plenty of usable content â€” per-step
             # verification could see each step in isolation, but nothing ever
             # assessed goal-level sufficiency of the accumulated whole. When
             # the gate says sufficient, skip the graft: the loop proceeds to
             # synthesis over what it has (the failed step stays recorded as a
-            # failure — failure recorded AND shown, never hidden).
+            # failure â€” failure recorded AND shown, never hidden).
             # Advisory on failure: any gate error falls through to the graft,
             # preserving the pre-existing behavior exactly.
             if (getattr(item, "tool", None) or "").lower() in self._DER_GATHER_TOOLS:
@@ -14140,7 +14225,7 @@ Respond with a JSON object:
                     # failing step's own result is appended to the digest so
                     # the gate sees everything the loop has actually seen.
                     # Session 365 FIX: `completed_items` is NOT a parameter of
-                    # this method — it is a local of `_execute_plan_der` — so
+                    # this method â€” it is a local of `_execute_plan_der` â€” so
                     # this line raised NameError on EVERY failed gather step.
                     # The bare `except` below swallowed it, so the gate
                     # silently returned False forever: `_der_findings_sufficient`
@@ -14164,7 +14249,7 @@ Respond with a JSON object:
                     _suff, _missing = False, ""
                 if _suff:
                     logger.info(
-                        "[DER] sufficiency gate TRIPPED for %s — accumulated "
+                        "[DER] sufficiency gate TRIPPED for %s â€” accumulated "
                         "findings satisfy the objective; graft skipped "
                         "(missing: %s)", item.step_id, (_missing or "none")[:120],
                     )
@@ -14200,20 +14285,20 @@ Respond with a JSON object:
                     # REQ-5 (dag-node-execution-model): grafted recovery steps
                     # ARE an amendment of the executing graph, so they go
                     # through the amendment gate rather than around it. This is
-                    # _der_amend_graph's production caller — without one the
+                    # _der_amend_graph's production caller â€” without one the
                     # mechanism was built, tested and unreachable.
                     #
                     # Behaviour is unchanged by construction: _AMENDMENT_BOUND
                     # and DER_MAX_GRAFTS are both 3, so the gate admits exactly
                     # the grafts that already ran. What it adds is REQ-5's
-                    # guarantees on a path that previously had none — validity
+                    # guarantees on a path that previously had none â€” validity
                     # checking, the per-task bound, and telemetry for every
                     # applied AND refused amendment (REQ-5 AC5, REQ-9 AC3).
                     if not self._der_amend_graph(
                         _children, _session, plan, queue, _turn_id=_turn_id,
                     ):
                         logger.info(
-                            "[DER] amendment refused for failed %s — continuing "
+                            "[DER] amendment refused for failed %s â€” continuing "
                             "on the existing graph (REQ-5 AC5)", item.step_id,
                         )
                         return aborted
@@ -14255,14 +14340,14 @@ Respond with a JSON object:
                     )
             except Exception as _graft_exc:
                 logger.warning("[DER] critical-failure split failed: %s", _graft_exc)
-        # ── REQ-5 (specs/long-horizon-der-execution): honest partial finalization ──
+        # â”€â”€ REQ-5 (specs/long-horizon-der-execution): honest partial finalization â”€â”€
         # When the recovery budget is exhausted, the task does NOT block on a
         # TASK_BLOCKED card / ask_user QuestionCard (that escalation came from
         # the deleted der-loop-integrity-display REQ-10; the long-horizon spec
         # supersedes it: "IF budget ends before completion THEN emit remaining
         # nodes and their last failure class"). The step is already marked
         # failed, descendants already aborted, failure evidence already
-        # recorded — the DER loop's final summary carries the remaining nodes
+        # recorded â€” the DER loop's final summary carries the remaining nodes
         # with their failure classes and the honest incomplete result.
         # Not when THIS failure just spent the last graft: the step waits on
         # its children then (live amend-7, 2026-10-12: this line said
@@ -14270,7 +14355,7 @@ Respond with a JSON object:
         if (item.critical and queue.graft_attempts >= DER_MAX_GRAFTS
                 and item.step_id not in (getattr(queue, "split_pending", None) or {})):
             logger.info(
-                "[DER] REQ-5: critical step %s failed after %d grafts — "
+                "[DER] REQ-5: critical step %s failed after %d grafts â€” "
                 "finalizing honestly with remaining nodes + failure class",
                 item.step_id, queue.graft_attempts,
             )
@@ -14305,27 +14390,27 @@ Respond with a JSON object:
                 from backend.gateway.iris_ffi import ffi_caducean_update
 
                 # REQ-19 vocabulary: this "COMPRESS" (action=1) is the COMPRESS
-                # RECOMMENDATION — a physics action code that increments the
+                # RECOMMENDATION â€” a physics action code that increments the
                 # failure accumulator y. It COMPACTS NOTHING. See the REQ-19
                 # canonical-vocabulary table in
-                # specs/long-horizon-der-execution/design.md (row 3) — it is
+                # specs/long-horizon-der-execution/design.md (row 3) â€” it is
                 # NOT Node Condense, NOT DCP message pruning, NOT mcm_compress.
                 ffi_caducean_update(_session, 1, 1.0)
             except Exception:
                 pass
 
-    # ── Phase 2: Emergent Shape — growth-width split/execute operator ──────
+    # â”€â”€ Phase 2: Emergent Shape â€” growth-width split/execute operator â”€â”€â”€â”€â”€â”€
     # This is the ONE recursive operator that decides execution-tree *shape*
     # from the live Caducean state (u,xi). It replaces the former mode-driven
     # fan-out AND the separate recovery-graft path: both physics-triggered
     # ("unresolved_u") and verification-failed ("verify_failed") splits use it.
-    # MorphoHDL break: the decision is STATEFUL — width depends on live |u|,
+    # MorphoHDL break: the decision is STATEFUL â€” width depends on live |u|,
     # never a fixed stateless predicate.
 
     def _growth_width(self, u: float) -> int:
         """Map live |u| to a split width (MorphoHDL athlete rule).
 
-        REQ-19 vocabulary: this is STEP EXPANSION — the DER sub-loop split
+        REQ-19 vocabulary: this is STEP EXPANSION â€” the DER sub-loop split
         operator (_growth_width -> _split_step). It is NOT Node Expansion
         (scorer.expand, the mycelium coordinate-graph mechanism), NOT DER
         "COMPRESS" (a physics recommendation code, int 1), NOT DCP message
@@ -14347,7 +14432,7 @@ Respond with a JSON object:
         return 1
 
     def _der_split_width(self, u: float, verified_fraction: float) -> int:
-        """REQ-4 AC1/AC2 (T16): GRADED split width — a continuous function of
+        """REQ-4 AC1/AC2 (T16): GRADED split width â€” a continuous function of
         BOTH |u| and the verified fraction, not a |u|-only gate.
 
         The pre-T16 split width was binary in the verification dimension:
@@ -14355,20 +14440,20 @@ Respond with a JSON object:
         while ``verified_fraction`` was computed and then thrown away at the
         split decision. REQ-4 AC1 requires the continuous fraction to be a
         steering input; AC2 requires the graded middle path when the signal is
-        mid-band — never a threshold coin-flip.
+        mid-band â€” never a threshold coin-flip.
 
         Bands:
           verified_fraction <= 0.25            -> strong failure: |u| governs
                                                   (delegate to _growth_width)
           0.25 < verified_fraction < 0.75      -> MID-BAND (AC2): bounded probe
-                                                  (width 1, probe=True) — the
+                                                  (width 1, probe=True) â€” the
                                                   step produced meaningful but
                                                   insufficient content; a wide
                                                   split would be a retry wearing
                                                   a split costume. The child
                                                   resolves the specific blocker
                                                   (REQ-4 AC4/T16b) at width 1.
-          verified_fraction >= 0.75            -> near-pass: atomic (1) — the
+          verified_fraction >= 0.75            -> near-pass: atomic (1) â€” the
                                                   result satisfied most of the
                                                   expected output; a wide split
                                                   spends budget re-attempting a
@@ -14383,10 +14468,10 @@ Respond with a JSON object:
             return 1  # near-pass: atomic
         return self._growth_width(u)  # strong failure: |u| bands govern
 
-    # ── REQ-5 (T17): coupling as decision-provenance ────────────────────────
+    # â”€â”€ REQ-5 (T17): coupling as decision-provenance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Retrieval RANKS relevant branches (physics- and evidence-driven, AC3) and
     # SURFACES ALL of them (bounded by the candidate cap) to the deciding step
-    # (AC1) — never silently pre-selecting one by score. When the step commits,
+    # (AC1) â€” never silently pre-selecting one by score. When the step commits,
     # the edge to the branch that informed it is written/strengthened with the
     # decision as provenance (AC2), and the per-decision record (how many
     # candidates surfaced, which was chosen) is stored on the node record (AC4).
@@ -14395,17 +14480,17 @@ Respond with a JSON object:
         self, item, cad: Optional[Dict[str, float]] = None, max_candidates: int = 0
     ) -> List[dict]:
         """REQ-5 AC1/AC3 (T17): rank relevant branch candidates and return ALL
-        of them (bounded by the candidate cap) — never one, never pre-selected.
+        of them (bounded by the candidate cap) â€” never one, never pre-selected.
 
         Ranking is physics- and evidence-driven (AC3):
-          - coordinate proximity to the step's live Σ position,
+          - coordinate proximity to the step's live Î£ position,
           - learned score of the region->candidate edge (if one exists),
           - compression/expansion state via the EXISTING coupling kernel
-            ``trig_coupling.align_force`` (AC6 — reuse, do not write a second
+            ``trig_coupling.align_force`` (AC6 â€” reuse, do not write a second
             implementation): the u term biases candidates whose phase aligns
             with the step's current direction.
 
-        SELECTION is NOT made here — the step decides with all candidates in
+        SELECTION is NOT made here â€” the step decides with all candidates in
         view; the chosen one is recorded at commit (see
         ``_der_record_coupling_decision``).
 
@@ -14430,11 +14515,11 @@ Respond with a JSON object:
                 _cad.get("xi", 0.0), _cad.get("u", 0.0),
             ]
             _u = _cad.get("u", 0.0)
-            # AC6: the EXISTING coupling kernel — the u-term in the ranking is
+            # AC6: the EXISTING coupling kernel â€” the u-term in the ranking is
             # align_force as WIRED at coupled_registry.py:287 (full phase list
             # [self, other], N=2 satisfies the mean-field guard; the self term
             # contributes sin(0)=0). The u-term is the signed attraction of the
-            # step's phase toward the converged phase 0.0 — NOT a new formula.
+            # step's phase toward the converged phase 0.0 â€” NOT a new formula.
             _align = align_force(_u, [_u, 0.0], k=1.0)
             # physics term normalized to [0, 1]: aligned (u>0, expanding toward
             # convergence) scores higher; anti-aligned (u<0, compressing) lower.
@@ -14447,7 +14532,7 @@ Respond with a JSON object:
             _nav = getattr(myc, "_navigator", None)
             _nodes = []
             # Primary candidate source: the highest-confidence node from each
-            # space (navigate_all_spaces) — the relevant BRANCHES, one per
+            # space (navigate_all_spaces) â€” the relevant BRANCHES, one per
             # space. Fallback: active registry nodes.
             try:
                 if _nav is not None and hasattr(_nav, "navigate_all_spaces"):
@@ -14502,7 +14587,7 @@ Respond with a JSON object:
                     continue
             _scored.sort(key=lambda c: c["score"], reverse=True)
             # REQ-5 AC5 (T17b): record the TOTAL number of relevant branches
-            # found (BEFORE the cap) on the item — the coverage DENOMINATOR
+            # found (BEFORE the cap) on the item â€” the coverage DENOMINATOR
             # for candidate-surfacing coverage ("how often a decision saw >=2
             # candidates when >=2 EXISTED"). candidates_surfaced is the capped
             # return; candidates_existed is the uncapped count. Both are needed
@@ -14512,13 +14597,13 @@ Respond with a JSON object:
             except Exception:
                 pass
             return _scored[:cap]
-        except Exception as _cp_exc:  # noqa: BLE001 — coupling never blocks
+        except Exception as _cp_exc:  # noqa: BLE001 â€” coupling never blocks
             logger.debug("[DER] branch-candidate surfacing failed: %s", _cp_exc)
             return []
 
     def _der_region_node_id(self, session_id: str) -> str:
         """The mycelium node_id of the session's CURRENT region node (the ONE
-        active node nearest the live Σ position — REQ-26 AC1 region scoping).
+        active node nearest the live Î£ position â€” REQ-26 AC1 region scoping).
         Empty string if none resolvable. Never raises."""
         try:
             myc = getattr(self._memory_interface, "_mycelium", None)
@@ -14559,7 +14644,7 @@ Respond with a JSON object:
 
     def _der_record_governance(self, source: str) -> None:
         """REQ-6 AC1/AC3 (T18): record WHICH signal governed a steering
-        decision — past-memory | live-state | both.
+        decision â€” past-memory | live-state | both.
 
         Increments the per-turn governance counter on the kernel (read by the
         caller's TurnMetrics block into the [LAYERS] line). Off the hot path
@@ -14569,8 +14654,8 @@ Respond with a JSON object:
         the same counts.
 
         No decision path hardcodes which signal is authoritative (AC2): the
-        recorded source is OBSERVED at the decision point — a step whose
-        context carried a compressed node record (past-memory) AND live Σ is
+        recorded source is OBSERVED at the decision point â€” a step whose
+        context carried a compressed node record (past-memory) AND live Î£ is
         "both"; memory-sparse (no record) is "live"; record present but no
         live signal is "past".
         """
@@ -14597,7 +14682,7 @@ Respond with a JSON object:
         "awareness of the alternatives, and a recorded decision, is [the
         system's business]"). The step's choice is observed from the outcome:
         the chosen branch is the candidate whose coordinates are nearest the
-        step's final Σ position (``coords_to``), i.e. the branch the step's
+        step's final Î£ position (``coords_to``), i.e. the branch the step's
         result actually moved toward. Empty string when no candidate is
         nearest (no branches existed / no coords). Never raises.
         """
@@ -14640,7 +14725,7 @@ Respond with a JSON object:
                     return _best
             # No resolvable coordinates: fall back to the top-ranked candidate
             # (the ranking is physics- and evidence-driven, AC3) so a decision
-            # is still RECORDED — an empty choice would be an unrecorded one.
+            # is still RECORDED â€” an empty choice would be an unrecorded one.
             return (candidates[0].get("node_id", "") if candidates else "")
         except Exception as _ch_exc:  # noqa: BLE001
             logger.debug("[DER] coupling-branch choice failed: %s", _ch_exc)
@@ -14658,9 +14743,9 @@ Respond with a JSON object:
         ``chosen_node_id`` is the branch the step actually committed to.
 
         AC2: write/strengthen the coupling edge from the step's region node to
-        the chosen branch — the decision IS the edge's provenance. Uses the
+        the chosen branch â€” the decision IS the edge's provenance. Uses the
         SAME edge store/scorer as the region->mediator learning (one store,
-        one scorer — REQ-19 AC4); a decision is a strengthenable observation,
+        one scorer â€” REQ-19 AC4); a decision is a strengthenable observation,
         not a new edge kind.
         AC4: candidates_surfaced / chosen_branch / surfaced_branches are
         stamped on the node record so "was the agent aware of both branches"
@@ -14679,7 +14764,7 @@ Respond with a JSON object:
                 _rec.candidates_surfaced = _count
                 _rec.chosen_branch = _chosen
                 # REQ-18 AC1b (T19): a node that SURFACED >=1 candidate and
-                # CHOSE one is a node that COMMITTED A DECISION — a valid
+                # CHOSE one is a node that COMMITTED A DECISION â€” a valid
                 # coupling endpoint. This is the ROLE marker that makes
                 # "which decisions were informed by branch X" a relationship
                 # lookup (REQ-20) instead of a table scan. Set only here, at
@@ -14691,7 +14776,7 @@ Respond with a JSON object:
                     c.get("label", "") for c in (candidates or [])
                 ][:DER_COUPLING_PROVENANCE_MAX]
                 # REQ-5 AC5 (T17b): the DENOMINATOR for candidate-surfacing
-                # coverage — how many relevant branches EXISTED before the cap.
+                # coverage â€” how many relevant branches EXISTED before the cap.
                 # candidates_surfaced / candidates_existed is the coverage ratio
                 # ("saw >=2 when >=2 existed").
                 try:
@@ -14715,7 +14800,7 @@ Respond with a JSON object:
                             if _existing is not None:
                                 # decision PROVENANCE: the informed-branch edge
                                 # is strengthened by a decision observation
-                                # (REQ-5 AC2) — delta positive, modest.
+                                # (REQ-5 AC2) â€” delta positive, modest.
                                 _store.record_observation(_edge_id, 0.1)
                             elif hasattr(_store, "upsert_edge"):
                                 _new_eid = _store.upsert_edge(
@@ -14746,7 +14831,7 @@ Respond with a JSON object:
 
         Goal contract T6 (REQ-3 AC3.3): task-level coverage C is an optional
         second input. When supplied, the gap g = 1 - C acts as a forcing term
-        on the effective magnitude — an open goal makes the state read less
+        on the effective magnitude â€” an open goal makes the state read less
         converged (stricter verification), a covered goal lets it settle.
         ``coverage=None`` preserves the exact legacy bands. The parameter is
         optional so every existing (u)-only caller keeps working unchanged.
@@ -14779,15 +14864,15 @@ Respond with a JSON object:
         """REQ-4 AC4 (T16b): name the SPECIFIC blocker this split resolves.
 
         Deterministic extraction from the failure evidence (no LLM call on the
-        split hot path — the blocker is derived, not generated):
+        split hot path â€” the blocker is derived, not generated):
 
           1. error-prefixed step_result  -> the tool failure itself
           2. verify_failed               -> the acceptance criterion that was
-             NOT satisfied (expected_output, else the produced result) — names
+             NOT satisfied (expected_output, else the produced result) â€” names
              the specific gap, never the parent goal
           3. unresolved_u (physics)      -> the oscillating state itself
-             (decomposition, not a failure — still names WHAT it resolves)
-          4. empty evidence AND no expected_output -> "" (UNNAMED blocker) —
+             (decomposition, not a failure â€” still names WHAT it resolves)
+          4. empty evidence AND no expected_output -> "" (UNNAMED blocker) â€”
              the split cannot name what it resolves; recorded as such via
              blocker_named=False, surfaced as evidence the failure was not
              understood.
@@ -14819,7 +14904,7 @@ Respond with a JSON object:
                 return f"result did not satisfy expected output: {_exp[:200]}"
             if _res:
                 return f"result was not verified against the expected output: {_res[:200]}"
-            return ""  # UNNAMED — no expected output AND no evidence
+            return ""  # UNNAMED â€” no expected output AND no evidence
         if trigger == "unresolved_u":
             return "unresolved oscillating state (|u| below the split threshold)"
         if _res:
@@ -14845,10 +14930,10 @@ Respond with a JSON object:
                         minus what has been prepaid). Split is PERMITTED only if
                         work_units >= width; split PREPAYS ``width`` units up
                         front (this is what makes the Lyapunov potential Phi
-                        strictly decrease — see Appendix B).
+                        strictly decrease â€” see Appendix B).
             step_result: the failure evidence (produced result / error text).
                         REQ-4 AC4 (T16b): used to name the SPECIFIC blocker the
-                        children exist to resolve — the child's objective_anchor
+                        children exist to resolve â€” the child's objective_anchor
                         is NEVER a restatement of the parent goal.
             verified_fraction: REQ-4 AC1/AC2 (T16): the continuous verification
                         fraction of this step (0..1), consumed as a GRADED
@@ -14870,11 +14955,11 @@ Respond with a JSON object:
 
         u = cad.get("u", 0.0)
         # REQ-4 AC1/AC2 (T16): the width is now a GRADED function of BOTH |u|
-        # and the verified fraction — the continuous signal is a steering
+        # and the verified fraction â€” the continuous signal is a steering
         # input, not a post-hoc label. Mid-band -> bounded probe (width 1).
         # Goal contract T6 (REQ-3 AC3.3): feed task-level coverage C when the
         # per-step fraction is degenerate (0.0 default) so the split width is
-        # a continuous function of coverage as well as |u|. Advisory — falls
+        # a continuous function of coverage as well as |u|. Advisory â€” falls
         # back to the per-step fraction exactly when no contract exists.
         _gcov_state = getattr(self, "_goal_contract_state", None)
         _steer_frac = verified_fraction
@@ -14894,16 +14979,16 @@ Respond with a JSON object:
         from backend.agent.der_loop import QueueItem, NodeRecord
 
         # REQ-4 AC2 (T16): a mid-band verified fraction selects the graded
-        # middle path — a BOUNDED PROBE (width 1, probe=True), not a threshold
+        # middle path â€” a BOUNDED PROBE (width 1, probe=True), not a threshold
         # coin-flip. The child resolves the specific blocker at width 1.
         _probe = 0.25 < verified_fraction < 0.75 and trigger == "verify_failed"
 
         from backend.agent.der_loop import QueueItem, NodeRecord
 
         # REQ-4 AC4 (T16b): name the SPECIFIC blocker the split exists to
-        # resolve — deterministically extracted from the failure evidence (no
+        # resolve â€” deterministically extracted from the failure evidence (no
         # LLM call on the split hot path). A split that cannot name what it
-        # resolves records an UNNAMED blocker (blocker_named=False) — surfaced
+        # resolves records an UNNAMED blocker (blocker_named=False) â€” surfaced
         # as evidence the failure was not understood, never hidden behind a
         # fresh node id.
         _blocker = self._der_split_blocker(item, trigger, step_result)
@@ -14915,14 +15000,14 @@ Respond with a JSON object:
             _blocker_named = False
             logger.warning(
                 "[DER] _split_step trigger=%s step=%s produced an UNNAMED "
-                "blocker — the split cannot name what it resolves; recorded "
+                "blocker â€” the split cannot name what it resolves; recorded "
                 "as evidence (REQ-4 AC4)",
                 trigger, item.step_id,
             )
 
-        # REQ-21 (T41): the compressed footprint each child carries —
+        # REQ-21 (T41): the compressed footprint each child carries â€”
         # Understanding (what has been attempted/gathered for this goal across
-        # ALL prior attempts, bounded — never a truncated sample), Awareness
+        # ALL prior attempts, bounded â€” never a truncated sample), Awareness
         # (the goal itself), Direction (remaining vs ruled-out), and a
         # coordinate_ref into the ledger/memory for the full prior evidence.
         # Bounded by construction: prior attempts are a deduplicated key set
@@ -14938,7 +15023,7 @@ Respond with a JSON object:
             _prior_summary = (
                 f"{len(_prior_keys)} prior gather attempt(s) committed for "
                 f"this goal: {', '.join(_prior_keys[:5])}"
-                + ("…" if len(_prior_keys) > 5 else "")
+                + ("â€¦" if len(_prior_keys) > 5 else "")
             )
             _coordinate_ref = None
             try:
@@ -14996,7 +15081,7 @@ Respond with a JSON object:
                         _recall_sources = [
                             s for s, t in (("known_case", _trail), ("chain_timeline", _chain_ctx)) if t
                         ]
-            except Exception as _chain_exc:  # noqa: BLE001 — advisory context
+            except Exception as _chain_exc:  # noqa: BLE001 â€” advisory context
                 logger.debug("[DER] replan chain context skipped: %s", _chain_exc)
 
         children: List["QueueItem"] = []
@@ -15016,7 +15101,7 @@ Respond with a JSON object:
                 step_id=f"{item.step_id}_s{i}",
                 step_number=item.step_number,
                 # REQ-4 AC4 (T16b): the child's description/objective names the
-                # SPECIFIC blocker it resolves — NOT a restatement of the
+                # SPECIFIC blocker it resolves â€” NOT a restatement of the
                 # parent goal. This is what makes a split a RESOLVE, not a
                 # retry wearing a new node id.
                 description=f"{_child_anchor} (sub {i + 1})",
@@ -15029,7 +15114,7 @@ Respond with a JSON object:
                 is_subloop=True,  # collapses back to parent as one COMPRESS
                 critical=item.critical,
                 independent=True,  # T6.8: subloop children are independent per REQ-18 AC1
-                # REQ-3 T8: EVERY node carries its memory record — the
+                # REQ-3 T8: EVERY node carries its memory record â€” the
                 # generalized NodeRecord (was SubLoopFootprint, sub-loop-only).
                 node_record=NodeRecord(
                     step_id=f"{item.step_id}_s{i}",
@@ -15047,7 +15132,7 @@ Respond with a JSON object:
                     blocker_named=_blocker_named,
                     probe=_probe,
                     # REQ-18 (T19): children INHERIT the parent's two domain
-                    # axes — they are the same task (topic) run in the same
+                    # axes â€” they are the same task (topic) run in the same
                     # winding (execution). Registry values by construction.
                     topic_domain=getattr(
                         getattr(item, "node_record", None), "topic_domain", "general"
@@ -15117,7 +15202,7 @@ Respond with a JSON object:
 
         Primary: ffi_caducean_get_state (live engine). Fallback: the trajectory
         recorder's last recorded coordinate (so a split can still be decided if
-        the engine is unavailable). Never raises — returns zeros on total
+        the engine is unavailable). Never raises â€” returns zeros on total
         failure.
         """
         try:
@@ -15160,7 +15245,7 @@ Respond with a JSON object:
 
         Success path -> natural_exit=True (task ran to completion); failure /
         zero-step path -> natural_exit=False (task did NOT complete). Best-
-        effort, off the hot path, never raises — a missing conversation memory
+        effort, off the hot path, never raises â€” a missing conversation memory
         is simply skipped.
         """
         try:
@@ -15173,7 +15258,7 @@ Respond with a JSON object:
     # Session 245 (synthesis starvation fix, conv-36 live finding): gather
     # tools whose ENTIRE purpose is delivering content (crawl / search /
     # read) need far larger evidence windows than generic tools. A 3-page
-    # crawl compressed to 300-400 chars starves every downstream consumer —
+    # crawl compressed to 300-400 chars starves every downstream consumer â€”
     # the tool-decision model then honestly reports "unable to access the
     # search results" because no fragment it sees can answer the goal.
     _DER_GATHER_TOOLS = {
@@ -15197,7 +15282,7 @@ Respond with a JSON object:
 
     # Session-323: stored-read tools deliver the SAME gathered bytes through
     # the document store instead of a fresh fetch. A rerouted read that keeps
-    # the 400-char generic cap starves every downstream consumer — live
+    # the 400-char generic cap starves every downstream consumer â€” live
     # B3-repeat: guard rerouted to get_rendered_documents, step result held
     # only "1 document(s) retrieved", synthesis honestly reported IDs-only.
     # Kept as a SEPARATE set (same reason as _DER_SEARCH_TOOLS): this set
@@ -15230,7 +15315,7 @@ Respond with a JSON object:
         self, objective: str, completed_items: List[Any]
     ) -> tuple:
         """
-        Session 247: goal-level sufficiency check — the mindful-search gate.
+        Session 247: goal-level sufficiency check â€” the mindful-search gate.
 
         DER's per-step verifier grades each step in isolation; nothing ever
         asked whether the ACCUMULATED findings already answer the user's
@@ -15243,7 +15328,7 @@ Respond with a JSON object:
         False -> graft proceeds (missing aspects are logged for targeting).
 
         NEVER raises. On any inference/parse failure returns (False, "") so
-        the gate is advisory and pre-existing behavior is preserved — a broken
+        the gate is advisory and pre-existing behavior is preserved â€” a broken
         gate must not change loop semantics, only a working one may.
         """
         import re as _re2
@@ -15304,12 +15389,12 @@ Respond with a JSON object:
                 acts=lambda c: oracle_acts("sufficient", c),
             )
             return _value, _missing
-        except Exception:  # noqa: BLE001 — the gate is advisory
+        except Exception:  # noqa: BLE001 â€” the gate is advisory
             return _brain_sufficient, _brain_missing
 
     @staticmethod
     def _smart_excerpt(text: str, cap: int) -> str:
-        """Head+tail excerpt with an explicit truncation marker — never a
+        """Head+tail excerpt with an explicit truncation marker â€” never a
         silent amputation, never an unbounded dump."""
         t = (text or "").strip()
         if len(t) <= cap:
@@ -15322,7 +15407,7 @@ Respond with a JSON object:
     def _der_node_record_evidence(item) -> str:
         """REQ-8 AC1 (T26): compressed synthesis evidence from a node record.
 
-        Session 245 ADDITION: GATHER-tool steps bypass the compression —
+        Session 245 ADDITION: GATHER-tool steps bypass the compression â€”
         their raw output IS the payload the synthesis must read, so a
         content_summary[:300] of a 3-page crawl guarantees the final answer
         starves. They get a bounded-but-generous raw window instead; every
@@ -15333,7 +15418,7 @@ Respond with a JSON object:
         """
         try:
             # Gather tools: raw payload window (head+tail), compression OFF.
-            # Session-323: stored-read tools join the wide path — a rerouted
+            # Session-323: stored-read tools join the wide path â€” a rerouted
             # read delivers the SAME gathered bytes through the document
             # store, and compressing them to a node-record summary re-starves
             # the synthesis the wide gather window was built to feed.
@@ -15365,7 +15450,7 @@ Respond with a JSON object:
                     _parts.append(f"ruled-out: {_ro[:200]}")
                 if _parts:
                     return " | ".join(_parts)
-            # No node record — bounded raw fallback (REQ-8 edge case).
+            # No node record â€” bounded raw fallback (REQ-8 edge case).
             _raw = getattr(item, "result", "") or ""
             if _raw:
                 return _raw[:400]
@@ -15412,7 +15497,7 @@ Respond with a JSON object:
                 "Provide a friendly, user-facing summary of what was accomplished, "
                 "what failed, and what to do next.\n\n"
                 "Cover every part of the user's request. If the results lack "
-                "some asked part, say which part is missing in one line — "
+                "some asked part, say which part is missing in one line â€” "
                 "never skip it in silence.\n\n"
                 + _READABLE_FORMAT_RULES
             )
@@ -15427,7 +15512,7 @@ Respond with a JSON object:
             if _out.strip() and len(_out.strip()) < _stub_floor_f:
                 logger.warning(
                     "[DER] failure synthesis stub (%d chars < %d floor) "
-                    "— retrying once with the same inputs",
+                    "â€” retrying once with the same inputs",
                     len(_out.strip()), _stub_floor_f,
                 )
                 _res = self.infer(_prompt, role="reasoning",
@@ -15436,7 +15521,7 @@ Respond with a JSON object:
                 _out = _res.raw_text or ""
             # Session-345 (live, conv-134): with thinking disabled the model
             # may answer the failure-summary prompt with the tool-call ARGS
-            # JSON — `{"query": ..., "top_n": 10}` went straight to chat AND
+            # JSON â€” `{"query": ..., "top_n": 10}` went straight to chat AND
             # TTS. A bare-JSON final answer is never a user-facing message;
             # reject it so the deterministic failure close takes over.
             _stripped = _out.strip()
@@ -15446,35 +15531,35 @@ Respond with a JSON object:
                     _parsed = _json.loads(_stripped)
                     if isinstance(_parsed, dict) and "query" in _parsed:
                         logger.warning(
-                            "[DER] failure synthesis returned tool-args JSON — "
+                            "[DER] failure synthesis returned tool-args JSON â€” "
                             "rejecting for deterministic close"
                         )
                         return ""
                 except Exception:
                     pass
             # Session-326 shield 3, failure side: same stub rule as the
-            # success path — a stub falls through to the deterministic
+            # success path â€” a stub falls through to the deterministic
             # failure close, which names every failed step by shape.
             if _out and _out.strip():
                 _stub_floor = max(80, 40 * (len(completed_items) + len(queue.failed_ids)))
                 if len(_out.strip()) < _stub_floor:
                     logger.warning(
                         "[DER] failure synthesis stub (%d chars < %d floor) "
-                        "— deterministic fallback",
+                        "â€” deterministic fallback",
                         len(_out.strip()), _stub_floor,
                     )
                     return ""
             # Shield 4 (live 2026-09-25): internal narration is not a summary.
             # A failed three-file turn showed the user "We haven't performed the
             # read yet. Need to call read_file for the three files.Let's run
-            # read_file." — the model narrated its next move instead of telling
+            # read_file." â€” the model narrated its next move instead of telling
             # the user what happened. Reject it so the deterministic failure
             # close (which names each failed step) answers instead.
             from backend.agent.artifact_policy import looks_like_internal_narration
 
             if looks_like_internal_narration(_out):
                 logger.warning(
-                    "[DER] failure synthesis is internal narration — "
+                    "[DER] failure synthesis is internal narration â€” "
                     "deterministic close instead: %r", _out.strip()[:140],
                 )
                 return ""
@@ -15494,8 +15579,8 @@ Respond with a JSON object:
         REQ-12 (AC1/AC2/AC3): success-path synthesis.
 
         Consumes the SAME evidence the failure path (``_der_synthesize_outcome``)
-        consumes — ``plan.original_task`` plus each completed step's description
-        and result — and routes it through the previously-dead
+        consumes â€” ``plan.original_task`` plus each completed step's description
+        and result â€” and routes it through the previously-dead
         ``_synthesize_response`` brain synthesis (AC3 wiring), which handles the
         InferenceRouter, LM Studio, and Ollama providers. Returns "" when
         synthesis is unavailable so the caller falls back to the deterministic
@@ -15503,7 +15588,7 @@ Respond with a JSON object:
         """
         # Session 245 (verb progression): announce the SYNTH phase so the
         # working step's verb leaves SEARCH and shows SYNTH while the answer
-        # is being composed — previously synthesis was invisible on the card.
+        # is being composed â€” previously synthesis was invisible on the card.
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -15555,7 +15640,7 @@ Respond with a JSON object:
             _syn = self._synthesize_response(_task, _step_results)
             if _syn and _syn.strip():
                 # Session-326 shield 3 (owner: understudy rule): a stub turn
-                # ("Let's attempt that.") counts as a failed synthesis — the
+                # ("Let's attempt that.") counts as a failed synthesis â€” the
                 # caller then serves the deterministic per-step close, which
                 # covers every step by shape. Floor scales with steps so a
                 # true one-liner on a one-step ask still airs.
@@ -15577,7 +15662,7 @@ Respond with a JSON object:
                     # deterministic close (which never prints raw sources).
                     logger.warning(
                         "[DER] success synthesis stub (%d chars < %d floor) "
-                        "— retrying once with the same inputs: %r",
+                        "â€” retrying once with the same inputs: %r",
                         len(_syn_text), _syn_floor, _syn_text[:120],
                     )
                     _retry = self._synthesize_response(_task, _step_results)
@@ -15587,12 +15672,12 @@ Respond with a JSON object:
                     else:
                         logger.warning(
                             "[DER] success synthesis stub persists after retry "
-                            "(%d chars < %d floor) — deterministic fallback",
+                            "(%d chars < %d floor) â€” deterministic fallback",
                             len(_retry_text), _syn_floor,
                         )
                         return ""
                 logger.info(
-                    "[DER] success synthesis ran (REQ-12 AC1) — steps=%d",
+                    "[DER] success synthesis ran (REQ-12 AC1) â€” steps=%d",
                     len(completed_items),
                 )
                 # The goal contract proved every asked fact has evidence (each
@@ -15606,7 +15691,7 @@ Respond with a JSON object:
                     _facts = list(getattr(_gc_st.get("contract"), "required", ()) or ())
                     logger.warning(
                         "[DER] reply claims a part is missing but all %d required facts "
-                        "have evidence — writing once more: %r",
+                        "have evidence â€” writing once more: %r",
                         len(_facts), _syn_text[:140],
                     )
                     _task.user_message = (
@@ -15628,7 +15713,7 @@ Respond with a JSON object:
 
                 if looks_like_internal_narration(_syn_text):
                     logger.warning(
-                        "[DER] success synthesis is internal narration — "
+                        "[DER] success synthesis is internal narration â€” "
                         "deterministic close instead: %r", _syn_text[:140],
                     )
                     return ""
@@ -15638,7 +15723,7 @@ Respond with a JSON object:
             logger.warning("[DER] success synthesis failed: %s", _e)
             return ""
 
-    # ── Partial-artifact completion (live 2026-09-25) ───────────────────────
+    # â”€â”€ Partial-artifact completion (live 2026-09-25) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # One step is ONE tool call (ToolDecisionBox.resolve is single-shot), so a
     # step that names several files can only ever write one of them. Measured:
     # "create three files ... each with one bullet" wrote ONE file, the other two
@@ -15650,7 +15735,7 @@ Respond with a JSON object:
 
     @classmethod
     def _declared_file_names(cls, text: str) -> list:
-        """File names named in the text — ordered, deduped, bounded to 8.
+        """File names named in the text â€” ordered, deduped, bounded to 8.
 
         Pure: the caller decides which of them are actually missing.
         """
@@ -15695,7 +15780,7 @@ Respond with a JSON object:
         Called after a FILE-WRITING step finalizes. Bounded three ways: only for
         file-writing tools, at most DER_MAX_GRAFTS steps per run, and each file
         name is attempted at most once (``_artifact_graft_attempted``). Never
-        raises — a missed graft must not break the turn.
+        raises â€” a missed graft must not break the turn.
         """
         try:
             # What the step DID (_step_calls), not item.tool: a node step has no
@@ -15872,11 +15957,11 @@ Respond with a JSON object:
         evidence is the OUTCOME, never internal mechanics.
 
         This used to return ``ToolEnvelope.line()``, whose own docstring reads
-        'success, mismatched, repeat of step_1 — try_different, doc ab12ef34'.
+        'success, mismatched, repeat of step_1 â€” try_different, doc ab12ef34'.
         It is a DIAGNOSTIC string, and live 2026-09-25 the user was shown
 
-            - Create zz_a.md ...: success — proceed, doc b2299b91-2c3 | {"success": true, ...}
-            - Read the contents ...: success, [idling] — try_different, doc 43de69cd-343 | - Tea ...
+            - Create zz_a.md ...: success â€” proceed, doc b2299b91-2c3 | {"success": true, ...}
+            - Read the contents ...: success, [idling] â€” try_different, doc 43de69cd-343 | - Tea ...
 
         Verdicts (proceed/retry_same/try_different), stuck shapes ([idling]) and
         doc ids belong in the ledger. The user gets the status and what the step
@@ -15907,10 +15992,10 @@ Respond with a JSON object:
         """User-facing 'task incomplete' message that needs NO LLM call (Part B).
 
         ``_der_synthesize_outcome`` relies on ``infer()`` to write the summary.
-        When the model is rate-limited/unavailable — the exact failure that
-        triggered the research step's failure — that synthesis returns "" and the
+        When the model is rate-limited/unavailable â€” the exact failure that
+        triggered the research step's failure â€” that synthesis returns "" and the
         user is left with silence. This deterministic fallback guarantees the
-        user always gets a clear "I couldn't complete X — these steps failed
+        user always gets a clear "I couldn't complete X â€” these steps failed
         (and why)" message even if the LLM is down.
         """
         try:
@@ -15927,7 +16012,7 @@ Respond with a JSON object:
                 _failed.append(f"- {_desc}" + (f": {_reason}" if _reason else ""))
             _failed_txt = "\n".join(_failed) or "(unknown step)"
             _done = len(completed_items)
-            # Same graft-aware denominator as the success summary — a run that
+            # Same graft-aware denominator as the success summary â€” a run that
             # extended itself must not report "7/4 steps".
             _total = max(
                 len(getattr(plan, "steps", []) or []),
@@ -15938,12 +16023,12 @@ Respond with a JSON object:
                 f"I couldn't complete that task. {_done}/{_total} steps finished, "
                 f"but the following step(s) failed:\n{_failed_txt}\n\n"
                 f"If a search or source failed, try rephrasing the request or "
-                f"pasting the information directly — I can continue from where it stopped."
+                f"pasting the information directly â€” I can continue from where it stopped."
             )
         except Exception as _e:
             logger.warning("[DER] deterministic failure summary failed: %s", _e)
             return (
-                "I couldn't complete that task — one or more steps failed. "
+                "I couldn't complete that task â€” one or more steps failed. "
                 "Please try again or rephrase the request."
             )
 
@@ -15954,7 +16039,7 @@ Respond with a JSON object:
         Mirrors ``_der_deterministic_failure_summary``: when the brain synthesis
         is unavailable (no reasoning model / providers down), this deterministic
         summary guarantees the user gets a clear statement of what was completed
-        — never a silent raw concatenation of step outputs.
+        â€” never a silent raw concatenation of step outputs.
         """
         try:
             _done_lines = []
@@ -15977,7 +16062,7 @@ Respond with a JSON object:
                 len(getattr(queue, "items", []) or []),
                 _done,
             )
-            # AC5.6: report done + grade — recomputed statelessly from the
+            # AC5.6: report done + grade â€” recomputed statelessly from the
             # envelopes (this is a @staticmethod; no instance state, no
             # shared mutable state). A load-bearing mismatch caps the run
             # below full pass, honestly, in the user-facing fallback too.
@@ -15997,7 +16082,7 @@ Respond with a JSON object:
                 if _grade == "capped":
                     _capped = True
                     _grade_line = (
-                        "\nRun grade: capped below full pass — "
+                        "\nRun grade: capped below full pass â€” "
                         + "; ".join(_reasons or [])
                         + "\n"
                     )
@@ -16007,11 +16092,11 @@ Respond with a JSON object:
             # and can say "capped ... required fact(s) open and unblocked" while
             # this summary still opened with "I've completed the task". Measured
             # 2026-09-17: grade=capped C=0.000 with an open fact, narration said
-            # "I've completed the task. 1/1 steps finished." — a false success
+            # "I've completed the task. 1/1 steps finished." â€” a false success
             # claim. The narration MUST agree with the grade it just computed.
             if _capped:
                 return (
-                    f"I couldn't fully complete the task — {_done}/{_total} steps "
+                    f"I couldn't fully complete the task â€” {_done}/{_total} steps "
                     f"finished, but required work remains open.\n"
                     f"{_done_txt}\n{_grade_line}\n"
                     f"What would you like me to do next?"
@@ -16022,11 +16107,11 @@ Respond with a JSON object:
                 f"What would you like to do next?"
             )
         except Exception as _e:
-            # AC5.6 honesty: this is the failure path — never claim success here.
+            # AC5.6 honesty: this is the failure path â€” never claim success here.
             logger.warning("[DER] deterministic success summary failed: %s", _e)
             return "I finished running the steps but couldn't verify the result. What would you like me to do next?"
 
-    # ── Phase 2.2: context-aware query refinement ──────────────────────
+    # â”€â”€ Phase 2.2: context-aware query refinement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @staticmethod
     def _der_query_has_reference(query: str) -> bool:
@@ -16099,7 +16184,7 @@ Respond with a JSON object:
         - never raises; any failure falls back to str(raw)
 
         Note: the full structured result is still captured verbatim by
-        _capture_tool_result (document store) — this only shapes the textual
+        _capture_tool_result (document store) â€” this only shapes the textual
         flow, so nothing is lost for later reformatting.
         """
         if raw is None:
@@ -16126,7 +16211,7 @@ Respond with a JSON object:
                         return _val
                     return json.dumps(_val, ensure_ascii=False, default=str)
                 # Document envelopes (e.g. get_rendered_documents) carry no
-                # content key — without this they fell to compact JSON and the
+                # content key â€” without this they fell to compact JSON and the
                 # raw payload (success/conversation_id/documents) rendered
                 # verbatim on task-card rows (live 2026-09-09). Summarize
                 # human-side; full data stays in the document store.
@@ -16147,7 +16232,7 @@ Respond with a JSON object:
                         else _base
                     )
                 # Conversation index (e.g. list_conversations) carries no
-                # content key either — without this it fell to compact JSON
+                # content key either â€” without this it fell to compact JSON
                 # and the raw index rendered verbatim on task-card rows AND
                 # entered working memory with no next-action pointer (live
                 # conv-98: the planner read the index as retrieved content
@@ -16164,7 +16249,7 @@ Respond with a JSON object:
                     ][:3]
                     _cbase = (
                         f"{len(_convs)} conversation(s) with documents "
-                        f"(index only — call get_rendered_documents("
+                        f"(index only â€” call get_rendered_documents("
                         f"conversation_id=...) to read one)"
                     )
                     return (
@@ -16190,7 +16275,7 @@ Respond with a JSON object:
 
         Session-323: a rerouted READ (get_rendered_documents after a guard
         REPEAT block) delivers the same gathered bytes through the document
-        store — but _format_tool_result reduces that envelope to a title
+        store â€” but _format_tool_result reduces that envelope to a title
         line ("1 document(s) retrieved"), so the step result starves and
         synthesis honestly reports IDs-only (live B3-repeat). For read
         tools, keep the header line AND append a bounded content excerpt
@@ -16272,13 +16357,13 @@ Respond with a JSON object:
     ) -> Optional[str]:
         """Presentation gate (specs/tool-decision-engine REQ-11, REQ-23).
 
-        Returns "card" / "plain" — the engine verdict — whenever the engine
+        Returns "card" / "plain" â€” the engine verdict â€” whenever the engine
         answers, INCLUDING in shadow mode: the verdict SURFACES for the async
         calibration observer (REQ-23 AC23.1) while steering remains
-        structurally impossible — nothing reads `_last_surface_choice` (the
+        structurally impossible â€” nothing reads `_last_surface_choice` (the
         writes are removed). Returns None only when the engine is unavailable
         or an ENFORCED verdict is below threshold (the legacy heuristic
-        decides). Gate-layer only — surface choice, never content (content
+        decides). Gate-layer only â€” surface choice, never content (content
         belongs to chat-communication-lanes). Never raises.
 
         ``live_surface`` is the surface that ACTUALLY ran, supplied by the
@@ -16300,7 +16385,7 @@ Respond with a JSON object:
         n = len(response or "")
         # REQ-23 AC23.2: AC11.4 (one card per turn) moved to the render sites,
         # so a turn WITH a card already emitted must STILL yield an observer
-        # verdict — otherwise "engine wanted plain, live produced card" is
+        # verdict â€” otherwise "engine wanted plain, live produced card" is
         # never measured. The frame admits the card exists (truthful).
         already = bool(getattr(self, "_last_render_emitted", False))
         frame = {
@@ -16367,7 +16452,7 @@ Respond with a JSON object:
                 pass
         if not (enforced and confident):
             # Shadow / unconfident: the verdict RETURNS for the observer's
-            # calibration log while steering remains structurally impossible —
+            # calibration log while steering remains structurally impossible â€”
             # nothing reads `_last_surface_choice` (the writes are removed,
             # REQ-23). Only an enforced+confident verdict may steer.
             return "plain" if ds.chosen == "plain_text" else "card"
@@ -16382,13 +16467,13 @@ Respond with a JSON object:
         """Async presentation observer (specs/reply-surface-contract REQ-15).
 
         The `presentation` decision-engine consumer is PRESERVED but DEMOTED
-        (owner decision OQ-3, option C): it no longer gates the live surface —
+        (owner decision OQ-3, option C): it no longer gates the live surface â€”
         REQ-14 AC2 keeps `show`-presence as the sole live trigger. This spawns
         a daemon thread that runs :meth:`_engine_gate_surface` as a pure
         observer (its own `record_decision` ledger row still lands, so the
         consumer's calibration data keeps flowing) and logs a
         `surface_observer_disagreement` line whenever the engine's verdict
-        differs from the live surface — the evidence needed to promote the
+        differs from the live surface â€” the evidence needed to promote the
         consumer again later. Never raises; never blocks the reply.
         """
 
@@ -16399,7 +16484,7 @@ Respond with a JSON object:
                 verdict = self._engine_gate_surface(
                     response, turn_id or "", live_surface=live_surface
                 )
-            except Exception:  # noqa: BLE001 — observer must never surface
+            except Exception:  # noqa: BLE001 â€” observer must never surface
                 return
             try:
                 if verdict is not None and verdict != live_surface:
@@ -16410,7 +16495,7 @@ Respond with a JSON object:
                         live_surface,
                         verdict,
                     )
-            except Exception:  # noqa: BLE001 — observer must never surface
+            except Exception:  # noqa: BLE001 â€” observer must never surface
                 pass
 
         try:
@@ -16419,7 +16504,7 @@ Respond with a JSON object:
                 name="iris-surface-observer",
                 daemon=True,
             ).start()
-        except Exception:  # noqa: BLE001 — instrumentation never blocks
+        except Exception:  # noqa: BLE001 â€” instrumentation never blocks
             pass
 
     def _turn_is_bounded_content_ask(self) -> bool:
@@ -16445,13 +16530,13 @@ Respond with a JSON object:
         planned: bool,
         web_mode: bool,
     ) -> None:
-        """Route shadow (REQ-18 AC1, task T30) — one JSONL row per turn.
+        """Route shadow (REQ-18 AC1, task T30) â€” one JSONL row per turn.
 
         This is the EVIDENCE for the unified-routing flip (T33): every turn
         records which branch ran and whether the gate judged it trivial, so
         direct-vs-DER parity is measured before the direct branch is deleted.
         The classification itself is the semantic gate's answer already
-        computed at the fork — zero extra work on the reply path. A write
+        computed at the fork â€” zero extra work on the reply path. A write
         failure here must never cost a reply.
         """
         try:
@@ -16474,7 +16559,7 @@ Respond with a JSON object:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(row, ensure_ascii=False) + "\n")
-        except Exception:  # noqa: BLE001 — shadow logging never blocks a reply
+        except Exception:  # noqa: BLE001 â€” shadow logging never blocks a reply
             pass
 
     def _log_surface(
@@ -16491,7 +16576,7 @@ Respond with a JSON object:
         One structured line per reply: the lane chosen (plain / card /
         card_plus_summary), whether a `show` payload was present, and where
         the bubble text came from. `card_suppressed_reason` marks the distinct
-        "card suppressed" signals (AC2) — "no_show_payload" on plain turns and
+        "card suppressed" signals (AC2) â€” "no_show_payload" on plain turns and
         "empty_websearch_synthesis" on the show-downgrade path. Logging only:
         REQ-9 AC3 keeps instrumentation off the critical path. Never raises.
         """
@@ -16505,7 +16590,7 @@ Respond with a JSON object:
                 bubble_source,
                 card_suppressed_reason or "-",
             )
-        except Exception:  # noqa: BLE001 — instrumentation never blocks
+        except Exception:  # noqa: BLE001 â€” instrumentation never blocks
             pass
 
     def _emit_reply_progressively(
@@ -16519,7 +16604,7 @@ Respond with a JSON object:
 
         The bubble and TTS must NOT wait for the document. So the agent's
         `speak` line is the FIRST chunk downstream; the `show` body follows as
-        the seam's DOCUMENT_RENDER (single whole-body emit — the bound
+        the seam's DOCUMENT_RENDER (single whole-body emit â€” the bound
         providers do not stream a partial card, per the spec's fallback rules;
         the partial channel in T18b exists for when they do).
 
@@ -16527,13 +16612,13 @@ Respond with a JSON object:
           - plain text (no `show`): the full text is the ONE chunk (unchanged
             from the previous single-chunk path).
           - `show` + `speak`: `speak` is the FIRST (and only) text chunk; the
-            card body streams via the render event, never in the text stream —
+            card body streams via the render event, never in the text stream â€”
             pre-contract this path sent the raw structured JSON into the TTS
             sentence queue.
           - `show` without `speak`: no text chunk; the seam supplies the
             supportive excerpt as the final bubble.
 
-        Always emits the force-flush sentinel (``""``) last — the sentence
+        Always emits the force-flush sentinel (``""``) last â€” the sentence
         queue terminates on it. Never raises.
         """
         if not response or chunk_callback is None:
@@ -16550,12 +16635,12 @@ Respond with a JSON object:
                     chunk_text = speak
                 elif show is None:
                     chunk_text = response
-            except Exception:  # noqa: BLE001 — parse failure -> plain fallback
+            except Exception:  # noqa: BLE001 â€” parse failure -> plain fallback
                 chunk_text = response
             if chunk_text:
                 chunk_callback(chunk_text)
             chunk_callback("")  # force-flush end-of-stream
-        except Exception:  # noqa: BLE001 — a streaming failure never kills a turn
+        except Exception:  # noqa: BLE001 â€” a streaming failure never kills a turn
             logger.warning(
                 "[AgentKernel] progressive reply emit failed turn=%s",
                 turn_id or "unknown",
@@ -16594,7 +16679,7 @@ Respond with a JSON object:
         if not _out:
             _out = _t[:max_chars]
         if len(_out) > max_chars:
-            _out = _out[:max_chars].rstrip() + "…"
+            _out = _out[:max_chars].rstrip() + "â€¦"
         return _out
 
     @staticmethod
@@ -16603,7 +16688,7 @@ Respond with a JSON object:
 
         REQ-19 vocabulary: "COMPRESS"/"EXPAND"/"MAINTAIN" here are DER PHYSICS
         RECOMMENDATION CODES (ints 1/0/2) returned by ffi_caducean_recommend.
-        They modulate temperature ONLY — they compact/expand NOTHING. Actual
+        They modulate temperature ONLY â€” they compact/expand NOTHING. Actual
         compaction is DCP message pruning (dcp.py) and mycelium condense/expand
         (scorer.py); Step Expansion is _growth_width->_split_step. See the
         REQ-19 vocabulary table in specs/long-horizon-der-execution/design.md.
@@ -16612,7 +16697,7 @@ Respond with a JSON object:
         - EXPAND   (rec==0) -> more exploratory (temperature *1.2, capped at 0.6)
         - MAINTAIN (rec==2) / unknown / TOPO_VIOLATION -> base unchanged
 
-        Pure function of (base, session_id); never raises — returns ``base`` on
+        Pure function of (base, session_id); never raises â€” returns ``base`` on
         any error so planning always proceeds.
         """
         try:
@@ -16651,7 +16736,7 @@ Respond with a JSON object:
                     )
             except Exception:
                 pass
-            # P1 (live conv-98): working memory enters this prompt unbounded —
+            # P1 (live conv-98): working memory enters this prompt unbounded â€”
             # a 15KB+ crawl dump emptied the provider here while the
             # compressed-record final synthesis on the same provider
             # succeeded. Bound with an explicit truncation marker (never a
@@ -16689,7 +16774,7 @@ Respond with a JSON object:
                 "Complete this step. Respond with the result only."
             ).strip()
             # THINKING RUNS ON THE BRAIN (2026-08-16). This is the tool-less
-            # step path — there is no tool to execute, only reasoning — so it
+            # step path â€” there is no tool to execute, only reasoning â€” so it
             # belongs to the reasoning binding. It used to run on
             # role="EXECUTION" (the tool_execution binding), which meant that
             # with Brain and Tool on different models the actual thinking was
@@ -16703,10 +16788,10 @@ Respond with a JSON object:
                 # the "[step N completed]" placeholder, failed verification,
                 # and burned 3 sub-loop retries on the same bloated prompt.
                 # Retry ONCE with shrunk context (excerpted findings) before
-                # surrendering to the placeholder — same provider, bounded
+                # surrendering to the placeholder â€” same provider, bounded
                 # prompt is the combination proven to succeed.
                 logger.info(
-                    "[DER] step-direct infer empty — retrying once with "
+                    "[DER] step-direct infer empty â€” retrying once with "
                     "shrunk context (step %s)", item.step_number,
                 )
                 _shrunk = (
@@ -16728,8 +16813,8 @@ Respond with a JSON object:
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
 
-    # ── ToolDecisionBox lazy factory ─────────────────────────────────────
-    # pin_517dfcbda150 — physics-driven web-gather sanction:
+    # â”€â”€ ToolDecisionBox lazy factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # pin_517dfcbda150 â€” physics-driven web-gather sanction:
     #   _MAX_CRAWLS_PER_TASK  hard budget of DISTINCT queries per task; the
     #                         agent may gather more only by refining the query
     #                         (new hash = new job). Same-query repeats resolve
@@ -16783,7 +16868,7 @@ Respond with a JSON object:
             return self._tool_box
         from backend.agent.tool_registry import get_registry_tools, validate_tool_call
 
-        # memory_lookup_fn — consults mycelium / pheromone for tool suggestions
+        # memory_lookup_fn â€” consults mycelium / pheromone for tool suggestions
         # (REQ-4 AC6: memory as pre-filter, not fallback; SourceRegistry-like).
         def _mem_lookup(goal: str) -> Optional[Dict[str, Any]]:
             try:
@@ -16791,21 +16876,21 @@ Respond with a JSON object:
                     AUTO_ENGINE, _is_web_intent, _pheromone_top1, _shape_web_query,
                 )
 
-                # ── pin_517dfcbda150: physics-driven gather sanction ──
-                # pin_42ddd255162d: the gate runs BEFORE the memory checks —
+                # â”€â”€ pin_517dfcbda150: physics-driven gather sanction â”€â”€
+                # pin_42ddd255162d: the gate runs BEFORE the memory checks â€”
                 # it needs no memory (conversation state + engine + scheduler
                 # oscillators). Behind the old `mi is None` early return it
                 # NEVER ran in the DER (whose kernel has no memory interface):
                 # web-intent step 1 resolved REASON (tool=null), its short
                 # result failed verification, the step split, and the children
-                # re-gathered the same URLs — the "keeps going back to
+                # re-gathered the same URLs â€” the "keeps going back to
                 # searching" loop. The route + sanction below also give the
                 # FIRST web-intent resolution a hard crawler_query.
                 # Applies to ANY goal flavor (not just web-intent phrasing):
                 # synthesis steps like "summarize the findings" are NOT web
                 # intent by the classifier, yet must be prevented from
                 # re-gathering once the task has committed web content.
-                # Once ≥1 crawl ran this task:
+                # Once â‰¥1 crawl ran this task:
                 #   (a) converged (|u| < U_SPLIT)      -> veto gather tools,
                 #   (b) new distinct query + budget hit -> veto (budget),
                 #   (c) provider under load (amp low)  -> veto (load).
@@ -16816,7 +16901,7 @@ Respond with a JSON object:
                 except Exception:  # pragma: no cover - constant drift guard
                     U_SPLIT = 0.5
                 # pin_42ddd255162d: key the gather-sanction state by the
-                # CONVERSATION, not the execution session — DER split children
+                # CONVERSATION, not the execution session â€” DER split children
                 # run under the placeholder session
                 # "unknown", which made every child look like a fresh task and
                 # bypassed the converged/budget veto (u=0.00 yet children
@@ -16826,7 +16911,7 @@ Respond with a JSON object:
                     or getattr(self, "session_id", "")
                     or ""
                 )
-                # D2: stable action identity — deterministic digest, never
+                # D2: stable action identity â€” deterministic digest, never
                 # builtin hash() (process-randomized). Same query -> same key
                 # across restarts and replay fixtures.
                 try:
@@ -16846,12 +16931,12 @@ Respond with a JSON object:
                 )
                 # D1 (REQ-3): physics and scheduler state never AUTHORIZE here.
                 # u/xi convergence and phase-manager amplitude are removed from
-                # tool authorization — the scheduler paces calls; whether a
+                # tool authorization â€” the scheduler paces calls; whether a
                 # required web action may run is decided by the execution
                 # policy below (fresh-query budget only). A converged oscillator
                 # means stable physics, NOT task completion, and a failed step's
                 # children must still be allowed to gather their sub-query.
-                # D6/REQ-9: the same-query repeat is allowed — the JobRegistry
+                # D6/REQ-9: the same-query repeat is allowed â€” the JobRegistry
                 # dedupe serves the cached crawl (no provider call is paid), so
                 # a repeat is a read observation, not a new side effect.
                 _is_web_goal = False
@@ -16882,7 +16967,7 @@ Respond with a JSON object:
                 if _is_web_goal:
                     # Explicit resource bound (REQ-3 AC3): a FRESH distinct web
                     # query beyond the per-task crawl budget is vetoed. Same-key
-                    # repeats skip the budget — but Session 312 (conv-99): a
+                    # repeats skip the budget â€” but Session 312 (conv-99): a
                     # repeat is steered to an honest READ of the already-gathered
                     # documents instead of a re-dispatch, because the promised
                     # cache-served repeat never existed (D6) and every repeat
@@ -16932,14 +17017,14 @@ Respond with a JSON object:
                         "rationale": "bounded_content_ask",
                     }
 
-                # Web-intent → crawler_query (capability-gated, not a silent fallback)
+                # Web-intent â†’ crawler_query (capability-gated, not a silent fallback)
                 if _is_web_goal:
                     # Session-345 (live finding conv-124): do NOT mark the
                     # qkey here. This gate is consulted more than once per
                     # step (engine hint pass + kernel re-resolution), and a
                     # mark at PROPOSAL time means the superseded first pass
                     # makes the second pass read "already gathered this turn"
-                    # and steer to get_rendered_documents — the search then
+                    # and steer to get_rendered_documents â€” the search then
                     # never runs and the turn ends in an honest-but-wrong
                     # refusal. The mark happens at DISPATCH time (where the
                     # tool is actually paid for), not here.
@@ -16966,7 +17051,7 @@ Respond with a JSON object:
                         params: Dict[str, Any] = {"query": goal}
                         # Consult SourceRegistry for known URLs (learned knowledge)
                         # REQ-12 (T16): OFF the DER thread and bounded. This was
-                        # `_asyncio.run(sr.resolve(goal, quick=True))` — building
+                        # `_asyncio.run(sr.resolve(goal, quick=True))` â€” building
                         # and tearing down an event loop inside the step, before
                         # the engine could even start. Now: TTL cache first, then
                         # submit to the gateway's MAIN loop with a <=100ms budget;
@@ -16978,10 +17063,10 @@ Respond with a JSON object:
                             try:
                                 from backend.iris_gateway import get_iris_gateway
                                 _sr_loop = getattr(get_iris_gateway(), "_main_loop", None)
-                            except Exception:  # noqa: BLE001 — no gateway → empty hint
+                            except Exception:  # noqa: BLE001 â€” no gateway â†’ empty hint
                                 _sr_loop = None
                             sr_result = source_hint(goal, loop=_sr_loop)
-                        except Exception:  # noqa: BLE001 — a hint never fails a step
+                        except Exception:  # noqa: BLE001 â€” a hint never fails a step
                             sr_result = {}
                             if sr_result.get("hit") and sr_result.get("sources"):
                                 known_urls = [
@@ -16989,7 +17074,7 @@ Respond with a JSON object:
                                     if isinstance(s, dict) and "url" in s
                                 ][:3]
                                 # Session 312 (URL-level turn memory): filter
-                                # URLs this conversation already fetched —
+                                # URLs this conversation already fetched â€”
                                 # conv-99 served the same 4 URLs to 3 gather
                                 # steps. All-filtered -> serve nothing (the
                                 # crawler does fresh discovery instead of
@@ -17015,7 +17100,7 @@ Respond with a JSON object:
                         except Exception:
                             pass  # SourceRegistry failure is non-fatal
                         # Session-318 T21-hotfix: the exclusion attach lives OUTSIDE
-                        # the registry try-block above — a resolve throw must never
+                        # the registry try-block above â€” a resolve throw must never
                         # skip it (unproven, but a resolve failure coinciding with
                         # a repeat repeat would re-crawl known pages silently).
                         try:
@@ -17041,12 +17126,12 @@ Respond with a JSON object:
                 # REQ-3 AC4 / REQ-5 (specs/long-horizon-der-execution): once the
                 # task has committed web evidence (>=1 crawl), steer SYNTHESIS
                 # goals toward READING the gathered documents instead of
-                # re-gathering. Advisory only — _apply_pre_filter keeps the
+                # re-gathering. Advisory only â€” _apply_pre_filter keeps the
                 # suggested tool alongside generic utilities, so the LLM still
                 # chooses; if the read tool is unavailable the pre-filter falls
                 # back to the full list. This cuts the observed 4-gather waste
                 # (crawler_query x2 + search x2) and the 429 storm it caused.
-                # NOTE: no resolve_tool/capability_allowed here — that call in
+                # NOTE: no resolve_tool/capability_allowed here â€” that call in
                 # the hot path slowed every gate evaluation by seconds.
                 try:
                     _SYNTH_TRIGGERS = (
@@ -17057,7 +17142,7 @@ Respond with a JSON object:
                     # not the per-turn _attempted budget. _attempted resets at
                     # every turn boundary (process_text_message), so a
                     # summarize-from-prior turn always saw attempted=0 and the
-                    # steer never fired — live b324_web1 turn 2 resolved REASON
+                    # steer never fired â€” live b324_web1 turn 2 resolved REASON
                     # trusting prior context, then infer returned empty twice.
                     # _der_crawled_urls survives across turns per conversation.
                     _conv_evidence323: set = set()
@@ -17081,10 +17166,10 @@ Respond with a JSON object:
                             "tool": "get_rendered_documents",
                             "rationale": "evidence committed; synthesize from gathered docs",
                         }
-                except Exception:  # noqa: BLE001 — steering is advisory
+                except Exception:  # noqa: BLE001 â€” steering is advisory
                     pass
 
-                # Memory pre-filter (REQ-4 AC6) — mycelium consulted only
+                # Memory pre-filter (REQ-4 AC6) â€” mycelium consulted only
                 # after the physics gate, which needs no memory.
                 mi = getattr(self, "_memory_interface", None)
                 if mi is None:
@@ -17109,7 +17194,7 @@ Respond with a JSON object:
                 return None
 
         # specs/tool-decision-engine: inject the resident calibrated decision
-        # engine (injected, not lazily global — unit suites run engine-free for
+        # engine (injected, not lazily global â€” unit suites run engine-free for
         # determinism; the engine degrades to legacy path when its model is
         # absent, AC1.3). Wiring lives here so the box stays snapshot-free.
         try:
@@ -17130,19 +17215,19 @@ Respond with a JSON object:
         )
         return self._tool_box
 
-    # ── Phase 4: concurrent step execution helpers ──────────────────────
+    # â”€â”€ Phase 4: concurrent step execution helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _der_pre_dispatch_guard(self, item: "QueueItem") -> Optional[Dict[str, Any]]:
         """T6B (specs/tool-result-envelope REQ-2/REQ-3 AC3.3, KD-10): the
-        pre-dispatch HARD-RULE guard — prevention decides, the envelope
+        pre-dispatch HARD-RULE guard â€” prevention decides, the envelope
         testifies. Runs BEFORE a tool call is paid for; reads turn memory
-        (seen dispatches + crawled URLs) and the wall ledger ONLY — adds no
+        (seen dispatches + crawled URLs) and the wall ledger ONLY â€” adds no
         inference and no store writes.
 
         Hierarchy C hard rules (never overridable in-run):
-          * WALLED — the target domain has a live wall record (is_walled):
+          * WALLED â€” the target domain has a live wall record (is_walled):
             the tool is NEVER retried; the step fails honestly.
-          * CIRCLING — this exact tool+params (or an all-known-URLs gather)
+          * CIRCLING â€” this exact tool+params (or an all-known-URLs gather)
             already ran this conversation: NEVER re-executed; the step is
             rerouted to READ the original result via the document store
             (get_rendered_documents), and the original envelope is re-stamped
@@ -17151,7 +17236,7 @@ Respond with a JSON object:
         Returns None when the call may proceed, or a dict:
           {"reason": ..., "reroute_tool": str|None, "reroute_params": dict,
            "original_step_id": str}
-        Never raises — a broken guard must not change loop semantics
+        Never raises â€” a broken guard must not change loop semantics
         (advisory-gate principle).
         """
         try:
@@ -17171,7 +17256,7 @@ Respond with a JSON object:
                 }
                 self._envelope_counters = _counters
 
-            # ── HARD RULE 1: walled domain — never retried in-run ─────────
+            # â”€â”€ HARD RULE 1: walled domain â€” never retried in-run â”€â”€â”€â”€â”€â”€â”€â”€â”€
             _target = ""
             try:
                 _p = item.params or {}
@@ -17188,7 +17273,7 @@ Respond with a JSON object:
                 _counters["hard_blocks"] += 1
                 logger.info(
                     "[DER:guard] WALLED tool refused pre-dispatch "
-                    "(conv=%s step=%s tool=%s domain=%s) — never retried "
+                    "(conv=%s step=%s tool=%s domain=%s) â€” never retried "
                     "in-run",
                     _conv, getattr(item, "step_id", "?"),
                     getattr(item, "tool", None), _target,
@@ -17200,7 +17285,7 @@ Respond with a JSON object:
                     "original_step_id": "",
                 }
 
-            # ── HARD RULE 2: repeat — never re-executed; read instead ─────
+            # â”€â”€ HARD RULE 2: repeat â€” never re-executed; read instead â”€â”€â”€â”€â”€
             _digest = params_digest(
                 getattr(item, "tool", None), getattr(item, "params", None)
             )
@@ -17233,7 +17318,7 @@ Respond with a JSON object:
                             logger.info(
                                 "[envelope] criticality divergence: step %s "
                                 "declared %s but a later step consumed its "
-                                "doc (now %s) — tuning signal",
+                                "doc (now %s) â€” tuning signal",
                                 _original_step_id, _before[0], _after[0],
                             )
                     except Exception:
@@ -17241,7 +17326,7 @@ Respond with a JSON object:
                 _counters["hard_blocks"] += 1
                 logger.info(
                     "[DER:guard] REPEAT blocked pre-dispatch (conv=%s "
-                    "step=%s tool=%s original=%s) — rerouting to read the "
+                    "step=%s tool=%s original=%s) â€” rerouting to read the "
                     "gathered documents instead of re-executing",
                     _conv, getattr(item, "step_id", "?"),
                     getattr(item, "tool", None), _original_step_id,
@@ -17253,7 +17338,7 @@ Respond with a JSON object:
                     "original_step_id": _original_step_id,
                 }
 
-            # ── Gather URL-subset check: all fetch targets already crawled ─
+            # â”€â”€ Gather URL-subset check: all fetch targets already crawled â”€
             # Compares NORMALIZED addresses so a trailing slash or fragment
             # drift cannot re-open a visited page (session-321 B-probe fix).
             _p = item.params or {}
@@ -17275,7 +17360,7 @@ Respond with a JSON object:
                 logger.info(
                     "[DER:guard] URL-repeat blocked pre-dispatch (conv=%s "
                     "step=%s): all %d fetch targets already crawled this "
-                    "conversation — rerouting to read",
+                    "conversation â€” rerouting to read",
                     _conv, getattr(item, "step_id", "?"), len(_urls),
                 )
                 return {
@@ -17349,7 +17434,7 @@ Respond with a JSON object:
                     self._der_crawl_attempts = _cs
             except Exception:
                 pass
-        # ── Record tool call for ToolCallTree (REQ-13) ──
+        # â”€â”€ Record tool call for ToolCallTree (REQ-13) â”€â”€
         try:
             _result_str = str(getattr(dr, "result", ""))[:200] or str(getattr(dr, "error", ""))[:200]
             self._get_tool_box().record_tool_call(
@@ -17384,7 +17469,7 @@ Respond with a JSON object:
         detail rather than a second lane:
 
           * it returns the SAME ``(step_result, success)`` shape ``_der_run_node``
-            returns, so the finalize site (§5) and the failure seam
+            returns, so the finalize site (Â§5) and the failure seam
             (``_der_handle_step_failure``) are unchanged and still see it;
           * it stamps the SAME bookkeeping the DAG reads (``node_calls`` /
             ``node_call_log`` / ``node_digest``), so repeat detection and the
@@ -17398,7 +17483,7 @@ Respond with a JSON object:
             _msgs = [{"role": "user", "content": (task or goal)}]
             _text, _thinking, _calls = self._router.generate("reasoning", _msgs)
             text = str(_text or "").strip()
-        except Exception as exc:  # noqa: BLE001 — a node never crashes the turn
+        except Exception as exc:  # noqa: BLE001 â€” a node never crashes the turn
             logger.debug("[DER] direct node failed: %r", exc)
         item.node_calls = []
         item.node_call_log = []
@@ -17408,7 +17493,7 @@ Respond with a JSON object:
             item.node_digest = params_digest(
                 "run_node_direct", {"goal": (goal or "")[:200]}
             )
-        except Exception:  # noqa: BLE001 — bookkeeping never fails a step
+        except Exception:  # noqa: BLE001 â€” bookkeeping never fails a step
             pass
         return text, bool(text)
 
@@ -17460,7 +17545,7 @@ Respond with a JSON object:
         def _execute(name, params):
             if not _turn_live():
                 return {"success": False, "error": _ended, "error_type": "aborted"}
-            # ── Domain guard (2026-10-08) ───────────────────────────────────
+            # â”€â”€ Domain guard (2026-10-08) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # A step whose goal names an EXTERNAL resource, but which reaches
             # for a LOCAL tool, is searching the wrong domain. Measured live: a
             # plan step "Read the README and main files from the OpenAI math
@@ -17517,7 +17602,7 @@ Respond with a JSON object:
                             "%s is not offered/steerable - local pick %s left "
                             "alone", _shape, _alt, name,
                         )
-            except Exception as _dg_exc:  # noqa: BLE001 — a guard never blocks a step
+            except Exception as _dg_exc:  # noqa: BLE001 â€” a guard never blocks a step
                 logger.debug("[DER] domain guard skipped: %r", _dg_exc)
             # parallel nodes: the browser page / the screen has one driver - a
             # node claims it at its first such call and keeps it to the end.
@@ -17541,7 +17626,7 @@ Respond with a JSON object:
             return raw if raw is not None else {"success": False, "error": getattr(dr, "error", "") or "no result"}
 
         goal = item.description or item.objective_anchor or ""
-        # ── mode (2026-10-08, unification) ──────────────────────────────────
+        # â”€â”€ mode (2026-10-08, unification) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # The node's GOAL decides its mode, exactly as it decides its domain
         # (the domain guard in _execute). Chosen ONCE here, at node entry -
         # never switched mid-step. A "direct" node answers from the model's own
@@ -17586,7 +17671,7 @@ Respond with a JSON object:
             if _prior_results:
                 _p = _prior_results[-1]
                 _lr = f"{_p.get('description') or ''}: {_p.get('result') or ''}"
-        except Exception:  # noqa: BLE001 — a shadow never needs context
+        except Exception:  # noqa: BLE001 â€” a shadow never needs context
             _lr = ""
         _crit = {}
         try:
@@ -17594,7 +17679,7 @@ Respond with a JSON object:
                 _fn = t.get("function") or {}
                 if _fn.get("name"):
                     _crit[_fn["name"]] = _fn.get("description") or ""
-        except Exception:  # noqa: BLE001 — a shadow never needs context
+        except Exception:  # noqa: BLE001 â€” a shadow never needs context
             _crit = {}
         # tc-frame-v6: the option lines are the tools' DECISION lines (when to
         # choose, with the precondition), not the argument-oriented LLM text.
@@ -17603,7 +17688,7 @@ Respond with a JSON object:
 
             _hints = {n: _ohint(n, _crit.get(n, "")) for n in _offered}
             _hints.update({n: _ohint(n) for n in ("DELEGATE", "NONE")})
-        except Exception:  # noqa: BLE001 — a shadow never needs context
+        except Exception:  # noqa: BLE001 â€” a shadow never needs context
             _hints = dict(_crit)
 
         # THE STEP'S OWN STATE (tc-frame-v5 / tool_approval v3, 2026-10-11):
@@ -17676,7 +17761,7 @@ Respond with a JSON object:
             _decided["row"] = got[1]
             return got[0]
 
-        def _on_result(name, params, ok):
+        def _on_result(name, params, ok, approval_ok=None):
             # The call's OUTCOME is now known. Every node consult runs HERE,
             # post-hoc, on the PRE-CALL state: run_node calls this BEFORE it
             # appends the call and before it updates the last result, so
@@ -17684,6 +17769,10 @@ Respond with a JSON object:
             # (2026-10-11: tool_choice and browser_next moved here from the
             # pre-call hook so their rows carry `brain_ok` - an outcome-checked
             # label and fine-tuning data, not only parity.)
+            # v6 (2026-10-17): `approval_ok` is the CALL-level outcome for the
+            # tool_approval label (a run_command that RAN counts as a
+            # successful call whatever its exit code reported about the WORK);
+            # `ok` stays the loop-level outcome every other reader uses.
             _hist, _last = _step_so_far()
             # A real tool call: a card-free turn earns its card at the bound.
             self._der_count_tool_call(item)
@@ -17705,7 +17794,7 @@ Respond with a JSON object:
                         done_when=_done_when or None, calls_this_step=_hist or None,
                         brain_ok=bool(ok),
                     )
-                except Exception as _bn_err:  # noqa: BLE001 — a shadow never blocks
+                except Exception as _bn_err:  # noqa: BLE001 â€” a shadow never blocks
                     logger.debug("[DER] browser_next row failed: %r", _bn_err)
             try:
                 # Same single ledger writer as the direct loop; async_=True runs
@@ -17720,7 +17809,7 @@ Respond with a JSON object:
                     session_id=self.conversation_id or "voice",
                     conversation_id=self.conversation_id or "", async_=True,
                 )
-            except Exception as _tc_err:  # noqa: BLE001 — a shadow never blocks
+            except Exception as _tc_err:  # noqa: BLE001 â€” a shadow never blocks
                 logger.debug("[DER] tool_choice row failed: %r", _tc_err)
             # tool_approval (2026-10-10): post-hoc approval consult with the
             # PRE-CALL frame + the outcome label (v2 args/menu, v3 history).
@@ -17732,12 +17821,14 @@ Respond with a JSON object:
                     proposed_tool=name, tool_description=_crit.get(name) or "",
                     args=params if isinstance(params, dict) else None,
                     offered_tools=_offered or None,
-                    outcome_success=bool(ok),
+                    outcome_success=bool(
+                        approval_ok if approval_ok is not None else ok
+                    ),
                     session_id=self.conversation_id or "voice",
                     conversation_id=self.conversation_id or "",
                     calls_this_step=_hist or None,
                 )
-            except Exception as _ta_err:  # noqa: BLE001 — a shadow never blocks
+            except Exception as _ta_err:  # noqa: BLE001 â€” a shadow never blocks
                 logger.debug("[DER] tool_approval row failed: %r", _ta_err)
 
         # Eval C (owner 2026-10-02): the Brain helps a struggling tool model -
@@ -17844,15 +17935,21 @@ Respond with a JSON object:
         # needed; done with zero calls = it was not (live g04: such steps paid
         # a full tool-loop call for nothing). Ambiguous outcomes get no row.
         # Scored on the shadow lane after the step - never on the answer path.
+        # v2 (2026-10-18): the label reads the CALL-level outcome (`ok_call`),
+        # not the loop's `ok`. `ok` counts a non-zero returncode as failure, so
+        # a node whose only call was an informative pytest run mid-iteration
+        # emitted NO row at all (all-"failed" -> None) and mixed nodes
+        # under-counted - the same conflation that held tool_approval below
+        # chance before v6. A call that RAN is a tool that was needed.
         try:
             _calls = result.calls or []
-            _label = (True if any(c.get("ok") for c in _calls)
+            _label = (True if any(c.get("ok_call", c.get("ok")) for c in _calls)
                       else False if (not _calls and result.success) else None)
             if _label is not None:
                 from backend.agent import surface_shadow as _ss_na
 
                 _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
-                                      True, None, "needs_action/v1",
+                                      True, None, "needs_action/v2",
                                       outside_label=_label)
         except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
             logger.debug("[DER] needs_action row skipped: %r", _na_exc)
@@ -17874,7 +17971,7 @@ Respond with a JSON object:
 
         Session 245 (synthesis starvation fix): ``queue`` joins the signature
         so the tool-decision evidence for tool-less steps can carry PRIOR
-        completed step results — previously the evidence was metadata-only
+        completed step results â€” previously the evidence was metadata-only
         (session/turn/task_class), so a synthesis step after a successful
         crawl was decided by a model that had never seen a byte of the crawl
         output ("I am unable to access the search results", conv-36).
@@ -17882,7 +17979,7 @@ Respond with a JSON object:
         step_result = ""
         step_success = True
         try:
-            # ── Session 245: prior completed step results for the decision
+            # â”€â”€ Session 245: prior completed step results for the decision
             # evidence (Seam A of the synthesis starvation fix). Bounded per
             # result by tool-aware caps; steps without results are skipped.
             _prior_results: list = []
@@ -17915,10 +18012,10 @@ Respond with a JSON object:
                 return self._der_run_node(item, _session, _turn_id, _prior_results,
                                           task=getattr(plan, "original_task", "") or "")
 
-            # ── Phase 2: dispatch (TOOL) or direct (REASON) ──────────────
+            # â”€â”€ Phase 2: dispatch (TOOL) or direct (REASON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Set the phase gate call class so the gate knows whether to wait
-            # (REASON/TOOL → gated) or admit immediately (USER_TURN/SPEAK) (T3.7).
-            # GRAFT is NOT high-priority (T6.4) — recovery-plan generation after
+            # (REASON/TOOL â†’ gated) or admit immediately (USER_TURN/SPEAK) (T3.7).
+            # GRAFT is NOT high-priority (T6.4) â€” recovery-plan generation after
             # a step failure (including 429) must be gated to avoid amplification.
             if item.tool:
                 set_call_class(CallClass.TOOL)
@@ -17954,7 +18051,7 @@ Respond with a JSON object:
                     )
                 except Exception as _maybe_timeout:
                     # Session-318 T18 (REQ-11 AC11.3): deadline expiry settles
-                    # honestly — synthetic failed DispatchResult so the normal
+                    # honestly â€” synthetic failed DispatchResult so the normal
                     # downstream (record/call/capture/finalize) all run and the
                     # envelope stamps status=timeout via item.timed_out.
                     # Version-proof timeout check (TimeoutError aliases differ
@@ -17969,7 +18066,7 @@ Respond with a JSON object:
                         raise
                     _timeout_text = (
                         f"[STEP TIMEOUT after {_dispatch_deadline:g}s "
-                        f"(deadline {_dispatch_deadline:g}s) — tool "
+                        f"(deadline {_dispatch_deadline:g}s) â€” tool "
                         f"{item.tool} did not settle; continuing without it. "
                         f"The worker was abandoned, not killed (threads "
                         f"cannot be aborted); tool-internal ceilings bound "
@@ -17997,9 +18094,9 @@ Respond with a JSON object:
                     )
                 except RuntimeError as _rte:
                     # asyncio.run() inside box may fail if an event loop is
-                    # already running in this thread — executor fallback
+                    # already running in this thread â€” executor fallback
                     logger.warning(
-                        "[DER] box.dispatch RuntimeError for %s: %s — using executor",
+                        "[DER] box.dispatch RuntimeError for %s: %s â€” using executor",
                         item.tool, _rte,
                     )
                     import concurrent.futures as _cf
@@ -18039,12 +18136,12 @@ Respond with a JSON object:
                         if _dr_err:
                             step_result = f"[STEP ERROR: {_dr_err}]"
             else:
-                # REASON (no tool) or no tool_bridge — direct reasoning
+                # REASON (no tool) or no tool_bridge â€” direct reasoning
                 step_result = self._run_step_direct(item, context_package, _session)
         except RateLimitedError:
             # Propagate rate-limit failures untouched so the DER layer can
             # record them honestly (REQ-3 AC4 / REQ-4 AC2). Do NOT wrap in a
-            # string — the structured provider_id / retry_after fields are
+            # string â€” the structured provider_id / retry_after fields are
             # needed by the ledger.
             raise
         except Exception as _ex_err:
@@ -18055,11 +18152,11 @@ Respond with a JSON object:
             )
         return step_result, step_success
 
-    # ── DER Phase 0: verification (stub-kill + coarsened outcome) ──────────────
-    # SemanticVerifier instance — lazy-init so import at module level is safe.
+    # â”€â”€ DER Phase 0: verification (stub-kill + coarsened outcome) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # SemanticVerifier instance â€” lazy-init so import at module level is safe.
     _VERIFIER: Optional["SemanticVerifier"] = None
     _STUB_RE = re.compile(r"\[step\s+\d+\s+completed\]", re.IGNORECASE)
-    # pin_517dfcbda150: web/crawl steps verify by CONTENT SUFFICIENCY — the
+    # pin_517dfcbda150: web/crawl steps verify by CONTENT SUFFICIENCY â€” the
     # tool itself already proved it fetched real content (zero pages returns
     # an error at the tool boundary in tool_bridge). Assertion matching against
     # crawl output is meaningless under the hash/substring fallback while the
@@ -18076,7 +18173,7 @@ Respond with a JSON object:
     # the dispatcher's loop guard for the same reason).
     _REPEAT_GUARDED_TOOLS = _WEB_CONTENT_TOOLS | {"fetch_url", "open_url"}
     # pin_42ddd255162d: display/render tools complete by SUCCESS, not by content
-    # volume — a rendered-card confirmation is a legit completion, never a
+    # volume â€” a rendered-card confirmation is a legit completion, never a
     # candidate for a verify-failure split (which is what made the task card
     # say "rendering documents" while the backend re-searched).
     _TRUSTED_RESULT_TOOLS = frozenset({"get_rendered_documents"})
@@ -18088,7 +18185,7 @@ Respond with a JSON object:
         return self._VERIFIER
 
     def _der_trace_task_id(self) -> str:
-        """Stable per-task key for the REQ-18 trace — mirrors the ledger's
+        """Stable per-task key for the REQ-18 trace â€” mirrors the ledger's
         task_id (conversation_id or session_id), so the trace and the ledger
         correlate on the same task."""
         return self.conversation_id or self.session_id or "unknown"
@@ -18130,20 +18227,20 @@ Respond with a JSON object:
         A stub pattern with no real output is ALWAYS FAILED (no silent success).
 
         pin_517dfcbda150: when ``tool`` is a web/crawl tool, the verdict is
-        CONTENT SUFFICIENCY — the tool already proved it fetched pages (a
+        CONTENT SUFFICIENCY â€” the tool already proved it fetched pages (a
         zero-page crawl returns an error from tool_bridge), so a non-empty,
         non-error result VERIFIEDs. This terminates the crawl step as soon as
         real content exists and prevents pointless re-crawl splits.
         """
         if tool in self._TRUSTED_RESULT_TOOLS:
             # pin_42ddd255162d: display/render tools complete by SUCCESS, and
-            # this check runs FIRST — the formatted result of the render tool
+            # this check runs FIRST â€” the formatted result of the render tool
             # can be an empty/JSON-less string even on success (its dict has no
             # extractable content key), and the old position (after the
             # empty-result check) turned every successful render into a
-            # verify-FAILED → split → children re-gathered the SAME urls while
+            # verify-FAILED â†’ split â†’ children re-gathered the SAME urls while
             # the card said "rendering documents". A trusted tool that ran
-            # returns "VERIFIED" unconditionally — its contract never returns
+            # returns "VERIFIED" unconditionally â€” its contract never returns
             # errors on the read-only render path.
             return "VERIFIED"
         if not result:
@@ -18163,7 +18260,7 @@ Respond with a JSON object:
         if tool and tool in self._WEB_CONTENT_TOOLS:
             _low = _without_marker.lower()
             # pin_42ddd255162d: CONTENT SUFFICIENCY must not scan real page
-            # text for failure words — web pages legitimately contain "failed
+            # text for failure words â€” web pages legitimately contain "failed
             # to"/"no usable" mid-text, and the crawl fallback result may
             # carry an informational worker-timeout note alongside real pages.
             # Session 248 FIX (live conv-53): the failure-word scan below ran
@@ -18179,7 +18276,7 @@ Respond with a JSON object:
                 return "FAILED"
             # Session 312 (goal-result alignment, user-directed): a successful
             # fetch that never mentions the step's distinctive subject did NOT
-            # serve the goal — conv-99 "verified" a Parakeet step with a
+            # serve the goal â€” conv-99 "verified" a Parakeet step with a
             # whisper.cpp dump. Distinctive terms = capitalized words in the
             # goal (proper nouns like model names); if NONE appear in the
             # result, commit honestly as UNVERIFIED so the next decision sees
@@ -18196,7 +18293,7 @@ Respond with a JSON object:
                 t.lower() in _low for t in _subj_terms
             ):
                 logger.info(
-                    "[DER] gather alignment MISS: goal %r — none of %s appear "
+                    "[DER] gather alignment MISS: goal %r â€” none of %s appear "
                     "in fetched content", goal[:80], _subj_terms[:4],
                 )
                 return "UNVERIFIED"
@@ -18206,22 +18303,22 @@ Respond with a JSON object:
                 return "VERIFIED"
             if "no usable" in _low or "failed to" in _low:
                 return "FAILED"
-            # Short, non-error text: weak but honest — commits as UNVERIFIED,
+            # Short, non-error text: weak but honest â€” commits as UNVERIFIED,
             # never triggers a re-gather split.
             return "UNVERIFIED"
         if tool in self._TRUSTED_RESULT_TOOLS:
-            # pin_42ddd255162d: display/render tools complete by SUCCESS — a
+            # pin_42ddd255162d: display/render tools complete by SUCCESS â€” a
             # rendered-card confirmation is a legit completion. The expected
             # assertion text (e.g. "a rendered document card") never matches
             # the short confirmation string, so the assertion path FAILED the
-            # step and split it — spawning children that re-gathered web pages
+            # step and split it â€” spawning children that re-gathered web pages
             # while the card said "rendering documents".
             return "VERIFIED" if _without_marker else "FAILED"
         _frac = self._verified_fraction(expected, result)
         _expected_text = (expected or "").strip()
         if not _expected_text:
             # pin_42ddd255162d: no explicit expectation (REASON/synthesis and
-            # render steps) — the assertion fraction is meaningless; the verdict
+            # render steps) â€” the assertion fraction is meaningless; the verdict
             # rests on SUBSTANCE: a substantial result VERIFIEDs, short text
             # commits honestly as UNVERIFIED. Only an explicit error/stub FAILs.
             # Live fix 2026-09-24 (conv-145): a real TOOL that reported
@@ -18242,22 +18339,22 @@ Respond with a JSON object:
         if _frac >= 0.3:
             return "UNVERIFIED"
         # Explicit expectation, low match: a SUBSTANTIAL result is still a real
-        # answer — commit honestly as UNVERIFIED; only weak stubs FAIL.
+        # answer â€” commit honestly as UNVERIFIED; only weak stubs FAIL.
         return "UNVERIFIED" if len(_without_marker) >= 200 else "FAILED"
 
-    # ── REQ-1 AC2/AC3/AC4: per-step edge scoring ────────────────────────────
+    # â”€â”€ REQ-1 AC2/AC3/AC4: per-step edge scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     @staticmethod
     def _der_mediator_for(item: "QueueItem") -> tuple:
         """REQ-23 (T37): resolve the MEDIATOR for a finalized step.
 
         Returns (mediator, source):
-          - mediator: ``"<tool>:<args_hash>"`` — the resolved tool/action
+          - mediator: ``"<tool>:<args_hash>"`` â€” the resolved tool/action
             identifier plus a stable hash of its arguments (AC1). The args
             hash is the separator between "the same tool with materially
             different arguments" (REQ-23 edge case).
           - source:   ``"explicit"`` (tool chosen by the normal resolver /
                       plan), ``"none"`` (a pure decision/synthesis node with
-                      no tool — recorded EXPLICITLY, never empty, per AC5).
+                      no tool â€” recorded EXPLICITLY, never empty, per AC5).
 
         The DER loop resolves tools through the plan/explorer path today, so
         the source is always ``"explicit"`` or ``"none"``; the ``"predictor"``
@@ -18362,26 +18459,26 @@ Respond with a JSON object:
 
         This is deliberately a thin wiring call, not a new scorer: the deltas
         are the SAME generic table already defined in
-        ``EdgeScorer._OUTCOME_DELTAS`` (scorer.py) — hit=+0.05, partial=+0.02,
-        miss=-0.08 — now applied EVIDENCE-WEIGHTED (REQ-26/T40): the first
+        ``EdgeScorer._OUTCOME_DELTAS`` (scorer.py) â€” hit=+0.05, partial=+0.02,
+        miss=-0.08 â€” now applied EVIDENCE-WEIGHTED (REQ-26/T40): the first
         observation on an edge moves it fully, later observations move it
         less, so belief converges instead of oscillating.
 
         REQ-26 AC1 (T40c): the scored edge is the (coordinate-region,
-        mediator) pair for THIS step, selected by the CALLER — not every
+        mediator) pair for THIS step, selected by the CALLER â€” not every
         outbound edge of every active node. The REGION is the single active
         Mycelium node whose coordinates are nearest the step's live Caducean
-        position Σ = (x, y, ξ, u) (the same state the chain row records):
+        position Î£ = (x, y, Î¾, u) (the same state the chain row records):
         a step's outcome updates the region it was IN, and only that region.
         Scoring every active node would re-create the global fan-out the
-        amendment removes — a step cannot fail "in two regions at once".
+        amendment removes â€” a step cannot fail "in two regions at once".
         The mediator is ``_der_mediator_for(item)`` (REQ-23/T37).
         ``EdgeScorer.record_region_mediator_outcome`` finds-or-creates that
         edge and updates ONLY it, so a tool that works in one region and
         fails in another is representable (a single global score cannot
         express that).
 
-        REQ-1 AC2: VERIFIED  -> hit-scoring only (no crystallization change —
+        REQ-1 AC2: VERIFIED  -> hit-scoring only (no crystallization change â€”
                    out of scope; no per-step crystallization exists today).
         REQ-1 AC3: UNVERIFIED -> partial credit, capped at
                    DER_MAX_UNVERIFIED_REPROPOSE + 1 scored attempts per
@@ -18390,8 +18487,8 @@ Respond with a JSON object:
                    credit. Never crystallizes (no code path does today).
         REQ-1 AC4: FAILED    -> miss-scoring, and writes an episode with
                    outcome_type="miss" via the EXISTING ``_store_task_episode``
-                   path — the same episodic-store write used for whole-task
-                   outcomes — so evidence.py's AVOID section (which already
+                   path â€” the same episodic-store write used for whole-task
+                   outcomes â€” so evidence.py's AVOID section (which already
                    queries ``outcome_type = 'miss'``) surfaces it on the next
                    acting-prompt assembly. No second AVOID path is added.
 
@@ -18407,7 +18504,7 @@ Respond with a JSON object:
         }[verified_label]
 
         if verified_label == "UNVERIFIED":
-            # AC3: enforce the re-propose cap BEFORE scoring — this is the
+            # AC3: enforce the re-propose cap BEFORE scoring â€” this is the
             # load-bearing guard, not advisory. Lazily initialised so this
             # works regardless of how the kernel was constructed (tests build
             # AgentKernel via __new__ without running __init__).
@@ -18417,7 +18514,7 @@ Respond with a JSON object:
             if _count > DER_MAX_UNVERIFIED_REPROPOSE:
                 logger.debug(
                     "[DER] UNVERIFIED re-propose cap reached for step %s "
-                    "(> %d) — no further partial credit",
+                    "(> %d) â€” no further partial credit",
                     item.step_id, DER_MAX_UNVERIFIED_REPROPOSE,
                 )
                 return
@@ -18440,14 +18537,14 @@ Respond with a JSON object:
             try:
                 _mediator, _mediator_source = self._der_mediator_for(item)
                 if _mediator == "none":
-                    # REQ-23 AC5: a node with NO mediator records "none" —
+                    # REQ-23 AC5: a node with NO mediator records "none" â€”
                     # there is no (region, mediator) edge to score. Pure
                     # decision/synthesis nodes are not learning events.
                     return
                 _mediator_tool = _mediator.split(":", 1)[0]
                 node_ids = list(myc._registry.get_active(session_id))
                 # REQ-26 AC1: the step's REGION is the ONE active node whose
-                # coordinates are nearest its live Σ position — not every
+                # coordinates are nearest its live Î£ position â€” not every
                 # active node (that would be a fan-out in region clothing).
                 try:
                     _cad = self._der_live_cad_state(session_id)
@@ -18493,7 +18590,7 @@ Respond with a JSON object:
                     from backend.memory.mycelium.scorer import EdgeScorer
 
                     # REQ-26 AC1/T40c: the (coordinate-region, mediator)
-                    # edge for THIS step — never the global fan-out.
+                    # edge for THIS step â€” never the global fan-out.
                     EdgeScorer(myc._store).record_region_mediator_outcome(
                         region_node_id=_region_node,
                         mediator=_mediator_tool,
@@ -18538,16 +18635,16 @@ Respond with a JSON object:
         Thin wrapper over the mycelium registry resolver (extractor.py
         ``resolve_topic_domain``) so the kernel never touches keyword patterns
         directly and unknown text resolves to the registry's ``general`` bucket
-        with a logged mismatch — never invented free text. Lazy import keeps
+        with a logged mismatch â€” never invented free text. Lazy import keeps
         the mycelium extractor off the module import path (heavy-import rule).
         """
         try:
             from backend.memory.mycelium.extractor import resolve_topic_domain
 
             return resolve_topic_domain(text or "")
-        except Exception as _td_exc:  # noqa: BLE001 — never block a step
+        except Exception as _td_exc:  # noqa: BLE001 â€” never block a step
             logger.debug(
-                "[DER] topic_domain resolve failed (%s) — falling back to "
+                "[DER] topic_domain resolve failed (%s) â€” falling back to "
                 "'general'",
                 _td_exc,
             )
@@ -18560,9 +18657,9 @@ Respond with a JSON object:
         winding. ``voice`` when the turn entered via voice; ``research`` when
         the task class is research-shaped (research|explore|investigate, the
         same set der_loop._decide_mode uses); otherwise ``der``. This is the
-        request-domain axis — how the node RUNS, distinct from ``topic_domain``
+        request-domain axis â€” how the node RUNS, distinct from ``topic_domain``
         (what it is ABOUT). Unknown windings resolve to the session default
-        (``der``) — never invented free text (REQ-18 AC3).
+        (``der``) â€” never invented free text (REQ-18 AC3).
         """
         if from_voice:
             return "voice"
@@ -18571,10 +18668,10 @@ Respond with a JSON object:
             return "research"
         return "der"
 
-    # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
+    # â”€â”€ Phase 4: shared per-step finalize (extracted from _execute_plan_der)
 
 
-    # ── Physics side lane (execution audit, 2026-09-29) ───────────────────────
+    # â”€â”€ Physics side lane (execution audit, 2026-09-29) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # A step's Caducean update (EML observation -> integrator update -> coupling
     # -> trajectory row -> homeostasis -> controller refit -> Immortus chain ->
     # physics-event narration) is bookkeeping for the NEXT step's shape, not
@@ -18582,12 +18679,12 @@ Respond with a JSON object:
     # coding eval c10 spent 16-20 s of a 63 s turn inside ffi_calculate_eml on
     # the DER thread while the reply waited (logs/stackdump.log, 21:06:31-47).
     #
-    # Now it runs on the ordered durability lane (one consumer, FIFO — the
+    # Now it runs on the ordered durability lane (one consumer, FIFO â€” the
     # physics is a sequential integrator and the chain is order-sensitive, so
     # order is preserved by construction). The CADUCEAN fold-back rule decides
     # who waits: only a DECISION about the next step's shape reads the pending
-    # update (_der_physics_settle). Everything else — synthesis, scoring,
-    # modulation — reads the last settled position and never waits.
+    # update (_der_physics_settle). Everything else â€” synthesis, scoring,
+    # modulation â€” reads the last settled position and never waits.
 
     def _der_submit_physics(
         self,
@@ -18617,7 +18714,7 @@ Respond with a JSON object:
         # integrator a shape decision folds back on.
         _lane_submit = _durability_lane("physics").submit
 
-        # ready: the integrator state (u, xi, rec) is updated — what a shape
+        # ready: the integrator state (u, xi, rec) is updated â€” what a shape
         #        decision reads. done: the whole job, bookkeeping included.
         fold = SimpleNamespace(
             ready=threading.Event(), done=threading.Event(), lock=threading.Lock(),
@@ -18694,13 +18791,13 @@ Respond with a JSON object:
         _session = vals["session"]
         step_success = vals["success"]
         from_voice = vals["from_voice"]
-        # pin_42ddd255162d: physics reads bound BEFORE the try below — any early
+        # pin_42ddd255162d: physics reads bound BEFORE the try below â€” any early
         # exception must not leave _u/_xi unbound for the narration hook
-        # (CADUCEAN_ARCHITECTURE.md §10 rule 7).
+        # (CADUCEAN_ARCHITECTURE.md Â§10 rule 7).
         _u = 0.0
         _xi = 0.0
 
-        # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
+        # â”€â”€ CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD â”€â”€
         try:
             from backend.gateway.iris_ffi import (
                 ffi_caducean_calculate_eml,
@@ -18747,12 +18844,12 @@ Respond with a JSON object:
             # current. The bookkeeping below (row, homeostasis, refit, chain,
             # narration) no longer holds any decision up.
             fold.ready.set()
-            # ── REQ-10 / REQ-11: multi-session coupling (feature-flagged).
+            # â”€â”€ REQ-10 / REQ-11: multi-session coupling (feature-flagged).
             # Register the session once with its domain windings, push live
-            # (ξ, u) into the registry, and apply coupling. The engine is
+            # (Î¾, u) into the registry, and apply coupling. The engine is
             # (re)initialized with the domain windings on first registration
             # so engine c_eff and registry c_eff agree (REQ-11 AC3). Any
-            # failure logs at debug and never blocks the step (REQ-10 AC5). ──
+            # failure logs at debug and never blocks the step (REQ-10 AC5). â”€â”€
             try:
                 from backend.agent.coupled_registry import (
                     coupling_enabled,
@@ -18829,7 +18926,7 @@ Respond with a JSON object:
                     direction_signal=None,  # full signal in DebugPanel
                 )
 
-            # ── Homeostatic relaxation (REQ-1 AC2) ─────────────────────────
+            # â”€â”€ Homeostatic relaxation (REQ-1 AC2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Fire after every RELAX_EVERY_N_UPDATES (10) updates, or every
             # RELAX_MAX_INTERVAL_S (60 s) wall-clock, whichever first. A
             # relaxation failure cannot abort the trajectory record or chain
@@ -18849,7 +18946,7 @@ Respond with a JSON object:
                     "[agent_kernel] maybe_relax failed: %s", _relax_exc
                 )
 
-            # ── TrajectoryController refit on DER cadence (REQ-13) ─────────
+            # â”€â”€ TrajectoryController refit on DER cadence (REQ-13) â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Calls TrajectoryController.fit() which refits only at milestones
             # (100, 500, 1000 records), in its own try/except so a refit
             # failure cannot abort the record or chain append.
@@ -18905,7 +19002,7 @@ Respond with a JSON object:
                 file_path=vals["file_path"],
                 landmark_id="",
                 # REQ-23 AC2: mediator + source ride the same chain row as the
-                # Σ coords, so (Treatment -> Mediator -> Outcome) is queryable
+                # Î£ coords, so (Treatment -> Mediator -> Outcome) is queryable
                 # together with the coordinates that were in force.
                 mediator=vals["mediator"],
                 mediator_source=vals["mediator_source"],
@@ -18919,14 +19016,14 @@ Respond with a JSON object:
         except Exception as _cad_exc:
             loud_error(_cad_exc, "caducean_trajectory_immortus")
 
-        # ── REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) ──
-        # The agent speaks ONLY on a physics event — a |u| transition
+        # â”€â”€ REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) â”€â”€
+        # The agent speaks ONLY on a physics event â€” a |u| transition
         # (oscillating -> converged) or a structural event (split into
         # Sub-Loops, or a Sub-Loop collapsing). Funneled through SpeakTool
         # (narration lock) so it never conflicts with web-search progress or
         # the final answer. It reads the u/xi this update just produced, so it
         # runs here, on the lane, right after the update.
-        # Invariant: spoken ⊆ visible — every spoken line is a real transition.
+        # Invariant: spoken âŠ† visible â€” every spoken line is a real transition.
         _n_children = vals["n_children"]
         _is_subloop = vals["is_subloop"]
         _verified = vals["verified"]
@@ -19036,7 +19133,7 @@ Respond with a JSON object:
         session domain ("voice" vs "der") instead of raising NameError.
         """
         # Session 312 (Pacman-only context flow, user-directed): the raw step
-        # result used to enter the inline flow UNBOUNDED — three crawls put
+        # result used to enter the inline flow UNBOUNDED â€” three crawls put
         # 71.5k chars of page text into a 64k window (conv-99). The DB keeps
         # the full text (Pacman fragments + document store); the context
         # window gets the SAME bounded excerpt the evidence path uses
@@ -19051,11 +19148,11 @@ Respond with a JSON object:
         step_outputs.append(_window_evidence)
         # Session 312 / Session-318 / Session-319: turn URL memory is harvested
         # by ONE shared helper so the FAILURE path records addresses too (that
-        # path skips this function entirely — see _der_handle_step_failure).
+        # path skips this function entirely â€” see _der_handle_step_failure).
         # Behaviour here is unchanged; the body simply moved.
         _remember_turn_urls(self, step_result, "finalize")
 
-        # ── EventBus: emit tool:result or tool:error ────────────────
+        # â”€â”€ EventBus: emit tool:result or tool:error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             _lifecycle_task_id = _turn_id or item.step_id
@@ -19093,7 +19190,7 @@ Respond with a JSON object:
                 )
         except Exception:
             pass
-        # T13 (REQ-10 AC10.11): the tool finished — close its narratable wait.
+        # T13 (REQ-10 AC10.11): the tool finished â€” close its narratable wait.
         # Results voice via the reply path; exit itself stays silent.
         try:
             self._end_tool_wait(_lifecycle_task_id)
@@ -19138,7 +19235,7 @@ Respond with a JSON object:
                         self._memory_interface.episodic, "fragment_and_store"
                     )
                 ):
-                    # Background, same writer as every other fragment path —
+                    # Background, same writer as every other fragment path â€”
                     # see the note at the document_data store above.
                     from backend.agent.mcm_protocol.actions.pacman_fragment import (
                         _submit_fragment_job,
@@ -19192,8 +19289,8 @@ Respond with a JSON object:
         except Exception as _fail_frag_exc:
             loud_error(_fail_frag_exc, "der_pacman_fragment_failure")
 
-        # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
-        # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
+        # â”€â”€ TOKEN BUDGET: accumulate estimated tokens from step result â”€â”€
+        # 4 chars â‰ˆ 1 token; also count prompt overhead per step (~200 tok)
         # Session 366 (track C): bill the BOUNDED evidence the window actually
         # receives, not the raw tool result. MEASURED: a 16384-token window
         # yields a 13270-token budget; one crawl's RAW result charged ~12k
@@ -19205,7 +19302,7 @@ Respond with a JSON object:
         # one large result killed the chain. 4 chars ~= 1 token, + ~200 prompt
         # overhead per step.
         _tokens_used += max(200, len(_window_evidence) // 4)
-        # ── EventBus: emit context:usage (token budget progress) ──────
+        # â”€â”€ EventBus: emit context:usage (token budget progress) â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -19221,11 +19318,11 @@ Respond with a JSON object:
                 session_id=_session,
             )
         except Exception:
-            pass  # EventBus is optional — no crash if it fails
+            pass  # EventBus is optional â€” no crash if it fails
         if _tokens_used >= _token_budget:
             logger.info(
                 f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
-                f"after step {item.step_number} — stopping early"
+                f"after step {item.step_number} â€” stopping early"
             )
             # RC6 FIX: emit explicit event instead of silent stop
             try:
@@ -19251,9 +19348,9 @@ Respond with a JSON object:
                     session_id=_session,
                 )
             except Exception:
-                pass  # EventBus is optional — no crash if it fails
+                pass  # EventBus is optional â€” no crash if it fails
 
-        # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
+        # â”€â”€ MYCELIUM SIGNAL: tool call â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             if self._memory_interface:
                 self._memory_interface.mycelium_ingest_tool_call(
@@ -19330,23 +19427,23 @@ Respond with a JSON object:
             recall_trace_ids=list(getattr(item, "recall_trace_ids", None) or []),
         )
 
-        # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
+        # â”€â”€ Phase 2 (D2.1): unified recovery â€” verification FAILED uses the
         # SAME _split_step operator as the physics trigger. No separate graft
         # code path remains. Split prepays work units up front (Lyapunov Phi
         # strictly decreases). Children are Sub-Loops (is_subloop=True) that
-        # collapse back to this step as ONE COMPRESS. ──
+        # collapse back to this step as ONE COMPRESS. â”€â”€
         # BUGFIX (REQ-8 AC3): this block used to run at the very end of the
         # function (right before `return _tokens_used`), but `_children` is
-        # READ much earlier — by the REQ-8 task:learning emit below and by the
-        # REQ-7 physics-narration hook — while it is only ASSIGNED here. Since
+        # READ much earlier â€” by the REQ-8 task:learning emit below and by the
+        # REQ-7 physics-narration hook â€” while it is only ASSIGNED here. Since
         # a name assigned anywhere in a Python function is local for the whole
         # function, every earlier read raised `UnboundLocalError: cannot
         # access local variable '_children' where it is not associated with a
         # value`, silently caught by each call site's own try/except so the
         # task:learning event (and the physics narration) never fired. Moved
         # up so `_children` is a real, already-computed value at every read
-        # site. `_children` defaults to `[]` (no split) so the success path —
-        # which never enters the split branch — still has a bound, honestly
+        # site. `_children` defaults to `[]` (no split) so the success path â€”
+        # which never enters the split branch â€” still has a bound, honestly
         # falsy value instead of leaving the name unbound.
         _children = []
         # REQ-13 (fold forward, not back): only a FAILED verification may enter
@@ -19365,7 +19462,7 @@ Respond with a JSON object:
             # BEFORE recursive fan-out. Transport/provider/envelope failures
             # (timeout, rate-limit, unavailable tool, bad args, empty result,
             # auth) are recorded as failure evidence and must NOT split the
-            # task into children — the old `not step_success -> split` rule
+            # task into children â€” the old `not step_success -> split` rule
             # turned a single transient error into a recursive fan-out. Only a
             # genuine semantic failure (tool produced content but verification
             # judged it wrong) splits: the step_result then carries real
@@ -19406,7 +19503,7 @@ Respond with a JSON object:
                     ):
                         _split_ok = False
                         logger.info(
-                            "[DER] step %s failure classified=%s — recorded, NOT split (D4)",
+                            "[DER] step %s failure classified=%s â€” recorded, NOT split (D4)",
                             item.step_id, _fail_class,
                         )
                         try:
@@ -19430,7 +19527,7 @@ Respond with a JSON object:
                             )
                         except Exception as _led_exc:  # noqa: BLE001
                             logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
-            except Exception:  # noqa: BLE001 — classification must never break recovery
+            except Exception:  # noqa: BLE001 â€” classification must never break recovery
                 _split_ok = True
             if _split_ok:
                 try:
@@ -19439,7 +19536,7 @@ Respond with a JSON object:
                     _cad_split = self._der_live_cad_state(_session)
                     _wu = getattr(self, "_der_work_units", 0)
                     # REQ-4 AC1 (T16): the continuous verified fraction is a
-                    # GRADED steering input at the split decision — mid-band
+                    # GRADED steering input at the split decision â€” mid-band
                     # selects a bounded probe (width 1) instead of a full-width
                     # re-attempt. Never crash the split on fraction failure.
                     try:
@@ -19459,7 +19556,7 @@ Respond with a JSON object:
                     )
                     # REQ-3: debit measured tokens, not a flat child count.
                     # _measured must be bound for the debit even when no child was
-                    # created (empty split) — a NameError here was silently swallowed
+                    # created (empty split) â€” a NameError here was silently swallowed
                     # by the broad except, disabling the work-unit debit entirely
                     # (NORTHSTAR defect-shape #1).
                     _measured = 0
@@ -19471,7 +19568,7 @@ Respond with a JSON object:
                         # REQ-3: debit measured tokens, not a flat child count.
                         _measured = max(200, len(step_result) // 4)
                         # REQ-14 (AC1/AC5, T23): a sub-loop split REVISES the
-                        # plan mid-task — re-emit task:start through the SAME
+                        # plan mid-task â€” re-emit task:start through the SAME
                         # merge-by-id channel (useTaskProgress.ts:210-227) with
                         # the revision origin so the frontend refreshes
                         # description/tool for new steps without clobbering live
@@ -19491,7 +19588,7 @@ Respond with a JSON object:
                                 else str(_phase)
                             )
                             # REQ-3 (T2) edge case: a sub-loop split CONTINUES
-                            # the parent card — it is a branch WITHIN a card,
+                            # the parent card â€” it is a branch WITHIN a card,
                             # never a second card. Handled generically by the
                             # "not initial" rule in _resolve_card_identity.
                             _card_task_id = _turn_id or getattr(
@@ -19502,7 +19599,7 @@ Respond with a JSON object:
                             )
                             # T2b (REQ-1 AC8): the badge marks the nested row,
                             # so the label is set on the CHILD steps this
-                            # split just produced — never on the parent or
+                            # split just produced â€” never on the parent or
                             # any sibling already in the queue. A step
                             # outside `_children` carries no `branchLabel`
                             # key at all (not an empty string), so
@@ -19547,7 +19644,7 @@ Respond with a JSON object:
                             # T4a (REQ-4 AC1): persist the split card. Uses
                             # _queue_steps_snapshot (derives done/failed from
                             # queue state) rather than the wire payload's
-                            # blanket "pending" — a mid-run restore should
+                            # blanket "pending" â€” a mid-run restore should
                             # show already-finished steps as finished.
                             self._persist_card_snapshot(
                                 card_id=_card_id,
@@ -19575,7 +19672,7 @@ Respond with a JSON object:
                             except Exception:
                                 pass
                         except Exception:
-                            pass  # EventBus is optional — never break recovery
+                            pass  # EventBus is optional â€” never break recovery
                     self._der_work_units = debit_work_units(_wu, _measured)
                     logger.info(
                         "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
@@ -19584,11 +19681,11 @@ Respond with a JSON object:
                 except Exception as _split_exc:
                     logger.warning("[DER] split-on-failure failed: %s", _split_exc)
 
-        # ── Phase 3 (D3.3 G5): honest commit ledger ──
+        # â”€â”€ Phase 3 (D3.3 G5): honest commit ledger â”€â”€
         # REQ-1: a commit is recorded for EVERY executed action with its true label
-        # (VERIFIED / UNVERIFIED / FAILED) — not only VERIFIED. This is the learning
+        # (VERIFIED / UNVERIFIED / FAILED) â€” not only VERIFIED. This is the learning
         # signal the outer loop and the AVOID/edge-miss path consume; gating it on
-        # VERIFIED starves failure learning. Store write — never injected into a
+        # VERIFIED starves failure learning. Store write â€” never injected into a
         # prompt.
         # D1 (HANDOFF 11): the write runs on lane("memory_events"), never on
         # the answer path - inline it waited on "database is locked" (live
@@ -19642,8 +19739,8 @@ Respond with a JSON object:
                 _session, getattr(item, "step_id", "?"), _verified, _commit_exc,
             )
 
-        # ── REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
-        # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped —
+        # â”€â”€ REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
+        # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped â€”
         # AC3) and never crystallizes, FAILED miss-scores (-0.08) and feeds the
         # AVOID header (AC4). Never raises. INLINE on purpose: the next step of
         # this turn decides on what it writes (explorer tool choice reads the
@@ -19659,7 +19756,7 @@ Respond with a JSON object:
             from backend.agent import review_outcome_label as _rol
 
             _rol.stamp(getattr(item, "step_id", None), _verified)
-        except Exception:  # noqa: BLE001 — a label never blocks a settle
+        except Exception:  # noqa: BLE001 â€” a label never blocks a settle
             logger.debug("[DER] review outcome stamp failed")
 
         try:
@@ -19686,11 +19783,11 @@ Respond with a JSON object:
         else:
             queue.mark_complete(item.step_id)
 
-        # ── T6/T8/T10 (specs/long-horizon-der-execution REQ-5/REQ-9) ──────
+        # â”€â”€ T6/T8/T10 (specs/long-horizon-der-execution REQ-5/REQ-9) â”€â”€â”€â”€â”€â”€
         # D8: persistence gates terminal state. Close the execution-attempt in
         # the ledger and persist BEFORE emitting the terminal task:learning
         # event. A persistence failure is exposed honestly (warning) and the
-        # event still fires — but the durable record is flagged, never silently
+        # event still fires â€” but the durable record is flagged, never silently
         # claimed.
         try:
             from backend.agent.der_execution_ledger import ExecutionLedger
@@ -19717,18 +19814,18 @@ Respond with a JSON object:
             )
             if not _ledger.persist():
                 logger.warning(
-                    "[DER] attempt persistence FAILED for step %s — durable completion not claimed",
+                    "[DER] attempt persistence FAILED for step %s â€” durable completion not claimed",
                     item.step_id,
                 )
-        except Exception as _att_exc:  # noqa: BLE001 — ledger must never block the step
+        except Exception as _att_exc:  # noqa: BLE001 â€” ledger must never block the step
             logger.debug("[DER] attempt-ledger write failed: %s", _att_exc)
 
-        # ── REQ-8: honest learning signal (task:learning) ───────────────
+        # â”€â”€ REQ-8: honest learning signal (task:learning) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Emited (never injected into a prompt) so the frontend can show the real
         # card state + Pacman OrbCanvas particles on the border. Three signals:
-        #   avoided    — FAILED step (no children, not a subloop) -> AVOID
-        #   retried    — verify_failed -> split into Sub-Loops
-        #   crystallized— VERIFIED step -> skill captured
+        #   avoided    â€” FAILED step (no children, not a subloop) -> AVOID
+        #   retried    â€” verify_failed -> split into Sub-Loops
+        #   crystallizedâ€” VERIFIED step -> skill captured
         # Off the critical path; a bus failure must never block the step result.
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -19754,9 +19851,9 @@ Respond with a JSON object:
         except Exception as _learn_exc:
             logger.debug("[DER] task:learning emit failed: %s", _learn_exc)
 
-        # ── Phase 3 (Gap 3): propagate this step's output into dependent
+        # â”€â”€ Phase 3 (Gap 3): propagate this step's output into dependent
         # pending steps so later steps consume real results, not static
-        # params. Non-blocking — never fails the step. ──
+        # params. Non-blocking â€” never fails the step. â”€â”€
         try:
             queue.resolve_dependent_params(item, step_result)
         except Exception as _dep_exc:
@@ -19764,7 +19861,7 @@ Respond with a JSON object:
                 "[DER] resolve_dependent_params failed: %s", _dep_exc
             )
 
-        # ── Caducean physics -> ordered side lane (_der_submit_physics) ──
+        # â”€â”€ Caducean physics -> ordered side lane (_der_submit_physics) â”€â”€
         # The node record is stamped HERE, inline: synthesis and the
         # continuation consult read it. The physics update (EML, integrator,
         # trajectory row, homeostasis, refit, Immortus chain, physics-event
@@ -19773,16 +19870,16 @@ Respond with a JSON object:
         _mediator, _mediator_source = "none", "none"
         _phys = None
         try:
-            # REQ-23 (T37): the causal triple — resolve the MEDIATOR once and
+            # REQ-23 (T37): the causal triple â€” resolve the MEDIATOR once and
             # bind it to a VALUE (the write runs later; `item` must not be
             # read from another thread after the loop moves on). AC1: written
             # at the same finalize point as the outcome; AC5: "none" is the
             # explicit value for mediator-less (decision/synthesis) nodes,
-            # never empty — so they do not rank as failed actions.
+            # never empty â€” so they do not rank as failed actions.
             _mediator, _mediator_source = self._der_mediator_for(item)
             # REQ-3 AC2 (T37 completion): stamp the node's memory record at
-            # finalize — outcome, continuous fraction, mediator, and the
-            # landing coordinate — so the record is complete for the causal
+            # finalize â€” outcome, continuous fraction, mediator, and the
+            # landing coordinate â€” so the record is complete for the causal
             # vocabulary (Treatment -> Mediator -> Outcome) and for the
             # REQ-26 posterior reader. Off the critical path; never fails the
             # step.
@@ -19811,7 +19908,7 @@ Respond with a JSON object:
                 if _rec is not None:
                     _rec.outcome = _verified
                     # REQ-18 (T19): stamp the two domain axes at the same
-                    # finalize point as the outcome — topic re-resolved from
+                    # finalize point as the outcome â€” topic re-resolved from
                     # the FULL step result text (richer signal than the seed
                     # description; registry-backed, general + logged on miss),
                     # execution from the active winding. AC4: these ride the
@@ -19824,7 +19921,7 @@ Respond with a JSON object:
                     )
                     # T36-FIX (content_summary): the L6014 construction comment
                     # promised "the finalize site re-stamps with the full step
-                    # result text" — but content_summary was NEVER re-stamped, so
+                    # result text" â€” but content_summary was NEVER re-stamped, so
                     # _der_node_record_evidence fed the synthesis LLM only the
                     # step DESCRIPTION (plan sentence), not the actual tool output.
                     # Live T36 smoke: crawl stored 17 chunks + rendered the prism
@@ -19848,8 +19945,8 @@ Respond with a JSON object:
                             _verified, 0.0
                         )
                     _rec.verified_fraction = _vf
-                    # ── Goal contract T5 (specs/goal-contract-coverage,
-                    # REQ-2/REQ-3) ── mark coverage from the settled node's
+                    # â”€â”€ Goal contract T5 (specs/goal-contract-coverage,
+                    # REQ-2/REQ-3) â”€â”€ mark coverage from the settled node's
                     # outcome + result (VERIFIED + term match, set union),
                     # stamp C onto the task node's verified_fraction, log
                     # C/g/covered/required. Advisory: never break finalize.
@@ -19888,7 +19985,7 @@ Respond with a JSON object:
                                     _gc_state["unmoved"] = 0
                                 # rho = dC/(g*ds): ds = measured tokens spent
                                 # this cycle (4 chars ~= 1 token on the step
-                                # result). Advisory — computed best-effort.
+                                # result). Advisory â€” computed best-effort.
                                 _gc_ds = max(
                                     1.0, len(str(step_result or "")) / 4.0
                                 )
@@ -19902,7 +19999,7 @@ Respond with a JSON object:
                             if _gc_task_rec is not None:
                                 _gc_task_rec.verified_fraction = float(_gc_cov.C)
                                 _gc_task_rec.covered_facts = list(_gc_cov.covered)
-                            # REQ-4 AC4.2: agent ceiling discovery — a VERIFIED
+                            # REQ-4 AC4.2: agent ceiling discovery â€” a VERIFIED
                             # step whose result carries deliverables BEYOND the
                             # required floor proposes them as ceiling facts
                             # (surplus extraction via the same deterministic
@@ -19916,7 +20013,7 @@ Respond with a JSON object:
                                 #   agent ceiling +2 ({"success": true,
                                 #   "stdout": "wc : The term 'wc' is not
                                 #   recognized..."})
-                                # — shell error text became "discovered facts".
+                                # â€” shell error text became "discovered facts".
                                 # Only discover from a result that carries
                                 # actual output.
                                 if (
@@ -19974,9 +20071,9 @@ Respond with a JSON object:
                             "[goal-contract] coverage mark skipped: %s",
                             _gc_cov_exc,
                         )
-                    # ── Goal contract T9 (REQ-5 AC5.1): a FAILED settle with
+                    # â”€â”€ Goal contract T9 (REQ-5 AC5.1): a FAILED settle with
                     # a terminal typed reason blocks the facts it was working
-                    # on. Advisory — non-terminal failures retry, never block.
+                    # on. Advisory â€” non-terminal failures retry, never block.
                     try:
                         if str(_verified or "").upper() == "FAILED":
                             _gc_reason = str(
@@ -19991,9 +20088,9 @@ Respond with a JSON object:
                     _rec.mediator = _mediator
                     _rec.mediator_source = _mediator_source
                     _rec.edge_ids = _rec.edge_ids or []
-                    # ── REQ-5 AC2/AC4 (T17): record the COUPLING DECISION at
+                    # â”€â”€ REQ-5 AC2/AC4 (T17): record the COUPLING DECISION at
                     # commit. The branches surfaced to this step (all of them,
-                    # capped — AC1) plus the one it chose are stamped on the
+                    # capped â€” AC1) plus the one it chose are stamped on the
                     # node record, and the edge to the chosen branch is
                     # written/strengthened with the decision as provenance.
                     # Off the critical path; never raises.
@@ -20008,12 +20105,12 @@ Respond with a JSON object:
                         logger.debug(
                             "[DER] coupling-decision record failed: %s", _cc_exc
                         )
-                    # ── REQ-19 (T20): persist the DER structural links into
-                    # the SHARED link store at the same finalize point — the
+                    # â”€â”€ REQ-19 (T20): persist the DER structural links into
+                    # the SHARED link store at the same finalize point â€” the
                     # node's memory record AND its edges land together (DAG =
                     # memory = DAG). part_of (sub-loop containment, child ->
                     # parent), depends_on (plan dependency), relevant_to
-                    # (branches actually surfaced to a decision — provenance,
+                    # (branches actually surfaced to a decision â€” provenance,
                     # not affinity), failed_like (same failure class, so AVOID
                     # recall is a graph walk). Off the critical path; the
                     # writer itself never raises.
@@ -20040,7 +20137,7 @@ Respond with a JSON object:
                 logger.debug(
                     "[DER] node_record finalize stamp failed: %s", _rec_exc
                 )
-            # ── REQ-4 AC4 (T16b): FOLD-BACK — a sub-loop child folds back as
+            # â”€â”€ REQ-4 AC4 (T16b): FOLD-BACK â€” a sub-loop child folds back as
             # a compressed observation that CHANGES the parent's state: the
             # parent's node_record gains the child's verified outcome (REQ-3
             # AC1: the parent's next decision reads node records that now
@@ -20085,11 +20182,11 @@ Respond with a JSON object:
             )
         except Exception as _lane_exc:
             loud_error(_lane_exc, "der_physics_submit")
-        # ── specs/tool-result-envelope T6 (REQ-1 AC1.2): build the
+        # â”€â”€ specs/tool-result-envelope T6 (REQ-1 AC1.2): build the
         # envelope ONCE at the finalize site. Extracted into its own
         # method so an upstream caducean failure can never skip
-        # envelope construction (AC1.4: the envelope ALWAYS exists —
-        # full or minimal — never a silent legacy item).
+        # envelope construction (AC1.4: the envelope ALWAYS exists â€”
+        # full or minimal â€” never a silent legacy item).
         try:
             self._der_build_step_envelope(
                 item=item,
@@ -20111,10 +20208,10 @@ Respond with a JSON object:
                 getattr(item, "step_id", "?"), _env_call_exc,
             )
 
-        # ── WORKING MEMORY: accumulate findings for later steps ──
+        # â”€â”€ WORKING MEMORY: accumulate findings for later steps â”€â”€
         # T7 (specs/tool-result-envelope REQ-2 AC2.1): append the envelope
         # LINE (status + summary + wrapper labels + raw_ref doc id) for EVERY
-        # settled step INCLUDING failures — the old site appended a raw
+        # settled step INCLUDING failures â€” the old site appended a raw
         # _smart_excerpt for successes only, silently skipping failures,
         # which guaranteed the next step could not see the flat tire it just
         # hit. Raw payloads no longer enter working memory by construction;
@@ -20140,7 +20237,7 @@ Respond with a JSON object:
                         _session, _wm_note, zone="working_history"
                     )
                 # Session 245 (live memory footer): surface the memory WRITE
-                # on the card's footer while execution happens — previously
+                # on the card's footer while execution happens â€” previously
                 # memory:event only fired once at recall time (before the
                 # card existed), so the footer sat on "Active Execution" for
                 # whole runs. Same registry kind ("episodic"), outcome_type
@@ -20167,9 +20264,9 @@ Respond with a JSON object:
         completed_items.append(item)
 
         # Session-318 T16 (REQ-9 AC9.5/AC9.6): VLM in-site recovery trigger.
-        # Dead fetch + unvisited same-site candidates + budget remaining →
+        # Dead fetch + unvisited same-site candidates + budget remaining â†’
         # a recovery QueueItem joins via add_item (the card-visible path).
-        # Dependents order after it; independents ahead proceed first — the
+        # Dependents order after it; independents ahead proceed first â€” the
         # lane never blocks the loop (no new locks, no waits). One recovery
         # per dead host per turn; chains forbidden in the helper.
         try:
@@ -20201,7 +20298,7 @@ Respond with a JSON object:
         except Exception as _rec_open_exc:
             logger.debug("[DER] recovery open failed: %s", _rec_open_exc)
 
-        # ── Phase 3: escalation + explorer ─────────────────────────
+        # â”€â”€ Phase 3: escalation + explorer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # After each step, check if mode escalation is warranted.
         # If queue is complete but more work is needed in AGENTIC/FULL
         # mode, re-plan with the LLM.
@@ -20216,7 +20313,7 @@ Respond with a JSON object:
 
             # If queue is complete but mode is AGENTIC or FULL,
             # ask the LLM if more tools are needed.
-            # Phase 5: rec-int termination — during COMPRESS (rec==1) the field
+            # Phase 5: rec-int termination â€” during COMPRESS (rec==1) the field
             # is condensing, so do NOT expand the plan with new explorer steps.
             # (next_ready already defers non-critical steps during COMPRESS; this
             # stops adding NEW ones, integrating the recommendation into loop
@@ -20289,10 +20386,10 @@ Respond with a JSON object:
                 if _next_tool:
                     # GOAL ONLY: the continuation step carries no tool/params.
                     # _der_run_step_execution resolves it via the single resolver
-                    # (explorer.propose) — F6 / System Invariant. We never take a
+                    # (explorer.propose) â€” F6 / System Invariant. We never take a
                     # tool from the Explorer's continuation dict.
                     # Session 312 (live conv-99): QueueItem was referenced here
-                    # without an import — the one at the DER-loop function is a
+                    # without an import â€” the one at the DER-loop function is a
                     # LOCAL binding, invisible here. Explorer escalation died
                     # with NameError at 18:05:09, exactly when result-aware
                     # steering was needed.
@@ -20314,7 +20411,7 @@ Respond with a JSON object:
                     )
                     # Surface the newly-planned step to the frontend so the
                     # inline plan card shows the agent's live search/action
-                    # steps as they are discovered — not just the upfront
+                    # steps as they are discovered â€” not just the upfront
                     # planner plan.  Frontend appends it to the to-do list.
                     # No session_id -> broadcast to all (single-user IRIS).
                     try:
@@ -20340,7 +20437,7 @@ Respond with a JSON object:
                             card_id=_add_step_envelope.get("card_id"),
                             conversation_id=self.conversation_id,
                             card_relation="continues",
-                            # save_card upserts the WHOLE row — plan_title/mode
+                            # save_card upserts the WHOLE row â€” plan_title/mode
                             # must be re-sent every write or a step-transition
                             # snapshot would null out what task:start set.
                             plan_title=self._effective_plan_title(plan),
@@ -20361,7 +20458,7 @@ Respond with a JSON object:
                 "[DER] Explorer escalation failed: %s", _explorer_exc
             )
         # Session-318 T19 (AC5.6 defect fix): grade at completion on EVERY
-        # terminal path — the continuation-done branch alone never runs on
+        # terminal path â€” the continuation-done branch alone never runs on
         # queue-exhaustion ends (conv-102: zero grade lines). Deduped by turn.
         # Non-vacuous only: an EMPTY queue is trivially "complete" and must
         # never stamp a premature PASS mid-run (caught by BT-4).
@@ -20373,7 +20470,7 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # ── EventBus: emit der:step ────────────────────────────────
+        # â”€â”€ EventBus: emit der:step â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -20405,7 +20502,7 @@ Respond with a JSON object:
                     "step_done": True,
                     # pin_517dfcbda150: carry the unique step id so the frontend
                     # can check off BOTH plan steps (ids like r1/step_1) and
-                    # DER-discovered steps (der-N / explorer_N) — previously it
+                    # DER-discovered steps (der-N / explorer_N) â€” previously it
                     # only matched der-N, so plan steps never visually completed.
                     "step_id": item.step_id,
                     "step_number": item.step_number,
@@ -20417,7 +20514,7 @@ Respond with a JSON object:
                 },
             )
             # T4a (REQ-4 AC5): persist the step transition so a card
-            # interrupted mid-run restores with current step statuses —
+            # interrupted mid-run restores with current step statuses â€”
             # the whole point of AC5, since a crash never reaches task:done.
             _step_done_envelope = self._card_envelope(_turn_id)
             self._persist_card_snapshot(
@@ -20433,7 +20530,7 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # ── TRAILING DIRECTOR gap-fill REMOVED (2026-08-06) ──────────────
+        # â”€â”€ TRAILING DIRECTOR gap-fill REMOVED (2026-08-06) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # The gap-fill ran SEQUENTIALLY after the user's task: it was invoked
         # synchronously in _der_finalize_step and its gap items were queued
         # into the SAME turn, re-executing completed steps' work after the plan
@@ -20453,7 +20550,7 @@ Respond with a JSON object:
         # NOTE: the verify_failed -> split-into-sub-loops step (Phase 2 D2.1)
         # used to live here. It computed `_children`, which the REQ-8
         # task:learning emit and the REQ-7 physics-narration hook above both
-        # read — but those reads ran *before* this block, every time, so
+        # read â€” but those reads ran *before* this block, every time, so
         # `_children` was always unbound at read time (UnboundLocalError,
         # silently swallowed). Moved up to right after `_verified` is known,
         # before its first reader. See the bugfix note there.
@@ -20464,27 +20561,27 @@ Respond with a JSON object:
         """REQ-3 T8b AC4/AC5/AC6: bound the step's working context (forgetting).
 
         Extracted from _der_finalize_step's step-input section so the contract
-        test drives the REAL code. Never raises — the caller's step must not
+        test drives the REAL code. Never raises â€” the caller's step must not
         fail on a forgetting error.
 
         AC4: content beyond the OQ-6 derived bound is dropped from the step's
-        working context (coordinate_signal) — the node record is the re-read
+        working context (coordinate_signal) â€” the node record is the re-read
         point.
         AC5: the per-step prompt token count is recorded (measured reduction);
         the bound is DERIVED from the REQ-1 resolved window, never a literal.
         AC6: when the node's chain write FAILED (durability drop counter > 0),
-        the working context is the ONLY copy — never bounded/dropped.
+        the working context is the ONLY copy â€” never bounded/dropped.
         """
         try:
             _window = self.resolve_context_window() or 8192
-            # OQ-6: 15% of the resolved window, derived — never a hardcoded
+            # OQ-6: 15% of the resolved window, derived â€” never a hardcoded
             # literal (a literal re-creates the 8192 collapse REQ-1 fixes).
             _step_budget = max(512, int(_window * 0.15))
             _sig = getattr(item, "coordinate_signal", "") or ""
-            _step_tokens = max(1, len(_sig) // 4)  # chars→tokens ≈ 4:1
+            _step_tokens = max(1, len(_sig) // 4)  # charsâ†’tokens â‰ˆ 4:1
             # AC6: never forget content whose write failed. BUGFIX 2026-08-06:
             # the old guard `_der_chain_drops == 0 or not
-            # step_id.startswith("immortus")` made AC6 vacuously true — the
+            # step_id.startswith("immortus")` made AC6 vacuously true â€” the
             # `or` second clause was True for EVERY non-immortus step, so a
             # regular DER step whose chain write FAILED (drops>0) still had
             # its only copy dropped. Contract
@@ -20500,7 +20597,7 @@ Respond with a JSON object:
         except Exception as _forget_exc:
             loud_error(_forget_exc, "step_forgetting_bound")
 
-    # ── Phase 3: explorer methods ──────────────────────────────────────
+    # â”€â”€ Phase 3: explorer methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _gc_result_is_error(self, result: object) -> bool:
         """True when a settled step's result is an ERROR envelope, not output.
@@ -20610,7 +20707,7 @@ Respond with a JSON object:
             if not _open:
                 return None
             logger.info(
-                "[goal-contract] gap open (%d facts) — requesting "
+                "[goal-contract] gap open (%d facts) â€” requesting "
                 "work instead of finalizing: %r",
                 len(_open), str(_open[0])[:160],
             )
@@ -20633,12 +20730,12 @@ Respond with a JSON object:
             if _st.get("blocked"):
                 return False
             return not self._goal_contract_open_facts()
-        except Exception:  # noqa: BLE001 — doubt means "not met": the consult runs
+        except Exception:  # noqa: BLE001 â€” doubt means "not met": the consult runs
             return False
 
     def _goal_contract_open_facts(self) -> List[str]:
         """Goal contract T6 (REQ-3 AC3.2/AC3.6): required facts neither covered
-        nor blocked. Advisory helper — empty when no contract exists."""
+        nor blocked. Advisory helper â€” empty when no contract exists."""
         try:
             _st = getattr(self, "_goal_contract_state", None)
             if _st is None:
@@ -20670,7 +20767,7 @@ Respond with a JSON object:
         except Exception:
             return []
 
-    # ── Goal contract Wave 3 (T7/T8/T9/T10) ─────────────────────────────
+    # â”€â”€ Goal contract Wave 3 (T7/T8/T9/T10) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Advisory helpers: every path degrades to legacy behavior when no
     # contract exists. Never raise, never block the turn.
 
@@ -20706,7 +20803,7 @@ Respond with a JSON object:
             ])
             _hits = list(_gc_mod4.step_fact_hits(_open, _step_text))
             if not _hits:
-                # The failed step maps to no open fact — name the gap against
+                # The failed step maps to no open fact â€” name the gap against
                 # the first open fact so the block is never silent.
                 _hits = [str(_open[0])]
             _blocked = _st.get("blocked") or []
@@ -20772,7 +20869,7 @@ Respond with a JSON object:
         """T9 AC5.3/AC5.4: the final answer names every blocked fact.
 
         When blocked facts exist and the answer does not already name all
-        of them, the deterministic blocked-fact summary is the floor — the
+        of them, the deterministic blocked-fact summary is the floor â€” the
         naming block is appended so every blocked fact is explicit. Returns
         the answer unchanged when nothing is blocked or all are named.
         Advisory: never raises.
@@ -20792,7 +20889,7 @@ Respond with a JSON object:
             _lines = "\n".join(f"- {_f}" for _f in _blocked)
             _suffix = (
                 "\n\nParts of your request I could not cover "
-                "(blocked — not skipped):\n" + _lines
+                "(blocked â€” not skipped):\n" + _lines
             )
             logger.info(
                 "[goal-contract] named %d blocked fact(s) in final answer "
@@ -20805,8 +20902,8 @@ Respond with a JSON object:
     def _goal_contract_apply_steering(self, text: str) -> bool:
         """Route user steering through amend (T7, REQ-4 AC4.1/AC4.6/AC4.7).
 
-        Amends the task node's required set in place — add, remove, or
-        repromote — without creating a second task. Writes the forward
+        Amends the task node's required set in place â€” add, remove, or
+        repromote â€” without creating a second task. Writes the forward
         amendment node (derives_from, T8) and logs who/when/why (AC7.3).
         Returns True when the contract changed.
         """
@@ -20937,11 +21034,11 @@ Respond with a JSON object:
         """SHADOW (session 365): record the continuation route the loop is about
         to take, so `depth_route` can be scored against what actually happened.
 
-        CALLED FROM EACH BRANCH, passing that branch's own literal name — never
+        CALLED FROM EACH BRANCH, passing that branch's own literal name â€” never
         by predicting the route from state. Predicting would mean duplicating
         `_goal_contract_bonus_pass`'s conditions (whose only mutation is
         `bonus_passes = 1`), and a duplicated predicate that drifts would record
-        a WRONG reference — worse than no row, because a wrong `brain_choice`
+        a WRONG reference â€” worse than no row, because a wrong `brain_choice`
         silently corrupts the parity metric this consumer exists to produce.
 
         The route is therefore declared where it is decided. Purely an observer:
@@ -20976,7 +21073,7 @@ Respond with a JSON object:
                 session_id=str(getattr(self, "session_id", "") or ""),
                 async_=True,  # shadow score off the continuation path
             )
-        except Exception:  # noqa: BLE001 — an observer never blocks a reply
+        except Exception:  # noqa: BLE001 â€” an observer never blocks a reply
             pass
 
     def _der_plan_next_step(
@@ -20992,10 +21089,10 @@ Respond with a JSON object:
         needed to satisfy the original objective.
 
         Returns a dict with 'description' (a GOAL) if more work is needed,
-        or None if done. It MUST NOT return a 'tool'/'params' — tool
+        or None if done. It MUST NOT return a 'tool'/'params' â€” tool
         selection is the single resolver's job (explorer.propose), fired
         when the continuation step executes (F6 / System Invariant). This
-        is the key method for AGENTIC mode — it enables the multi-step tool
+        is the key method for AGENTIC mode â€” it enables the multi-step tool
         loop without a hardcoded limit, while keeping one tool authority.
         """
         try:
@@ -21004,7 +21101,7 @@ Respond with a JSON object:
 
             from backend.agent.der_constants import ExecutionMode
 
-            # Build a summary of what was done — T8 (specs/tool-result-envelope
+            # Build a summary of what was done â€” T8 (specs/tool-result-envelope
             # REQ-2 AC2.2 / REQ-4 AC4.2): BOTH halves render envelope views
             # only. The old done_summary half appended the FULL raw i.result
             # for the last 10 steps (the conv-99 leak); it is now capped to
@@ -21017,7 +21114,7 @@ Respond with a JSON object:
                     if getattr(i, "envelope", None) is not None
                     else (
                         # Legacy edge (pre-envelope item): bounded excerpt via
-                        # the class static — fake/test kernels may not carry
+                        # the class static â€” fake/test kernels may not carry
                         # the instance method.
                         f"\n    OUTPUT: {AgentKernel._smart_excerpt(i.result, 400)}"
                         if i.result
@@ -21028,7 +21125,7 @@ Respond with a JSON object:
             )
 
             # Phase 3 (Gap 4): surface what each completed step actually
-            # returned — now as ENVELOPE lines (status + wrapper + summary +
+            # returned â€” now as ENVELOPE lines (status + wrapper + summary +
             # doc pointer), not bounded raw excerpts. Bounded by construction.
             _env_lines = [
                 f"  [{i.step_number}] {i.envelope.line()}"
@@ -21048,7 +21145,7 @@ Respond with a JSON object:
                 )
             )
 
-            # REQ-8 AC8.2: visited ledger — pointers only, omit when empty.
+            # REQ-8 AC8.2: visited ledger â€” pointers only, omit when empty.
             try:
                 _visited_next = self._der_visited_block()
             except Exception:
@@ -21058,7 +21155,7 @@ Respond with a JSON object:
             # check rides with the replan hook. Open (uncovered, unblocked)
             # required facts go into the prompt so the planner sees them, and
             # an LLM "done" with open facts still requests work instead of
-            # finalizing. Advisory — absent contract = legacy behavior.
+            # finalizing. Advisory â€” absent contract = legacy behavior.
             _gc_open: List[str] = []
             try:
                 _gc_open = self._goal_contract_open_facts()
@@ -21067,7 +21164,7 @@ Respond with a JSON object:
             _gc_open_block = ""
             if _gc_open:
                 _gc_open_block = (
-                    "OPEN REQUIRED FACTS (uncovered, unblocked — the turn "
+                    "OPEN REQUIRED FACTS (uncovered, unblocked â€” the turn "
                     "must not end while any remains and work is admissible):\n"
                     + "\n".join(f"  - {_f[:200]}" for _f in _gc_open[:8])
                     + "\n\n"
@@ -21104,7 +21201,7 @@ Respond with a JSON object:
                 #  1. `return None` is the SAME value the caller gets for "no
                 #     next step wanted", so a prose reply silently ENDED the task
                 #     with no way to tell the two apart.
-                #  2. It skips the `done` shadow consult below entirely — no row,
+                #  2. It skips the `done` shadow consult below entirely â€” no row,
                 #     no log line, a consumer that looks unwired.
                 # Recover the done-bit from the common non-JSON shapes first. A
                 # recovered bit keeps the row PAIRABLE (an unpaired row carries
@@ -21119,7 +21216,7 @@ Respond with a JSON object:
                 if not _bit_m:
                     logger.warning(
                         "[DER] _der_plan_next_step: planner reply had no JSON and "
-                        "no recoverable done-bit — returning None (which is "
+                        "no recoverable done-bit â€” returning None (which is "
                         "indistinguishable from 'no next step') and SKIPPING the "
                         "`done` shadow consult. raw[:120]=%r",
                         raw[:120],
@@ -21129,8 +21226,8 @@ Respond with a JSON object:
             else:
                 data = _json.loads(m.group())
             # REQ-14 AC14.1 (T18): shadow-score the `done` consumer and emit
-            # the row. The Brain's bit still decides — the goal-contract
-            # override below is PRESERVED (AC14.1) — and the engine only ever
+            # the row. The Brain's bit still decides â€” the goal-contract
+            # override below is PRESERVED (AC14.1) â€” and the engine only ever
             # supplies the bool, never the next-goal text (AC14.2).
             try:
                 from backend.agent import monitor_shadow as _ms
@@ -21166,10 +21263,10 @@ Respond with a JSON object:
                     # confident, else the Brain's own bit): make it the one the
                     # loop reads below. The Brain's next-goal text stays.
                     data["done"] = bool(_done_value)
-            except Exception as _mon_err:  # noqa: BLE001 — advisory observer
+            except Exception as _mon_err:  # noqa: BLE001 â€” advisory observer
                 # VISIBLE, but still ADVISORY (2026-09-27). This was a bare
                 # `pass`, so a failing monitor consult lost its calibration row
-                # in total silence — the exact class of silence that made seven
+                # in total silence â€” the exact class of silence that made seven
                 # consumers look unwired for a whole session. A skipped consumer
                 # must leave a trace. Warning, not debug: losing a row is a real
                 # calibration event, and the observed failure mode was NO row
@@ -21180,12 +21277,12 @@ Respond with a JSON object:
                 )
             if data.get("done") is True:
                 # Goal contract T6 (REQ-3 AC3.6): the turn SHALL NOT end while
-                # a required fact is open and unblocked — request work on the
+                # a required fact is open and unblocked â€” request work on the
                 # first open fact instead of honoring the LLM's done.
                 _gc_push = AgentKernel._goal_contract_cover_step(self)
                 if _gc_push is not None:
                     return _gc_push
-                # REQ-3 AC3.5: C reached 1.0 — permit ONE bounded bonus pass
+                # REQ-3 AC3.5: C reached 1.0 â€” permit ONE bounded bonus pass
                 # over ceiling facts, then terminate (helper owns the
                 # counter so every increment has exactly one writer).
                 try:
@@ -21195,7 +21292,7 @@ Respond with a JSON object:
                 if _gc_bonus is not None:
                     self._der_note_depth_route("bonus_ceiling")
                     return _gc_bonus
-                # ── THE REAL DEPTH PUSH (session 364) ───────────────────────
+                # â”€â”€ THE REAL DEPTH PUSH (session 364) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 # We only reach here when `_gc_open_now` was EMPTY: every
                 # required fact is nominally covered, so the loop is about to
                 # finalize. But "covered" is not "done to depth" - a fact can be
@@ -21239,7 +21336,7 @@ Respond with a JSON object:
                         )}
                 except Exception:  # noqa: BLE001 - advisory, never blocks
                     pass
-                # AC5.6: done+GRADE via the shared helper (deduped by turn —
+                # AC5.6: done+GRADE via the shared helper (deduped by turn â€”
                 # the finalize-complete site may have reported first, T19).
                 try:
                     self._der_report_run_grade(
@@ -21258,7 +21355,7 @@ Respond with a JSON object:
                 self._der_note_depth_route("finalize")
                 return None
 
-            # GOAL ONLY — no tool/params. The resolver picks the tool on exec.
+            # GOAL ONLY â€” no tool/params. The resolver picks the tool on exec.
             self._der_note_depth_route("next_step")
             return {"description": str(_desc).strip()}
 
@@ -21368,7 +21465,7 @@ Tool execution results:
 
 Based on the tool results above, provide a natural response to the user's request.
 If any tools failed, address those issues in your response.
-Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line — never skip it in silence.
+Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line â€” never skip it in silence.
 If a CROSS-CHECK section is present, say which facts are confirmed since the earlier date and which changed.
 PRIOR RESEARCH lines are results of earlier searches: a fact found only there is NOT missing - give it with its date.
 
@@ -21376,7 +21473,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
 """
 
         try:
-            # Get reasoning model for synthesis — only use local model if it's
+            # Get reasoning model for synthesis â€” only use local model if it's
             # actually loaded.  Do NOT call get_reasoning_model() as a fallback here:
             # that can return a broken/unloaded stub which echoes garbage like
             # "respond_to_user" back to the user verbatim.
@@ -21389,7 +21486,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
             if reasoning_model:
                 # Call the loaded local/LFM model for synthesis. In-process
                 # local models never report a usage block (no HTTP response to
-                # parse), so this is an ESTIMATE-only accrual (D1 item 4/5) —
+                # parse), so this is an ESTIMATE-only accrual (D1 item 4/5) â€”
                 # there is no real number available to prefer here.
                 _raw_reply = reasoning_model.generate(synthesis_prompt)
                 response = self._strip_thinking(_raw_reply)
@@ -21402,13 +21499,13 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 return response
 
             # Primary path: route synthesis through the unified InferenceRouter so
-            # API providers (Cerebras, OpenAI, …) are used for the brain answer,
+            # API providers (Cerebras, OpenAI, â€¦) are used for the brain answer,
             # not just local/Ollama models. Legacy LM Studio / Ollama branches
             # below remain as fallbacks for local-model configurations.
             #
             # REQ-8 AC3 (T26): when the ROUTER holds the primary provider (its
             # health check reports ok), a router failure degrades DIRECTLY to the
-            # compressed-summary fallback — we do NOT replay the giant synthesis
+            # compressed-summary fallback â€” we do NOT replay the giant synthesis
             # prompt through the LM Studio / Ollama chain (the 429-stall
             # behaviour REQ-8 fixes). LM Studio / Ollama are only tried when the
             # router has NO bound provider (local-only configurations), where
@@ -21423,7 +21520,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 _router_primary = False
             try:
                 # AC11.6 (session-319): the user-facing answer was the ONLY
-                # unbounded wait left in the turn — no timeout here, and the
+                # unbounded wait left in the turn â€” no timeout here, and the
                 # transport retried 3x60s beneath it, so one slow provider
                 # response could stall the turn for ~3 minutes with nothing
                 # watching. This bounds it. On expiry the exception path below
@@ -21448,7 +21545,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 )
                 # Session-342 (live 2026-09-19): Ollama intermittently answers
                 # a synthesis prompt with an EMPTY completion (HTTP 200, no
-                # text) while the provider is healthy — observed on a working
+                # text) while the provider is healthy â€” observed on a working
                 # run where the crawl had extracted the answer and the turn
                 # degraded to "I've completed the task" anyway. A single retry
                 # on the SAME prompt recovers it; without that the user sees a
@@ -21456,7 +21553,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 # Bounded: exactly ONE retry, inside the existing deadline.
                 if not _syn_text and _router_primary:
                     logger.warning(
-                        "[AgentKernel] router synthesis returned empty — retrying "
+                        "[AgentKernel] router synthesis returned empty â€” retrying "
                         "once before degrading (transient empty completion)"
                     )
                     _syn_text, _syn_think, _syn_tools = self._router.generate(
@@ -21478,9 +21575,9 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 if _router_primary:
                     # Empty response from the primary provider counts as failure
                     # (the health check reports ok even when the endpoint returns
-                    # nothing — reachability is only proven at execution time).
+                    # nothing â€” reachability is only proven at execution time).
                     logger.warning(
-                        "[AgentKernel] router (primary) returned empty synthesis — "
+                        "[AgentKernel] router (primary) returned empty synthesis â€” "
                         "degrading to compressed-summary fallback (REQ-8 AC3)"
                     )
                     return ""
@@ -21490,7 +21587,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 )
                 # Session-342 (live 2026-09-19): the transport RAISES on a
                 # transient empty completion ("Empty response from Ollama"),
-                # never returning a falsy string — so the success-path retry
+                # never returning a falsy string â€” so the success-path retry
                 # above never fired and the turn degraded to "I've completed
                 # the task" while the answer sat extracted on the card. Retry
                 # once on THIS shape only; any other failure degrades exactly
@@ -21498,7 +21595,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 if _router_primary and "empty response" in str(_syn_err).lower():
                     logger.warning(
                         "[AgentKernel] synthesis failed on a transient empty "
-                        "completion — retrying once (session-342 evidence: the "
+                        "completion â€” retrying once (session-342 evidence: the "
                         "same endpoint answered 688 tokens 16s earlier)"
                     )
                     try:
@@ -21527,10 +21624,10 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                             f"[AgentKernel] empty-response retry failed: {_retry_err}"
                         )
                 if _router_primary:
-                    # REQ-8 AC3 (T26): primary provider failed — degrade to the
+                    # REQ-8 AC3 (T26): primary provider failed â€” degrade to the
                     # deterministic compressed summary, no giant-prompt replay.
                     logger.warning(
-                        "[AgentKernel] router is the primary provider and failed — "
+                        "[AgentKernel] router is the primary provider and failed â€” "
                         "degrading to compressed-summary fallback (REQ-8 AC3)"
                     )
                     return ""
@@ -21583,10 +21680,10 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
             # No model available for synthesis. Return "" instead of a generic
             # template so the REQ-12 success path falls through to the DER-shaped
             # deterministic summary (_der_deterministic_success_summary) that
-            # mirrors _der_deterministic_failure_summary — never a silent raw
+            # mirrors _der_deterministic_failure_summary â€” never a silent raw
             # concatenation of step outputs (REQ-12 AC4).
             logger.warning(
-                "[AgentKernel] No model for synthesis — returning empty "
+                "[AgentKernel] No model for synthesis â€” returning empty "
                 "(caller falls back to deterministic summary)"
             )
             return ""
@@ -21658,7 +21755,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
     # defined HERE and silently SHADOWED the real one near the top of this
     # class (line ~590). Python class bodies keep the LAST def, so every
     # `clear_conversation(conversation_id)` call from iris_gateway raised
-    # "takes 1 positional argument but 2 were given" — logged as
+    # "takes 1 positional argument but 2 were given" â€” logged as
     # "[Chat] Failed to clear previous conversation ..." on every new-thread
     # switch, meaning the previous thread's kernel context was never cleared
     # and could leak into the new thread. The duplicate is removed; the real
@@ -21696,11 +21793,11 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
     # This allows saved settings that used local model path names to resolve
     # correctly against VPS available-model IDs without requiring a migration.
     _MODEL_ALIASES: Dict[str, str] = {
-        # Legacy local model directory name → canonical ID (executor only; brain removed)
+        # Legacy local model directory name â†’ canonical ID (executor only; brain removed)
         "LFM2.5-1.2B-Instruct": "lfm2.5-1.2b-instruct",
         "executor": "lfm2.5-1.2b-instruct",
         # NOTE: LFM2-8B-A1B / "brain" / "lfm2-8b" aliases are intentionally absent.
-        # That model is not in use — removing the aliases prevents accidental routing.
+        # That model is not in use â€” removing the aliases prevents accidental routing.
     }
 
     def _normalize_model_id(self, model_id: Optional[str]) -> Optional[str]:
@@ -21732,14 +21829,14 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
             model_provider:     Provider the user chose: "local" | "vps" | "api"
 
         Returns:
-            True always — selections are stored unconditionally so that:
-            • Ollama model IDs (e.g. "llama3.2:3b") aren't rejected because
+            True always â€” selections are stored unconditionally so that:
+            â€¢ Ollama model IDs (e.g. "llama3.2:3b") aren't rejected because
               ModelRouter doesn't list them.
-            • LFM local models aren't rejected when lazy loading is active and
+            â€¢ LFM local models aren't rejected when lazy loading is active and
               the models dict is still empty.
             Inference-time routing is responsible for surfacing "not available".
         """
-        # Normalize aliases (e.g. "LFM2-8B-A1B" → "lfm2-8b")
+        # Normalize aliases (e.g. "LFM2-8B-A1B" â†’ "lfm2-8b")
         reasoning_model = self._normalize_model_id(reasoning_model)
         tool_execution_model = self._normalize_model_id(tool_execution_model)
 
@@ -21756,7 +21853,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
             # If swarm is enabled, do NOT let the Models card overwrite
             # provider='iris_local' or the swarm model names back to UI
             # selections. This used to guard only the (now removed) legacy-field
-            # assignments, while the role rebind below ran anyway — so the card
+            # assignments, while the role rebind below ran anyway â€” so the card
             # re-pointed the router away from the swarm even as the log line
             # claimed the selection was ignored. Returning here makes the guard
             # mean what it says.
@@ -21767,7 +21864,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     # timestamped intent (in-memory on the router + visible in
                     # the snapshot + persisted by the gateway), never silently
                     # dropped as before. APPLYING it on swarm end belongs to
-                    # the future swarm spec — no swarm logic here.
+                    # the future swarm spec â€” no swarm logic here.
                     import time as _time_sw
 
                     _defer_stamp = _time_sw.time()
@@ -21784,7 +21881,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     except Exception:
                         pass
                     logger.info(
-                        f"[AgentKernel] Swarm is enabled — deferring model_selection "
+                        f"[AgentKernel] Swarm is enabled â€” deferring model_selection "
                         f"(keeping provider='{self._model_provider}', "
                         f"reasoning='{self._selected_reasoning_model}', "
                         f"tool='{self._selected_tool_execution_model}')"
@@ -21803,13 +21900,13 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
             # `_selected_reasoning_model`, `_selected_tool_execution_model` and
             # `_model_provider` are derived from those bindings.
 
-            # ── Resolve provider credentials EARLY ─────────────────────────
+            # â”€â”€ Resolve provider credentials EARLY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Must happen BEFORE peer propagation / snapshot sync so secondary
-            # kernels (crawl_planner, session_iris_integration, …) inherit the
+            # kernels (crawl_planner, session_iris_integration, â€¦) inherit the
             # CORRECT api_base_url + api_key. Previously these were assigned at
             # the END of this method, AFTER peers/snapshot had copied the stale
-            # default (https://api.openai.com/v1) — so the crawl_planner sent the
-            # Cerebras key to OpenAI → 401.
+            # default (https://api.openai.com/v1) â€” so the crawl_planner sent the
+            # Cerebras key to OpenAI â†’ 401.
             if api_key:
                 self._api_key = api_key
                 self._api_key_provider = model_provider or ""
@@ -21862,7 +21959,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 if peer_kernel is not self:
                     if getattr(peer_kernel, "_swarm_enabled", False):
                         logger.debug(
-                            f"[AgentKernel] Peer '{peer_id}' swarm enabled — "
+                            f"[AgentKernel] Peer '{peer_id}' swarm enabled â€” "
                             f"skipping credential propagation"
                         )
                         continue
@@ -21882,8 +21979,8 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
 
             # The 'default' kernel used to be force-created here so it could act
             # as the "inheritance source" new conversations copied their model
-            # from. There is no inheritance any more — every kernel reads the
-            # shared role table — so this block existed only to keep a copy
+            # from. There is no inheritance any more â€” every kernel reads the
+            # shared role table â€” so this block existed only to keep a copy
             # warm, and creating a phantom 'default' kernel as a side effect of
             # a model pick was itself a known problem (Wave 5).
 
@@ -21896,7 +21993,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 # (e.g. "local:lfm-2.5") when the frontend sends the actual provider
                 # instance id from the dropdown. The bare-string checks below only
                 # matched "local" / "iris_local" / "inprocess", so a namespaced local
-                # id fell through to ProviderKind.API — and the provider was persisted
+                # id fell through to ProviderKind.API â€” and the provider was persisted
                 # with kind="API", which validate_providers drops on restart.
                 _is_local = model_provider in ("local", "iris_local", "inprocess") or (
                     isinstance(model_provider, str) and model_provider.startswith("local:")
@@ -21913,7 +22010,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     # Persist the per-provider key to the keyring so it survives
                     # restarts and _build_transport can retrieve it by cred_ref.
                     # Without this, a key applied per provider was memory-only and
-                    # the keyring kept a stale/fake key → 401 after restart.
+                    # the keyring kept a stale/fake key â†’ 401 after restart.
                     try:
                         from backend.agent.inference.keyring import set_secret
 
@@ -21923,7 +22020,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 if api_base_url:
                     self._api_base_url = api_base_url.rstrip("/")
                 # Resolve the effective key: freshly supplied key wins; else the
-                # key already on the kernel — but ONLY when it belongs to THIS
+                # key already on the kernel â€” but ONLY when it belongs to THIS
                 # provider. `self._api_key` is a single shared field holding the
                 # LAST applied key regardless of provider; using it as a blanket
                 # fallback attaches, e.g., a Cerebras key to a Cohere provider
@@ -21951,26 +22048,26 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 # Namespace the bare "local" provider id (REQ-4 AC1) so it never
                 # collides with or shadows a namespaced local entry.
                 # `reasoning_model` is optional on this call, so derive the stem
-                # defensively — an unguarded .split() on None raised out of here
+                # defensively â€” an unguarded .split() on None raised out of here
                 # and the whole selection silently returned False.
                 _inst_id = (
                     f"local:{(reasoning_model or 'local').split('.')[0].lower()}"
                     if model_provider == "local"
                     else model_provider
                 )
-                # ── Resolve the model this instance is registered WITH ──────
+                # â”€â”€ Resolve the model this instance is registered WITH â”€â”€â”€â”€â”€â”€
                 # `registry.add()` REPLACES the entry for this id, so whatever
                 # lands in `model=` becomes the provider's model for every
                 # later reader (ModelSwitcher label, dashboard card, and
                 # `generate()`'s `model_override or inst.model` fallback).
                 #
-                # Two rules, both learned from the cerebras→cohere desync
+                # Two rules, both learned from the cerebrasâ†’cohere desync
                 # (2026-08-13 08:19, backend-20260813-074742.log): a confirm_card
                 # carrying the PREVIOUS provider's model name re-registered
                 # `cohere` with `model="gemma-4-31b"`.
                 #   1. A hosted-API provider only accepts a model from its OWN
                 #      catalog. A foreign model id is a stale caller value, not
-                #      a user intent — drop it rather than stamp it on.
+                #      a user intent â€” drop it rather than stamp it on.
                 #   2. Never downgrade a known model to blank. An empty `model`
                 #      is what made every downstream resolution fall through to
                 #      the stale value in the first place.
@@ -21995,7 +22092,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 # documents exactly that ("a provider with NO catalog entry ...
                 # accepts anything ... never for local servers where the catalog
                 # is a suggestion list"). Including OLLAMA here contradicted that
-                # contract and silently dropped a model the user really has —
+                # contract and silently dropped a model the user really has â€”
                 # measured live: `gemma4:31b-cloud` (present in `ollama list`,
                 # verified via /api/tags) was rejected, the warning said "not in
                 # provider 'ollama' catalog", and the role fell back to the
@@ -22009,7 +22106,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     and not model_belongs_to_provider(model_provider, _inst_model)
                 ):
                     logger.warning(
-                        "[AgentKernel] model '%s' is not in provider '%s' catalog — "
+                        "[AgentKernel] model '%s' is not in provider '%s' catalog â€” "
                         "ignoring it (stale caller value) and keeping the provider's "
                         "own model",
                         _inst_model, model_provider,
@@ -22038,7 +22135,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     api_base_url=api_base_url or getattr(self, '_api_base_url', '') or "",
                     api_key=_effective_key,
                     # Carry forward live state that this call knows nothing
-                    # about — re-registering a loaded local provider must not
+                    # about â€” re-registering a loaded local provider must not
                     # silently mark it unloaded (that drops it out of the
                     # ModelSwitcher, which filters local providers on `loaded`).
                     purpose=(_prev_inst.purpose if _prev_inst else "chat"),
@@ -22047,22 +22144,22 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 )
                 # Register on this kernel's router only. The registry is
                 # process-wide (REQ-5), so every peer kernel observes the same
-                # provider and role bindings automatically — no fan-out loop.
+                # provider and role bindings automatically â€” no fan-out loop.
                 _r = getattr(self, "_router", None)
                 if _r is not None:
                     _r.add_provider(_inst)
                     # PERSIST the provider, not just register it (2026-08-16).
                     #
                     # add_provider() writes the LIVE registry only. The config's
-                    # `inference.providers` collection — which the registry is
-                    # rebuilt from at startup — was written by a different path
+                    # `inference.providers` collection â€” which the registry is
+                    # rebuilt from at startup â€” was written by a different path
                     # that only the explicit provider-setup flow calls. So a
                     # provider chosen through the Models card existed until the
                     # next restart and then vanished: ollama disappeared from the
                     # ModelSwitcher dropdown and both roles fell back to cohere,
                     # because the id they were bound to no longer existed.
                     #
-                    # This is provider-agnostic by construction — the same hole
+                    # This is provider-agnostic by construction â€” the same hole
                     # swallowed any provider (and would swallow a loaded local
                     # model) that was never registered through provider setup.
                     # Credentials are NOT written here; the key already went to
@@ -22097,7 +22194,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                         _sc2(_cfg2)
                         logger.info(
                             "[AgentKernel] persisted provider %r to config "
-                            "(kind=%s model=%r) — survives restart",
+                            "(kind=%s model=%r) â€” survives restart",
                             _inst_id, _kind.name, _inst_model,
                         )
                     except Exception as _pp_err:
@@ -22108,7 +22205,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     if preserve_bindings:
                         # confirm_card path: role_bindings (set by the Brain/Tool
                         # dropdowns / chat ModelSwitcher via set_role_binding) are
-                        # canonical. Do NOT rebind them here — a stale provider
+                        # canonical. Do NOT rebind them here â€” a stale provider
                         # from the card must not clobber the user's selection.
                         # Only ensure the provider is registered.
                         logger.info(
@@ -22118,7 +22215,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     else:
                         # Explicit selection (Dashboard Models card): bind roles so
                         # resolve("reasoning") / resolve("tool_execution") succeed.
-                        # The overrides use the SANITIZED models — a foreign or
+                        # The overrides use the SANITIZED models â€” a foreign or
                         # blank model must not survive as a role override either,
                         # or generate() would send it to the new provider.
                         import time as _time2
@@ -22200,7 +22297,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 if _local_inst is not None:
                     instance_id = _local_inst.id
             # Local-override is NOT a veto (REQ-5 AC4): binding to a local
-            # provider whose model is not yet loaded is allowed — it becomes
+            # provider whose model is not yet loaded is allowed â€” it becomes
             # live once the model loads. The gateway surfaces a status flag
             # instead of rejecting. We simply bind on the process-wide registry.
             _r = getattr(self, "_router", None)
@@ -22208,15 +22305,15 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                 return False
             # THE write. The table is process-wide, so this one call is visible
             # to every kernel, every peer session, every future conversation,
-            # and every subagent — immediately and without propagation.
+            # and every subagent â€” immediately and without propagation.
             #
             # Nothing follows it. There used to be two sync blocks here: one
             # updating the module-global `_model_config_snapshot` and one
             # updating the legacy fields. Both were copies of this line's
-            # effect, and both are gone — the snapshot with its consumer, the
+            # effect, and both are gone â€” the snapshot with its consumer, the
             # legacy fields into properties that read the binding directly.
             # (The legacy sync was also subtly wrong: it assigned `instance_id`
-            # — a PROVIDER id — into `_selected_reasoning_model`, a MODEL
+            # â€” a PROVIDER id â€” into `_selected_reasoning_model`, a MODEL
             # field, so anything reading it for a model name got "cohere".)
             import time as _time
 
@@ -22325,7 +22422,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
 # Singleton instance management
 _agent_kernel_instances: Dict[str, AgentKernel] = {}
 
-# ── Global internet-access gate (app-wide) ────────────────────────────────
+# â”€â”€ Global internet-access gate (app-wide) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Web mode is a single app-level switch, not per-conversation.  Kernels are
 # created per conversation (_agent_kernel_instances), but internet access must
 # apply to every kernel at once when the user toggles web mode in the UI.
@@ -22347,12 +22444,12 @@ def get_global_internet_access() -> bool:
     return _internet_access_enabled
 
 
-# ── Global desktop-control gate (app-wide) ────────────────────────────────
+# â”€â”€ Global desktop-control gate (app-wide) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Desktop control = launching the user's real browser/apps, opening files with
 # their default application, locking the screen, GUI/screen automation, etc.
 # Everything that reaches OUTSIDE the app sandbox.  It is OFF by default and
 # only enabled when the user explicitly grants permission via the
-# desktop_control dashboard card (confirm_card → set_desktop_control_enabled).
+# desktop_control dashboard card (confirm_card â†’ set_desktop_control_enabled).
 # tool_bridge gates every desktop-control tool on this flag so the agent can
 # NEVER reach the desktop unless the user opted in.
 _desktop_control_enabled: bool = False
@@ -22384,7 +22481,7 @@ _swarm_config_snapshot: Optional[dict] = None
 # read the process-wide role-binding table, which already holds the live choice.
 #
 # It was also the third of the five competing sources of truth for "which model
-# is active", and the one that made the others hard to reason about — it was
+# is active", and the one that made the others hard to reason about â€” it was
 # written by set_model_selection under one key spelling ("tool_execution_model")
 # and read under another ("tool_model"), and its reader had been raising
 # TypeError on every call since the day set_model_selection's signature changed.
@@ -22403,7 +22500,7 @@ def get_agent_kernel(
     session_id is preserved for WS routing and Mycelium ingestion.
 
     Args:
-        conversation_id: Primary key — one kernel per conversation thread.
+        conversation_id: Primary key â€” one kernel per conversation thread.
         session_id: Transport label for WS routing and Mycelium.
                     If None, falls back to conversation_id.
 
@@ -22423,7 +22520,7 @@ def get_agent_kernel(
         # ran under session_iris. Log every construction with BOTH ids and the
         # existing keys so a mid-turn rebuild is visible instead of inferred.
         # Note some keys are pseudo-conversations by design (crawl_planner,
-        # data_extractor, default) — those are expected; a real thread id
+        # data_extractor, default) â€” those are expected; a real thread id
         # appearing twice, or appearing late, is not.
         logger.info(
             "[AgentKernel] CONSTRUCTING kernel conv=%r session=%r "
@@ -22437,7 +22534,7 @@ def get_agent_kernel(
             conversation_id=conversation_id,
         )
 
-        # Auto-wire Pillar 4 (Memory) — connects episodic/semantic memory to every session
+        # Auto-wire Pillar 4 (Memory) â€” connects episodic/semantic memory to every session
         try:
             from backend.memory import get_memory_interface
 
@@ -22455,8 +22552,8 @@ def get_agent_kernel(
         # Inherit inference BEHAVIOUR settings from any already-configured peer.
         #
         # Context: the user configures things once (in session_iris / the main UI
-        # session).  Secondary sessions — such as session_iris_integration which is
-        # created when the wake-word fires — are spun up lazily.  Without this,
+        # session).  Secondary sessions â€” such as session_iris_integration which is
+        # created when the wake-word fires â€” are spun up lazily.  Without this,
         # a wake-word-triggered response ran with default behaviour settings.
         #
         # WHICH MODEL SERVES WHICH ROLE IS NOT COPIED HERE (2026-08-16). It used
@@ -22464,7 +22561,7 @@ def get_agent_kernel(
         # _model_provider, ...)`` without ``preserve_bindings``, which fell
         # through to ``bind_role`` and REBOUND the process-wide role table from
         # the peer's LEGACY fields. Those fields are not updated by the gateway's
-        # role-binding path, so they held the startup provider — and every new
+        # role-binding path, so they held the startup provider â€” and every new
         # conversation therefore reverted the user's live pick (the recurring
         # "picked cohere, sent a message, back to cerebras" bug).
         #
@@ -22548,7 +22645,7 @@ def get_agent_kernel(
             # `response_length=` and `tool_mode=`, none of which are parameters
             # of set_model_selection, so every call raised TypeError straight
             # into the handler below it and logged "model snapshot hydrate
-            # failed". Second, even working it would have been wrong — it
+            # failed". Second, even working it would have been wrong â€” it
             # replayed a STORED copy of the user's choice over the live
             # process-wide role table, which is the same class of bug as the
             # peer-inheritance rebind above. Startup seeding belongs in
@@ -22559,13 +22656,13 @@ def get_agent_kernel(
     return _agent_kernel_instances[conversation_id]
 
 
-# ── Session → active conversation registry ───────────────────────────────
+# â”€â”€ Session â†’ active conversation registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Wave 5 (session-conversation-switching spec): eliminates the phantom
 # "default" kernel.  Callers that only knew a session_id (e.g. a wake-word
 # voice path, a reconnect, a REST chat request) were calling
 # get_agent_kernel(session_id=...) which fell back to conversation_id="default",
 # creating a kernel the active thread never used.  The gateway owns the
-# authoritative session→active-conversation binding (_active_conversation_id);
+# authoritative sessionâ†’active-conversation binding (_active_conversation_id);
 # it mirrors that binding here (module-level, no circular import) so any
 # caller can resolve the *real* active kernel for a session via
 # get_active_kernel(session_id) instead of spawning a "default" ghost.
@@ -22575,12 +22672,12 @@ _session_active_conversation: dict = {}
 def set_active_conversation(
     session_id: str, conversation_id: Optional[str]
 ) -> None:
-    """Mirror the gateway's session→active-conversation binding into this
+    """Mirror the gateway's sessionâ†’active-conversation binding into this
     module-level registry.  Called by the gateway whenever it (re)points a
     session at a conversation (new_conversation / switch_conversation /
     sync_state / voice_command_start / connect).
 
-    ``conversation_id=None`` UNBINDS the session — the state "the user left a
+    ``conversation_id=None`` UNBINDS the session â€” the state "the user left a
     thread and has not started the next one yet".  Leaving a stale binding in
     place is what let a wake word or a reconnect resolve back into the thread
     the user had just walked away from, so the absence of a thread has to be

@@ -123,7 +123,29 @@ class StructuredFormatter(logging.Formatter):
                           "exc_info", "exc_text", "stack_info") and not key.startswith("_"):
                 log_entry[key] = value
 
-        return json.dumps(log_entry, ensure_ascii=False)
+        # A LOG FORMATTER MUST NEVER RAISE (2026-10-16). `logging` calls this
+        # inside Handler.emit(); when it raises, `logging` prints a full
+        # "--- Logging error ---" traceback to stderr for EVERY record. The
+        # stdlib `websockets` client logs each frame at DEBUG with
+        # extra={"websocket": <ClientConnection>} — a bare json.dumps cannot
+        # encode that object, so the STT stream produced ~1,256 tracebacks in
+        # 14 min (~45k of 61k log lines, ~0.5 MB/min, one log reached 594 MB)
+        # and buried every real message. `default=str` encodes the unknown
+        # object; the guard covers anything else (a cycle, an object raising in
+        # __str__) so logging can never fail again.
+        try:
+            return json.dumps(log_entry, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001 — a formatter must never raise
+            return json.dumps(
+                {
+                    "timestamp": log_entry.get("timestamp"),
+                    "level": log_entry.get("level"),
+                    "logger": log_entry.get("logger"),
+                    "message": log_entry.get("message"),
+                    "log_serialization_error": True,
+                },
+                ensure_ascii=False,
+            )
 
 
 class StructuredLogger:

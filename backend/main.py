@@ -1387,6 +1387,9 @@ from backend.api.browser_surface import router as browser_surface_router
 # Structured frontend logs. Was a Next.js route handler; moved here because the
 # packaged widget is a static export with no Next.js server to run one.
 from backend.api.frontend_logs import router as frontend_logs_router
+# Turn verdict reporting (oracle.md 7.5, depth_met/v3): the OUTSIDE label for
+# held shadow rows - the eval harness POSTs a turn's hidden-test verdict here.
+from backend.api.eval_verdict import router as eval_verdict_router
 
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
@@ -1395,6 +1398,7 @@ app.include_router(research_router)
 app.include_router(caducean_debug_router)
 app.include_router(browser_surface_router)
 app.include_router(frontend_logs_router)
+app.include_router(eval_verdict_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────

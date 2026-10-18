@@ -86,12 +86,19 @@ def test_the_label_rule():
     """Structural guard: the outcome label expressions are inline in _der_run_node.
 
     Reads the source of AgentKernel._der_run_node. A call that worked labels True. No call and a
-    successful step labels False. Anything else gets no row. The row is keyed to needs_action/v1.
+    successful step labels False. Anything else gets no row. The row is keyed to needs_action/v2.
+
+    STALE-BY-SPEC update (2026-10-18): the label reads the CALL-level outcome
+    (`ok_call`, falling back to `ok`) instead of the loop's `ok` alone - `ok`
+    counts a non-zero returncode as failure, so a node whose only call was an
+    informative pytest run mid-iteration emitted NO row (the conflation that
+    held tool_approval below chance before its v6). A call that RAN is a tool
+    that was needed. The stamp moved v1 -> v2 (a label change is a new cohort).
     """
     src = inspect.getsource(AgentKernel._der_run_node)
-    assert 'any(c.get("ok") for c in _calls)' in src
+    assert 'any(c.get("ok_call", c.get("ok")) for c in _calls)' in src
     assert "not _calls and result.success" in src
-    assert '"needs_action/v1"' in src
+    assert '"needs_action/v2"' in src
     assert "outside_label=_label" in src
 
 

@@ -86,6 +86,28 @@ _CAP = 256
 _DROPPED = 0
 _WRITING = False
 
+# Outcomes whose STEP ALREADY SETTLED before this module was handed the row.
+#
+# WHY THIS EXISTS (measured live 2026-10-16: "flushed unsettled review rows = 5"
+# in one coding run). The review row is not built here on the turn thread: it is
+# built on the `oracle_shadow` lane (der_loop._shadow_review_verdict submits
+# `_job`, and `_job` calls this module's sink from a worker thread), while
+# `stamp` runs on the turn thread when the step settles. The two RACE, and the
+# settle can win. When it did, `defer` held a row whose step could never settle
+# again: it sat in `_PENDING`, `sweep` flushed it at turn grade on PARITY, and
+# the outcome label was lost with no marker on the row. This map lets that late
+# row be stamped ON ARRIVAL instead.
+#
+# Bounded twice over: drop-oldest at `_SETTLED_CAP`, and an entry is CONSUMED by
+# `defer` (a pop), so an ordinary row leaves nothing behind. A leftover entry is
+# reachable only by a later row carrying the SAME step_id, and `stamp` records
+# the FIRST settle for an id, never a later one - and a step_id is unique per
+# step in the loop.
+_SETTLED: "OrderedDict[str, str]" = OrderedDict()
+_SETTLED_CAP = 256
+_SETTLED_AHEAD = 0   # rows recovered by the reverse path (counted, not silent)
+_SWEPT = 0           # rows flushed on parity because their step never settled
+
 
 def enabled() -> bool:
     """True when the owner turned the outcome label on. Reads the env every
@@ -94,11 +116,19 @@ def enabled() -> bool:
 
 
 def stats() -> Dict[str, int]:
-    """Counters for the report/log. Never raises."""
+    """Counters for the report/log. Never raises.
+
+    `recovered_after_settle` and `flushed_parity` are the two halves of the
+    ROW-LOSS question: how many rows the reverse path saved, and how many were
+    still flushed on parity because their step never settled. Both are visible
+    so a loss is measured rather than silent.
+    """
     with _LOCK:
         return {
             "pending": len(_PENDING),
             "dropped_overflow": _DROPPED,
+            "recovered_after_settle": _SETTLED_AHEAD,
+            "flushed_parity": _SWEPT,
         }
 
 
@@ -113,6 +143,27 @@ def _verdict_name(row: Dict[str, Any]) -> Optional[str]:
         if v is not None:
             return str(v)
     return None
+
+
+def _apply_outcome(row: Dict[str, Any], label: str) -> None:
+    """Attach the settled outcome to the row, when the map has an answer.
+
+    The ONE place the label lands, shared by the normal path (`stamp`) and the
+    late path (`defer` winning the race). UNVERIFIED - or a verdict name we
+    cannot read - leaves the row UNSTAMPED: no ground truth exists, so it keeps
+    its parity reference. Dropping it would lose evidence; guessing would be the
+    phantom agreement the review row already guards against for parse failures.
+    """
+    truth = GROUND_TRUTH.get(label) or {}
+    verdict = _verdict_name(row)
+    correct = truth.get(verdict) if verdict is not None else None
+    if correct is None:
+        return
+    # REQ-7: an outside label takes precedence over the incumbent reference.
+    # `label_source` says which curve the row is built on, so the report keeps
+    # parity and outcome SEPARATE instead of blending.
+    row["outside_label"] = bool(correct)
+    row["label_source"] = "outcome"
 
 
 def _noop_write(_row) -> None:
@@ -164,13 +215,30 @@ def defer(row: Optional[Dict[str, Any]], write) -> bool:
     sid = str(row.get("step_id") or "").strip()
     if not sid:
         return False  # no join key -> write it now on parity, as before
+    global _SETTLED_AHEAD
     with _LOCK:
-        _PENDING[sid] = {"row": row, "write": write}
-        _PENDING.move_to_end(sid)
-        while len(_PENDING) > _CAP:
-            _PENDING.popitem(last=False)
-            globals()["_DROPPED"] += 1
-    return True
+        settled = _SETTLED.pop(sid, None)
+        if settled is None:
+            _PENDING[sid] = {"row": row, "write": write}
+            _PENDING.move_to_end(sid)
+            while len(_PENDING) > _CAP:
+                _PENDING.popitem(last=False)
+                globals()["_DROPPED"] += 1
+            return True
+        _SETTLED_AHEAD += 1
+    # THE RACE, LOST: the step settled BEFORE this row was built. The review row
+    # is built on lane("oracle_shadow") (see _shadow_review_verdict), but
+    # `stamp` runs on the turn thread at settle, so the settle can arrive first.
+    # Holding the row now would strand it - its step can never settle again -
+    # and `sweep` would flush it on PARITY, losing the label with no marker.
+    # Stamp it here and write it now.
+    _apply_outcome(row, settled)
+    try:
+        with _Emitting():
+            write(row)
+    except Exception:  # noqa: BLE001 — a label never blocks a settle
+        pass
+    return True  # already written: the caller must NOT write again
 
 
 def register(row: Optional[Dict[str, Any]], step_id: Optional[str] = None) -> Optional[str]:
@@ -212,26 +280,32 @@ def stamp(step_id: Optional[str], verified_label: Optional[str]) -> int:
 
     Idempotent per step: a step that settles twice does not double-write, and an
     UNVERIFIED step emits the row UNSTAMPED (parity reference preserved) rather
-    than dropping a real measurement. Never raises."""
+    than dropping a real measurement.
+
+    When NO row is held yet the outcome is not discarded: the row is built on the
+    shadow lane and may still be in flight, so the outcome is remembered for
+    `defer` (see `_SETTLED`). Never raises."""
     if not enabled() or not step_id:
         return 0
     label = str(verified_label or "").strip().upper()
     if label not in VERIFIED_LABELS:
         return 0
+    sid = str(step_id)
     with _LOCK:
-        entry = _PENDING.pop(str(step_id), None)
-    if not entry:
-        return 0
+        entry = _PENDING.pop(sid, None)
+        if entry is None:
+            # The row has not been held yet (the oracle_shadow lane has not
+            # finished building it). Remember the outcome so `defer` stamps it on
+            # arrival, instead of `sweep` flushing it on parity. FIRST settle wins
+            # for an id, so a repeat settle cannot overwrite the real one.
+            if sid not in _SETTLED:
+                _SETTLED[sid] = label
+                _SETTLED.move_to_end(sid)
+                while len(_SETTLED) > _SETTLED_CAP:
+                    _SETTLED.popitem(last=False)
+            return 0
     row = entry["row"]
-    truth = GROUND_TRUTH.get(label) or {}
-    verdict = _verdict_name(row)
-    correct = truth.get(verdict) if verdict is not None else None
-    if correct is not None:
-        # REQ-7: an outside label takes precedence over the incumbent
-        # reference. `label_source` says which curve the row is built on, so
-        # the report keeps parity and outcome SEPARATE instead of blending.
-        row["outside_label"] = bool(correct)
-        row["label_source"] = "outcome"
+    _apply_outcome(row, label)
     # UNVERIFIED (or an unknown verdict) emits the row UNSTAMPED: it is still a
     # real measurement on its parity reference. Dropping it would lose evidence.
     try:
@@ -245,12 +319,18 @@ def stamp(step_id: Optional[str], verified_label: Optional[str]) -> int:
 def sweep() -> int:
     """Flush rows whose step will never settle (turn ended early, exception).
     Returns the count emitted; those rows keep their parity reference. Never
-    raises."""
+    raises.
+
+    This is the loss path: after the reverse path in `defer`, every row counted
+    here is one whose outcome label did NOT land. The count is kept in `stats()`
+    so the loss rate is measurable, not inferred."""
+    global _SWEPT
     if not enabled():
         return 0
     with _LOCK:
         entries = list(_PENDING.values())
         _PENDING.clear()
+        _SWEPT += len(entries)
     for ent in entries:
         try:
             with _Emitting():
@@ -262,7 +342,10 @@ def sweep() -> int:
 
 def reset() -> None:
     """Test seam."""
-    global _DROPPED
+    global _DROPPED, _SETTLED_AHEAD, _SWEPT
     with _LOCK:
         _PENDING.clear()
+        _SETTLED.clear()
         _DROPPED = 0
+        _SETTLED_AHEAD = 0
+        _SWEPT = 0

@@ -13,7 +13,7 @@
     "ece": null,
     "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
     "precision": 0.0,
-    "rows": 159,
+    "rows": 166,
     "status": "shadow"
   },
   "call_closing": {
@@ -28,9 +28,9 @@
     },
     "consumer_id": "call_closing",
     "ece": null,
-    "gap": "oof AUROC 0.4974 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4995 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 822,
+    "rows": 1578,
     "status": "shadow"
   },
   "click_safety": {
@@ -44,10 +44,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "click_safety",
-    "ece": 0.4305,
-    "gap": "distinct rows 97 < 100",
+    "ece": 0.4398,
+    "gap": "minority class 2.9% < 5%",
     "precision": 1.0,
-    "rows": 97,
+    "rows": 105,
     "status": "shadow"
   },
   "depth_met": {
@@ -57,15 +57,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "8e96c5b6695e",
+      "criteria_version": "depth_met/v3",
       "engine_id": "d1-3b-ad-q4_k_m+letters",
       "readout_mode": "letters"
     },
     "consumer_id": "depth_met",
-    "ece": null,
-    "gap": "oof AUROC 0.4152 < 0.65 (confidence does not rank errors)",
-    "precision": 0.0,
-    "rows": 517,
-    "status": "shadow"
+    "ece": 0.0669,
+    "gap": "",
+    "precision": 0.9082,
+    "rows": 324,
+    "status": "enforced"
   },
   "depth_route": {
     "config": {
@@ -79,9 +80,9 @@
     },
     "consumer_id": "depth_route",
     "ece": null,
-    "gap": "distinct rows 32 < 100",
+    "gap": "oof AUROC 0.5213 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 32,
+    "rows": 119,
     "status": "shadow"
   },
   "done": {
@@ -95,10 +96,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "done",
-    "ece": null,
-    "gap": "distinct rows 22 < 100",
-    "precision": 0.0,
-    "rows": 22,
+    "ece": 0.0712,
+    "gap": "oof calibrated ECE 0.0761 > 0.05",
+    "precision": 0.9423,
+    "rows": 122,
     "status": "shadow"
   },
   "escalate_incomplete": {
@@ -112,10 +113,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "escalate_incomplete",
-    "ece": 0.1437,
+    "ece": 0.1788,
     "gap": "",
-    "precision": 0.9029,
-    "rows": 513,
+    "precision": 0.9141,
+    "rows": 777,
     "status": "enforced"
   },
   "event_family": {
@@ -130,9 +131,9 @@
     },
     "consumer_id": "event_family",
     "ece": null,
-    "gap": "distinct rows 29 < 100",
+    "gap": "distinct rows 68 < 100",
     "precision": 0.0,
-    "rows": 29,
+    "rows": 68,
     "status": "shadow"
   },
   "event_type:control": {
@@ -147,9 +148,9 @@
     },
     "consumer_id": "event_type:control",
     "ece": null,
-    "gap": "distinct rows 2 < 100",
+    "gap": "distinct rows 14 < 100",
     "precision": 0.0,
-    "rows": 2,
+    "rows": 14,
     "status": "shadow"
   },
   "event_type:delivery": {
@@ -164,9 +165,9 @@
     },
     "consumer_id": "event_type:delivery",
     "ece": null,
-    "gap": "distinct rows 8 < 100",
+    "gap": "distinct rows 17 < 100",
     "precision": 0.0,
-    "rows": 8,
+    "rows": 17,
     "status": "shadow"
   },
   "event_type:feedback": {
@@ -198,9 +199,9 @@
     },
     "consumer_id": "event_type:knowledge",
     "ece": null,
-    "gap": "distinct rows 16 < 100",
+    "gap": "distinct rows 33 < 100",
     "precision": 0.0,
-    "rows": 16,
+    "rows": 33,
     "status": "shadow"
   },
   "event_type:memory": {
@@ -215,9 +216,9 @@
     },
     "consumer_id": "event_type:memory",
     "ece": null,
-    "gap": "distinct rows 13 < 100",
+    "gap": "distinct rows 26 < 100",
     "precision": 0.0,
-    "rows": 13,
+    "rows": 26,
     "status": "shadow"
   },
   "mode": {
@@ -248,10 +249,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "narration",
-    "ece": 0.1963,
-    "gap": "oof calibrated ECE 0.0539 > 0.05",
-    "precision": 0.9051,
-    "rows": 390,
+    "ece": 0.2009,
+    "gap": "oof calibrated ECE 0.0546 > 0.05",
+    "precision": 0.8993,
+    "rows": 824,
     "status": "shadow"
   },
   "needs_action": {
@@ -261,16 +262,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "b6d225dbcc4b",
-      "criteria_version": "needs_action/v1",
+      "criteria_version": "needs_action/v2",
       "engine_id": "d1-3b-ad-q4_k_m+letters",
       "readout_mode": "letters"
     },
     "consumer_id": "needs_action",
-    "ece": 0.1276,
-    "gap": "",
-    "precision": 0.9346,
-    "rows": 216,
-    "status": "enforced"
+    "ece": null,
+    "gap": "distinct rows 0 < 100",
+    "precision": 0.0,
+    "rows": 0,
+    "status": "shadow"
   },
   "presentation": {
     "config": {
@@ -284,9 +285,9 @@
     },
     "consumer_id": "presentation",
     "ece": null,
-    "gap": "distinct rows 18 < 100",
+    "gap": "distinct rows 35 < 100",
     "precision": 0.0,
-    "rows": 18,
+    "rows": 35,
     "status": "shadow"
   },
   "recovery_strategy": {
@@ -313,15 +314,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "2e6f65b0fa3a",
+      "criteria_version": "review_verdict/v4",
       "engine_id": "d1-3b-ad-q4_k_m+letters",
       "readout_mode": "letters"
     },
     "consumer_id": "review_verdict",
-    "ece": 0.1675,
-    "gap": "enforcement bar unmet (oof AUROC 0.6271 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.9405,
-    "rows": 1381,
-    "status": "sampled"
+    "ece": 0.0842,
+    "gap": "",
+    "precision": 0.9227,
+    "rows": 538,
+    "status": "enforced"
   },
   "sufficient": {
     "config": {
@@ -347,15 +349,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "16cff5cb156a",
+      "criteria_version": "tool_approval/v6",
       "engine_id": "d1-3b-ad-q4_k_m+letters",
       "readout_mode": "letters"
     },
     "consumer_id": "tool_approval",
     "ece": null,
-    "gap": "oof AUROC 0.5821 < 0.65 (confidence does not rank errors)",
+    "gap": "",
     "precision": 0.0,
-    "rows": 1880,
-    "status": "shadow"
+    "rows": 524,
+    "status": "enforced"
   },
   "tool_choice": {
     "config": {
@@ -369,10 +372,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "tool_choice",
-    "ece": 0.1131,
+    "ece": 0.1011,
     "gap": "",
-    "precision": 0.9063,
-    "rows": 688,
+    "precision": 0.9571,
+    "rows": 1161,
     "status": "enforced"
   },
   "user_feedback": {
@@ -386,10 +389,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.2366,
-    "gap": "oof calibrated ECE 0.0544 > 0.05",
-    "precision": 0.9769,
-    "rows": 165,
+    "ece": 0.2251,
+    "gap": "oof calibrated ECE 0.053 > 0.05",
+    "precision": 0.9146,
+    "rows": 340,
     "status": "shadow"
   },
   "web_intent": {
@@ -404,9 +407,9 @@
     },
     "consumer_id": "web_intent",
     "ece": null,
-    "gap": "oof AUROC 0.4895 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4641 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 199,
+    "rows": 333,
     "status": "shadow"
   }
 }

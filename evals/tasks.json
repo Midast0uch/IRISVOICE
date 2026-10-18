@@ -1,157 +1,692 @@
 {
-  "_note": "Prompts are the requirement. Do not edit a prompt or a pattern to make a task pass; add a new task id instead.",
-  "tasks": [
-    {"id": "c01_fix_off_by_one", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. The test in test_mathutils.py fails. Find the bug in mathutils.py and fix it. Do not change the test."},
-    {"id": "c02_add_slugify", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Add a function slugify(text) to textutils.py. It lowercases the text, replaces every run of characters that are not letters or digits with a single hyphen, and strips hyphens from both ends. Example: slugify('Hello, World!') returns 'hello-world'."},
-    {"id": "c03_rename_across_files", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Rename the function calc_total to compute_total everywhere in this project and update every caller. python main.py must still run."},
-    {"id": "c04_implement_from_tests", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Make the tests in test_durations.py pass by implementing parse_duration in durations.py. Do not change the tests."},
-    {"id": "c05_add_cli_flag", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Add a --shout flag to greet.py. With --shout the greeting is printed in upper case. Without it the output stays exactly the same."},
-    {"id": "c06_fix_import_error", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Running python app.py fails with an ImportError. Fix the shapes package so app.py runs. Keep the public names area_circle and area_square, and do not change app.py."},
-    {"id": "c07_config_defaults", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Change load_config in config.py: any key missing from the file gets its value from DEFAULTS, keys the file sets keep the file's value, and when the file does not exist it returns a copy of DEFAULTS. DEFAULTS itself must never be modified."},
-    {"id": "c08_write_tests", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Write pytest tests for stack.py in a new file test_stack.py. Cover push, pop, peek, is_empty, len, and the errors on an empty stack. Do not change stack.py. All tests must pass."},
-    {"id": "c09_edit_long_file", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. total_value in inventory_report.py ignores the quantity of each item. Fix it so it returns the sum of price times qty. Do not change any other function."},
-    {"id": "c10_create_module", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Create inventory.py with a class Inventory. add(name, qty) adds stock. remove(name, qty) removes stock and raises ValueError if there is not enough. count(name) returns the stock, 0 for an unknown item. add or remove with qty <= 0 raises ValueError."},
-    {"id": "c11_two_bugs_two_files", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Some tests in tests/test_geometry.py fail. Fix the bugs in the geometry package so every test passes. Do not change the tests."},
-    {"id": "c12_add_method_long_class", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Add a method balance_on(date) to the Ledger class in ledger.py. It returns the balance of all entries dated on or before that date. Dates are ISO strings like '2026-01-31'. Keep every existing method working."},
-    {"id": "c13_explain_code", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Without changing any file, tell me exactly what encode('abc') in cipher.py returns.",
-     "reply_patterns": ["\\bfed\\b"]},
-    {"id": "c14_run_and_report", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Run the tests in this project and tell me exactly how many of them fail. Do not fix anything.",
-     "reply_patterns": ["\\b(3|three)\\b[^.\\n]{0,40}\\bfail|\\bfail\\w*\\W{0,5}(3|three)\\b"]},
-    {"id": "c15_iterate_until_green", "group": "coding", "mode": "developer", "path": "dev_cli", "timeout_s": 1200,
-     "prompt": "The project is in {workdir}. Make every test in test_roman.py pass without changing the tests. Run the tests to confirm before you finish."},
-
-    {"id": "r01_python_origin", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Who created the Python programming language, and in what year was its first version released? Search the web to confirm.",
-     "reply_patterns": ["guido", "\\b1991\\b"]},
-    {"id": "r02_websocket_rfc", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Search the web: which RFC number defines the WebSocket protocol?",
-     "reply_patterns": ["\\b6455\\b"]},
-    {"id": "r03_attention_paper", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Look up who wrote the paper 'Attention Is All You Need' and the year it was published.",
-     "reply_patterns": ["vaswani", "\\b2017\\b"]},
-    {"id": "r04_kilimanjaro", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "What is the tallest mountain in Africa, and how tall is it in meters? Check a source online.",
-     "reply_patterns": ["kilimanjaro", "\\b5[,. ]?89\\d\\b"]},
-    {"id": "r05_fastapi_license", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Look up which open-source license the FastAPI project on GitHub uses.",
-     "reply_patterns": ["\\bMIT\\b"]},
-    {"id": "r06_tokyo_osaka", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Search the web for the populations of Tokyo and Osaka and tell me which city is larger.",
-     "reply_patterns": ["tokyo", "osaka", "million|\\d{1,3}(,\\d{3}){2,}|\\d{7,}"]},
-    {"id": "r07_first_iphone", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Using a web search, find the year the first iPhone was released and the company that made it.",
-     "reply_patterns": ["\\b2007\\b", "apple"]},
-    {"id": "r08_http_418", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "What does the HTTP status code 418 mean? Look it up.",
-     "reply_patterns": ["teapot"]},
-    {"id": "r09_three_facts", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Look up three separate facts on the web and give each one: the height of the Eiffel Tower in metres, the year the Golden Gate Bridge opened, and the year the first Harry Potter book was published.",
-     "reply_patterns": ["\\b3[0-3]\\d\\b", "\\b1937\\b", "\\b1997\\b"]},
-
-    {"id": "r10_tungsten_melting", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Which chemical element has the highest melting point? Search the web to confirm and give the temperature in Celsius.",
-     "reply_patterns": ["tungsten", "3422|3,422"]},
-    {"id": "r11_berlin_wall", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Search online: in what year did the Berlin Wall come down?",
-     "reply_patterns": ["\\b1989\\b"]},
-    {"id": "r12_jupiter_moons", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Look up on the web how many moons the planet Jupiter has, according to a recent count.",
-     "reply_patterns": ["\\b9[0-9]\\b"]},
-    {"id": "r13_olympics_2016", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Which city hosted the 2016 Summer Olympic Games? Verify it with a web source.",
-     "reply_patterns": ["rio"]},
-    {"id": "r14_speed_of_light", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Search the web and tell me the speed of light in vacuum, in metres per second.",
-     "reply_patterns": ["299"]},
-    {"id": "r15_hash_table", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Explain in two short sentences what a hash table is. Answer from your own knowledge; do not search the web.",
-     "reply_patterns": ["hash", "key"]},
-    {"id": "r16_http_meaning", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "What does the acronym HTTP stand for? Answer directly without a web search.",
-     "reply_patterns": ["hypertext", "transfer"]},
-    {"id": "r17_sorting_algorithms", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Name three sorting algorithms and say in one sentence each how they work. No web search needed.",
-     "reply_patterns": ["sort"]},
-    {"id": "r18_process_thread", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "What is the difference between a process and a thread? Answer briefly from your own knowledge, without looking anything up.",
-     "reply_patterns": ["process", "thread"]},
-    {"id": "r19_binary_search", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Explain how binary search works and when it can be used. Do not use the web.",
-     "reply_patterns": ["sort(ed)?", "log"]},
-
-    {"id": "r20_mona_lisa", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Who painted the Mona Lisa, and in what century? Check a web source.",
-     "reply_patterns": ["leonardo", "sixteenth|16th"]},
-    {"id": "r21_rest_api", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Explain what a REST API is in two sentences. Answer from your own knowledge.",
-     "reply_patterns": ["transfer", "state"]},
-    {"id": "r22_gold_symbol", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Search the web: what is the chemical symbol for gold?",
-     "reply_patterns": ["\\bAu\\b"]},
-    {"id": "r23_sql_meaning", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "What does SQL stand for? No web search needed.",
-     "reply_patterns": ["structured", "query"]},
-    {"id": "r24_largest_planet", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Look up online which planet in our solar system is the largest.",
-     "reply_patterns": ["jupiter"]},
-    {"id": "r25_tcp_layers", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Name the four layers of the TCP/IP model. Do not search the web.",
-     "reply_patterns": ["application", "transport", "internet"]},
-    {"id": "b01_example_more_info", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://example.com in the live browser, click the 'More information' link, and tell me the title of the page it opens.",
-     "reply_patterns": ["example domains?"]},
-    {"id": "b02_wiki_search_lovelace", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://en.wikipedia.org/wiki/Main_Page in the live browser, type 'Ada Lovelace' into the page's search box, open her article, and tell me the year she was born.",
-     "reply_patterns": ["\\b1815\\b"]},
-    {"id": "b03_python_downloads", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://www.python.org in the live browser, click 'Downloads' in the top menu, and tell me the newest Python version number the page offers.",
-     "reply_patterns": ["\\b3\\.\\d+"]},
-    {"id": "b04_turing_birthplace", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://en.wikipedia.org/wiki/Alan_Turing in the live browser, click the 'Early life and education' section link in the contents, and tell me where he was born.",
-     "reply_patterns": ["maida vale|london"]},
-    {"id": "b05_python_docs_library", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://docs.python.org/3/ in the live browser, click the 'Library reference' link, and tell me the title of the page that opens.",
-     "reply_patterns": ["standard library"]},
-    {"id": "b06_wikipedia_curie", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://www.wikipedia.org in the live browser, search for 'Marie Curie' with the page's search box, open her English article, and tell me the year of her first Nobel Prize.",
-     "reply_patterns": ["\\b1903\\b"]},
-    {"id": "b07_httpbin_form", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://httpbin.org/forms/post in the live browser, type 'IRIS test' into the customer name field and select the 'Large' pizza size. Do not submit the form. Then tell me which toppings the form offers.",
-     "reply_patterns": ["bacon|cheese|onion|mushroom"]},
-    {"id": "b08_moon_exploration", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://en.wikipedia.org/wiki/Moon in the live browser, click the 'Exploration' link in the contents, and tell me the year of the first crewed Moon landing.",
-     "reply_patterns": ["\\b1969\\b"]},
-    {"id": "b09_iana_reserved", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://www.iana.org in the live browser, click the 'Domain Names' link, and tell me one of the topics that page lists.",
-     "reply_patterns": ["root|zone|domain|\\.int|\\.arpa|idn"]},
-    {"id": "b10_mdn_html", "group": "browser", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "Open https://developer.mozilla.org/en-US/ in the live browser, use the site's search to look for 'fetch', open the Fetch API page, and tell me in one sentence what the Fetch API does.",
-     "reply_patterns": ["request|resource|network|http"]},
-    {"id": "g01_quote_author_birth", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "On https://quotes.toscrape.com, go to the author page of whoever wrote the quote that begins 'The world as we have created it' and tell me the birth date it shows.",
-     "reply_patterns": ["march 14,? 1879|14 march 1879"]},
-    {"id": "g02_country_andorra", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "What capital and population does https://www.scrapethissite.com/pages/simple/ list for Andorra?",
-     "reply_patterns": ["andorra la vella", "84,?000"]},
-    {"id": "g03_austen_humor", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "On https://quotes.toscrape.com, find a Jane Austen quote under the 'humor' tag and tell me what it says.",
-     "reply_patterns": ["intolerably stupid|imagination is very rapid"]},
-    {"id": "g04_hockey_1990_wins", "group": "browser_goal", "mode": "personal", "path": "text_message", "timeout_s": 600,
-     "prompt": "On https://www.scrapethissite.com/pages/forms/, look up the Boston Bruins in the site's team list and tell me how many games they won in 1990.",
-     "reply_patterns": ["\\b44\\b"]}
-  ]
+ "_note": "Prompts are the requirement. Do not edit a prompt or a pattern to make a task pass; add a new task id instead.",
+ "tasks": [
+  {
+   "id": "c01_fix_off_by_one",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. The test in test_mathutils.py fails. Find the bug in mathutils.py and fix it. Do not change the test."
+  },
+  {
+   "id": "c02_add_slugify",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Add a function slugify(text) to textutils.py. It lowercases the text, replaces every run of characters that are not letters or digits with a single hyphen, and strips hyphens from both ends. Example: slugify('Hello, World!') returns 'hello-world'."
+  },
+  {
+   "id": "c03_rename_across_files",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Rename the function calc_total to compute_total everywhere in this project and update every caller. python main.py must still run."
+  },
+  {
+   "id": "c04_implement_from_tests",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Make the tests in test_durations.py pass by implementing parse_duration in durations.py. Do not change the tests."
+  },
+  {
+   "id": "c05_add_cli_flag",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Add a --shout flag to greet.py. With --shout the greeting is printed in upper case. Without it the output stays exactly the same."
+  },
+  {
+   "id": "c06_fix_import_error",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Running python app.py fails with an ImportError. Fix the shapes package so app.py runs. Keep the public names area_circle and area_square, and do not change app.py."
+  },
+  {
+   "id": "c07_config_defaults",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Change load_config in config.py: any key missing from the file gets its value from DEFAULTS, keys the file sets keep the file's value, and when the file does not exist it returns a copy of DEFAULTS. DEFAULTS itself must never be modified."
+  },
+  {
+   "id": "c08_write_tests",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Write pytest tests for stack.py in a new file test_stack.py. Cover push, pop, peek, is_empty, len, and the errors on an empty stack. Do not change stack.py. All tests must pass."
+  },
+  {
+   "id": "c09_edit_long_file",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. total_value in inventory_report.py ignores the quantity of each item. Fix it so it returns the sum of price times qty. Do not change any other function."
+  },
+  {
+   "id": "c10_create_module",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Create inventory.py with a class Inventory. add(name, qty) adds stock. remove(name, qty) removes stock and raises ValueError if there is not enough. count(name) returns the stock, 0 for an unknown item. add or remove with qty <= 0 raises ValueError."
+  },
+  {
+   "id": "c11_two_bugs_two_files",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Some tests in tests/test_geometry.py fail. Fix the bugs in the geometry package so every test passes. Do not change the tests."
+  },
+  {
+   "id": "c12_add_method_long_class",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Add a method balance_on(date) to the Ledger class in ledger.py. It returns the balance of all entries dated on or before that date. Dates are ISO strings like '2026-01-31'. Keep every existing method working."
+  },
+  {
+   "id": "c13_explain_code",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Without changing any file, tell me exactly what encode('abc') in cipher.py returns.",
+   "reply_patterns": [
+    "\\bfed\\b"
+   ]
+  },
+  {
+   "id": "c14_run_and_report",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me exactly how many of them fail. Do not fix anything.",
+   "reply_patterns": [
+    "\\b(3|three)\\b[^.\\n]{0,40}\\bfail|\\bfail\\w*\\W{0,5}(3|three)\\b"
+   ]
+  },
+  {
+   "id": "c15_iterate_until_green",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Make every test in test_roman.py pass without changing the tests. Run the tests to confirm before you finish."
+  },
+  {
+   "id": "r01_python_origin",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Who created the Python programming language, and in what year was its first version released? Search the web to confirm.",
+   "reply_patterns": [
+    "guido",
+    "\\b1991\\b"
+   ]
+  },
+  {
+   "id": "r02_websocket_rfc",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web: which RFC number defines the WebSocket protocol?",
+   "reply_patterns": [
+    "\\b6455\\b"
+   ]
+  },
+  {
+   "id": "r03_attention_paper",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Look up who wrote the paper 'Attention Is All You Need' and the year it was published.",
+   "reply_patterns": [
+    "vaswani",
+    "\\b2017\\b"
+   ]
+  },
+  {
+   "id": "r04_kilimanjaro",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What is the tallest mountain in Africa, and how tall is it in meters? Check a source online.",
+   "reply_patterns": [
+    "kilimanjaro",
+    "\\b5[,. ]?89\\d\\b"
+   ]
+  },
+  {
+   "id": "r05_fastapi_license",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Look up which open-source license the FastAPI project on GitHub uses.",
+   "reply_patterns": [
+    "\\bMIT\\b"
+   ]
+  },
+  {
+   "id": "r06_tokyo_osaka",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web for the populations of Tokyo and Osaka and tell me which city is larger.",
+   "reply_patterns": [
+    "tokyo",
+    "osaka",
+    "million|\\d{1,3}(,\\d{3}){2,}|\\d{7,}"
+   ]
+  },
+  {
+   "id": "r07_first_iphone",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Using a web search, find the year the first iPhone was released and the company that made it.",
+   "reply_patterns": [
+    "\\b2007\\b",
+    "apple"
+   ]
+  },
+  {
+   "id": "r08_http_418",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What does the HTTP status code 418 mean? Look it up.",
+   "reply_patterns": [
+    "teapot"
+   ]
+  },
+  {
+   "id": "r09_three_facts",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Look up three separate facts on the web and give each one: the height of the Eiffel Tower in metres, the year the Golden Gate Bridge opened, and the year the first Harry Potter book was published.",
+   "reply_patterns": [
+    "\\b3[0-3]\\d\\b",
+    "\\b1937\\b",
+    "\\b1997\\b"
+   ]
+  },
+  {
+   "id": "r10_tungsten_melting",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Which chemical element has the highest melting point? Search the web to confirm and give the temperature in Celsius.",
+   "reply_patterns": [
+    "tungsten",
+    "3422|3,422"
+   ]
+  },
+  {
+   "id": "r11_berlin_wall",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search online: in what year did the Berlin Wall come down?",
+   "reply_patterns": [
+    "\\b1989\\b"
+   ]
+  },
+  {
+   "id": "r12_jupiter_moons",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Look up on the web how many moons the planet Jupiter has, according to a recent count.",
+   "reply_patterns": [
+    "\\b9[0-9]\\b"
+   ]
+  },
+  {
+   "id": "r13_olympics_2016",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Which city hosted the 2016 Summer Olympic Games? Verify it with a web source.",
+   "reply_patterns": [
+    "rio"
+   ]
+  },
+  {
+   "id": "r14_speed_of_light",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web and tell me the speed of light in vacuum, in metres per second.",
+   "reply_patterns": [
+    "299"
+   ]
+  },
+  {
+   "id": "r15_hash_table",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Explain in two short sentences what a hash table is. Answer from your own knowledge; do not search the web.",
+   "reply_patterns": [
+    "hash",
+    "key"
+   ]
+  },
+  {
+   "id": "r16_http_meaning",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What does the acronym HTTP stand for? Answer directly without a web search.",
+   "reply_patterns": [
+    "hypertext",
+    "transfer"
+   ]
+  },
+  {
+   "id": "r17_sorting_algorithms",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Name three sorting algorithms and say in one sentence each how they work. No web search needed.",
+   "reply_patterns": [
+    "sort"
+   ]
+  },
+  {
+   "id": "r18_process_thread",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What is the difference between a process and a thread? Answer briefly from your own knowledge, without looking anything up.",
+   "reply_patterns": [
+    "process",
+    "thread"
+   ]
+  },
+  {
+   "id": "r19_binary_search",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Explain how binary search works and when it can be used. Do not use the web.",
+   "reply_patterns": [
+    "sort(ed)?",
+    "log"
+   ]
+  },
+  {
+   "id": "r20_mona_lisa",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Who painted the Mona Lisa, and in what century? Check a web source.",
+   "reply_patterns": [
+    "leonardo",
+    "sixteenth|16th"
+   ]
+  },
+  {
+   "id": "r21_rest_api",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Explain what a REST API is in two sentences. Answer from your own knowledge.",
+   "reply_patterns": [
+    "transfer",
+    "state"
+   ]
+  },
+  {
+   "id": "r22_gold_symbol",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web: what is the chemical symbol for gold?",
+   "reply_patterns": [
+    "\\bAu\\b"
+   ]
+  },
+  {
+   "id": "r23_sql_meaning",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What does SQL stand for? No web search needed.",
+   "reply_patterns": [
+    "structured",
+    "query"
+   ]
+  },
+  {
+   "id": "r24_largest_planet",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Look up online which planet in our solar system is the largest.",
+   "reply_patterns": [
+    "jupiter"
+   ]
+  },
+  {
+   "id": "r25_tcp_layers",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Name the four layers of the TCP/IP model. Do not search the web.",
+   "reply_patterns": [
+    "application",
+    "transport",
+    "internet"
+   ]
+  },
+  {
+   "id": "b01_example_more_info",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://example.com in the live browser, click the 'More information' link, and tell me the title of the page it opens.",
+   "reply_patterns": [
+    "example domains?"
+   ]
+  },
+  {
+   "id": "b02_wiki_search_lovelace",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://en.wikipedia.org/wiki/Main_Page in the live browser, type 'Ada Lovelace' into the page's search box, open her article, and tell me the year she was born.",
+   "reply_patterns": [
+    "\\b1815\\b"
+   ]
+  },
+  {
+   "id": "b03_python_downloads",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://www.python.org in the live browser, click 'Downloads' in the top menu, and tell me the newest Python version number the page offers.",
+   "reply_patterns": [
+    "\\b3\\.\\d+"
+   ]
+  },
+  {
+   "id": "b04_turing_birthplace",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://en.wikipedia.org/wiki/Alan_Turing in the live browser, click the 'Early life and education' section link in the contents, and tell me where he was born.",
+   "reply_patterns": [
+    "maida vale|london"
+   ]
+  },
+  {
+   "id": "b05_python_docs_library",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://docs.python.org/3/ in the live browser, click the 'Library reference' link, and tell me the title of the page that opens.",
+   "reply_patterns": [
+    "standard library"
+   ]
+  },
+  {
+   "id": "b06_wikipedia_curie",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://www.wikipedia.org in the live browser, search for 'Marie Curie' with the page's search box, open her English article, and tell me the year of her first Nobel Prize.",
+   "reply_patterns": [
+    "\\b1903\\b"
+   ]
+  },
+  {
+   "id": "b07_httpbin_form",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://httpbin.org/forms/post in the live browser, type 'IRIS test' into the customer name field and select the 'Large' pizza size. Do not submit the form. Then tell me which toppings the form offers.",
+   "reply_patterns": [
+    "bacon|cheese|onion|mushroom"
+   ]
+  },
+  {
+   "id": "b08_moon_exploration",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://en.wikipedia.org/wiki/Moon in the live browser, click the 'Exploration' link in the contents, and tell me the year of the first crewed Moon landing.",
+   "reply_patterns": [
+    "\\b1969\\b"
+   ]
+  },
+  {
+   "id": "b09_iana_reserved",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://www.iana.org in the live browser, click the 'Domain Names' link, and tell me one of the topics that page lists.",
+   "reply_patterns": [
+    "root|zone|domain|\\.int|\\.arpa|idn"
+   ]
+  },
+  {
+   "id": "b10_mdn_html",
+   "group": "browser",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Open https://developer.mozilla.org/en-US/ in the live browser, use the site's search to look for 'fetch', open the Fetch API page, and tell me in one sentence what the Fetch API does.",
+   "reply_patterns": [
+    "request|resource|network|http"
+   ]
+  },
+  {
+   "id": "g01_quote_author_birth",
+   "group": "browser_goal",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "On https://quotes.toscrape.com, go to the author page of whoever wrote the quote that begins 'The world as we have created it' and tell me the birth date it shows.",
+   "reply_patterns": [
+    "march 14,? 1879|14 march 1879"
+   ]
+  },
+  {
+   "id": "g02_country_andorra",
+   "group": "browser_goal",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What capital and population does https://www.scrapethissite.com/pages/simple/ list for Andorra?",
+   "reply_patterns": [
+    "andorra la vella",
+    "84,?000"
+   ]
+  },
+  {
+   "id": "g03_austen_humor",
+   "group": "browser_goal",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "On https://quotes.toscrape.com, find a Jane Austen quote under the 'humor' tag and tell me what it says.",
+   "reply_patterns": [
+    "intolerably stupid|imagination is very rapid"
+   ]
+  },
+  {
+   "id": "g04_hockey_1990_wins",
+   "group": "browser_goal",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "On https://www.scrapethissite.com/pages/forms/, look up the Boston Bruins in the site's team list and tell me how many games they won in 1990.",
+   "reply_patterns": [
+    "\\b44\\b"
+   ]
+  },
+  {
+   "id": "r26_rust_creator",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Which developer created the Rust programming language, and which organization sponsored it in its early years? Search the web to confirm.",
+   "reply_patterns": [
+    "graydon",
+    "mozilla"
+   ]
+  },
+  {
+   "id": "r27_http_teapot",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web: which HTTP status code is the joke status for a teapot?",
+   "reply_patterns": [
+    "418"
+   ]
+  },
+  {
+   "id": "r28_moon_distance",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "How far is the Moon from Earth on average, measured in kilometers? Check a source online.",
+   "reply_patterns": [
+    "384"
+   ]
+  },
+  {
+   "id": "r29_git_creator",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Look up who created the Git version control system and the year of its first release.",
+   "reply_patterns": [
+    "linus",
+    "2005"
+   ]
+  },
+  {
+   "id": "r30_largest_ocean",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Which ocean covers the largest surface area of Earth? Confirm online.",
+   "reply_patterns": [
+    "pacific"
+   ]
+  },
+  {
+   "id": "r31_c_language",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web for the year the C programming language first appeared and the name of its designer.",
+   "reply_patterns": [
+    "197[0-9]",
+    "ritchie"
+   ]
+  },
+  {
+   "id": "r32_everest_height",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "What is the height of Mount Everest in meters according to the most recent official survey? Look it up.",
+   "reply_patterns": [
+    "884[0-9]"
+   ]
+  },
+  {
+   "id": "r33_django_license",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Which open-source license does the Django web framework use? Check the project online.",
+   "reply_patterns": [
+    "bsd"
+   ]
+  },
+  {
+   "id": "r34_light_speed",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "Search the web for the speed of light in vacuum expressed in kilometers per second.",
+   "reply_patterns": [
+    "299"
+   ]
+  },
+  {
+   "id": "r35_typescript_year",
+   "group": "research",
+   "mode": "personal",
+   "path": "text_message",
+   "timeout_s": 600,
+   "prompt": "In what year did Microsoft first release TypeScript? Confirm on the web.",
+   "reply_patterns": [
+    "2012"
+   ]
+  }
+ ]
 }

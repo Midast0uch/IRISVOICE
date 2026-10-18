@@ -53,6 +53,7 @@ class DevOrchestrator:
         payload: dict[str, Any],
         ws_send: Callable[[dict], Any],  # coroutine that sends a WS message
         conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> None:
         """
         Main handler for dev_cli messages.
@@ -60,6 +61,14 @@ class DevOrchestrator:
         conversation_id: the caller's active conversation thread, so /run joins
         the user's live context instead of a detached one. Falls back to
         session_id when unknown.
+        turn_id: the WS turn protocol's id for this turn. The KERNEL call must
+        use it, not the display proc_id below: the kernel binds it into the
+        Oracle measurement scope, and the eval harness reports its hidden-test
+        verdict keyed by the WS turn id (POST /api/eval/verdict, depth_met/v3).
+        Measured live 2026-10-17: with proc_id as the kernel's turn id, every
+        held depth_met row carried 'iris-agent-<hex>' while the verdict
+        arrived for the WS id - a join that could never fire. Falls back to
+        proc_id when the caller passes none (the pre-fix behaviour).
         """
         query: str = payload.get("query", "").strip()
         conv_id = conversation_id or session_id
@@ -158,6 +167,10 @@ class DevOrchestrator:
         })
 
         proc_id = f"iris-agent-{uuid.uuid4().hex[:8]}"
+        # The KERNEL's turn id is the WS turn id (see the docstring): the
+        # Oracle scope, the sampled-row join and the external verdict label
+        # all key on it. proc_id stays the DISPLAY id (cli_started/cli_output).
+        _kernel_turn_id = str(turn_id) if turn_id else proc_id
         await ws_send({
             "type": "cli_started",
             "tool_name": _AGENT_DISPLAY_NAME,
@@ -194,7 +207,7 @@ class DevOrchestrator:
                 session_id=session_id,
                 conversation_id=conv_id,
                 chunk_callback=_chunk_cb,
-                turn_id=proc_id,
+                turn_id=_kernel_turn_id,
             )
 
         try:

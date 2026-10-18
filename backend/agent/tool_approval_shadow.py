@@ -33,8 +33,24 @@ TOOL_APPROVAL_CONSUMER = "tool_approval"
 
 # The question the model scores against (the Decision Index `instructions`
 # field). Registered on the consumer spec so the backend renders it.
+# v4 (2026-10-17, oracle.md 7.5: "make the question match its honest label"):
+# the label is "the call succeeded" (brain_bool, ground truth, outside), but
+# v1-v3 asked "is this the RIGHT tool" - a different question. A right tool
+# can fail (an edit_file whose old text is not in the file) and a wrong tool
+# can succeed; measured live at 2976 distinct rows the mismatch held the
+# consumer at oof AUROC 0.5633.
+# v5 (2026-10-17, same day, replay on REAL frames): v4's plain "Will this
+# call succeed as written?" matched the label but d1 HEDGED "no" on 104 of
+# 252 live calls - 238 of which SUCCEEDED (small-model pessimism, the same
+# hedge review_verdict showed before its evidence-only frame). Live v4: oof
+# AUROC 0.5156. The base-rate prior plus the concrete failure signatures
+# stops the hedge: replay on 83 REAL frames with REAL outcomes - v4 wording
+# 0.6504, v3 wording 0.5929, THIS wording 0.7429 (yes 59 / no 24, correct
+# 71%). Wording matters: a shortened variant of THIS text dropped to 0.6155.
 TOOL_APPROVAL_INSTRUCTION = (
-    "Is this tool the right next tool for this goal, given this result?"
+    "Will this call succeed? Most calls do. Answer no only when the "
+    "evidence shows a concrete problem: a path that does not exist, "
+    "text to replace that is not in the file, or an invalid command."
 )
 
 _TRUE_LABEL = "yes"
@@ -51,7 +67,22 @@ _FALSE_LABEL = "no"
 # last_result = THIS step's last call. The node path passed the previous
 # STEP's result, computed once per node, so every call of a step carried the
 # same evidence (the tool_choice defect, measured 50.9% parity there).
-CRITERIA_VERSION = "tool_approval/v3"
+# v4 (2026-10-17): the QUESTION changes to "Will this call succeed as
+# written?" so it measures what the label (the call's outcome) records.
+# v5 (2026-10-17): the anti-pessimism wording above (replay on real frames
+# 0.7429 - later found to be a MISALIGNED pairing; the honest timestamp-joined
+# replay measured v5 at 0.5894 and live at 0.4542-0.5156).
+# v6 (2026-10-17): the LABEL defect fixed - the DER site labelled a call by
+# the loop's `failed`, which counts a non-zero returncode as failure, so
+# every informative pytest run during test-driven work was a "failed" call
+# (7 of 11 live "failures" were valid commands the tool reported success for;
+# d1 approved them at 0.77-0.91 and was scored wrong). The label is now the
+# CALL-level outcome (node_executor passes approval_ok: a run_command that
+# RAN is a successful call; its exit code is the WORK's answer, not the
+# call's). The RespondDirect site already used the tool's success flag. The
+# frame and the question are UNCHANGED from v5. v1-v5 rows are retired
+# (criteria_version scopes them; never blend them back).
+CRITERIA_VERSION = "tool_approval/v6"
 
 # Sentinel: adopt the module-level engine singleton. `engine=None` means NO
 # ENGINE (fail-safe) — never "resolve the singleton", or a shadow scorer would
@@ -223,6 +254,97 @@ def _fmt_tools(tools: Optional[list]) -> Optional[str]:
         return None
 
 
+def _build_frame(
+    *,
+    goal: str,
+    last_result: Optional[str],
+    proposed_tool: str,
+    tool_description: str = "",
+    args: Optional[dict] = None,
+    offered_tools: Optional[list] = None,
+    calls_this_step: Optional[str] = None,
+) -> Dict[str, Any]:
+    """The PRE-CALL frame, shared by the post-hoc consult and the pre-call
+    guard. The call's own result is deliberately absent - it would leak the
+    answer the row measures. Never raises on bad input (best-effort fields)."""
+    return {
+        "goal": (goal or "")[:200],
+        # v3: the step's own calls so far (empty on its first call).
+        "calls_this_step": (calls_this_step or "")[-300:] or None,
+        # v3: 400 -> 300 (and description 200 -> 150, offered 200 -> 150) so
+        # the added history fits the 384-id budget with `args` intact.
+        "last_result": (last_result or "")[:300] or None,
+        "proposed_tool": str(proposed_tool),
+        "tool_description": (tool_description or "")[:150] or None,
+        # v2: the arguments the Brain is about to execute — the strongest
+        # approval signal for tools like run_command — and the names of the
+        # tools the Brain was OFFERED (what else was on the menu).
+        "args": _fmt_args(args),
+        "offered_tools": _fmt_tools(offered_tools),
+    }
+
+
+def pre_call_guard(
+    *,
+    goal: str,
+    last_result: Optional[str] = None,
+    proposed_tool: str,
+    tool_description: str = "",
+    args: Optional[dict] = None,
+    offered_tools: Optional[list] = None,
+    calls_this_step: Optional[str] = None,
+    engine: Any = AUTO_ENGINE,
+) -> Optional[bool]:
+    """The ENFORCED pre-call verdict (oracle.md 7.5, the v6 live decision).
+
+    Returns False ONLY when the engine is enforced for this consumer, its
+    calibrated confidence clears the threshold, and its answer is "no - this
+    call will fail as written" (an edit_file whose old text is not in the
+    file, a guessed path, an invalid command). The caller then asks the model
+    to correct the call before it runs. Returns None in every other case -
+    not enforced, below the threshold, a "yes" (the call runs), or any fault -
+    and None always means "run the call" (fail-open, refuse-only: the guard
+    may tighten, never deadlock). Runs on the CALLER's thread (the node
+    loop): a deciding consult costs the decision latency, the same cost an
+    enforced tool_choice pick already pays there. Never raises.
+    """
+    try:
+        if not proposed_tool:
+            return None
+        from backend.agent.decision_engine import decides, oracle_acts
+
+        _tau = decides(TOOL_APPROVAL_CONSUMER)
+        if _tau is None:
+            return None  # not enforced: zero cost, the call runs
+        eng = _default_engine() if engine is AUTO_ENGINE else engine
+        if eng is None:
+            return None
+        register_tool_approval_consumer()
+        frame = _build_frame(
+            goal=goal, last_result=last_result,
+            proposed_tool=proposed_tool, tool_description=tool_description,
+            args=args, offered_tools=offered_tools,
+            calls_this_step=calls_this_step,
+        )
+        noul = score_tool_approval(frame, engine=eng)
+        if noul is None:
+            return None
+        p = float(noul.probability)
+        conf = max(p, 1.0 - p)
+        if not oracle_acts(TOOL_APPROVAL_CONSUMER, conf):
+            return None  # below the calibrated threshold: the call runs
+        if bool(noul.true(0.5)):
+            return None  # "will succeed": no opinion, the call runs
+        logger.info(
+            "[tool_approval] pre-call guard REJECTED %s %s (conf=%.3f, threshold=%.3f)",
+            proposed_tool, _fmt_args(args) or "", conf, float(_tau),
+        )
+        return False
+    except Exception as e:  # noqa: BLE001 — a guard never blocks a call
+        logger.debug("[tool_approval] pre-call guard failed: %r", e)
+        return None
+
+
 def record_tool_approval(
     *,
     goal: str,
@@ -247,25 +369,22 @@ def record_tool_approval(
     if not proposed_tool:
         return
     _scope = _scope_now()
-    _frame = {
-        "goal": (goal or "")[:200],
-        # v3: the step's own calls so far (empty on its first call).
-        "calls_this_step": (calls_this_step or "")[-300:] or None,
-        # v3: 400 -> 300 (and description 200 -> 150, offered 200 -> 150) so
-        # the added history fits the 384-id budget with `args` intact.
-        "last_result": (last_result or "")[:300] or None,
-        "proposed_tool": str(proposed_tool),
-        "tool_description": (tool_description or "")[:150] or None,
-        # v2: the arguments the Brain is about to execute — the strongest
-        # approval signal for tools like run_command — and the names of the
-        # tools the Brain was OFFERED (what else was on the menu).
-        "args": _fmt_args(args),
-        "offered_tools": _fmt_tools(offered_tools),
-    }
+    _frame = _build_frame(
+        goal=goal, last_result=last_result,
+        proposed_tool=proposed_tool, tool_description=tool_description,
+        args=args, offered_tools=offered_tools,
+        calls_this_step=calls_this_step,
+    )
     _brain = bool(outcome_success)
 
     def _job() -> None:
         noul = score_tool_approval(_frame, engine=engine)
+        # DIAGNOSTIC (2026-10-17): decision rows do not store the rendered
+        # frame, so a live cohort cannot be replayed against a changed
+        # question. One DEBUG record per consult shows what the engine read
+        # (the review_verdict frame diagnostic is the precedent - it made the
+        # v4 fix chain possible). Off the answer path (lane).
+        logger.debug("[tool_approval] frame: %r", _frame)
         emit_row(shadow_row(noul, brain_bool=_brain, scope=_scope))
 
     try:

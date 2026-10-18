@@ -164,23 +164,26 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 ### 2.3 Shadow and sampled consumers around the engine
 
 ```
-                     +-----------------------------------------+
-                     |  DecisionEngine  (one resident backend)  |
-                     +-----------------------------------------+
-   route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
-                   browser_next (shadow, element ids as options)
-   approve job --- tool_approval (shadow, post-hoc)
-   guard job ----- click_safety (shadow + refuse-only sample) | needs_action (ENFORCED: node mode)
-   judge_step ---- review_verdict | escalate_incomplete (ENFORCED)
-   judge_goal ---- done | sufficient | depth_met
-   judge_call ---- call_closing (REFUSED: measurement only)
-   shape job ----- presentation | narration
-   interpret job - web_intent | user_feedback
-   classify_event  event_family | event_type:<family>
-   boot: main.py _boot_load_d1 loads d1 (+mmproj) on :8082 at startup
-   lanes: oracle_shadow (most consults), click_safety_shadow,
-          event_oracle, memory_events   (backend/utils/durability_queue.lane)
+                      +-----------------------------------------+
+                      |  DecisionEngine  (one resident backend)  |
+                      +-----------------------------------------+
+    route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
+                    browser_next (shadow, element ids as options)
+    approve job --- tool_approval (ENFORCED: the pre-call guard; post-hoc rows keep flowing)
+    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (re-earning on v2)
+    judge_review -- review_verdict (ENFORCED, refuse-only)
+    judge_step ---- escalate_incomplete (ENFORCED)
+    judge_goal ---- done | sufficient
+    judge_depth --- depth_met (ENFORCED, tighten-only)
+    judge_call ---- call_closing (REFUSED: measurement only)
+    shape job ----- presentation | narration
+    interpret job - web_intent (v2, turn-outcome label) | user_feedback
+    classify_event  event_family | event_type:<family>
+    boot: main.py _boot_load_d1 loads d1 (+mmproj) on :8082 at startup
+    lanes: oracle_shadow (most consults), click_safety_shadow,
+           event_oracle, memory_events   (backend/utils/durability_queue.lane)
 ```
+
 
 ### 2.4 Boot and serving
 
@@ -213,24 +216,24 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 A consumer is one decision point (one question asked at one place in the app).
 Each has an id, a declared decision type and criteria, and one job.
 
-`CONSUMER_DECLARATIONS` (`decision_engine.py`) declares the type of every consumer below. `CONSUMERS` is the smaller set of 13 ids the owner can switch on; `tool_approval`, `click_safety`, `browser_next`, `user_feedback` and the event consumers are declared but are not members of it.
+`CONSUMER_DECLARATIONS` (`decision_engine.py`) declares the type of every consumer below. `CONSUMERS` is the smaller set of 14 ids the owner can switch on; `click_safety`, `browser_next`, `user_feedback` and the event consumers are declared but are not members of it (`tool_approval` joined 2026-10-18 when its pre-call guard became its live decision).
 
 | Consumer | Job | Type | Incumbent that decides today | Where |
 |---|---|---|---|---|
 | `tool_choice` | route | choice | the tool model | node loop (`choose_node_tool`, enforced) and post-hoc shadow row |
-| `tool_approval` | approve | noul | none (labelled by the call's outcome) | `tool_approval_shadow`, post-hoc |
+| `tool_approval` | approve | noul | none (labelled by the call-level outcome) | `tool_approval_shadow` post-hoc; ENFORCED: the pre-call guard in `node_executor.run_node` |
 | `browser_next` | route | choice | the tool model's element pick | `browser_next_shadow`, each `browser_act` |
 | `click_safety` | guard | choice (safe/unsafe/unsure) | rules, then Brain judge, then ask the user | `tools/browser_tools.py`, `click_safety_shadow` |
 | `recovery_strategy` | route | choice | the recovery ladder | `ToolDecisionBox.recovery_strategy` |
 | `depth_route` | route | choice | the loop's own continuation | `ToolDecisionBox.depth_route` |
-| `review_verdict` | judge_step | choice (pass/refine/veto) | the Brain reviewer | `der_loop.Reviewer` |
+| `review_verdict` | judge_review | choice (pass/refine/veto) | the Brain reviewer | `der_loop.Reviewer`; ENFORCED, refuse-only, outcome-labelled |
 | `escalate_incomplete` | judge_step | noul | incomplete-result keyword list | `der_loop` |
 | `done`, `sufficient` | judge_goal | noul | Brain done-bit / sufficiency gate | `monitor_shadow` |
-| `depth_met` | judge_goal | noul | the loop's run grade | `surface_shadow`, run-grade point |
-| `needs_action` | guard | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; enforced it may move REACT -> DIRECT |
+| `depth_met` | judge_depth | noul | the loop's run grade below threshold | `surface_shadow`, run-grade point; ENFORCED, tighten-only, labelled by the EXTERNAL turn verdict |
+| `needs_action` | guard | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; re-earning on v2 (demoted 2026-10-18, see 7.4) |
 | `presentation` | shape | choice | reply-surface rules | `agent_kernel` reply surface |
 | `narration` | shape | choice | deterministic beat rule | `agent_kernel` |
-| `web_intent` | interpret | noul | duplicated web-trigger keyword lists | `explorer` |
+| `web_intent` | interpret | noul | duplicated web-trigger keyword lists | `explorer`; v2 turn-outcome label |
 | `user_feedback` | interpret | choice | none (a Brain sample is the reference) | `event_oracle` |
 | `event_family`, `event_type:<family>` | classify_event | choice | rule label, Brain sample | `event_oracle` |
 | `call_closing` | judge_call | noul | the node closing rule | measurement only |
@@ -261,11 +264,13 @@ declared, because an input that carries the answer measures nothing.
 | Job | Question | Declared fields (render order) | Budget (ids) |
 |---|---|---|---|
 | `route` | which of these next actions? | coverage, open_facts, depth_met, grade, goal, done_when, calls_this_step, step_facts, last_result, task_class, previous_chosen, previous_outcome, step_index, needs_vision, vision_candidates, ruled_out, error_snippet, pushes_used | 384 |
-| `approve` | is this the right tool for this goal? | goal, calls_this_step, last_result, proposed_tool, tool_description, args, offered_tools | 384 |
+| `approve` | will this call succeed? | goal, calls_this_step, last_result, proposed_tool, tool_description, args, offered_tools | 384 |
 | `guard` | is this action safe without asking? | goal; image field `screenshot` | 128 |
 | `interpret` | what does the user's message mean? | goal | 64 |
 | `judge_step` | did this step do its part? | goal | 96 |
+| `judge_review` | did this step do its part? | goal | 288 |
 | `judge_goal` | is the objective met, deep and sufficient? | goal, open_facts, evidence | 128 |
+| `judge_depth` | is the objective met, deep and sufficient? | evidence, coverage, open_facts, goal | 384 |
 | `shape` | how should this answer be delivered? | goal, content_chars, has_structure, card_already_rendered, zone, mode, steps, beats_authored, beats_admitted, multi_segment | 128 |
 | `classify_event` | which event family/type? | goal | 64 |
 | `judge_call` | was this call the closing call? | goal, call, result | 96 |
@@ -368,9 +373,12 @@ identity = model_id | readout_mode | criteria_hash
   only while the running identity equals it.
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp instead: `tc-frame-v8` (post-hoc tool_choice
-  parity rows), `tc-decide-v3` (Oracle-decided rows), `tool_approval/v3`,
-  `browser_next/v1`, `needs_action/v1`. The report and the fit take `--scope CONSUMER=STAMP` to measure
-  one cohort and never blend two.
+  parity rows), `tc-decide-v3` (Oracle-decided rows), `tool_approval/v6`,
+  `browser_next/v1`, `needs_action/v2`, `review_verdict/v4`, `depth_met/v3`,
+  `web_intent/v2`. The report and the fit take `--scope CONSUMER=STAMP` to measure
+  one cohort and never blend two. A stamp is never reused: v2 of
+  `review_verdict` was withdrawn (62 obsolete rows) and v5 of `tool_approval`
+  was superseded the same day, and neither name comes back.
 
 ### 3.6 Enforcement allow-list
 
@@ -560,6 +568,16 @@ How the numbers are made:
 - `scripts/replay_tool_choice.py` re-asks d1 on recorded `state` / menu under a variant
   and reports agreement and confidence bands without writing, so a design change is
   tested before any live run.
+- Since 2026-10-17 every `review_verdict`, `tool_approval` and `web_intent` consult
+  also logs its rendered frame (a step- or turn-keyed DEBUG line in the backend log),
+  so a live cohort can be replayed against a changed frame or question even though
+  the ledger row does not store the state. Join by the logged key, never by sequence
+  (an order-based pairing across runs measured 0.7429 on misaligned pairs - noise).
+- `depth_met`'s outside label arrives from OUTSIDE the process: the eval harness
+  reports each turn's hidden-test verdict to `POST /api/eval/verdict`
+  (`backend/api/eval_verdict.py`), and `turn_verdict_label` holds the row until it
+  arrives (bounded, swept, counted). A live turn's honest label - a user correction
+  or a re-ask - can use the same endpoint.
 - After any of these the fit is re-run for the new cohort; the bar is re-earned.
 
 **Limits.**
@@ -629,24 +647,37 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 
 | Consumer | Distinct rows (correct/wrong) | OOF AUROC | OOF ECE | Threshold (rows above, precision, Wilson) | Measured status | Gap |
 |---|---|---|---|---|---|---|
-| `tool_choice` (scope `tc-decide-v3`) | 688 (568/120) | 0.7617 | 0.0187 | 0.7215 (524, 0.9008, 0.8722) | meets the bar; ON | - |
-| `tool_choice` (scope `tc-frame-v8`, parity) | 673 (495/178) | 0.8002 | 0.0154 | 0.6193 (396, 0.9015, 0.8682) | meets the bar | - |
-| `escalate_incomplete` | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON since 2026-10-13 | - |
-| `needs_action` (scope `needs_action/v1`) | 216 (164/52) | 0.8043 | 0.0404 | 0.80 (109, 0.9174, 0.8505) | meets the bar; ON since 2026-10-13 | - |
+| `tool_choice` (scope `tc-decide-v3`, 2026-10-13) | 688 (568/120) | 0.7617 | 0.0187 | 0.7215 (524, 0.9008, 0.8722) | meets the bar; ON | - |
+| `escalate_incomplete` (2026-10-13) | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON | - |
+| `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
+| `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
+| `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
+| `needs_action` (scope `needs_action/v1`, 2026-10-18) | 1126 (833/293) | 0.6538 | 0.0153 | none | shadow | no threshold at precision >= 0.90 on the accumulated cohort; re-earning on v2 |
 | `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow | ECE 0.0544 > 0.05 |
-| `narration` | 332 (266/66) | 0.7571 | 0.0539 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0539 > 0.05 |
-| `review_verdict` | 1381 (665/716) | 0.6271 | 0.0217 | 0.7732 (86, 0.9302, 0.856) | sampled rung | AUROC < 0.65 |
+| `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
+| `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
 | `browser_next` | 126 (71/55) | 0.7059 | 0.095 | none | shadow | no threshold reaches precision 0.90 on 50 rows |
-| `tool_approval` | 1880 (1094/786) | 0.5821 | 0.0146 | none | shadow | AUROC < 0.65 |
-| `depth_met` | 401 (153/248) | 0.3983 | 0.0658 | none | shadow | AUROC < 0.65 |
-| `web_intent` | 199 (157/42) | 0.4895 | 0.0 | none | shadow | AUROC < 0.65 |
 | `call_closing` | 657 (122/535) | 0.4951 | 0.0 | none | shadow, refused by design | AUROC < 0.65 |
 | `click_safety` | 92 (89/3) | 0.3034 | 0.0003 | 0.9595 | shadow | rows < 100 (and 3 wrong: minority < 5%) |
-| `mode` (retired) 77, `depth_route` 27, `event_family` 21, `done` 20, `presentation` 13, `event_type:*` 1-13 | below 100 | - | - | none | shadow | rows < 100 |
-| `needs_action` (old wording, before 2026-10-13) | 0 | - | - | none | - | no live caller then (section 4.1) |
+| `depth_route` 27, `event_family` 67, `done` 47, `presentation` 13, `event_type:*` 1-32, `mode` (retired) 77 | below 100 | - | - | none | shadow | rows < 100 |
 | `recovery_strategy`, `sufficient` | 0 on d1 | - | - | none | shadow | failure-only paths (below) |
 
-Enforcement today: `tool_choice`, `escalate_incomplete` and `needs_action` are on (`.env` `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action`). Enforced, the `escalate_incomplete` question runs inline at each step settle and the `needs_action` question before each REACT step (each about 80-300 ms); below the threshold the incumbent still decides. A live test of the `escalate_incomplete` yes-path (real d1): it escalated 3 incomplete results (2 the keyword list misses), stayed out of a keyword trap, and escalated one complete answer at raw 0.58 (calibrated 0.654) - the cost of a wrong yes is a move to full mode (time, not correctness). The bar record's `precision` and `ece` fields are the pre-hardening scalars (0.0 and null); the hardened numbers are in the calibration file (`oof` block). `escalate_incomplete`, `narration` and `user_feedback` are labelled by agreement with their incumbent, so meeting the bar means "agrees with the rule", not "is right".
+Enforcement today (2026-10-18): `tool_choice`, `escalate_incomplete`, `review_verdict`,
+`depth_met` and `tool_approval` are on (`.env`
+`IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`).
+`needs_action` is allow-listed but NOT deciding: its bar, recomputed on the accumulated
+v1 cohort (1126 rows), no longer holds a 90%-precision threshold, so `decides()` fails
+closed - it re-earns on the v2 cohort (the call-level outcome label). The five deciding
+consumers each cost one question at their site: `tool_choice` before the model call,
+`escalate_incomplete` at step settle, `review_verdict` at review (refuse-only: a
+confident veto where the Brain passed), `depth_met` at the run grade (tighten-only:
+a confident "not deep enough" pushes more work), and `tool_approval` before each
+call (refuse-only: a confident "it will fail" asks the model to correct the call,
+bounded at `_MAX_GUARD_CORRECTIONS=2` per node). Below each threshold the incumbent
+decides. The `escalate_incomplete`, `narration` and `user_feedback` labels are
+agreement with their incumbent, so meeting the bar means "agrees with the rule",
+not "is right"; every consumer switched on since 2026-10-17 is labelled by an
+outside outcome instead.
 
 ### 7.3 Cost per decision
 
@@ -669,60 +700,43 @@ Enforcement today: `tool_choice`, `escalate_incomplete` and `needs_action` are o
   lane, bounded at 512 pending jobs. A full lane drops the job, counts it and logs it;
   `submit()` never blocks and never raises.
 
-### 7.4 Why the other consumers do not meet the bar (2026-10-13)
+### 7.4 Why the other consumers do not meet the bar (2026-10-13; updated 2026-10-18)
 
-- **`needs_action`: given a live home 2026-10-13** (section 4.1) and switched on after two eval rounds. **`use_thinking`: removed** (section 3.1).
+The 2026-10-13 diagnoses below are kept as the record of what was wrong. Every
+one of the four label-defect consumers has since been fixed by the 7.5 method
+and three of them now decide (see 7.2):
+
+- **`needs_action`: given a live home 2026-10-13** (section 4.1) and switched on after two eval rounds. **`use_thinking`: removed** (section 3.1). **Demoted 2026-10-18**: the bar, recomputed on its accumulated v1 cohort (1126 rows), no longer holds a 90%-precision threshold - fail-closed by design. The v2 label (the CALL-level outcome, `ok_call`) fixes the same returncode conflation that broke `tool_approval`'s v1-v5 labels; it re-earns on the v2 cohort.
 - **`recovery_strategy`, `sufficient`: failure-only paths.** 183 `recovery_strategy` rows and 5 `sufficient` rows exist, none on the d1 identity with a label; both are asked only after a step fails.
-- **`depth_met`: a rule's output as the reference.** The reference is the loop grade (`grade == "pass"`), a deterministic function of envelope match, open facts and coverage that are not in the model's input; the `judge_goal` job also drops `coverage` (`grade` is the reference and must stay out) and cuts `evidence` first. 85% of references are True. AUROC 0.40 means its confidence ranks errors backwards.
-- **`web_intent`: a noisy reference.** The reference is a substring keyword list (`explorer.py`) that misses requests with a URL ("Open https://..."); 88% of references are "no". Many Oracle "yes" answers that are scored wrong are right.
-- **`tool_approval`: the label answers another question.** The question is "is this the right tool"; the label is "the call succeeded" (91% True). A right tool can fail and a wrong tool can succeed.
-- **`review_verdict`: the evidence is cut.** The `judge_step` job reads only `goal` (96 ids = 384 chars) and renders STEP, OBJECTIVE, then RECENT RESULTS, so the budget cuts the results first. The Brain reference says "pass" 99% of the time.
-- **Rows below 100** (`click_safety`, `depth_route`, `done`, `presentation`, event consumers, `browser_next` precision): more live traffic, no code change.
-- Decision rows do not store the rendered `state`, so a row cannot be replayed against a changed frame; `web_intent` and `review_verdict` rows carry no `criteria_version`.
+- **`depth_met`: FIXED 2026-10-18** (was "a rule's output as the reference", oof AUROC 0.40, inverted). The external verdict label (`turn_verdict_label` + `POST /api/eval/verdict` from the eval harness) and the `judge_depth` job (evidence first, coverage in, grade out) took it to 0.7103 - ENFORCED.
+- **`web_intent`: label FIXED 2026-10-18** (was "a noisy reference"). The v2 turn-outcome label (URL-by-rule, else web-usage-and-passed) works and the question is replay-validated at 0.7679 on real pairs; the cohort is capped by the eval's fixed task set (~61 distinct inputs) and needs diverse traffic (the 10 added r26-r35 tasks, browser groups, live usage).
+- **`tool_approval`: FIXED 2026-10-18** (was "the label answers another question", 0.5821). Two defects: the question (v4-v5) and, decisively, the LABEL - the DER site labelled a call by the loop's `failed`, which counts a non-zero returncode as failure, so every informative pytest run mid-iteration was a "failed" call. v6 labels by the CALL-level outcome and asks "Will this call succeed? Most calls do. Answer no only on a concrete problem..."; 0.7313 - ENFORCED as the pre-call guard.
+- **`review_verdict`: FIXED 2026-10-17** (was "the evidence is cut", 0.6271). The evidence-only frame (envelope lines; the step prose and problem-shaped objectives were the hedge drivers) took v4 to 0.8994 - ENFORCED, refuse-only.
+- **`rows below 100`** (`click_safety`, `depth_route`, `done`, `presentation`, event consumers, `browser_next` precision): more live traffic, no code change.
+- Decision rows do not store the rendered `state` - but since 2026-10-17 every review, approval and web consult logs its frame (step/turn-keyed DEBUG lines), so a live cohort CAN be replayed against a changed frame. That instrument drove every fix above.
 
-### 7.5 Path to the bar for the label-defect consumers
+### 7.5 The method that took the label-defect consumers to the bar (2026-10-17/18)
 
-The method that took `needs_action` from 0 rows to enforced (section 4.1) applies to
-each of these. The order: (1) find the LIVE decision the consumer should own and its
-caller; (2) give it an OUTCOME label - something that happened outside the Oracle -
-instead of agreement with a rule; (3) make the question ask what the label measures;
-(4) replay the wording on 15-20 hand-labelled cases with real d1 before any live run;
-(5) stamp a new `criteria_version` and measure only that cohort (`--scope`); (6) earn
-the bar on eval traffic, write it scoped, switch it on, run the live gate. Never lower
-a bar clause to get there.
+The order, proven four times (review_verdict, tool_approval, depth_met, and
+needs_action's v2 relabel): (1) find the LIVE decision the consumer should own
+and its caller; (2) give it an OUTCOME label - something that happened outside
+the Oracle - instead of agreement with a rule; (3) make the question ask what
+the label measures; (4) replay the wording on REAL frames with REAL outcomes
+through real d1 before any live run - hand-picked cases first, then the
+turn-keyed join once live frames exist (an order-based pairing across runs
+measured 0.7429 on misaligned pairs and was noise: join by a key, never by
+sequence); (5) stamp a new `criteria_version` and measure only that cohort
+(`--scope`); (6) earn the bar on eval traffic, write it scoped - with a scope
+for EVERY enforced consumer, or the recompute demotes them - switch it on, run
+the live gate. Never lower a bar clause to get there.
 
-- **`tool_approval` - make the question match its honest label.** The label "the
-  call succeeded" is clean and outside; the question "is this the right tool" is not
-  what it measures. Re-ask it as "Will this call succeed as written?" over the frame it
-  already has (goal, calls_this_step, step_facts-style facts, proposed tool, args,
-  never the call's own result). Its live decision is then a pre-call guard: on a
-  confident "it will fail" (an `edit_file` whose old text is not in the file, a guessed
-  URL, a missing path) the node asks the model to correct the call before it runs.
-  Imbalance: 91% of calls succeed, so the failures are the minority class (>= 5% holds).
-  Stamp `tool_approval/v4`.
-- **`depth_met` - an outcome label, or retire it.** Its reference, the loop grade, is
-  a deterministic rule over inputs the model never sees, so the Oracle cannot beat it
-  (AUROC 0.40 is the proof). The honest label is whether the TURN was actually right:
-  the eval verdict (pass/fail, hidden tests, missing facts) for eval turns, and a user
-  correction or a re-ask of the same request for live turns. Join it at turn end by
-  `turn_id` (`register_turn_pending` / `resolve_turn_pending` already do this for
-  sampled rows). Give the `judge_goal` frame the evidence first and the coverage
-  number, and keep `grade` out. If no outcome label is wired, retire `depth_met`: a
-  rule does this job exactly, which is the `tier0_classify` non-fit pattern.
-- **`web_intent` - label by what the turn needed.** Its live decision is the explorer's
-  "fetch from the web?" trigger (`explorer.py`). Label each row at turn end: True when
-  the turn ran a web tool (`search`, `crawler_query`, `browser_*`) that succeeded and
-  the reply passed (eval) or stood (live); False when the turn answered without the web
-  and passed. Requests that name a URL are True by rule, so the keyword list's blind
-  spot stops being label noise. The question already matches this label. Stamp
-  `web_intent/v2` (today's rows carry no `criteria_version`, so the new cohort is
-  separable only by the stamp).
-- **`review_verdict`** - raise the `judge_step` budget or render RECENT RESULTS before
-  STEP/OBJECTIVE, and keep the outcome label (`IRIS_ORACLE_REVIEW_OUTCOME`); its AUROC
-  0.6271 is close to 0.65.
-- **`narration`, `user_feedback`** - only ECE misses (0.0539, 0.0544 vs 0.05); more
-  rows usually settle it. `user_feedback` also needs adding to `CONSUMERS` before the
-  owner can switch it on.
+The remaining consumers, in order of tractability:
+
+- **`narration`, `user_feedback`** - only ECE misses (0.0512, 0.0544 vs 0.05); more rows usually settle it. `user_feedback` also needs adding to `CONSUMERS` before the owner can switch it on.
+- **`web_intent`** - the label and question are done; it needs diverse traffic to reach 100 distinct rows.
+- **`needs_action`** - re-earn on the v2 cohort (the call-level outcome label).
+- **`browser_next`** - a precision problem at every threshold; a frame fix (the same replay recipe) is the next lever.
+- **`click_safety`, `depth_route`, `done`, `presentation`, event consumers** - rows below 100; more traffic.
 
 ---
 
@@ -732,7 +746,7 @@ a bar clause to get there.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,escalate_incomplete,needs_action`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
+| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
 | `IRIS_ORACLE_FORCE_MIN` | 0.9 | raw confidence a SAMPLED tool pick needs to be binding |
 | `IRIS_ORACLE_SAMPLE` | on | `0` kills all sampling |
 | `IRIS_ORACLE_SAMPLE_FRACTION` | 0.05 | sampled share for every samplable consumer |
@@ -741,7 +755,7 @@ a bar clause to get there.
 | `IRIS_ORACLE_PHASE`, `IRIS_ORACLE_PHASE_EXIT` | off in code; `.env` sets both to 1 | phase-model admission; `0` returns to the engine lock |
 | `IRIS_ORACLE_PHASE_PERIOD_S`, `_MAX_WAIT_S`, `_K` | 0.3, 0.3, 0.6 | phase gate tuning (timed gate) |
 | `IRIS_ORACLE_BATCH_CAP` | 8 | width of a batched pass (no production caller) |
-| `IRIS_ORACLE_REVIEW_OUTCOME` | off | stamps pending `review_verdict` rows with the step's settled label (VERIFIED / UNVERIFIED / FAILED) as the outside label |
+| `IRIS_ORACLE_REVIEW_OUTCOME` | off in code; `.env` sets 1 | stamps pending `review_verdict` rows with the step's settled label (VERIFIED / UNVERIFIED / FAILED) as the outside label; ON since 2026-10-17 (the v4 cohort is outcome-labelled) |
 | `IRIS_D1_CHECK_TTL_S`, `IRIS_D1_TIMEOUT_S`, `IRIS_D1_N_PROBS` | 300, 20, 512 | serving check cache, HTTP timeout, logprobs returned |
 | `IRIS_LOCAL_MODEL_PORT` | 8082 | the shared llama-server port |
 

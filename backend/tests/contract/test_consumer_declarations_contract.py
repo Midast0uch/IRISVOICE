@@ -161,11 +161,47 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
 
 def test_oracle_jobs_gained_only_the_call_closing_job():
     """AC10.7 gives `call_closing` its own job; tool_approval (2026-10-10) adds
-    the `approve` job. The prior jobs keep their names; fields/budgets evolve
+    the `approve` job; the review-verdict frame fix (2026-10-16) adds
+    `judge_review`. The prior jobs keep their names; fields/budgets evolve
     with the frame fixes (route gained `last_result` + evidence fields
     2026-10-10; approve widened to 384 for the v2 frame — the physical reason
     is stated in test_oracle_jobs_contract)."""
-    assert len(de.ORACLE_JOBS) == 10
+    # 11, not 10 (2026-10-16, review-verdict frame fix): review_verdict shared
+    # `judge_step` with the ENFORCED `escalate_incomplete`, and judge_step's
+    # 96-id budget (384 chars) cut "RECENT RESULTS" out of review_verdict's
+    # 800-char frame — the completed steps' own results, the evidence its
+    # question ("did this step do its part?") is about. A dedicated job raises
+    # ONLY review_verdict's ceiling; escalate_incomplete keeps its input, its
+    # identity and its threshold. The isolation is asserted here because it is
+    # the whole reason the job is separate.
+    # 12, not 11 (2026-10-17, depth_met/v3): depth_met gets its own
+    # `judge_depth` job - judge_goal's 128-id budget (512 chars) cut its
+    # EVIDENCE to almost nothing and its field order rendered the criteria
+    # first. judge_depth declares evidence FIRST, then coverage, open_facts,
+    # goal, at the 384-id owner ceiling; `grade` is deliberately absent (it is
+    # the incumbent reference and must stay out of the input). done/sufficient
+    # keep judge_goal, so their input is untouched - the same isolation
+    # pattern judge_review set (2026-10-16).
+    assert len(de.ORACLE_JOBS) == 12
+    assert de.ORACLE_JOBS["judge_depth"].fields == (
+        "evidence", "coverage", "open_facts", "goal")
+    assert de.ORACLE_JOBS["judge_depth"].budget_ids == 384
+    assert de.CONSUMER_JOBS["depth_met"] == "judge_depth"
+    assert de.CONSUMER_JOBS["done"] == "judge_goal"
+    assert de.CONSUMER_JOBS["sufficient"] == "judge_goal"
+    assert de.ORACLE_JOBS["judge_review"].fields == ("goal",)
+    # 288, not 200 (2026-10-17, review_verdict/v3): the v3 frame renders 3
+    # ENVELOPE lines as evidence (each head+tail capped at 200 — the outcome
+    # of a tool run lives at the TAIL of its output, so the v1 raw
+    # result[:120] head cut threw the signal away; measured: constant verdict,
+    # oof AUROC 0.5113 live, vs replay AUROC 1.0000 with envelope evidence).
+    # 3 x 200 + STEP[:300] + TOOL + OBJECTIVE[:200] is ~1150 chars = 288 ids
+    # x 4; at 200 ids/800 chars the cap cut the OBJECTIVE — the bar the review
+    # rubric judges against. 384 stays the owner ceiling.
+    assert de.ORACLE_JOBS["judge_review"].budget_ids == 288
+    assert de.CONSUMER_JOBS["review_verdict"] == "judge_review"
+    assert de.CONSUMER_JOBS["escalate_incomplete"] == "judge_step"
+    assert de.ORACLE_JOBS["judge_step"].budget_ids == 96
     assert de.ORACLE_JOBS["judge_call"].fields == ("goal", "call", "result")
     # STALE-BY-SPEC update (2026-10-11, tool_approval/v3): `calls_this_step`
     # joins the approve job - the step's own calls were invisible (the frame
@@ -187,7 +223,16 @@ def test_consumers_grew_by_exactly_two():
     never pay, and its AUROC fell below the bar at volume (0.591 at 77 rows).
     The removal is complete (CONSUMERS, CONSUMER_DECLARATIONS, CONSUMER_JOBS,
     the scoring site and its tests all changed in the SAME commit), so the
-    declared set is not left half-changed."""
-    assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {"depth_route", "call_closing"}
+    declared set is not left half-changed.
+
+    STALE-BY-SPEC update (2026-10-18, owner: "address tool_approval pre-call
+    guard so it can be flipped"): `tool_approval` JOINED the declared set - it
+    earned the hardened bar on the v6 cohort (433 rows, oof AUROC 0.7313, ECE
+    0.0398, precision@t 0.9034) and its live decision exists (the pre-call
+    guard in node_executor). TIER_REFUSE_ONLY: it may only reject a call, and
+    its correction budget bounds it."""
+    assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {
+        "depth_route", "call_closing", "tool_approval"}
     # owner-directed removals: `mode` (2026-10-10) and `use_thinking` (2026-10-13)
     assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {"mode", "use_thinking"}
+    assert "tool_approval" in de.TIER_REFUSE_ONLY

@@ -99,13 +99,25 @@ class _ServerManager:
             return False
 
     def server_ready(self) -> bool:
-        """Fast non-blocking check: a healthy server is up right now."""
+        """Fast check: a HEALTHY server answers on our port right now.
+
+        A live process is not a ready server. ``self._proc`` is the fermion
+        launcher shim: it stays alive for the whole model load (measured
+        90.3 s boot, 2026-10-16) and also for a server that never bound.
+        Reading liveness as readiness made ``begin_utterance`` connect to a
+        port nobody listens on (WinError 10061, once per utterance for the
+        whole boot window) and made ``_phonon2_warm_up`` skip its spawn
+        forever — it believed a dead server was warm.
+
+        Readiness is PROBED, never assumed, and the probe does NOT
+        ``touch()``: a readiness check is not user activity. Counting it as
+        activity reset the idle watchdog on every recording start, so the
+        server held its ~1.1 GB and 8 decode threads for the lifetime of
+        the app instead of exiting after ``_IDLE_EXIT_S`` (live 2026-10-16).
+        """
         with self._lock:
             if self._disabled:
                 return False
-        if self._proc is not None and self._proc.poll() is None:
-            self.touch()
-            return True
         return self._healthy()
 
     def spawn_in_background(self) -> None:
@@ -134,6 +146,12 @@ class _ServerManager:
             if self._disabled:
                 return False
             if self._proc is not None and self._proc.poll() is None:
+                # Alive is not ready (same rule as server_ready): the shim
+                # lives through the whole load, so only a HEALTHY server is
+                # servable. Claiming warm here logged "first utterance will
+                # stream" for a server that had not bound its port yet.
+                if not self._healthy():
+                    return False
                 self._last_activity = time.monotonic()
                 return True
             if self._starting:

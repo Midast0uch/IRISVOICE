@@ -22,6 +22,7 @@ import logging
 import math
 import numpy as np
 import os
+import sys
 from pathlib import Path
 import queue
 import re
@@ -4696,6 +4697,31 @@ class IRISGateway:
         # The half-duplex mic gate is owned by the lane scheduler (REQ-7
         # AC7.2) — it is already closed while this node plays.
 
+        # ── ONE utterance on the audio device, process-wide ────────────────
+        # The streaming path below opens its own sounddevice.OutputStream.
+        # Two of them at once (the lane scheduler retrying a wedged node while
+        # its play thread is still inside Pa_WriteStream, or a second session
+        # speaking) corrupt PortAudio's native state and kill the backend with
+        # an access violation in _raw_write (logs/crash_traceback.log,
+        # 2026-10-13: two speech-lane-play-* threads for one node). The lock
+        # already guards AudioPipeline.play_stream/play_audio; take it here so
+        # the streaming path obeys the same invariant. A busy device costs one
+        # utterance's audio, never the process.
+        from backend.audio.pipeline import (
+            acquire_playback_device as _acquire_playback,
+            release_playback_device as _release_playback,
+            _PLAYBACK_WAIT_S,
+        )
+
+        _device_acquired = _acquire_playback()
+        if not _device_acquired:
+            self._logger.error(
+                "[Voice] playback device busy for %.0fs — skipping this "
+                "utterance (another stream still holds it)",
+                _PLAYBACK_WAIT_S,
+            )
+            return
+
         try:
             producer_thread = threading.Thread(
                 target=_producer, daemon=True, name="tts-producer"
@@ -5084,6 +5110,31 @@ class IRISGateway:
                                                 except Exception:
                                                     pass
                                                 _tw.sleep(0.03)
+                                            if _i >= _catch_up_wn - 1:
+                                                # Stream closed after the LAST word
+                                                # was broadcast: the catch-up loop
+                                                # above is empty, so finalise that
+                                                # word here. Without this the
+                                                # frontend never sees is_final=True
+                                                # (multi-sentence case, pinned by
+                                                # TestTTSWordEventIntegration).
+                                                try:
+                                                    _aw.run_coroutine_threadsafe(
+                                                        self._ws_manager.send_to_client(
+                                                            _client_id or session_id,
+                                                            {
+                                                                "type": "tts_word",
+                                                                "payload": {
+                                                                    "word_index": _last_word_idx,
+                                                                    "total_words": _catch_up_wn,
+                                                                    "is_final": True,
+                                                                },
+                                                            },
+                                                        ),
+                                                        self._main_loop,
+                                                    )
+                                                except Exception:
+                                                    pass
                                             return
                                         _tw.sleep(0.01)
 
@@ -5185,6 +5236,11 @@ class IRISGateway:
         except Exception as e:
             self._logger.error(f"[Voice] TTS Consumer error: {e}")
         finally:
+            # Free the process-wide playback lock taken above, whatever the
+            # exit path (normal, barge-in, error). The next utterance — a lane
+            # retry or a new turn — may only open its stream after this.
+            if _device_acquired:
+                _release_playback()
             # ALWAYS stop STTPROC when speak_response exits — barge-in,
             # interruption, or error. Without this, the looping "processing"
             # sound keeps playing forever when the stream exits before
@@ -5199,13 +5255,16 @@ class IRISGateway:
                     pass
             # The half-duplex mic gate is owned by the lane scheduler (REQ-7
             # AC7.2) — it reopens when the scheduler's worker finishes this node.
-            try:
-                import torch
-
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except Exception:
-                pass
+            # Best-effort GPU cache clear. Only when torch is ALREADY loaded:
+            # importing it here costs seconds on the reply path (a heavy import)
+            # just to clear a cache that cannot exist if torch is absent.
+            _torch = sys.modules.get("torch")
+            if _torch is not None:
+                try:
+                    if _torch.cuda.is_available():
+                        _torch.cuda.empty_cache()
+                except Exception:
+                    pass
             # ---- SPEAK RESPONSE END: BROADCAST IDLE OR AUTO-RELISTEN ----
             #
             # The orb on the frontend MUST receive a `listening_state: "idle"`
@@ -11897,11 +11956,17 @@ class IRISGateway:
                 # REQ-0 AC1: dispatch with the session's conversation context —
                 # /run joins the caller's active conversation thread, not a
                 # detached one, so memory follows the work (D7 rationale).
+                # turn_id: the SAME id the TurnEmitter frames carry, so the
+                # kernel's Oracle scope and the WS turn protocol share one id
+                # (depth_met/v3's external verdict join keys on it; measured
+                # live 2026-10-17: with the orchestrator's own proc_id the
+                # join could never fire).
                 await orchestrator.handle_dev_cli(
                     session_id,
                     payload,
                     _ws_send,
                     conversation_id=self._active_conversation_id.get(session_id),
+                    turn_id=_turn.turn_id,
                 )
                 _turn.end("ok")
         except Exception as exc:

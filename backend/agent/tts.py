@@ -226,6 +226,13 @@ class TTSManager:
     # a request happened to arrive after the load finished (26 min later).
     _WORKER_STARTUP_TIMEOUT: float = 300.0
 
+    # RESILIENCE (2026-10-18): the readiness probe's bounded respawn clock. A
+    # worker that died under RAM pressure once left /health at 503 forever
+    # (nothing ever respawned it: the only trigger was the next synthesize
+    # request, and eval turns never speak). The probe now triggers a background
+    # respawn at most once per this window.
+    _RESPAWN_COOLDOWN_S: float = 120.0
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -246,6 +253,8 @@ class TTSManager:
         self._ready: bool = False
         self._load_error: Optional[str] = None
         self._proc_lock = threading.Lock()  # guards spawn/restart
+        # RESILIENCE (2026-10-18): the readiness probe's bounded respawn clock
+        self._last_respawn_attempt: float = 0.0
         self._synthesis_lock = threading.Lock()  # serializes synthesis requests
         self._filler_cache: Dict[str, tuple] = {}  # phrase → (audio_array, sample_rate)
         # Pre-synthesis hold store (REQ-10 AC10.6/AC10.7, T14): key → audio.
@@ -571,6 +580,24 @@ class TTSManager:
             self._load_error = "worker startup timeout"
             logger.error("[TTSManager] Worker startup timed out")
 
+    def _maybe_respawn_dead_worker(self) -> None:
+        """Bounded background respawn of a dead worker (see readiness). Never
+        raises; at most one attempt per cooldown window."""
+        try:
+            now = time.monotonic()
+            if now - self._last_respawn_attempt < self._RESPAWN_COOLDOWN_S:
+                return
+            self._last_respawn_attempt = now
+            logger.warning(
+                "[TTSManager] Worker process is gone - background respawn "
+                "triggered by the readiness probe"
+            )
+            threading.Thread(
+                target=self._ensure_worker, daemon=True, name="tts-respawn"
+            ).start()
+        except Exception as exc:  # noqa: BLE001 — a probe never raises
+            logger.debug("[TTSManager] respawn trigger failed: %r", exc)
+
     def _ensure_worker(self) -> bool:
         """Ensure the worker subprocess is running and ready."""
         if self._proc is not None and self._proc.poll() is None and self._ready:
@@ -697,6 +724,16 @@ class TTSManager:
         if self._ready and self._proc is not None and self._proc.poll() is None:
             return {"status": "ready"}
         if self._proc is not None and self._proc.poll() is None:
+            return {"status": "loading"}
+        if self._proc is not None and self._proc.poll() is not None:
+            # RESILIENCE (2026-10-18): a worker that DIED (RAM pressure killed
+            # it after ~12 h of eval runs) left /health at 503 FOREVER - the
+            # only respawn trigger was the next synthesize request, and eval
+            # turns never speak. The probe now triggers a BOUNDED background
+            # respawn: one attempt per _RESPAWN_COOLDOWN_S, on a daemon thread
+            # (_ensure_worker blocks for the whole load; the health endpoint
+            # must not). The status stays "loading" while it comes up.
+            self._maybe_respawn_dead_worker()
             return {"status": "loading"}
         if self._load_error:
             return {"status": "error", "error": str(self._load_error)}

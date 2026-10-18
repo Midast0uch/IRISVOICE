@@ -103,8 +103,11 @@ def test_row_carries_the_outcome_as_brain_bool():
     assert row["confidence"] == 0.9
     assert row["probability"] == 0.9
     assert row["shadow"] is True
-    # STALE-BY-SPEC update (2026-10-11): the v3 frame is a new cohort.
-    assert row["criteria_version"] == "tool_approval/v3"
+    # STALE-BY-SPEC update (2026-10-17): v6 - the label is now the CALL-level
+    # outcome (a run_command that RAN is a successful call; its exit code is
+    # the work's answer), fixing the pytest-iteration label noise that held
+    # the consumer below chance. Question and frame unchanged from v5.
+    assert row["criteria_version"] == "tool_approval/v6"
 
     # A sure "no": confidence is in the CHOSEN answer, not P(true).
     no = ta.shadow_row(_StubNoul(0.05), brain_bool=False)

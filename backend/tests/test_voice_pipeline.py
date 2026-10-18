@@ -781,8 +781,9 @@ class TestVADSilenceThreshold:
 
     Live history: 0.5 cut mid-sentence pauses → 0.6 (this file's old pin) →
     0.8 covers breaths (230ce06f, live 2026-09-04 — the value in force).
-    The 1.2s figure elsewhere in history is now the ADAPTIVE cap
-    (VAD_SILENCE_SEC_MAX), not the base threshold. The loop itself changed
+    The ADAPTIVE cap (VAD_SILENCE_SEC_MAX) is 1.8, not the base threshold
+    (raised from 1.2 in dc7139bc; see test_vad_silence_constants_pinned).
+    The loop itself changed
     under these tests (230ce06f): CALIBRATE phase (~0.5s ambient sampling),
     adaptive noise floor, 3.0x/1.5x hysteresis — so stimulus must lead with
     quiet calibration frames; speech-from-frame-0 is BY DESIGN treated as
@@ -811,14 +812,24 @@ class TestVADSilenceThreshold:
         return handler
 
     def test_vad_silence_constants_pinned(self):
-        """Base 0.8 / min-speech 0.3 / adaptive cap 1.2 (live-tuned 2026-09-04:
-        0.5 cut mid-sentence pauses, 0.8 covers breaths — 230ce06f)."""
+        """Base 0.8 / min-speech 0.3 / adaptive cap 1.8.
+
+        Base 0.8 (live-tuned 2026-09-04: 0.5 cut mid-sentence pauses, 0.8
+        covers breaths — 230ce06f). Cap raised 1.2 -> 1.8 in dc7139bc
+        (2026-10-07): the 1.2 cap BINNED against the ramp's x1.5, so long
+        utterances always topped out at ~1.18s and raising the cap could not
+        take effect; 1.8 is the ceiling the pause ramp actually reaches.
+        """
         from backend.audio.voice_command import VoiceCommandHandler
         assert VoiceCommandHandler.VAD_SILENCE_SEC == 0.8, (
             f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.8"
         )
         assert VoiceCommandHandler.VAD_MIN_SPEECH_SEC == 0.3
-        assert VoiceCommandHandler.VAD_SILENCE_SEC_MAX == 1.2
+        assert VoiceCommandHandler.VAD_SILENCE_SEC_MAX == 1.8, (
+            "VAD_SILENCE_SEC_MAX is "
+            f"{VoiceCommandHandler.VAD_SILENCE_SEC_MAX}, expected 1.8 "
+            "(raised from 1.2 in dc7139bc so the long-utterance ramp can reach it)"
+        )
 
     def test_speech_plus_05s_silence_does_not_end_speech(self):
         """

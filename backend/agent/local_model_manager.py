@@ -3595,8 +3595,21 @@ class LocalModelManager:
             # still bounds request rate to 0.5 Hz worst case, which is nothing
             # next to a multi-GB load. MoE models (LFM2.5 8B) need extra time for
             # expert routing init; bump to 300s for them.
-            _is_moe = bool(model_meta.get("is_moe") or "A1B" in str(model_path))
-            _deadline_secs = 300.0 if _is_moe else 180.0
+            # 300 s for EVERY model, not 180 for a non-MoE one (2026-10-16). The
+            # 180 s non-MoE deadline is SHORTER than a cold load of d1 on this
+            # machine: measured 2026-10-16, llama-server start 14:11:23 ->
+            # 14:14:28 "Timed out waiting for server to start" (185 s: missed by
+            # seconds) while the server was alive and still loading (it logged
+            # "load_model: loading model ..." one second later, 14:14:29).
+            # A miss is NOT harmless. `_classify_load_failure` returns "other"
+            # for a timeout -> "marked unusable: not retrying" -> unload_model()
+            # -> :8082 serves nothing -> EVERY Oracle consumer returns None for
+            # the whole process lifetime. That is silent by design ("every Oracle
+            # call returns a score or None", oracle.md S1), so a cold start
+            # quietly disables the entire Oracle programme.
+            # 300 s is the app's existing cold-boot allowance: the TTS worker's
+            # startup timeout is also 300 s (backend/audio/tts.py).
+            _deadline_secs = 300.0
             deadline = loop.time() + _deadline_secs
             ready = False
             last_pct = 0
@@ -3700,7 +3713,10 @@ class LocalModelManager:
                 if _captured:
                     err_msg = _captured
                 else:
-                    err_msg = "Timed out waiting for server to start"
+                    err_msg = (
+                        f"Timed out waiting for server to start "
+                        f"({int(_deadline_secs)}s)"
+                    )
                 logger.error(f"[LocalModelManager] {err_msg}")
                 # Also push a final error progress event so frontend doesn't stay at 15% if the earlier 15% error was missed
                 if progress_cb:

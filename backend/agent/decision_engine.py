@@ -138,6 +138,13 @@ CONSUMERS: Tuple[str, ...] = (
     # never `step_satisfied`, never `done_at_call`. It is MEASUREMENT-ONLY
     # permanently (AC10.0) - see REFUSED_CONSUMERS below.
     "call_closing",
+    # tool_approval (2026-10-18, owner: "address tool_approval pre-call guard
+    # so it can be flipped"): earned the hardened bar on the v6 cohort (433
+    # distinct rows, oof AUROC 0.7313, ECE 0.0398, precision@t 0.9034) and
+    # given its live decision - the PRE-CALL GUARD in node_executor (a
+    # confident "it will fail" asks the model to correct the call before it
+    # runs). Membership lets the owner switch it on with IRIS_DECISION_ENFORCE.
+    "tool_approval",
 )
 
 
@@ -287,8 +294,45 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               ("goal",), 128, image_fields=("screenshot",)),
     OracleJob("judge_step", "did this step do its part?",
               ("goal",), 96),
+    # review_verdict gets its OWN job (2026-10-16). It shared `judge_step` with
+    # the ENFORCED `escalate_incomplete`, and `judge_step`'s 96-id budget is 384
+    # chars — but review_verdict's frame (der_loop._shadow_review_verdict) is
+    # STEP[:300] + OBJECTIVE[:200] + "RECENT RESULTS: <3 x result[:120]>", which
+    # its call site caps at 800. The backend cap trims from the END, so RECENT
+    # RESULTS — the completed steps' own results, the evidence the question
+    # ("did this step do its part?") is about — were cut on every row.
+    # A SEPARATE job rather than a raise of `judge_step`: the budget is not part
+    # of the identity hash, but escalate_incomplete ACTS on its threshold and
+    # must keep its own input untouched. The job IS part of the identity, so the
+    # new cohort separates from the old judge_step rows.
+    # Budget 288 = 1152 chars (2026-10-17, v3 frame): the v3 evidence is 3
+    # envelope lines (each head+tail capped at 200 — the outcome of a tool run
+    # lives at the TAIL of its output, so a head-only cut throws the signal
+    # away; measured: raw result[:120] evidence -> constant verdict, oof AUROC
+    # 0.5113; envelope evidence -> replay AUROC 1.0000). 3 x 200 + STEP[:300] +
+    # TOOL + OBJECTIVE[:200] is ~1150 chars; at the old 200-id/800-char budget
+    # the cap cut the OBJECTIVE — the bar the review rubric judges against.
+    # 384 ids stays the owner ceiling (test_oracle_jobs_contract).
+    OracleJob("judge_review", "did this step do its part?",
+              ("goal",), 288),
     OracleJob("judge_goal", "is the objective met, deep and sufficient?",
               ("goal", "open_facts", "evidence"), 128),
+    # depth_met gets its OWN job (2026-10-17, oracle.md 7.5: "Give the
+    # judge_goal frame the evidence first and the coverage number, and keep
+    # grade out"). It shared `judge_goal` with `done`/`sufficient`, whose
+    # frames differ; judge_goal's 128-id budget (512 chars) cut depth_met's
+    # EVIDENCE - the work product the depth question is about - to almost
+    # nothing, and its field order rendered the criteria first. The v3 frame
+    # (agent_kernel's grade block) is evidence[:1000] + coverage + open_facts
+    # + goal(criteria) ~= 1500 chars = 384 ids, the owner ceiling; the field
+    # order IS the render order (job_input), so evidence renders first and
+    # only a max-length frame can clip the criteria. `grade` is deliberately
+    # NOT a field: it is the incumbent reference and must stay out of the
+    # input. A separate job rather than a judge_goal change: done/sufficient
+    # keep their own input, and the job IS part of the identity, so the
+    # depth_met/v3 cohort separates from the v2 rows.
+    OracleJob("judge_depth", "is the objective met, deep and sufficient?",
+              ("evidence", "coverage", "open_facts", "goal"), 384),
     # FRAME/JOB MISMATCH FIX (2026-10-10): the shape job declared ONLY `goal`,
     # but its consumers' frames carry OTHER keys — the renderer drops every
     # undeclared key, so `presentation` (whose frame has NO goal at all)
@@ -333,11 +377,11 @@ CONSUMER_JOBS: Dict[str, str] = {
     # labels ride the option lines.
     "browser_next": "route",
     "click_safety": "guard", "needs_action": "guard",
-    "review_verdict": "judge_step",
+    "review_verdict": "judge_review",
     "escalate_incomplete": "judge_step",
     # REQ-10: the per-call closing question has its own job (AC10.7).
     "call_closing": "judge_call",
-    "done": "judge_goal", "depth_met": "judge_goal", "sufficient": "judge_goal",
+    "done": "judge_goal", "depth_met": "judge_depth", "sufficient": "judge_goal",
     "presentation": "shape", "narration": "shape",
     "event_family": "classify_event",
 }
@@ -1215,9 +1259,23 @@ _SCOPE_KEYS = ("turn_id", "step_id", "node_exec_id")
 
 
 def set_scope(**ids) -> "contextvars.Token":
-    """Bind the current scope (a contextvar; per task/thread)."""
-    return _SCOPE.set({k: str(v) for k, v in ids.items()
-                       if v is not None and str(v) != ""})
+    """Bind the current scope (a contextvar; per task/thread).
+
+    MERGES into the existing scope: a step bind must never wipe the turn bind.
+    Measured live 2026-10-17: every depth_met row carried step_id but NO
+    turn_id - the review site's step bind had REPLACED the turn-entry bind, so
+    no turn-level join (the external verdict label, the sampled-row outcome
+    join) could ever fire for anything scored after it. An explicit None (or
+    empty string) CLEARS its key, so turn entry resets the previous turn's
+    ids: ``set_scope(turn_id=t, step_id=None, node_exec_id=None)``.
+    """
+    merged = dict(_SCOPE.get() or {})
+    for k, v in ids.items():
+        if v is None or str(v) == "":
+            merged.pop(k, None)
+        else:
+            merged[k] = str(v)
+    return _SCOPE.set(merged)
 
 
 def scope_now() -> Dict[str, str]:
@@ -1516,7 +1574,13 @@ TIER_SAMPLABLE: frozenset = frozenset({
 # AC6.6: refuse-direction ONLY - sampled, but the engine may only ever tighten
 # (refuse/veto where the incumbent allowed), never loosen. Wired at the
 # incumbent's own refuse junction.
-TIER_REFUSE_ONLY: frozenset = frozenset({"click_safety", "review_verdict"})
+TIER_REFUSE_ONLY: frozenset = frozenset({
+    "click_safety", "review_verdict",
+    # tool_approval (2026-10-18): the pre-call guard may only REJECT a call
+    # the model was allowed to make - it never forces one, and its correction
+    # budget (_MAX_GUARD_CORRECTIONS) bounds it so it can never deadlock.
+    "tool_approval",
+})
 TIER_JOIN_ONLY: frozenset = frozenset({
     "done", "sufficient", "depth_met",
 })

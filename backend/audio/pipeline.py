@@ -5,6 +5,7 @@ AudioPipeline - Manages audio input/output streams using sounddevice
 import threading
 import queue
 import logging
+import sys
 import time
 from typing import Optional, Callable, List
 
@@ -32,8 +33,40 @@ def _sd():
 # the faulthandler stack: sounddevice.stop inside start_stream, beside a second
 # play thread for the SAME utterance; the 15:18 crash has the same fault offset).
 # Bounded wait: a stuck device costs one utterance's audio, never the process.
-_PLAYBACK_LOCK = threading.Lock()
+#
+# The lock is anchored on the ``sys`` module. ``sys`` is a true process
+# singleton, so the lock stays ONE object no matter which import path reaches
+# this file: ``backend.audio.pipeline`` and the bare ``audio.pipeline`` (when a
+# harness puts ``backend/`` on sys.path) are two module objects, and without the
+# anchor each would build its own lock — silently disabling the rule. Guarded by
+# backend/tests/contract/test_playback_lock_singleton_contract.py.
+_LOCK_ATTR = "_iris_playback_lock"
+_PLAYBACK_LOCK = getattr(sys, _LOCK_ATTR, None)
+if _PLAYBACK_LOCK is None:
+    _PLAYBACK_LOCK = threading.Lock()
+    setattr(sys, _LOCK_ATTR, _PLAYBACK_LOCK)
 _PLAYBACK_WAIT_S = 60.0
+
+
+def acquire_playback_device(timeout: Optional[float] = None) -> bool:
+    """Take the process-wide playback lock (see the comment above).
+
+    Returns True when the device is held, False when it stayed busy for
+    ``timeout`` seconds (defaults to ``_PLAYBACK_WAIT_S``, read at call time).
+    A caller that gets False MUST skip playback — never open a second stream on
+    the device. The streaming TTS path in ``iris_gateway._speak_response`` uses
+    this so its OutputStream can never coexist with another utterance's stream
+    (the 2026-10-13 access violation: two ``speech-lane-play-*`` threads for one
+    node, both in ``_raw_write``).
+    """
+    if timeout is None:
+        timeout = _PLAYBACK_WAIT_S
+    return _PLAYBACK_LOCK.acquire(timeout=timeout)
+
+
+def release_playback_device() -> None:
+    """Release the lock taken by :func:`acquire_playback_device`."""
+    _PLAYBACK_LOCK.release()
 
 
 class AudioPipeline:

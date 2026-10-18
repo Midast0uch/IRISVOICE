@@ -334,6 +334,12 @@ _CHANGE_TOOLS = frozenset({"edit_file", "write_file", "create_directory"})
 # Two repeats show a model is stuck (eval C 2026-10-02: 8-14 repeats per
 # struggling task at 3, each repeat one more model call before the handover).
 _MAX_REPEATS = 2
+
+# tool_approval/v6 pre-call guard: the correction budget per NODE. After this
+# many guard rejections the guard stands down for the rest of the node - a
+# refuse-only guard may tighten, never deadlock (a model that keeps re-issuing
+# the same rejected call gets the repeat hint, then the hand-over).
+_MAX_GUARD_CORRECTIONS = 2
 _REPEAT_HINT = (
     "REPEATED CALL - not run again: you just made this exact call and its result "
     "is above, unchanged. Use that result and take the NEXT action of the step "
@@ -568,6 +574,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     last_key: Optional[str] = None
     last_res_key: Optional[str] = None
     repeats = 0
+    _guard_budget = _MAX_GUARD_CORRECTIONS
     role = ctx.role
     helped = ""
     edit_failures = 0
@@ -734,6 +741,66 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.on_call(name, params)
                         except Exception as exc:  # noqa: BLE001 — advisory only
                             logger.debug("[run_node] shadow hook failed: %r", exc)
+                    # tool_approval/v6 PRE-CALL GUARD (oracle.md 7.5, 2026-10-18):
+                    # when the consumer is ENFORCED and the engine confidently
+                    # says "this call will fail as written", the call does NOT
+                    # run - the model gets a rejection message and re-issues
+                    # (hopefully corrected). Refuse-only and bounded: after
+                    # _MAX_GUARD_CORRECTIONS rejections the guard stands down
+                    # for the rest of the node (a guard may tighten, never
+                    # deadlock), and any fault means "run the call". The
+                    # consult costs the decision latency on the node path -
+                    # the same cost an enforced tool_choice pick pays there -
+                    # and ONLY when the consumer is enforced (decides() is
+                    # None -> zero cost).
+                    if _guard_budget > 0 and name in allowed:
+                        _guard = None
+                        try:
+                            from backend.agent import tool_approval_shadow as _ta_g
+
+                            _desc = ""
+                            for _t in (ctx.tools or []):
+                                _fn = _t.get("function") or {}
+                                if _fn.get("name") == name:
+                                    _desc = str(_fn.get("description") or "")
+                                    break
+                            _guard = _ta_g.pre_call_guard(
+                                goal=goal,
+                                last_result=ctx.last_result_text or None,
+                                proposed_tool=name,
+                                tool_description=_desc,
+                                args=params if isinstance(params, dict) else None,
+                                offered_tools=sorted(allowed),
+                                calls_this_step=history_text(calls),
+                            )
+                        except Exception as exc:  # noqa: BLE001 — fail-open
+                            logger.debug("[run_node] pre-call guard failed: %r", exc)
+                        if _guard is False:
+                            _guard_budget -= 1
+                            logger.info(
+                                "[run_node] conv=%s pre-call guard: %s %s rejected "
+                                "before it ran (budget %d left) - asking the model "
+                                "to correct the call",
+                                ctx.conv_id, name, _target(params or {}), _guard_budget,
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id") or name,
+                                "name": name,
+                                "content": (
+                                    "[pre-call check rejected] This call was "
+                                    "rejected BEFORE it ran: it looks like it "
+                                    "will fail as written (for example a path "
+                                    "that does not exist, text to replace that "
+                                    "is not in the file, or an invalid command). "
+                                    "Re-issue the SAME tool call with corrected "
+                                    "arguments - the exact text to replace, or "
+                                    "the correct path. Do NOT rewrite whole "
+                                    "files or change approach to work around "
+                                    "this check."
+                                ),
+                            })
+                            continue
                     if key in prefetched:  # a sibling that already ran side by side
                         raw = prefetched[key]
                     else:
@@ -742,14 +809,31 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         except Exception as exc:  # noqa: BLE001 — typed result, the model reacts
                             raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
-                # tool_approval (2026-10-10): the call's OUTCOME is now known —
+                # tool_approval (2026-10-10): the call's OUTCOME is now known -
                 # submit the post-hoc approval consult (pre-call frame + this
                 # outcome as the label). Advisory only; never blocks the loop.
+                # v6 (2026-10-17): the APPROVAL label is the CALL-level outcome,
+                # not the loop's `failed`. _failed() counts a non-zero
+                # returncode as failure - correct for the loop's retry
+                # semantics, wrong for the approval question: a pytest run
+                # during test-driven work exits 1 BECAUSE the work is mid-
+                # iteration, which is the call doing its job (measured live:
+                # 7 of 11 "failed" approval rows were valid pytest runs the
+                # tool itself reported success:true for; d1 correctly approved
+                # them at 0.77-0.91 and was scored wrong - the label noise
+                # held the consumer below chance). The loop's `failed` is
+                # UNCHANGED: retries, hand-over and the tool_choice label all
+                # keep reading it.
+                _approval_ok = not failed
+                if (name == "run_command" and isinstance(raw, dict)
+                        and raw.get("success") is not False):
+                    _approval_ok = True  # the command RAN; its exit code is the work's answer
                 if ctx.on_result is not None:
                     try:
-                        ctx.on_result(name, params, not failed)
-                    except Exception as exc:  # noqa: BLE001 — advisory only
+                        ctx.on_result(name, params, not failed, _approval_ok)
+                    except Exception as exc:  # noqa: BLE001 - advisory only
                         logger.debug("[run_node] approval hook failed: %r", exc)
+
                 if failed:
                     # A FAILED call may be retried as is (live 2026-10-02: a
                     # cold-start browser_open timed out at 90 s, the retry was
@@ -768,7 +852,15 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     last_command_failed = failed
                 # args: the identifying keys only (never a file body) - what
                 # memory events and footprints read as "what this step touched".
+                # "ok_call" (2026-10-18) is the CALL-level outcome: the command
+                # RAN and produced output, whatever its exit code said about the
+                # WORK (a pytest run mid-iteration reports failing tests - that
+                # is the call doing its job). `ok` keeps the loop-level meaning
+                # (retries, hand-over read it). needs_action's label reads
+                # ok_call: "a call that worked = a tool was needed" is about
+                # the CALL, not the work's state.
                 calls.append({"tool": name, "target": _target(params or {}), "ok": not failed,
+                              "ok_call": bool(_approval_ok),
                               "args": {k: params[k] for k in _ID_KEYS
                                        if isinstance(params, dict) and params.get(k)}})
                 logger.info("[run_node] conv=%s %s %s -> %s", ctx.conv_id, name,
