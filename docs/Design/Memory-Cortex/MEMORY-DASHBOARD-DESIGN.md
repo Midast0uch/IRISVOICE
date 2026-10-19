@@ -1045,3 +1045,19 @@ from above - a small fan for recalls from just before, long sweeps for old ones;
 hovered, so you can move onto a strand and read it, and click it to enter that session. The session's hover card
 says how much the memory gave it ("11 earlier steps from 4 sessions · 5 of 5 helped"). The per-turn time lens and the
 turn-by-turn replay are gone with the tab.
+
+### 18.10 The cortex: each kind of memory has its own shape (2026-10-19)
+
+Owner: "I still don't like how neurons look, and events, pins, landmarks are not properly identified."
+
+| Kind | Shape | Motion |
+|---|---|---|
+| claim (landmark) | a hex crystal, six facets = evidence shares by kind, inner light = use; outline only while still learning; cracked red facets = contradicted; gaps in the rim = weak trust channel; outer hexagon = permanent | still, sharp |
+| neuron links | frost arbors: straight segments forking at 60 degrees, thinner each generation; a frost star round each crystal (arms = kinds of evidence), one arm to its territory on the skin (it spreads along the lattice where it lands), frost bridges between linked claims (width = score firmed by use) | light runs out along an arbor when the claim is used, along a bridge whose use grew |
+| moment (event) | a comet spark with a small head | leaves the core, lands on its territory, flashes the skin, wakes the claim it touches, fades |
+| pin | a small shard between two brackets that always face you | does not drift or fade; breathes in its brackets while held in context |
+| node | a small ring on its layer's shell | shown with the layers (s) |
+
+The key (cortex view, bottom right) draws the five shapes the way the scene draws them; clicking one shows only that
+kind while the rest of the organism steps back. Cards name the kind first ("claim · proven", "pin · ...", "node · ...").
+The HUD carries a breadcrumb (memory › view › territory or session › claim) and four thin frame corners.

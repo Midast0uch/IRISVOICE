@@ -77,6 +77,11 @@ svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
 #brand{position:absolute;left:22px;top:18px;font-size:11px;letter-spacing:.32em;color:var(--ink)}
 #brand span{color:var(--dim)}
 #local{position:absolute;left:22px;top:36px;font-size:10px;color:var(--faint);letter-spacing:.06em}
+#crumb{position:absolute;left:22px;top:52px;font-size:10px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
+#crumb b{font-weight:400;color:var(--dim)}#crumb i{font-style:normal;margin:0 .7em;opacity:.6}
+.corner{position:absolute;width:18px;height:18px;border:0 solid rgba(212,236,246,.2)}
+.corner.tl{left:10px;top:10px;border-left-width:1px;border-top-width:1px}.corner.tr{right:10px;top:10px;border-right-width:1px;border-top-width:1px}
+.corner.bl{left:10px;bottom:10px;border-left-width:1px;border-bottom-width:1px}.corner.br{right:10px;bottom:10px;border-right-width:1px;border-bottom-width:1px}
 #stats{position:absolute;right:22px;top:18px;font-size:10px;color:var(--faint);text-align:right;line-height:1.7}
 #stats em{font-style:normal;color:var(--dim)}
 #title{position:absolute;left:22px;top:70px;max-width:520px;font-family:'Inter Tight',sans-serif;
@@ -129,6 +134,8 @@ svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
 <div id="hud">
   <div id="brand">IRIS <span>· MEMORY</span></div>
   <div id="local">everything here lives on this machine</div>
+  <div id="crumb"></div>
+  <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
   <div id="stats"></div>
   <div id="title"></div>
   <div id="ticker"><div class="line old"></div><div class="line"></div></div>
@@ -2209,6 +2216,16 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
   update(tp){if(!this.pos||!tunnel)return;const x=8+clamp(tp+.02,0,1)*(this.W-16);this.pos.setAttribute('d',`M${x-4},29 L${x+4},29 L${x},23 Z`);
     for(const m of this.marks){const on=tunnel.sel<0||m.st.li===tunnel.sel||tunnel.linked.has(tunnel.sel+'-'+m.st.li)||tunnel.linked.has(m.st.li+'-'+tunnel.sel);
       m.e.setAttribute('opacity',on?1:.25)}}};
+// where you are, as a path: memory > the view > the territory or session you are in > the claim you hold
+let crumbKey='';
+function updateCrumb(){const parts=['memory'];
+  if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','session · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
+  else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'how iris decides'}[state.lens];if(lw)parts.push(lw);
+    if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
+    if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
+    if(state.lens==='timeline'&&sync.sid)parts.push('session · '+titleOf(sync.sid))}
+  const k=parts.join('|');if(k===crumbKey)return;crumbKey=k;
+  $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')}
 function updateStats(fps){const c=M.meta.counts||{};
   $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> certainties · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> sessions<br>`+
   `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
@@ -2699,7 +2716,7 @@ renderer.setAnimationLoop(()=>{
   moteGeo.attributes.position.needsUpdate=moteGeo.attributes.aA.needsUpdate=true;
   // impulses
   updateSparks(dt);updateRings(dt);updateThreads(dt);updateSatellites(t);
-  updateCamera(dt);syncFrame(dt);$('key').classList.toggle('on',state.lens==='cortex'&&cam.mode!=='tunnel'&&!state.diving);
+  updateCamera(dt);syncFrame(dt);updateCrumb();$('key').classList.toggle('on',state.lens==='cortex'&&cam.mode!=='tunnel'&&!state.diving);
   if(cam.mode==='tunnel'&&tunnel){
     // the far doorway opens as you near the end of the thread; the side door stays ajar
     tunnel.door.mesh.material.uniforms.uOpen.value=smooth01((cam.tp-.78)/.18);
