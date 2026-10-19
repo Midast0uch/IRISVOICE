@@ -1,0 +1,2053 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRIS Memory Cortex</title>
+<!--
+  IRIS Memory Cortex — design mockup (2026-10-14).
+  Foundation: docs/Design/Aurora-Concept (fresnel shell, pulse wireframe, inner core, comet rings,
+  shockwave, bloom) + components/iris/orb/OrbCanvas.tsx (the 9-lobe epitrochoid particle shells).
+  References: the owner's two videos (dendritic neuron tunnel; region-painted point bust that
+  exhales its media into an organic Voronoi tissue).
+  Data: loads ./memory-snapshot.js (window.IRIS_MEMORY, exported read-only from data/memory.db by
+  export_snapshot.py) when present; otherwise a generator that follows the same schema.
+  Spec: docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md (section 16 = this experience model).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Inter+Tight:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#020306; --ink:#d4ecf6; --dim:#6c8796; --faint:#33454f; --brand:#00d4ff;
+  --warn:#ff4a3d; --amber:#ffb547; --white:#f4fbff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;color:var(--ink);
+  font-family:'JetBrains Mono',ui-monospace,monospace;-webkit-font-smoothing:antialiased}
+canvas#gl{position:fixed;inset:0;display:block;width:100%;height:100%}
+canvas#tissue{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .5s}
+canvas#tissue.on{pointer-events:auto;opacity:1}
+#vignette{position:fixed;inset:0;pointer-events:none;
+  background:radial-gradient(ellipse at center,transparent 45%,rgba(0,0,0,.55) 85%,rgba(0,0,0,.9) 100%)}
+svg#leaders{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+svg#leaders path{fill:none;stroke:rgba(212,236,246,.38);stroke-width:1}
+svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
+#labels,#annos{position:fixed;inset:0;pointer-events:none}
+.rlabel{position:absolute;white-space:nowrap;font-size:11px;letter-spacing:.04em;color:var(--dim);
+  transition:opacity .35s,color .25s;opacity:0}
+.rlabel b{font-weight:600;color:var(--ink);margin-right:.6em}
+.rlabel i{display:block;font-style:normal;font-size:10px;color:var(--faint);line-height:1.5}
+.rlabel.hot b{color:var(--white)} .rlabel.hot i{color:var(--dim)}
+.anno{position:absolute;max-width:360px;pointer-events:none;opacity:0;transition:opacity .3s}
+.anno.on{opacity:1}
+.anno .k{font-size:10px;letter-spacing:.14em;text-transform:lowercase;color:#9cb6c3}
+.anno .t{font-family:'Inter Tight',sans-serif;font-weight:400;font-size:19px;line-height:1.3;
+  color:var(--white);margin:.35em 0 .5em}
+.anno .m{font-size:10.5px;line-height:1.75;color:#b3c9d4}
+/* leader-line labels float on the scene: a dark halo behind each glyph keeps them readable */
+.anno:not(.cell){text-shadow:0 0 3px #000,0 0 8px #000,0 0 16px rgba(0,0,0,.9)}
+/* cell: the point swells into an organic cell with the full text inside (artifact-cell language) */
+.anno.cell{max-width:none;width:330px;padding:46px 44px 48px;text-align:center;
+  background:radial-gradient(ellipse at 50% 42%,rgba(9,20,30,.96),rgba(3,8,14,.93) 72%);
+  border:1px solid var(--cell,#7fe8ff);
+  box-shadow:inset 0 0 22px -6px var(--cell,#7fe8ff),0 0 26px -6px var(--cell,#7fe8ff),0 0 70px -24px var(--cell,#7fe8ff);
+  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);
+  border-radius:47% 53% 44% 56% / 55% 45% 55% 45%;
+  transform:scale(.04);opacity:0;transition:transform .55s cubic-bezier(.2,.9,.25,1.12),opacity .22s;
+  animation:membrane 7s ease-in-out infinite alternate}
+.anno.cell.on{transform:scale(1);opacity:1}
+.anno.cell .k{color:var(--cell,#7fe8ff)}
+.anno.cell .t{font-size:17.5px;color:#fff;margin:.45em 0 .6em}
+.anno.cell .m{font-size:11px;color:#c3d6df}
+.anno.cell .go{margin-top:.9em}
+@keyframes membrane{0%{border-radius:47% 53% 44% 56%/55% 45% 55% 45%}50%{border-radius:55% 45% 52% 48%/46% 56% 44% 54%}
+  100%{border-radius:44% 56% 49% 51%/52% 48% 57% 43%}}
+@media (prefers-reduced-motion:reduce){.anno.cell{animation:none;transition:opacity .2s}}
+.anno .m em{font-style:normal;color:var(--ink)}
+.anno .m .w{color:var(--warn)} .anno .m .u{color:var(--white)}
+.anno .go{display:inline-block;margin-top:.6em;font-size:10.5px;color:var(--brand);pointer-events:auto;cursor:pointer}
+.anno .go:hover{color:var(--white)}
+.anno.right{text-align:left} .anno.left{text-align:right}
+#hud{position:fixed;inset:0;pointer-events:none}
+#brand{position:absolute;left:22px;top:18px;font-size:11px;letter-spacing:.32em;color:var(--ink)}
+#brand span{color:var(--dim)}
+#local{position:absolute;left:22px;top:36px;font-size:10px;color:var(--faint);letter-spacing:.06em}
+#stats{position:absolute;right:22px;top:18px;font-size:10px;color:var(--faint);text-align:right;line-height:1.7}
+#stats em{font-style:normal;color:var(--dim)}
+#title{position:absolute;left:22px;top:70px;max-width:520px;font-family:'Inter Tight',sans-serif;
+  font-weight:300;font-size:24px;line-height:1.25;color:var(--white);opacity:0;transition:opacity .6s}
+#title small{display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--dim);margin-top:.6em;letter-spacing:.04em}
+#ticker{position:absolute;left:22px;bottom:22px;font-size:11px;line-height:1.8;max-width:46vw}
+#ticker .line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .6s}
+#ticker .line.old{opacity:.32}
+#ticker .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:.7em;vertical-align:1px}
+#lenses{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:26px;pointer-events:auto}
+#lenses a{font-size:11px;letter-spacing:.22em;color:var(--faint);cursor:pointer;text-transform:lowercase;user-select:none;transition:color .25s}
+#lenses a:hover{color:var(--dim)} #lenses a.on{color:var(--white);text-shadow:0 0 12px rgba(0,212,255,.6)}
+#hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
+#scrub{position:absolute;left:50%;bottom:56px;width:min(520px,60vw);height:24px;transform:translateX(-50%);
+  pointer-events:auto;cursor:ew-resize;opacity:0;transition:opacity .4s}
+#scrub.on{opacity:1}
+#scrub .track{position:absolute;left:0;right:0;top:12px;height:1px;background:var(--faint)}
+#scrub .fill{position:absolute;left:0;top:12px;height:1px;background:var(--brand);box-shadow:0 0 8px var(--brand)}
+#scrub .lbl{position:absolute;right:0;top:-4px;font-size:9.5px;color:var(--dim);letter-spacing:.06em}
+#scrub .lbl0{position:absolute;left:0;top:-4px;font-size:9.5px;color:var(--faint)}
+#search{position:absolute;left:50%;top:22px;transform:translateX(-50%);text-align:center;opacity:0;transition:opacity .3s}
+#search.on{opacity:1;pointer-events:auto}
+#search input{background:transparent;border:0;border-bottom:1px solid var(--faint);color:var(--white);
+  font:300 18px 'Inter Tight',sans-serif;width:min(420px,70vw);text-align:center;outline:none;padding:4px 0}
+#search div{font-size:10px;color:var(--dim);margin-top:6px;letter-spacing:.06em}
+#flash{position:fixed;inset:0;background:#fff;opacity:0;pointer-events:none}
+/* thread rail: the session's neurons and tasks laid out in time; click one to travel there */
+#rail{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);width:min(680px,76vw);height:40px;pointer-events:auto;opacity:0;transition:opacity .4s}
+#rail.on{opacity:1}
+#rail svg{width:100%;height:28px;overflow:visible;display:block}
+#rail .rl{font-size:10px;color:#9fb8c6;text-align:center;height:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 0 4px #000}
+#rail circle,#rail rect{cursor:pointer}
+#err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;font-size:12px;color:var(--dim)}
+#lenses a{white-space:nowrap}
+@media (max-width:700px){#lenses{gap:14px;bottom:16px}#lenses a{letter-spacing:.1em}#hint,#stats{display:none}
+  #ticker{max-width:calc(100vw - 32px);left:16px;bottom:48px}#scrub{bottom:104px;width:calc(100vw - 32px)}#brand,#local{left:16px}}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="vignette"></div>
+<canvas id="tissue"></canvas>
+<svg id="leaders"></svg>
+<div id="labels"></div>
+<div id="annos"></div>
+<div id="hud">
+  <div id="brand">IRIS <span>· MEMORY</span></div>
+  <div id="local">everything here lives on this machine</div>
+  <div id="stats"></div>
+  <div id="title"></div>
+  <div id="ticker"><div class="line old"></div><div class="line"></div></div>
+  <nav id="lenses"></nav>
+  <div id="scrub"><span class="lbl0"></span><span class="lbl"></span><div class="track"></div><div class="fill"></div></div>
+  <div id="rail"><svg></svg><div class="rl"></div></div>
+  <div id="search"><input id="q" placeholder="search what IRIS remembers" autocomplete="off"><div id="qres"></div></div>
+  <div id="hint"></div>
+</div>
+<div id="flash"></div>
+<div id="err">This view needs WebGL2.</div>
+
+<script src="memory-snapshot.js" onerror="void 0"></script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Delaunay } from 'https://cdn.jsdelivr.net/npm/d3-delaunay@6.0.4/+esm';
+
+const V3 = THREE.Vector3;
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 0. small utilities
+// ═══════════════════════════════════════════════════════════════════════════
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+let rng = mulberry32(20261014);
+const rand=(a=0,b=1)=>a+(b-a)*rng();
+const randi=(a,b)=>Math.floor(rand(a,b+1));
+const pick=a=>a[Math.floor(rng()*a.length)];
+function gauss(){let u=0,v=0;while(!u)u=rng();while(!v)v=rng();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+const clamp=(x,a,b)=>Math.max(a,Math.min(b,x));
+const lerp=(a,b,t)=>a+(b-a)*t;
+const smooth01=t=>{t=clamp(t,0,1);return t*t*(3-2*t)};
+const easeIO=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+const nowS=()=>Date.now()/1000;
+function weighted(pairs){let s=0;for(const p of pairs)s+=p[1];let r=rng()*s;for(const p of pairs){r-=p[1];if(r<=0)return p[0]}return pairs[0][0]}
+function fib(n,i){const y=1-(i+.5)/n*2,r=Math.sqrt(1-y*y),th=i*2.399963229728653;return new V3(Math.cos(th)*r,y,Math.sin(th)*r)}
+function ago(ts){const d=Math.max(0,nowS()-ts);
+  if(d<45)return 'just now'; if(d<3600)return Math.round(d/60)+' min ago';
+  if(d<86400)return Math.round(d/3600)+' h ago'; if(d<86400*14)return Math.round(d/86400)+' days ago';
+  if(d<86400*60)return Math.round(d/604800)+' weeks ago'; return Math.round(d/2592000)+' months ago'}
+function span(s){s=Math.max(1,s); if(s<60)return Math.round(s)+' s'; if(s<3600)return Math.round(s/60)+' min';
+  return Math.floor(s/3600)+' h '+Math.round((s%3600)/60)+' min'}
+const fmt=n=>n.toLocaleString('en-US');
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 1. the alphabet + translation table (MEMORY-DASHBOARD-DESIGN §4.2, §12)
+// ═══════════════════════════════════════════════════════════════════════════
+const FAM=[
+  {key:'intent',      word:'goals',         color:'#ffd36b'},
+  {key:'control',     word:'plans',         color:'#9a86ff'},
+  {key:'problem',     word:'problems',      color:'#ff6a4a'},
+  {key:'knowledge',   word:'knowledge',     color:'#00d4ff'},
+  {key:'feedback',    word:'your feedback', color:'#f4fbff'},
+  {key:'delivery',    word:'deliveries',    color:'#5dffb0'},
+  {key:'memory',      word:'remembering',   color:'#d36bff'},
+  {key:'safety',      word:'safety',        color:'#ff9b3d'},
+  {key:'environment', word:'the world',     color:'#6b9bff'},
+];
+const FAMI=Object.fromEntries(FAM.map((f,i)=>[f.key,i]));
+const LABELS={
+  intent:['GOAL_SET','GOAL_REFINED','CLARIFY_ASKED','CLARIFY_ANSWERED','PREFERENCE_STATED','GOAL_ABANDONED'],
+  control:['PLAN_MADE','REPLAN','PIVOT','SPLIT','DELEGATED','ESCALATED','HALTED','BUDGET_HIT'],
+  problem:['OBSTACLE','BUG','ATTEMPT','DEAD_END','RESOLUTION','FIX','VERIFIED_RESOLUTION','VERIFIED_FIX'],
+  knowledge:['OBSERVED','CLAIM_CORROBORATED','CLAIM_UPDATED','CLAIM_CONTRADICTED','SOURCE_UNRELIABLE','BELIEF_STALE'],
+  feedback:['CONFIRMATION','CORRECTION','APPROVAL','DENIAL','NO_RESPONSE'],
+  delivery:['ANSWER_GIVEN','ARTIFACT_PRODUCED','NARRATED','CARD_SHOWN'],
+  memory:['RECALL_DELIVERED','RECALL_USED','RECALL_HELPED','RECALL_MISLED','RECALL_MISSED','OFFLOADED','RESTRETCHED','LESSON','LANDMARK_PROMOTED','LANDMARK_STALE','CHAIN_CREATED','CHAIN_VARIANT'],
+  safety:['UNSAFE_REFUSED','ESCALATED_UNSURE','INJECTION_SUSPECTED','PERMISSION_DENIED'],
+  environment:['DEPENDENCY_CHANGED','RESOURCE_LIMIT','WORLD_CHANGED'],
+};
+// the topic-domain registry (the 12 values memory_chain.topic_domain carries); they are the
+// TERRITORIES of the lattice; the event families are the activity inside them
+const DOMAINS=['general','web','science','data','finance','ai','design','mobile','systems','devops','security','hardware'];
+const DOM_WORD={general:'everyday',web:'the web',science:'science',data:'data',finance:'money',ai:'AI & models',design:'design',
+  mobile:'mobile',systems:'systems & code',devops:'running things',security:'security',hardware:'hardware'};
+const DOM_COL={general:'#9fb4c4',web:'#00d4ff',science:'#7fe8a8',data:'#ffd36b',finance:'#e8c25a',ai:'#d36bff',design:'#ff7fbf',
+  mobile:'#7fa8ff',systems:'#5dffd0',devops:'#ff9b3d',security:'#ff6a4a',hardware:'#c8a87f'};
+const READ={
+  GOAL_SET:'you set a goal',GOAL_REFINED:'the goal got sharper',CLARIFY_ASKED:'IRIS asked what you meant',CLARIFY_ANSWERED:'you clarified',
+  PREFERENCE_STATED:'you said what you prefer',GOAL_ABANDONED:'a goal was dropped',
+  PLAN_MADE:'made a plan',REPLAN:'changed the plan',PIVOT:'changed direction',SPLIT:'split the work into parallel paths',
+  DELEGATED:'handed work to a helper',ESCALATED:'asked for help',HALTED:'stopped on purpose',BUDGET_HIT:'ran out of budget',
+  OBSTACLE:'hit an obstacle',BUG:'found a bug',ATTEMPT:'tried a fix',DEAD_END:'reached a dead end',RESOLUTION:'found a way through',
+  FIX:'wrote a fix',VERIFIED_RESOLUTION:'the way through held',VERIFIED_FIX:'the fix passed its test',
+  OBSERVED:'noticed something',CLAIM_CORROBORATED:'a second source agreed',CLAIM_UPDATED:'updated a belief',
+  CLAIM_CONTRADICTED:'a belief was contradicted',SOURCE_UNRELIABLE:'a source proved unreliable',BELIEF_STALE:'a belief went stale',
+  CONFIRMATION:'you confirmed',CORRECTION:'you corrected IRIS',APPROVAL:'you approved',DENIAL:'you said no',NO_RESPONSE:'no reply came',
+  ANSWER_GIVEN:'answered you',ARTIFACT_PRODUCED:'made something',NARRATED:'spoke an update',CARD_SHOWN:'showed you a card',
+  RECALL_DELIVERED:'remembered something',RECALL_USED:'used what it remembered',RECALL_HELPED:'remembering this helped',
+  RECALL_MISLED:'remembering this misled',RECALL_MISSED:'forgot something it knew',APERTURE_DROPPED:'let a memory leave its mind',
+  OFFLOADED:'set a thought aside',RESTRETCHED:'brought a thought back',PREMATURE_EVICTION:'let a thought go too early',
+  LESSON:'learned a lesson',LANDMARK_PROMOTED:'IRIS is now sure about this',LANDMARK_STALE:'a certainty went stale',
+  LANDMARK_DEMOTED:'a certainty was withdrawn',CHAIN_CREATED:'learned a way of working',CHAIN_VARIANT:'found a variation that works',
+  UNSAFE_REFUSED:'refused something unsafe',ESCALATED_UNSURE:'checked with you when unsure',INJECTION_SUSPECTED:'spotted a manipulation attempt',
+  PERMISSION_DENIED:'was not allowed',DEPENDENCY_CHANGED:'a dependency changed',RESOURCE_LIMIT:'hit a limit of this machine',WORLD_CHANGED:'the world changed',
+};
+const readEvent=e=>READ[e.label]||((FAM[FAMI[e.family]]||{word:'other'}).word+' · '+String(e.label||'').toLowerCase().replace(/_/g,' '));
+// evidence ladder = the visual hierarchy (§4.2, §11). user > recurrence/corroboration > test/completion > verifier > claim > none
+const EVID={user:1,recurrence:.86,corroboration:.86,test:.72,completion:.72,verifier:.45,claim:.28,none:.12};
+const EVID_WORD={user:'you confirmed this',test:'a test passed',completion:'the task finished',recurrence:'it held up again',
+  corroboration:'an independent source agreed',verifier:'the reviewer checked it',claim:'IRIS reported this',none:'unconfirmed'};
+const EVID_COL={user:'#f4fbff',recurrence:'#7fe8ff',corroboration:'#7fe8ff',test:'#5dffb0',completion:'#5dffb0',verifier:'#4f8fb0',claim:'#56707e',none:'#2c3a42'};
+const OUTSIDE=new Set(['user','recurrence','corroboration','test','completion']);
+const CLUSTER_WORD={preference:'your preferences',implement:'building',research:'research',debug:'fixing things',
+  voice:'voice',environment:'this machine',workflow:'ways of working'};
+const KIND_WORD={screen:'screenshots',web:'web captures',code:'code',doc:'documents',chart:'charts',audio:'audio',image:'images',terminal:'test runs',video:'videos'};
+const ORACLE_PLAIN={tool_choice:'picking the next tool',escalate_incomplete:'knowing a result is incomplete',needs_action:'knowing when a step needs a tool',
+  review_verdict:'judging its own steps',user_feedback:'reading what you meant',narration:'deciding what to say aloud',browser_next:'choosing where to click next',
+  tool_approval:'predicting if a tool call will work',depth_met:'knowing when research is deep enough',web_intent:'knowing when to search the web',
+  click_safety:'knowing if a click is safe',call_closing:'knowing a call was the last one',recovery_strategy:'choosing how to recover',
+  sufficient:'knowing an answer is enough',event_family:'sorting what happened',event_type:'naming what happened'};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2. memory — real snapshot when present, otherwise a schema-faithful generator
+// ═══════════════════════════════════════════════════════════════════════════
+function synthMemory(){
+  rng=mulberry32(1014);
+  const T=nowS(), DAY=86400;
+  const OBJ=['research local GGUF quantization','fix the TTS warm-up hang','make the orb readable on pale wallpapers','speed up the cold start',
+   'summarize this week\'s emails','add strand cascade delete','find why the in-app browser stalls','plan a long weekend in Lisbon',
+   'compare three note-taking apps','write tests for the turn store','debug the wake word on a noisy mic','draft a reply to the landlord',
+   'index the memory events table','explain the Caducean phase model','design the per-project port registry','clean up the downloads folder',
+   'research robot vacuum reviews','find a recipe with what is in the fridge','split the agent kernel file','find why replies took 3 minutes',
+   'learn my calendar habits','convert the report to PDF','scan the changelog for breaking changes','tune the narration timing',
+   'chart my sleep data','start the dev server for the side project','research the Nostr protocol','fix the flaky ledger test',
+   'review the oracle bar report','write the weekly status note','find the cause of the 6 GB memory file','order the reading list by topic',
+   'measure the research eval','outline the hive network idea','repair tool-call arguments','learn my preferred voice speed',
+   'compare two laptops for local models','build the memory dashboard mockup'];
+  const sessions=OBJ.map((o,i)=>{const live=i===OBJ.length-1;
+    const started=live?T-1500:T-(OBJ.length-1-i)*DAY*1.55-rand(0,DAY*.6);
+    const dur=live?0:rand(500,3.2*3600);
+    return {id:'sess_'+i,objective:o,started,ended:live?null:started+dur,exit:live?'live':(rng()<.82?'natural':'drift'),traj:[],events:[],episodes:[]}});
+  const DKW={web:/research|capture|review|changelog|nostr|search/,ai:/model|gguf|oracle|quantiz|narration|voice/,data:/chart|sleep|index|memory|reading list/,
+    design:/orb|dashboard|wallpaper|mockup|hive/,systems:/kernel|ledger|store|test|cold start|browser|tts|wake word|arguments|turn|strand/,
+    devops:/dev server|eval|downloads|port|pdf/,hardware:/laptop|mic|vacuum/,science:/caducean|phase|recipe/,finance:/landlord|rent|budget/};
+  for(const s of sessions)s.domain=Object.keys(DKW).find(k=>DKW[k].test(s.objective))||'general';
+  for(const s of sessions){let ph=rand(0,6);const n=randi(26,64);for(let k=0;k<n;k++){ph+=rand(.12,.5);
+    s.traj.push({x:Math.sin(ph)*.85+gauss()*.08,y:Math.cos(ph*.7),xi:rand(),u:.5+.5*Math.sin(ph*1.3)})}}
+
+  const PREF=['You prefer short spoken replies with the details on screen.','You like a voice slightly faster than the default.',
+   'You prefer metric units.','You want IRIS to ask before it edits its own code.','You read the news in the evening, not the morning.',
+   'You call the side panel "the wing".','You keep your reading list ordered by topic, not by date.','Recipes for you should leave out nuts.',
+   'In Lisbon you prefer walkable neighbourhoods to airport hotels.','Your landlord answers email faster than phone calls.',
+   'Your calendar is busiest on Tuesday mornings.','You like dark themes with one bright accent.','Downloads older than 90 days are safe to archive, you said.',
+   'You correct spelled-out numbers to digits.','The weekly status note goes out on Fridays.'];
+  const ENV=['The C: drive is a slow hard disk, so cold reads take ten times longer.','Local models live on the fast D: drive.',
+   'The browser stalls when the disk pages the model back in.','The wake word fails when the fan noise is high.',
+   'Shell paths with spaces need quotes on this machine.','This machine has 32 GB of memory, so one large local model fits at a time.',
+   'The text-to-speech worker must be warm before IRIS reports ready.'];
+  const DEBUG=['A fix is only a fix when its test passes.','Two writers on one database connection cause flaky failures.',
+   'Unindexed scans on large tables stall replies.','Tests that time out usually wait on a background thread.',
+   'The memory file grew from re-nested copies, not from real data.','Tool calls fail most often on wrong argument names.',
+   'A swallowed error on a path that should never fail is an alarm.','Editing files in place keeps em dashes intact; rewriting them garbles them.'];
+  const IMPL=['A coding step works when it sees your exact words.','Running one test file is faster than running the whole suite here.',
+   'Large files are best read in parts.','A dev server needs a port no other thread uses.','A reply that names a file should open it on the side.'];
+  const RES=['Splitting research into parallel paths finds sources faster.','Gadget reviews older than two years are less useful.',
+   'Breaking changes hide under "Migration" headings in changelogs.','Pages that refuse robots are skipped, not retried.',
+   'A source that contradicted itself twice is unreliable.','Laptops for local models need at least 32 GB of memory.'];
+  const VOICE=['Replies under 20 seconds keep a conversation flowing.','Narration should not repeat what is on screen.',
+   'The orb must stay visible while you speak.','Summaries land better with three points than with ten.'];
+  const WF=['Asking one clarifying question beats guessing on a vague task.','Charts read better with direct labels than with a legend.',
+   'A plan with one clear goal per step fails less.','Measure first, then fix the cause, then guard it.'];
+  const TOOLS=['The web search','The file reader','The test runner','The browser','The shell','The editor','The vision model','The calendar tool'];
+  const CONDS=['when the request is quoted exactly','when it runs in the project folder','after the page has finished loading','when paths are absolute',
+   'when the query names a site','on files under 1 MB','when it runs after the plan','when the step has one clear goal'];
+  const DOMS=['Cooking','Gadget','Travel','Coding','Fitness','Home repair'];
+  const SRCS=['official documentation','recent reviews','two independent sources','your own notes','the project\'s tests','forum answers marked as accepted'];
+  const claims=[];
+  const add=(arr,c)=>arr.forEach(x=>claims.push([x,c]));
+  add(PREF,'preference');add(ENV,'environment');add(DEBUG,'debug');add(IMPL,'implement');add(RES,'research');add(VOICE,'voice');add(WF,'workflow');
+  for(const t of TOOLS)for(const c of CONDS)if(rng()<.55)claims.push([`${t} succeeds more often ${c}.`,pick(['implement','workflow','research','debug'])]);
+  for(const d of DOMS)for(const s of SRCS)if(rng()<.5)claims.push([`${d} questions are answered best from ${s}.`,'research']);
+
+  const landmarks=claims.map(([claim,cls],i)=>{
+    const cand=rng()<.3;
+    const kinds=cand?['verifier','claim','none']:['user','recurrence','corroboration','test','completion'];
+    const ev=[];const n=cand?randi(0,2):randi(1,6);
+    for(let k=0;k<n;k++){const kind=cls==='preference'&&!cand&&k===0?'user':pick(kinds);ev.push({kind,at:T-rand(0,DAY*55),session:pick(sessions).id})}
+    const born=T-rand(DAY*.5,DAY*58);
+    return {id:'lm_'+i,claim,cls,tier:cand?'candidate':'landmark',permanent:!cand&&rng()<.6,evidence:ev,
+      activations:cand?randi(0,4):Math.round(Math.pow(rng(),2)*120)+1,contradictions:rng()<.12?randi(1,3):0,
+      last_activated:T-rand(60,DAY*20),last_verified:T-rand(DAY,DAY*40),born,session:pick(sessions).id,
+      fams:[FAMI.knowledge,FAMI.memory,pick([0,1,2,4,5,7,8])],
+      domain:rng()<.7?({preference:'general',implement:'systems',research:'web',debug:'systems',voice:'ai',environment:'hardware',workflow:'general'}[cls]||'general'):pick(DOMAINS)};
+  });
+  const edges=[];
+  for(let i=0;i<landmarks.length;i++){const k=randi(1,3);for(let j=0;j<k;j++){
+    let b=rng()<.75?landmarks.findIndex((l,ix)=>ix>i&&l.cls===landmarks[i].cls&&rng()<.3):randi(0,landmarks.length-1);
+    if(b<0||b===i)continue;edges.push({a:i,b,score:rand(.3,1),traversals:randi(0,60),hits:randi(0,30),misses:randi(0,6)})}}
+  const merges=[];for(let i=0;i<34;i++)merges.push({survivor:randi(0,landmarks.length-1),absorbed_label:pick(claims)[0],overlap:rand(.7,.97)});
+
+  const TOOLSEQ=['search','read_file','run_tests','edit_file','browser_open','browser_click','shell','vision','write_file','speak'];
+  const events=[],episodes=[];let eid=0;
+  for(const s of sessions){
+    const end=s.ended||T;const nEp=randi(1,3);
+    for(let e=0;e<nEp;e++){const out=weighted([['success',.62],['partial',.23],['failure',.15]]);
+      const t0=lerp(s.started,end,e/nEp),t1=lerp(s.started,end,(e+1)/nEp);
+      const ep={id:'ep_'+episodes.length,session:s.id,summary:e===0?s.objective:pick(['check the result','retry with a smaller step','write it up','verify the fix','read the source again']),
+        outcome:s.exit==='live'&&e===nEp-1?'running':out,score:out==='success'?rand(.75,1):out==='partial'?rand(.4,.7):rand(.05,.35),
+        corrected:rng()<.09,confirmed:rng()<.22,duration:t1-t0,tools:Array.from({length:randi(3,9)},()=>pick(TOOLSEQ)),ts:t1,
+        failure_reason:out==='failure'?pick(['the page refused automated access','the test kept timing out','the plan missed a step','a dependency was missing']):null};
+      episodes.push(ep);s.episodes.push(ep.id);
+      const seq=[['intent','GOAL_SET','user','user','advances']];
+      seq.push(['control','PLAN_MADE','agent','claim','advances']);
+      const n=randi(10,34);
+      for(let k=0;k<n;k++){const r=rng();
+        if(r<.2)seq.push(['knowledge',pick(['OBSERVED','OBSERVED','CLAIM_CORROBORATED','CLAIM_UPDATED','CLAIM_CONTRADICTED']),'tool',pick(['claim','corroboration','claim']),'advances']);
+        else if(r<.34)seq.push(['problem',pick(['OBSTACLE','BUG','DEAD_END']),pick(['tool','world']),'claim','sets_back']);
+        else if(r<.46)seq.push(['problem',pick(['ATTEMPT','FIX','RESOLUTION']),'agent','claim','neutral']);
+        else if(r<.52)seq.push(['problem','VERIFIED_FIX','tool','test','advances']);
+        else if(r<.64){seq.push(['memory','RECALL_DELIVERED','agent','claim','neutral']);seq.push(['memory','RECALL_USED','agent','claim','advances']);
+          seq.push(['memory',rng()<.8?'RECALL_HELPED':'RECALL_MISLED','agent',rng()<.5?'completion':'verifier',rng()<.8?'advances':'sets_back'])}
+        else if(r<.70)seq.push(['control',pick(['SPLIT','REPLAN','PIVOT','DELEGATED']),'agent','claim',pick(['neutral','sets_back','advances'])]);
+        else if(r<.80)seq.push(['delivery',pick(['NARRATED','CARD_SHOWN']),'agent','claim','neutral']);
+        else if(r<.83)seq.push(['safety',pick(LABELS.safety),'agent','verifier','neutral']);
+        else if(r<.86)seq.push(['environment',pick(LABELS.environment),'world','claim','sets_back']);
+        else if(r<.92)seq.push(['memory',pick(['LESSON','OFFLOADED','RESTRETCHED','LANDMARK_PROMOTED','CHAIN_CREATED']),'agent',pick(['recurrence','claim','completion']),'advances']);
+        else seq.push(['intent',pick(['GOAL_REFINED','CLARIFY_ASKED','CLARIFY_ANSWERED']),pick(['user','agent']),pick(['user','claim']),'advances']);
+      }
+      seq.push(['delivery',pick(['ANSWER_GIVEN','ARTIFACT_PRODUCED']),'agent','completion','advances']);
+      if(rng()<.5)seq.push(['feedback',ep.corrected?'CORRECTION':pick(['CONFIRMATION','APPROVAL','NO_RESPONSE']),'user','user',ep.corrected?'sets_back':'advances']);
+      seq.forEach((q,k)=>{const lm=q[0]==='memory'&&rng()<.85?randi(0,landmarks.length-1):null;
+        events.push({id:'ev_'+(eid++),ts:lerp(t0,t1,(k+rand(0,.8))/seq.length),family:q[0],label:q[1],actor:q[2],evidence:q[3],valence:q[4],
+          episode:ep.id,session:s.id,landmark:lm,domain:rng()<.85?s.domain:pick(DOMAINS)})});
+    }
+  }
+  events.sort((a,b)=>a.ts-b.ts);
+  for(const e of events){const s=sessions.find(x=>x.id===e.session);s.events.push(e)}
+  const AK=[['screen',8],['web',7],['code',9],['doc',7],['chart',5],['audio',4],['image',4],['terminal',5],['video',4]];
+  const FOLDERS={screen:['screenshots','browser captures'],web:['nostr','reviews','model docs'],code:['IRISVOICE','side-project'],doc:['notes','reports','letters'],
+    chart:['health','evals'],audio:['voice notes','narration'],image:['generated','photos'],terminal:['test runs','eval runs'],video:['screen recordings','clips']};
+  const ANAMES={screen:['orb-on-pale-wallpaper.png','chat-wing-dark.png','browser-stall.png','tier-card.png','strand-list.png','settings-voice.png','matrix-rows.png','oracle-panel.png','dev-server.png'],
+    web:['capture · nostr protocol spec','capture · vacuum review roundup','capture · gguf quant table','capture · lisbon tram map','capture · changelog 4.2','capture · sleep science article','capture · laptop benchmarks'],
+    code:['turn_store_test.py','port_registry.ts','tts_warmup.py','memory_events_index.sql','strand_delete.py','kernel_split_plan.py','arg_repair.py','orb_halo.tsx','ledger_lane.py'],
+    doc:['lisbon-weekend.md','weekly-status-10-10.md','reply-to-landlord.md','hive-network-outline.md','report.pdf','reading-list.md','kernel-split-notes.md'],
+    chart:['sleep-last-30-days.png','reply-times-eval.svg','store-size-growth.svg','oracle-bar-progress.svg','quant-quality-vs-size.svg'],
+    audio:['voice-note · landlord.wav','voice-note · grocery list.wav','narration-sample.wav','voice-speed-test.wav'],
+    image:['generated · orb concept.png','fridge-photo.jpg','lisbon-sunset.jpg','whiteboard.jpg'],
+    terminal:['pytest · turn store','pytest · ledger lane','eval run · coding 15/15','eval run · research','cargo test · tauri'],
+    video:['orb-swallow-demo.mp4','voice-turn-recording.mp4','browser-stall-repro.webm','tunnel-flythrough.mp4']};
+  const artifacts=[];
+  for(const [k,n] of AK)for(let i=0;i<n;i++){const s=pick(sessions);artifacts.push({id:'art_'+artifacts.length,kind:k,name:ANAMES[k][i%ANAMES[k].length],folder:pick(FOLDERS[k]),
+    session:s.id,ts:s.started+rand(60,3600),weight:rand(.6,1.6)*(rng()<.15?2:1),seed:randi(1,1e6)})}
+  const oracle=[
+    ['tool_choice','enforced',688,.76,.019,.91],['escalate_incomplete','enforced',513,.84,.03,.9],['needs_action','enforced',216,.80,.04,.92],
+    ['review_verdict','sampled',1381,.63,.04,.86],['user_feedback','shadow',165,.91,.054,.88],['narration','shadow',332,.7,.054,.84],
+    ['browser_next','shadow',126,.66,.08,.7],['tool_approval','shadow',1880,.56,.07,.75],['depth_met','shadow',401,.40,.12,.5],
+    ['web_intent','shadow',199,.49,.11,.55],['click_safety','shadow',92,.6,.09,.7],['call_closing','shadow',657,.6,.06,.8],
+    ['recovery_strategy','shadow',40,.55,.1,.6],['sufficient','shadow',35,.55,.1,.6],['event_family','shadow',24,.6,.1,.6],['event_type','shadow',18,.6,.1,.6],
+  ].map(([c,state,rows,auroc,ece,precision])=>({consumer:c,state,rows,auroc,ece,precision}));
+  const famCounts={intent:1450,control:3920,problem:2610,knowledge:4380,feedback:610,delivery:2950,memory:2260,safety:140,environment:481};
+  const mind=['your exact request','plan · step 3 of 5','turn_store.py · lines 40–120','the failing test output','what "the wing" means to you',
+    'run one test file, not the suite','last week\'s similar fix','the project folder layout','your voice speed preference','an open question for you',
+    'the search results from step 2','the error from the shell'];
+  return {meta:{source:'synthetic — follows the data/memory.db schema',generated:T,counts:{events:18801,chain:20743,landmarks:2027,edges:6628,merges:1806,
+    episodes:407,sessions:108,fragments:84712,artifacts:artifacts.length}},famCounts,sessions,events,landmarks,edges,merges,episodes,artifacts,oracle,mind};
+}
+function normalizeMemory(M){
+  M.sessions=M.sessions||[];M.events=M.events||[];M.landmarks=M.landmarks||[];M.edges=M.edges||[];M.merges=M.merges||[];
+  M.episodes=M.episodes||[];M.artifacts=M.artifacts||[];M.oracle=M.oracle||[];M.mind=M.mind||[];
+  M.famCounts=M.famCounts||{};
+  for(const f of FAM)if(M.famCounts[f.key]==null)M.famCounts[f.key]=M.events.filter(e=>e.family===f.key).length;
+  for(const e of M.events)e.domain=DOMAINS.includes(e.domain)?e.domain:'general';
+  if(!M.domCounts){M.domCounts={};const k=(M.meta?.counts?.events||M.events.length)/Math.max(1,M.events.length);
+    for(const e of M.events)M.domCounts[e.domain]=(M.domCounts[e.domain]||0)+k;for(const d in M.domCounts)M.domCounts[d]=Math.round(M.domCounts[d])}
+  const sById=new Map(M.sessions.map(s=>[s.id,s]));
+  for(const s of M.sessions){s.events=s.events||[];s.episodes=s.episodes||[];s.traj=s.traj||[]}
+  if(M.sessions.every(s=>!s.events.length))for(const e of M.events){const s=sById.get(e.session);if(s)s.events.push(e)}
+  for(const s of M.sessions)s.events.sort((a,b)=>a.ts-b.ts);
+  M.sessions.sort((a,b)=>a.started-b.started);
+  for(const l of M.landmarks){l.evidence=l.evidence||[];l.cls=l.cls||'workflow';l.fams=l.fams||[FAMI.knowledge,FAMI.memory];
+    l.domain=DOMAINS.includes(l.domain)?l.domain:'general';
+    l.born=l.born||l.last_verified||l.last_activated||nowS()}
+  M.sById=sById;M.epById=new Map(M.episodes.map(e=>[e.id,e]));
+  M.lmIndex=new Map(M.landmarks.map((l,i)=>[l.id,i]));
+  for(const e of M.events)if(typeof e.landmark==='string')e.landmark=M.lmIndex.has(e.landmark)?M.lmIndex.get(e.landmark):null;
+  return M;
+}
+// index.html?real shows the exported snapshot of this machine's memory; the default is the
+// schema-faithful demo, so the page always opens with the full experience.
+const USE_REAL=new URLSearchParams(location.search).has('real')&&window.IRIS_MEMORY;
+const M=normalizeMemory(USE_REAL?window.IRIS_MEMORY:synthMemory());
+rng=mulberry32(77);
+const T0=Math.min(...M.landmarks.map(l=>l.born),...M.sessions.map(s=>s.started),nowS()-86400);
+const bestEvidence=l=>{let b='none',bv=0;for(const e of l.evidence){const v=EVID[e.kind]||0;if(v>bv){bv=v;b=e.kind}}return b};
+// territories: the domains that hold anything, largest first (max 12 = the shader's region slots)
+const REG=Object.entries(M.domCounts).filter(([,n])=>n>0).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([d])=>d);
+if(!REG.length)REG.push('general');
+const REGI=Object.fromEntries(REG.map((d,i)=>[d,i]));
+const regOf=d=>REGI[d]??REGI.general??0;
+M.landmarks.forEach(l=>{l.dom=regOf(l.domain)});
+// what happens inside each territory: its three busiest kinds of event, in plain words
+const domTop=REG.map(d=>{const c={};for(const e of M.events)if(e.domain===d)c[e.family]=(c[e.family]||0)+1;
+  return Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([f,n])=>`${FAM[FAMI[f]]?.word||f} ${n}`)});
+const famTop={};
+for(const f of FAM){const c={};for(const e of M.events)if(e.family===f.key)c[e.label]=(c[e.label]||0)+1;
+  famTop[f.key]=Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([l])=>READ[l]||l.toLowerCase())}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. renderer, bloom, camera
+// ═══════════════════════════════════════════════════════════════════════════
+const canvas=document.getElementById('gl');
+let renderer;
+try{renderer=new THREE.WebGLRenderer({canvas,antialias:false,powerPreference:'high-performance'})}
+catch(e){document.getElementById('err').style.display='flex';throw e}
+// GPU is shared with local models: cap the pixel ratio and let quality fall back on slow frames.
+let DPR=Math.min(devicePixelRatio||1,1.6);
+renderer.setPixelRatio(DPR);renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0x020306,1);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(38,innerWidth/innerHeight,.01,8000);
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.85,.5,.24);
+composer.addPass(bloom);composer.addPass(new OutputPass());
+
+const THEMES=[['aether','#00d4ff'],['aurora','#f82a2a'],['ember','#e8843a'],['aurum','#f2c230'],['verdant','#2bd977']];
+let themeIdx=0;
+const BRAND=new THREE.Color(THEMES[0][1]);
+const R=10;
+
+function glowTexture(){const c=document.createElement('canvas');c.width=c.height=128;const g=c.getContext('2d');
+  const gr=g.createRadialGradient(64,64,0,64,64,64);gr.addColorStop(0,'rgba(255,255,255,1)');gr.addColorStop(.2,'rgba(255,255,255,.55)');
+  gr.addColorStop(.5,'rgba(255,255,255,.12)');gr.addColorStop(1,'rgba(255,255,255,0)');g.fillStyle=gr;g.fillRect(0,0,128,128);
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t}
+const GLOW=glowTexture();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. THE CORTEX — one organism. Its skin morphs: sphere / caduceus / iris / spores.
+// ═══════════════════════════════════════════════════════════════════════════
+const cortex=new THREE.Group();scene.add(cortex);
+const NS=42000;
+// regions: one per event family, painted onto the skin as swirls (video 2)
+const MAXREG=12;
+const regC=REG.map((d,i)=>{const v=fib(REG.length,i);v.applyAxisAngle(new V3(1,.3,0).normalize(),.6);return v.normalize()});
+const domMax=Math.max(1,...REG.map(d=>M.domCounts[d]||0));
+const regRad=REG.map(d=>(REG.length>8?.26:.3)+.34*Math.sqrt((M.domCounts[d]||0)/domMax));
+const regBase=REG.map(d=>.12+.28*Math.sqrt((M.domCounts[d]||0)/domMax));
+// pad the shader's 12 region slots (an empty slot has radius 0 and never matches)
+const pad=(a,v)=>{const o=a.slice();while(o.length<MAXREG)o.push(typeof v==='function'?v():v);return o};
+const regAct=regBase.slice();
+
+// session time axis for the caduceus
+const sess=M.sessions;
+const sT0=sess.length?sess[0].started:T0, sT1=nowS();
+const sessS=s=>clamp((s.started-sT0)/Math.max(1,sT1-sT0),0,1);
+// Caducean x along time, 0..1 (expand wide, compress narrow): each session's trajectory is laid
+// over its own stretch of the axis, so the serpents widen and narrow with what the work did.
+const expKnots=[];
+sess.forEach(q=>{const s0=sessS(q),s1=q.ended?clamp((q.ended-sT0)/Math.max(1,sT1-sT0),0,1):1;
+  q.traj.forEach((p,k)=>expKnots.push([lerp(s0,Math.max(s1,s0+.004),k/Math.max(1,q.traj.length-1)),clamp(.5+.5*p.x,0,1)]))});
+expKnots.sort((a,b)=>a[0]-b[0]);
+function expandAt(s){if(!expKnots.length)return .5;let lo=0,hi=expKnots.length-1;
+  while(hi-lo>1){const m=(lo+hi)>>1;if(expKnots[m][0]<s)lo=m;else hi=m}
+  const a=expKnots[lo],b=expKnots[hi];if(b[0]===a[0])return a[1];return lerp(a[1],b[1],clamp((s-a[0])/(b[0]-a[0]),0,1))}
+const HELIX_H=1.75*R;
+const helixY=s=>lerp(-HELIX_H,HELIX_H,s);
+
+// oracle ordering: trusted first, then trying out, then watching (the iris reads as a ladder around the pupil)
+const STATE_RANK={enforced:2,sampled:1,shadow:0};
+const ORC=M.oracle.slice().sort((a,b)=>(STATE_RANK[b.state]-STATE_RANK[a.state])||(b.rows-a.rows)).slice(0,16);
+const NSEC=Math.max(1,ORC.length);
+function barProgress(o){ // share of the bar met (MEMORY-DASHBOARD-DESIGN §8.1): rows, AUROC, precision, ECE
+  if(o.state==='enforced')return 1;
+  const p=[Math.min(1,o.rows/100),clamp((o.auroc-.5)/.15,0,1),clamp((o.precision||0)/.9,0,1),o.ece!=null?clamp((.12-o.ece)/.07,0,1):.5];
+  return clamp(p.reduce((a,b)=>a+b,0)/p.length*.92,0.06,.95)}
+
+const sPos=new Float32Array(NS*3),sHel=new Float32Array(NS*3),sIris=new Float32Array(NS*3),sCloud=new Float32Array(NS*3);
+const sRand=new Float32Array(NS*4),sInfo=new Float32Array(NS*3);
+for(let i=0;i<NS;i++){
+  const v=fib(NS,i).multiplyScalar(R*(1+gauss()*.004));sPos.set([v.x,v.y,v.z],i*3);
+  sRand.set([rng(),rng(),rng(),rng()],i*4);
+  // caduceus: two serpents around a staff; width follows expand/compress over time
+  const strand=i%11===0?2:(i%2);const s=rng();
+  if(strand===2){sHel.set([gauss()*.05*R,helixY(s),gauss()*.05*R],i*3)}
+  else{const ang=s*5*Math.PI*2+strand*Math.PI;const r=R*.6*(.45+.9*expandAt(s));
+    sHel.set([Math.cos(ang)*r+gauss()*.035*R,helixY(s)+gauss()*.02*R,Math.sin(ang)*r+gauss()*.035*R],i*3)}
+  // iris: radial wavy fibers, one sector per Oracle decision point
+  const sec=i%NSEC, fpS=22, f=Math.floor(rng()*fpS), ft=Math.pow(rng(),.85);
+  let th=(sec+(f+.5)/fpS)/NSEC*Math.PI*2+Math.PI/2;const ir=R*(.3+.75*ft);th+=.03*Math.sin(ir*1.3+f*1.7);
+  sIris.set([Math.cos(th)*ir,Math.sin(th)*ir,R*.14*Math.pow(1-ft,2)+gauss()*.04],i*3);
+  sInfo.set([sec,ft,strand],i*3);
+  // spores: the skin exhales toward the artifact tissue (left of the orb)
+  const cl=i%8, ca=cl/8*Math.PI*2;
+  if(rng()<.7)sCloud.set([-2.3*R+Math.cos(ca)*.75*R+gauss()*.42*R,Math.sin(ca)*.75*R+gauss()*.42*R,gauss()*.25*R],i*3);
+  else sCloud.set([-2.3*R+gauss()*1.3*R,gauss()*1.1*R,gauss()*.7*R],i*3);
+}
+const skinGeo=new THREE.BufferGeometry();
+skinGeo.setAttribute('position',new THREE.BufferAttribute(sPos,3));
+skinGeo.setAttribute('aHelix',new THREE.BufferAttribute(sHel,3));
+skinGeo.setAttribute('aIris',new THREE.BufferAttribute(sIris,3));
+skinGeo.setAttribute('aCloud',new THREE.BufferAttribute(sCloud,3));
+skinGeo.setAttribute('aRand',new THREE.BufferAttribute(sRand,4));
+skinGeo.setAttribute('aInfo',new THREE.BufferAttribute(sInfo,3));
+const U={uTime:{value:0},uPix:{value:DPR}};
+const skinMat=new THREE.ShaderMaterial({
+  uniforms:{...U,uMH:{value:0},uMI:{value:0},uMC:{value:0},uBounce:{value:1},uWarn:{value:0},uShock:{value:0},
+    uRegC:{value:pad(regC,()=>new V3(0,1,0))},uRegCol:{value:pad(REG.map(d=>new THREE.Color(DOM_COL[d]||'#9fb4c4')),()=>new THREE.Color())},uRegRad:{value:pad(regRad,0)},uRegAct:{value:pad(regAct,0)},
+    uHoverReg:{value:-1},uOpenReg:{value:-1},uOpen:{value:0},uBrand:{value:BRAND},uR:{value:R},
+    uSecProg:{value:new Array(16).fill(0)},uSecState:{value:new Array(16).fill(0)},uSecPulse:{value:new Array(16).fill(0)},uHoverSec:{value:-1},
+    uScrollY:{value:0}},
+  vertexShader:`
+    uniform float uTime,uPix,uMH,uMI,uMC,uBounce,uWarn,uShock,uOpen,uR;
+    uniform int uHoverReg,uOpenReg,uHoverSec;
+    uniform vec3 uRegC[12]; uniform vec3 uRegCol[12]; uniform float uRegRad[12]; uniform float uRegAct[12];
+    uniform float uSecProg[16]; uniform float uSecState[16]; uniform float uSecPulse[16];
+    uniform vec3 uBrand;
+    attribute vec3 aHelix,aIris,aCloud; attribute vec4 aRand; attribute vec3 aInfo;
+    varying vec3 vCol; varying float vA;
+    float stag(float m,float r){return smoothstep(0.,1.,clamp(m*1.7-r*.7,0.,1.));}
+    void main(){
+      vec3 n=normalize(position);
+      float mh=stag(uMH,aRand.x), mi=stag(uMI,aRand.y), mc=stag(uMC,aRand.z);
+      vec3 p=position*uBounce;
+      p=mix(p,aHelix,mh); p=mix(p,aIris,mi); p=mix(p,aCloud,mc);
+      float tr=mh*(1.-mh)+mi*(1.-mi)+mc*(1.-mc);
+      p+=vec3(sin(aRand.w*40.+uTime*.7),cos(aRand.x*37.+uTime*.6),sin(aRand.y*33.+uTime*.8))*tr*uR*.55;
+      vec4 mv=modelViewMatrix*vec4(p,1.);
+      float wS=(1.-mh)*(1.-mi)*(1.-mc), wH=mh*(1.-mi)*(1.-mc), wI=mi*(1.-mc), wC=mc;
+      // ── sphere skin: fresnel (Aurora) + family swirls (video 2) + aperture
+      vec3 nv=normalize(normalMatrix*n);
+      float facing=abs(dot(nv,normalize(-mv.xyz)));
+      float fres=pow(1.-facing,2.2);
+      vec3 col=vec3(.55,.66,.75); float reg=0.; float hole=1.;
+      for(int i=0;i<12;i++){
+        float d=acos(clamp(dot(n,uRegC[i]),-1.,1.)); float rr=uRegRad[i];
+        if(d<rr){
+          // the skin only takes the region's colour; the pattern lives in the lattice cells
+          float rn=d/rr;
+          float act=uRegAct[i]+(uHoverReg==i?.9:0.);
+          float w=(1.-smoothstep(.8,1.,rn))*(.22+min(act,1.)*.18);
+          col=mix(col,uRegCol[i],clamp(w*1.6,0.,1.)); reg=max(reg,w*.6);
+          if(i==uOpenReg){
+            if(rn<uOpen*1.12) hole=0.;
+            reg+=smoothstep(.08,0.,abs(rn-uOpen*1.12))*uOpen*2.; }
+        }
+      }
+      col=mix(col,vec3(1.,.27,.22),uWarn*.5*fres);
+      col=mix(col,vec3(1.),uShock*.6);
+      float aS=(.016+.26*fres+reg*.5+uShock*.5)*hole;
+      float zS=1.+reg*1.3;
+      // ── caduceus
+      vec3 hc=aInfo.z<.5?uBrand:(aInfo.z<1.5?vec3(.82,.5,1.):vec3(.85,.9,.95));
+      float aH=.2+.1*sin(uTime*1.5+aRand.w*30.);
+      // ── iris
+      int sec=int(aInfo.x+.5); float ft=aInfo.y;
+      float prog=uSecProg[sec], st=uSecState[sec], pul=uSecPulse[sec];
+      vec3 ic=st>1.5?uBrand:(st>.5?vec3(1.,.7,.28):vec3(.42,.52,.64));
+      float lit=step(ft,prog);
+      float flick=st>.5&&st<1.5?.65+.35*sin(uTime*5.+aRand.w*20.):1.;
+      float ring=pul*smoothstep(.16,0.,abs(ft-(1.-pul)));
+      float aI=mix(.022,st>1.5?.3:(st>.5?.2:.12),lit)*flick+ring*.55+(uHoverSec==sec?.14:0.);
+      ic=mix(ic,vec3(1.),ring*.6);
+      // ── spores
+      vec3 cc=mix(vec3(.6,.75,.88),uBrand,.3); float aC=.12;
+      vCol=col*wS+hc*wH+ic*wI+cc*wC;
+      vA=aS*wS+aH*wH+aI*wI+aC*wC;
+      float sz=zS*wS+.95*wH+(.85+lit*.3+ring*.6)*wI+1.3*wC;
+      gl_PointSize=min(sz*uPix*(95./-mv.z),7.*uPix);
+      gl_Position=projectionMatrix*mv;
+    }`,
+  fragmentShader:`varying vec3 vCol;varying float vA;
+    void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(vCol,smoothstep(.5,0.,d)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const skin=new THREE.Points(skinGeo,skinMat);skin.frustumCulled=false;cortex.add(skin);
+
+// Regions live IN the lattice: the same geodesic cells the wireframe draws. Shared GLSL finds the
+// family region a direction belongs to (rw = membership, rc = colour, ra = activity, rn = 0 centre..1 rim).
+const SU=skinMat.uniforms;
+const impacts=Array.from({length:8},()=>new THREE.Vector4(0,1,0,-99)),impactCol=Array.from({length:8},()=>new THREE.Color());
+let impactIx=0;
+function impact(dir,col){impacts[impactIx].set(dir.x,dir.y,dir.z,clock.elapsedTime);impactCol[impactIx].set(col);impactIx=(impactIx+1)%8}
+const LATTICE_U={uRegC:SU.uRegC,uRegCol:SU.uRegCol,uRegRad:SU.uRegRad,uRegAct:SU.uRegAct,uHoverReg:SU.uHoverReg,uOpenReg:SU.uOpenReg,uOpen:SU.uOpen,
+  uImp:{value:impacts},uImpCol:{value:impactCol}};
+const REGION_GLSL=`
+  uniform vec3 uRegC[12]; uniform vec3 uRegCol[12]; uniform float uRegRad[12]; uniform float uRegAct[12];
+  uniform int uHoverReg,uOpenReg; uniform float uOpen; uniform vec4 uImp[8]; uniform vec3 uImpCol[8];
+  void region(vec3 n,out float rw,out vec3 rc,out float ra,out float rn,out float hole,out float rim){
+    rw=0.;rc=vec3(0.);ra=0.;rn=1.;hole=1.;rim=0.;
+    for(int i=0;i<12;i++){if(uRegRad[i]<=0.)continue;float d=acos(clamp(dot(n,uRegC[i]),-1.,1.));float q=d/uRegRad[i];
+      if(q<1.&&1.-q>rw*.999){rw=1.-q;rc=uRegCol[i];ra=uRegAct[i]+(uHoverReg==i?.9:0.);rn=q;
+        if(i==uOpenReg){if(q<uOpen*1.12)hole=0.;rim=smoothstep(.12,0.,abs(q-uOpen*1.12))*uOpen;}}}
+  }
+  float ripples(vec3 n,float t,out vec3 col){float s=0.;col=vec3(0.);
+    for(int k=0;k<8;k++){float age=t-uImp[k].w;if(age<0.||age>3.)continue;
+      float ang=acos(clamp(dot(n,normalize(uImp[k].xyz)),-1.,1.));
+      float r=exp(-pow((ang-age*.75)/.06,2.))*exp(-age*1.3)+exp(-pow(ang/.09,2.))*exp(-age*5.);
+      s+=r;col+=uImpCol[k]*r;}
+    if(s>0.)col/=s;return s;}`;
+
+// Aurora wireframe with travelling pulse bands; inside a region its lines take the family colour
+const wireMat=new THREE.ShaderMaterial({
+  uniforms:{...U,...LATTICE_U,uVis:{value:1},uWarn:{value:0},uShock:{value:0},uBrand:{value:BRAND},uR:{value:R}},
+  vertexShader:`varying vec3 vP;void main(){vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader:`uniform float uTime,uVis,uWarn,uShock,uR;uniform vec3 uBrand;varying vec3 vP;${REGION_GLSL}
+    void main(){vec3 n=normalize(vP);float lat=vP.y/uR;float lon=atan(vP.z,vP.x);float t=uTime*2.;
+      float w1=sin(lat*5.2-t*1.5);float w2=sin(lon*3.+lat*2.+t*.8);
+      float band=pow((w1*.7+w2*.3)*.5+.5,4.);
+      float rw,ra,rn,hole,rim;vec3 rc;region(n,rw,rc,ra,rn,hole,rim);
+      vec3 ic;float rp=ripples(n,uTime,ic);
+      float inR=step(.0001,rw);
+      vec3 pc=mix(uBrand,rc,inR*.85);pc=mix(pc,vec3(1.,.16,.16),uWarn);pc=mix(pc,ic,clamp(rp,0.,1.));pc=mix(pc,vec3(1.),uShock*.7);
+      rp=min(rp,1.);
+      float br=(.06+band*.8+inR*(.12+ra*.12)+rp*.6+rim*1.6)*(1.+uShock*2.5);
+      gl_FragColor=vec4(pc*br,(band*.24+.02+inR*(.07+ra*.04)+rp*.22+rim*.8+uShock*.3)*uVis*hole);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true});
+const wire=new THREE.Mesh(new THREE.IcosahedronGeometry(R*1.015,4),wireMat);cortex.add(wire);
+
+// the cells themselves: each triangle of the lattice fills with its region's colour as one flat
+// facet (the cell, not a gradient), glints when the region is busy, and carries event ripples.
+const cellGeo=new THREE.IcosahedronGeometry(R*1.012,4);
+{const p=cellGeo.attributes.position,n=p.count,fc=new Float32Array(n*3),fr=new Float32Array(n),a=new V3(),b=new V3(),c=new V3();
+  for(let f=0;f<n;f+=3){a.fromBufferAttribute(p,f);b.fromBufferAttribute(p,f+1);c.fromBufferAttribute(p,f+2);const m=a.add(b).add(c).normalize(),r=rng();
+    for(let k=0;k<3;k++){fc.set([m.x,m.y,m.z],(f+k)*3);fr[f+k]=r}}
+  cellGeo.setAttribute('aFace',new THREE.BufferAttribute(fc,3));cellGeo.setAttribute('aR',new THREE.BufferAttribute(fr,1))}
+const cellMat=new THREE.ShaderMaterial({
+  uniforms:{...U,...LATTICE_U,uVis:wireMat.uniforms.uVis,uShock:wireMat.uniforms.uShock},
+  vertexShader:`uniform float uTime,uVis,uShock;attribute vec3 aFace;attribute float aR;varying vec3 vC;varying float vA;${REGION_GLSL}
+    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vec3 n=normalize(aFace);
+      float rw,ra,rn,hole,rim;vec3 rc;region(n,rw,rc,ra,rn,hole,rim);vec3 ic;float rp=ripples(n,uTime,ic);
+      float inR=step(.0001,rw);
+      vec3 nv=normalize(normalMatrix*n);float fres=pow(1.-abs(dot(nv,normalize(-mv.xyz))),1.4);
+      float glint=pow(.5+.5*sin(uTime*(.4+aR*1.2)+aR*60.),14.)*(.3+ra*.5);rp=min(rp,1.);
+      float a=inR*(.028+ra*.022+glint*.05+step(.8,rn)*.025)+rp*.13+rim*.4+uShock*.06;
+      vC=mix(mix(vec3(.55,.7,.8),rc,inR),ic,clamp(rp,0.,1.));
+      vA=a*mix(.35,1.,fres)*hole*uVis;gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const cells=new THREE.Mesh(cellGeo,cellMat);cortex.add(cells);
+
+// inner core = what is on IRIS's mind right now (the aperture's contents orbit it)
+const coreMat=new THREE.ShaderMaterial({
+  uniforms:{uBrand:{value:BRAND},uGain:{value:1}},
+  vertexShader:`varying vec3 vN;varying vec3 vV;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uBrand;uniform float uGain;varying vec3 vN;varying vec3 vV;
+    void main(){float f=max(dot(vN,vV),0.);float g=pow(f,5.5);gl_FragColor=vec4(uBrand*(g*1.25+.25)*uGain,(g*.85+.15)*min(uGain,1.));}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const core=new THREE.Mesh(new THREE.IcosahedronGeometry(R*.15,4),coreMat);cortex.add(core);
+const coreHalo=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:BRAND,transparent:true,opacity:.5,blending:THREE.AdditiveBlending,depthWrite:false}));
+coreHalo.scale.setScalar(R*1.1);cortex.add(coreHalo);
+
+// comet rings (Aurora) — their speed follows how busy the agent is
+const rings=[];
+[[1.55,.3,0,.6,1,4],[1.85,-.5,.4,.2,.6,3],[2.2,.2,-.7,-.3,1.4,5]].forEach(([rad,a,b,c,sp,tl])=>{
+  const m=new THREE.ShaderMaterial({uniforms:{...U,uBrand:{value:BRAND},uSpeed:{value:sp},uVis:{value:.7},uTrail:{value:tl}},
+    vertexShader:`varying float vAng;void main(){vAng=atan(position.y,position.x);gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+    fragmentShader:`uniform float uTime,uSpeed,uVis,uTrail;uniform vec3 uBrand;varying float vAng;
+      void main(){float w=sin(vAng+uTime*uSpeed*1.8)*.5+.5;float tr=pow(w,uTrail*3.);gl_FragColor=vec4(uBrand*(tr*1.7+.03),tr*uVis*.8);}`,
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+  const ring=new THREE.Mesh(new THREE.TorusGeometry(R*rad,R*.0055,8,320),m);ring.rotation.set(a,b,c);ring.userData.sp=sp;cortex.add(ring);rings.push(ring)});
+
+// XurOrb signature: three 9-lobe epitrochoid shells (OrbCanvas.curvePoint), lifted into 3D.
+// Each lobe rises and falls in depth, each curve is a thin tube of particles, and the three shells
+// tumble on their own axes like a gyroscope. They are IRIS's attention: on a recall, a stream of
+// shell particles peels off, reaches the recalled thought, and flows back (see tendrils below).
+const XUR=[{scale:1.05,speed:1,count:220,alpha:.72},{scale:.70,speed:1.45,count:160,alpha:.55},{scale:.42,speed:.62,count:110,alpha:.95}];
+const XTUBE=3;
+XUR.forEach(s=>s.n=s.count*XTUBE);
+const xurN=XUR.reduce((a,s)=>a+s.n,0);
+const xurOff=new Float32Array(xurN*3);for(let i=0;i<xurN*3;i++)xurOff[i]=gauss();
+const xurSpin=[new V3(0,1,.3).normalize(),new V3(1,.2,0).normalize(),new V3(.3,.4,1).normalize()];
+const tendrils=[];
+function reachOut(k){if(k<0||REDUCED&&tendrils.length)return;const si=Math.floor(rng()*3);
+  tendrils.push({k,si,j0:Math.floor(rng()*XUR[si].count),n:Math.round(XUR[si].count*.22),t0:clock.elapsedTime})}
+const xurPos=new Float32Array(xurN*3),xurA=new Float32Array(xurN);
+const xurGeo=new THREE.BufferGeometry();
+xurGeo.setAttribute('position',new THREE.BufferAttribute(xurPos,3));xurGeo.setAttribute('aA',new THREE.BufferAttribute(xurA,1));
+const xurMat=new THREE.ShaderMaterial({uniforms:{...U,uBrand:{value:BRAND},uVis:{value:1}},
+  vertexShader:`uniform float uPix;attribute float aA;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=aA;
+    gl_PointSize=min(1.5*uPix*(95./-mv.z),5.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uBrand;uniform float uVis;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    gl_FragColor=vec4(mix(uBrand,vec3(1.),.35),smoothstep(.5,0.,d)*vA*uVis);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const xur=new THREE.Points(xurGeo,xurMat);xur.frustumCulled=false;cortex.add(xur);
+const xurPhase=[0,0,0];
+const xurTilt=[new THREE.Euler(.5,.2,0),new THREE.Euler(-.4,.9,.3),new THREE.Euler(1.2,-.3,.5)];
+const xurQ=xurTilt.map(e=>new THREE.Quaternion().setFromEuler(e));
+const xurFlat=new THREE.Quaternion();
+const xurV=new V3(),xurS=new V3(),xurC=new V3(),xurQt=new THREE.Quaternion();
+function curvePoint(t,s){return [(7*Math.cos(t)-3*s*Math.cos(9*t))/10,(7*Math.sin(t)-3*s*Math.sin(9*t))/10]}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5. the knowledge forest inside: landmarks as neurons (video 1), edges as axons
+// ═══════════════════════════════════════════════════════════════════════════
+const LM=M.landmarks;
+const NL=LM.length;
+const CL=[...new Set(LM.map(l=>l.cls))];
+const clDir=CL.map((c,i)=>fib(CL.length,i).multiplyScalar(R*.58));
+// neurons fill the whole volume, leaning toward the skin region their knowledge belongs to
+// Neurons are spread through the WHOLE ball (uniform in volume, radius 0.26R..0.92R), each leaning
+// toward the skin region its knowledge belongs to, so the tissue reaches the outer structure.
+const somaPos=LM.map(l=>{const fi=l.dom;
+  const dir=regC[fi].clone().multiplyScalar(.9).add(clDir[CL.indexOf(l.cls)].clone().normalize().multiplyScalar(.35))
+    .add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.5)).normalize();
+  return dir.multiplyScalar(R*(.26+.66*Math.cbrt(rng())))});
+{ // relax: gentle springs on edges (long rest length, so links never pull the mass into the centre),
+  // repulsion between all somas, stay inside the skin
+  const E=M.edges.filter(e=>e.a<NL&&e.b<NL);const tmp=new V3();
+  for(let it=0;it<24;it++){
+    for(const e of E){const a=somaPos[e.a],b=somaPos[e.b];tmp.subVectors(b,a);const d=tmp.length()||1e-3;const f=(d-R*.32)*.006;tmp.multiplyScalar(f/d);a.add(tmp);b.sub(tmp)}
+    for(let i=0;i<NL;i++)for(let j=i+1;j<NL;j++){const a=somaPos[i],b=somaPos[j];tmp.subVectors(b,a);const d=tmp.length()||1e-3;
+      if(d<R*.15){tmp.multiplyScalar((R*.15-d)*.5/d);a.sub(tmp);b.add(tmp)}}
+    for(const p of somaPos){const l=p.length();if(l>R*.92)p.multiplyScalar(R*.92/l);if(l<R*.22)p.multiplyScalar(R*.22/Math.max(l,1e-3))}
+  }
+}
+const lmBest=LM.map(bestEvidence);
+const iP=[],iSoma=[],iT=[],iRand=[],iCol=[],iBorn=[];
+{
+  const tmp=new THREE.Color();
+  LM.forEach((l,si)=>{
+    const S=somaPos[si];const born=clamp((l.born-T0)/Math.max(1,nowS()-T0),0,1);
+    // each kind of knowledge has its own soft hue, so neighbouring neurons read as separate cells;
+    // the nucleus keeps the evidence colour (the trust ladder)
+    tmp.set(EVID_COL[lmBest[si]]||'#56707e');
+    const hue=new THREE.Color().setHSL((CL.indexOf(l.cls)/Math.max(1,CL.length)+.52)%1,.55,.62);
+    const push=(p,t)=>{iP.push(p.x,p.y,p.z);iSoma.push(si);iT.push(t);iRand.push(rng(),rng(),rng(),rng());
+      const c=t<.001?tmp.clone():tmp.clone().lerp(hue,.55+Math.min(1,t)*.25);iCol.push(c.r,c.g,c.b);iBorn.push(born)};
+    push(S,0);
+    // cell body: a crisp membrane shell, with a clear gap before the dendrites begin, so the
+    // neuron reads as a distinct cell inside the tissue
+    for(let q=0;q<56;q++){const v=new V3(gauss(),gauss(),gauss()).normalize().multiplyScalar(R*(.021+Math.abs(gauss())*.0015));push(S.clone().add(v),.015)}
+    const strength=Math.min(1,.35+Math.log10(1+l.activations)/2.2);
+    const branches=l.tier==='candidate'?randi(3,4):randi(4,7);
+    const maxSteps=Math.round(10+strength*12);
+    const walk=(start,dir,steps,depth,t0)=>{
+      const p=start.clone(),d=dir.clone();
+      for(let k=0;k<steps;k++){
+        // dendrites drift outward, so the tissue grows toward the skin and meets it
+        d.add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.33)).addScaledVector(p.clone().normalize(),.1).normalize();
+        p.addScaledVector(d,R*.02*(1-depth*.2));
+        const t=t0+(k+1)/maxSteps;
+        // tapered tissue: thick where the branch leaves the cell body, thin at its tip
+        const jit=R*.0065*(1-Math.min(1,t)*.75)*(1-depth*.3);
+        for(let q=0;q<3;q++)push(p.clone().addScaledVector(d,-R*.005*q).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(jit)),Math.min(1,t));
+        if(depth<2&&rng()<.1)walk(p,d.clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.8)).normalize(),Math.floor((steps-k)*.7),depth+1,t);
+      }};
+    for(let b=0;b<branches;b++){const dir=new V3(gauss(),gauss(),gauss()).normalize();walk(S.clone().addScaledVector(dir,R*.03),dir,maxSteps,0,0)}
+  });
+}
+const NI=iSoma.length;
+const forestGeo=new THREE.BufferGeometry();
+forestGeo.setAttribute('position',new THREE.Float32BufferAttribute(iP,3));
+forestGeo.setAttribute('aSoma',new THREE.Float32BufferAttribute(iSoma,1));
+forestGeo.setAttribute('aT',new THREE.Float32BufferAttribute(iT,1));
+forestGeo.setAttribute('aRand',new THREE.Float32BufferAttribute(iRand,4));
+forestGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(iCol,3));
+forestGeo.setAttribute('aBorn',new THREE.Float32BufferAttribute(iBorn,1));
+// per-soma live state, 2 texels each: (wake, helped-pulse, highlight, reach) (caution, candidate, focus, contradicted)
+const somaData=new Float32Array(Math.max(1,NL)*2*4);
+LM.forEach((l,i)=>{somaData[i*8+3]=l.tier==='candidate'?.42:1;somaData[i*8+5]=l.tier==='candidate'?1:0;somaData[i*8+7]=l.contradictions>0?1:0});
+const somaTex=new THREE.DataTexture(somaData,Math.max(1,NL)*2,1,THREE.RGBAFormat,THREE.FloatType);
+somaTex.minFilter=somaTex.magFilter=THREE.NearestFilter;somaTex.needsUpdate=true;
+const forestU={...U,uSomaTex:{value:somaTex},uScrub:{value:1},uSearch:{value:0},uFocusDim:{value:0},uVis:{value:1},uNear:{value:0}};
+const forestMat=new THREE.ShaderMaterial({uniforms:forestU,
+  vertexShader:`
+    uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis; uniform sampler2D uSomaTex;
+    attribute float aSoma,aT,aBorn; attribute vec4 aRand; attribute vec3 aCol;
+    varying vec3 vCol; varying float vA;
+    void main(){
+      ivec2 ix=ivec2(int(aSoma+.5)*2,0);
+      vec4 s0=texelFetch(uSomaTex,ix,0); vec4 s1=texelFetch(uSomaTex,ix+ivec2(1,0),0);
+      float reach=s0.a; float vis=step(aT,reach+.001)*step(aBorn,uScrub);
+      vec4 mv=modelViewMatrix*vec4(position,1.);
+      float wake=s0.r,pulse=s0.g,hl=max(s0.b,s1.b);
+      float ap=wake*pow(.5+.5*sin(aT*10.-uTime*7.+aRand.x*6.28),6.);
+      float flick=mix(1.,.35+.65*abs(sin(uTime*(1.5+aRand.y*3.)+aRand.z*30.)),s1.g);
+      float isCore=step(aT,.0001);
+      float isMem=step(.005,aT)*step(aT,.03); // the cell membrane round the nucleus
+      float base=mix(mix(.17-aT*.08,.1,isMem),0.,isCore)*flick; // the neuron body itself is the glyph layer
+      float a=(base+wake*.55+ap*1.3+pulse*1.6*(1.-aT)+hl*.25)*(1.-isCore);
+      a*=mix(1.,.12,uSearch*(1.-s0.b));
+      a*=mix(1.,.38,uFocusDim*(1.-hl));
+      vec3 col=aCol;
+      float bad=clamp(s1.r+s1.a*step(.84,aRand.w)*(.5+.5*sin(uTime*6.+aRand.x*20.)),0.,1.);
+      col=mix(col,vec3(1.,.3,.24),bad); col=mix(col,vec3(1.),pulse*.55+wake*.15);
+      vCol=col; vA=a*vis*uVis;
+      float sz=isCore>.5?(3.2+wake*3.+pulse*7.+hl*3.):(1.05+isMem*.5+ap*1.4);
+      float cap=isCore>.5?(9.+pulse*12.+hl*6.):4.;
+      gl_PointSize=min(sz*uPix*(70./-mv.z),cap*uPix);
+      gl_Position=projectionMatrix*mv;
+    }`,
+  fragmentShader:`varying vec3 vCol;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    gl_FragColor=vec4(vCol,smoothstep(.5,0.,d)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const forest=new THREE.Points(forestGeo,forestMat);forest.frustumCulled=false;cortex.add(forest);
+
+// Neuron bodies: a distinct cell (ring membrane + bright nucleus) on top of the tissue, so each
+// neuron stands out from the dendrites around it. The tunnel draws its neurons with the SAME
+// fragment shader (CELL_FRAG), so a neuron looks the same in the cortex and in a session.
+// The neuron GLYPH: a small cell that SHOWS what a certainty is, without glare.
+//   spokes     = its evidence, one spoke per share, coloured by kind (white = you,
+//                green = tests / finished tasks, cyan = held up again / a second source,
+//                grey = only IRIS's own word); spoke length = how much it is used
+//   short faded spokes = still learning · a thin outer ring = permanent
+//   red, broken spokes = contradicted · soft membrane = the kind of knowledge (hue)
+const GLYPH_FRAG=`varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;
+  void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
+    const float N=11.;float k=floor(ang*N);float f=(k+.5)/N;
+    float e0=vEv.x,e1=e0+vEv.y,e2=e1+vEv.z;
+    vec3 ec=f<e0?vec3(1.):(f<e1?vec3(.36,1.,.69):(f<e2?vec3(.5,.91,1.):vec3(.5,.6,.68)));
+    float cand=vInfo.x;
+    float len=mix(.2+.24*vInfo.w,.15+.08*vInfo.w,cand);
+    float off=abs(fract(ang*N)-.5)/N*6.2831853*d;           // distance from the spoke's centre line
+    float wid=mix(.016,.006,smoothstep(.12,.12+len,d));      // spokes taper toward the tip
+    float spoke=smoothstep(wid,wid*.35,off)*smoothstep(.1,.13,d)*(1.-smoothstep(.12+len-.03,.12+len,d));
+    float bad=vInfo.z>.5&&k<vInfo.z?1.:0.;                   // the first n spokes broken and red
+    spoke*=mix(1.,step(.5,fract(d*22.)),bad);
+    float body=smoothstep(.12,.07,d);float mem=smoothstep(.02,0.,abs(d-.11));
+    float perm=vInfo.y*smoothstep(.012,0.,abs(d-.47))*.6;
+    vec3 col=mix(ec,vec3(1.,.25,.2),bad)*spoke*(1.-cand*.45)+vHue*(mem*.9+body*.35)+mix(vC,vec3(1.),.2)*smoothstep(.05,.02,d)+vec3(.8,.9,1.)*perm;
+    gl_FragColor=vec4(col,(spoke*(1.-cand*.45)+mem*.7+body*.35+smoothstep(.05,.02,d)+perm)*vA);}`;
+const KIND_HUE=cls=>new THREE.Color().setHSL((CL.indexOf(cls)/Math.max(1,CL.length)+.52)%1,.6,.62);
+function glyphOf(i){const l=LM[i],c={};
+  if(l.evidence_counts)Object.assign(c,l.evidence_counts);else l.evidence.forEach(e=>c[e.kind]=(c[e.kind]||0)+1);
+  const g=[c.user||0,(c.test||0)+(c.completion||0),(c.recurrence||0)+(c.corroboration||0),(c.verifier||0)+(c.claim||0)+(c.none||0)];
+  const s=g.reduce((a,b)=>a+b,0)||1;
+  return {ev:g.map(v=>v/s),info:[l.tier==='candidate'?1:0,l.permanent?1:0,Math.min(3,l.contradictions||0),clamp(Math.log10(1+(l.activations||0))/2,0,1)],hue:KIND_HUE(l.cls)}}
+const GLYPHS=LM.map((_,i)=>glyphOf(i));
+// membrane colour per best evidence (the trust ladder); lighter than EVID_COL so faint kinds stay visible
+const CELL_COL={user:'#f4fbff',recurrence:'#7fe8ff',corroboration:'#7fe8ff',test:'#5dffb0',completion:'#5dffb0',verifier:'#6fb3d6',claim:'#8aa3b0',none:'#6c7f8a'};
+const cellSize=l=>l.tier==='candidate'?3.4:4.2+Math.min(3,Math.sqrt(l.activations||0)*.45);
+const somaCellGeo=new THREE.BufferGeometry();
+somaCellGeo.setAttribute('position',new THREE.Float32BufferAttribute(somaPos.flatMap(p=>[p.x,p.y,p.z]),3));
+somaCellGeo.setAttribute('aSoma',new THREE.Float32BufferAttribute(LM.map((_,i)=>i),1));
+somaCellGeo.setAttribute('aSize',new THREE.Float32BufferAttribute(LM.map(cellSize),1));
+somaCellGeo.setAttribute('aBorn',new THREE.Float32BufferAttribute(LM.map(l=>clamp((l.born-T0)/Math.max(1,nowS()-T0),0,1)),1));
+somaCellGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(LM.flatMap((l,i)=>{const c=new THREE.Color(CELL_COL[lmBest[i]]||'#8aa3b0');return [c.r,c.g,c.b]}),3));
+somaCellGeo.setAttribute('aEv',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>g.ev),4));
+somaCellGeo.setAttribute('aInfo',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>g.info),4));
+somaCellGeo.setAttribute('aHue',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>[g.hue.r,g.hue.g,g.hue.b]),3));
+const somaCellMat=new THREE.ShaderMaterial({uniforms:forestU,
+  vertexShader:`uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis,uNear;uniform sampler2D uSomaTex;
+    attribute float aSoma,aSize,aBorn;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
+    varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;
+    void main(){ivec2 ix=ivec2(int(aSoma+.5)*2,0);vec4 s0=texelFetch(uSomaTex,ix,0),s1=texelFetch(uSomaTex,ix+ivec2(1,0),0);
+      float hl=max(s0.b,s1.b);vec4 mv=modelViewMatrix*vec4(position,1.);
+      float a=(.5+s0.r*.4+s0.g*.6+hl*.35)*mix(.35,1.,uNear)*mix(1.,.12,uSearch*(1.-s0.b))*mix(1.,.42,uFocusDim*(1.-hl))*step(aBorn,uScrub)*uVis;
+      vC=mix(mix(aCol,vec3(1.),s0.g*.6),vec3(1.,.3,.24),s1.r);vA=a;vEv=aEv;vHue=aHue;
+      vInfo=vec4(s1.g,aInfo.y,max(aInfo.z,s1.a*1.),aInfo.w); // live state wins: a promotion ends the dashes, a contradiction notches
+      gl_PointSize=min(aSize*2.1*(1.+s0.g*.5+hl*.3)*uPix*(60./-mv.z),110.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const somaCells=new THREE.Points(somaCellGeo,somaCellMat);somaCells.frustumCulled=false;cortex.add(somaCells);
+
+// fibres: connections are TISSUE, not hair — each is a tapered strand of particles (thick in the
+// middle, thin where it meets a cell), so neurons, tracts and skin read as one connected mass.
+// Similarity edges link neurons; tracts wire every neuron to the skin region its knowledge belongs to.
+const ax=[],axT=[],axPh=[],axW=[],axAB=[];
+function bez(a,c,b,t,out){const u=1-t;return out.set(u*u*a.x+2*u*t*c.x+t*t*b.x,u*u*a.y+2*u*t*c.y+t*t*b.y,u*u*a.z+2*u*t*c.z+t*t*b.z)}
+// every strand of tissue also carries a fine line down its centre: the connection you can follow
+const lnP=[],lnT=[],lnPh=[],lnW=[],lnAB=[];
+function fibre(A,C,B,n,thick,w,ia,ib,fan=0){const P=new V3(),ph=rng()*6.28;
+  {const P0=new V3(),P1=new V3();const SEG=14;for(let k=0;k<SEG;k++){bez(A,C,B,k/SEG,P0);bez(A,C,B,(k+1)/SEG,P1);
+    lnP.push(P0.x,P0.y,P0.z,P1.x,P1.y,P1.z);lnT.push(k/SEG,(k+1)/SEG);lnPh.push(ph,ph);lnW.push(w,w);lnAB.push(ia,ib,ia,ib)}}
+  for(let k=0;k<n;k++){const t=(k+rng())/n;bez(A,C,B,t,P);
+    // fan > 0: the tract opens into a terminal arbor where it meets the skin, rooting in the cells
+    const r=thick*(.35+.65*Math.sin(t*Math.PI))+fan*Math.max(0,t-.75)/.25*R*.06;
+    P.x+=gauss()*r;P.y+=gauss()*r;P.z+=gauss()*r;if(fan){const l=P.length();if(l>R*.995)P.multiplyScalar(R*.995/l)}
+    ax.push(P.x,P.y,P.z);axT.push(t);axPh.push(ph);axW.push(w);axAB.push(ia,ib)}}
+{const E=M.edges.filter(e=>e.a<NL&&e.b<NL);const per=clamp(Math.round(26000/Math.max(1,E.length)),8,40);
+  for(const e of E){const A=somaPos[e.a],B=somaPos[e.b];
+    const C=A.clone().add(B).multiplyScalar(.5*.72).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.05));
+    const w=clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)*.7+(e.score||.5)*.3;
+    fibre(A,C,B,per,R*.007,w,e.a,e.b)}}
+// every neuron also links to its two nearest neighbours, so the web is continuous from the core
+// to the skin rather than a cluster in the middle
+{const E=new Set(M.edges.map(e=>Math.min(e.a,e.b)+'-'+Math.max(e.a,e.b)));
+  for(let i=0;i<NL;i++){const d=[];for(let j=0;j<NL;j++)if(j!==i)d.push([somaPos[i].distanceToSquared(somaPos[j]),j]);d.sort((a,b)=>a[0]-b[0]);
+    for(const [,j] of d.slice(0,2)){const key=Math.min(i,j)+'-'+Math.max(i,j);if(E.has(key))continue;E.add(key);
+      const A=somaPos[i],B=somaPos[j],C=A.clone().add(B).multiplyScalar(.5).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.025));
+      fibre(A,C,B,18,R*.005,.12,i,j)}}}
+// tracts land on real nodes of the skin's lattice (the wireframe vertices), so the interior is
+// wired INTO the hex structure: one tract to the neuron's region, one straight out to the skin
+const latticeV=(()=>{const p=wire.geometry.attributes.position,out=[],seen=new Set();for(let i=0;i<p.count;i++){const v=new V3().fromBufferAttribute(p,i);
+  const k=v.x.toFixed(2)+','+v.y.toFixed(2)+','+v.z.toFixed(2);if(!seen.has(k)){seen.add(k);out.push(v.normalize())}}return out})();
+const snap=dir=>{let best=latticeV[0],bd=-2;for(const v of latticeV){const d=v.dot(dir);if(d>bd){bd=d;best=v}}return best.clone().multiplyScalar(R*1.012)};
+const somaAnchor=[],somaCtrl=[];
+LM.forEach((l,i)=>{const fi=l.dom;
+  const dir=regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(regRad[fi]*.45)).normalize();
+  const A=somaPos[i],B=snap(dir);
+  const C=A.clone().lerp(B,.55).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.06));
+  somaAnchor.push(B.clone());somaCtrl.push(C.clone());fibre(A,C,B,70,R*.011,.2,i,i,1);
+  const B2=snap(A.clone().normalize().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.15)).normalize());
+  fibre(A,A.clone().lerp(B2,.5),B2,40,R*.008,.14,i,i,1)});
+const axGeo=new THREE.BufferGeometry();
+axGeo.setAttribute('position',new THREE.Float32BufferAttribute(ax,3));axGeo.setAttribute('aT',new THREE.Float32BufferAttribute(axT,1));
+axGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(axPh,1));axGeo.setAttribute('aW',new THREE.Float32BufferAttribute(axW,1));
+axGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(axAB,2));
+const axMat=new THREE.ShaderMaterial({uniforms:{...U,uSomaTex:{value:somaTex},uSearch:forestU.uSearch,uVis:forestU.uVis,uFocusDim:forestU.uFocusDim,uNear:forestU.uNear,uBrand:{value:BRAND}},
+  vertexShader:`uniform float uTime,uPix,uSearch,uFocusDim,uVis;uniform sampler2D uSomaTex;attribute float aT,aPh,aW;attribute vec2 aAB;varying float vA;varying float vH;
+    void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
+      vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
+      float hl=max(max(a0.b,b0.b),max(a1.b,b1.b)); float wake=max(a0.r,b0.r);
+      float p=pow(.5+.5*sin(aT*9.-uTime*(.8+aW*2.5)+aPh),10.);
+      vA=(.075+aW*.05+p*(.12+aW*.3)+wake*.3)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.45,uFocusDim*(1.-hl))*uVis;vH=hl;
+      vec4 mv=modelViewMatrix*vec4(position,1.);gl_PointSize=min((1.25+p*.8)*uPix*(70./-mv.z),5.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    gl_FragColor=vec4(mix(mix(uBrand,vec3(.6,.8,.95),.45),vec3(1.),vH*.5),smoothstep(.5,0.,d)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const axons=new THREE.Points(axGeo,axMat);axons.frustumCulled=false;cortex.add(axons);
+const lnGeo=new THREE.BufferGeometry();
+lnGeo.setAttribute('position',new THREE.Float32BufferAttribute(lnP,3));lnGeo.setAttribute('aT',new THREE.Float32BufferAttribute(lnT,1));
+lnGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(lnPh,1));lnGeo.setAttribute('aW',new THREE.Float32BufferAttribute(lnW,1));
+lnGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(lnAB,2));
+const lnMat=new THREE.ShaderMaterial({uniforms:axMat.uniforms,
+  vertexShader:`uniform float uTime,uSearch,uFocusDim,uVis,uNear;uniform sampler2D uSomaTex;attribute float aT,aPh,aW;attribute vec2 aAB;varying float vA;varying float vH;
+    void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
+      vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
+      float hl=max(max(a0.b,b0.b),max(a1.b,b1.b));float wake=max(a0.r,b0.r);
+      float p=pow(.5+.5*sin(aT*12.-uTime*(.8+aW*2.5)+aPh),10.);
+      vA=(.035+aW*.05+p*(.14+aW*.3)+wake*.3)*mix(.6,.75,uNear)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis;vH=hl;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){gl_FragColor=vec4(mix(mix(uBrand,vec3(.7,.88,1.),.35),vec3(1.),vH*.5),vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const links=new THREE.LineSegments(lnGeo,lnMat);links.frustumCulled=false;cortex.add(links);
+
+// fragments: the 84k semantic pieces are a faint mist; the uncounted landmarks are dust
+const mistN=7000,mP=new Float32Array(mistN*3),mR=new Float32Array(mistN);
+for(let i=0;i<mistN;i++){const v=new V3(gauss(),gauss(),gauss()).normalize().multiplyScalar(R*Math.pow(rng(),.5)*.93);mP.set([v.x,v.y,v.z],i*3);mR[i]=rng()}
+const mistGeo=new THREE.BufferGeometry();mistGeo.setAttribute('position',new THREE.BufferAttribute(mP,3));mistGeo.setAttribute('aR',new THREE.BufferAttribute(mR,1));
+const mistMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:forestU.uVis,uMist:{value:1}},
+  vertexShader:`uniform float uTime,uPix,uVis,uMist;attribute float aR;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);
+    vA=(.025+.035*sin(uTime*(.5+aR)+aR*40.))*uVis*uMist;gl_PointSize=min(1.2*uPix*(80./-mv.z),3.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;if(length(c)>.5)discard;gl_FragColor=vec4(.6,.75,.9,vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const mist=new THREE.Points(mistGeo,mistMat);mist.frustumCulled=false;cortex.add(mist);
+
+// on-mind motes (CLM window / aperture): orbit the core; set-aside ones drift out
+const motes=M.mind.slice(0,12).map((label,i)=>({label,state:i<9?'in':'out',r:i<9?R*.3:R*.55,rT:i<9?R*.3:R*.55,ang:rng()*6.28,
+  axis:new V3(gauss(),gauss(),gauss()).normalize(),speed:rand(.15,.4),pos:new V3()}));
+const moteGeo=new THREE.BufferGeometry();const moteP=new Float32Array(motes.length*3),moteA=new Float32Array(motes.length);
+moteGeo.setAttribute('position',new THREE.BufferAttribute(moteP,3));moteGeo.setAttribute('aA',new THREE.BufferAttribute(moteA,1));
+const moteMat=new THREE.ShaderMaterial({uniforms:{...U,uBrand:{value:BRAND}},
+  vertexShader:`uniform float uPix;attribute float aA;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=aA;
+    gl_PointSize=min(7.*uPix*(70./-mv.z),30.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uBrand;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    gl_FragColor=vec4(mix(uBrand,vec3(1.),.6),pow(smoothstep(.5,0.,d),2.)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const moteObj=new THREE.Points(moteGeo,moteMat);moteObj.frustumCulled=false;cortex.add(moteObj);
+
+// caduceus beads: one per session, on the staff
+const beadGeo=new THREE.BufferGeometry();const bP=new Float32Array(sess.length*3),bA=new Float32Array(sess.length),bS=new Float32Array(sess.length),bC=new Float32Array(sess.length*3);
+sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=2.5+Math.sqrt(s.events.length)*.7;
+  const c=new THREE.Color(s.exit==='live'?THEMES[0][1]:s.exit==='drift'?'#ffb547':'#dfeaf2');bC.set([c.r,c.g,c.b],i*3)});
+beadGeo.setAttribute('position',new THREE.BufferAttribute(bP,3));beadGeo.setAttribute('aA',new THREE.BufferAttribute(bA,1));
+beadGeo.setAttribute('aS',new THREE.BufferAttribute(bS,1));beadGeo.setAttribute('aC',new THREE.BufferAttribute(bC,3));
+const beadMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0},uHover:{value:-1}},
+  vertexShader:`uniform float uPix,uVis,uTime;uniform float uHover;attribute float aA,aS;attribute vec3 aC;varying vec3 vC;varying float vA;
+    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(float(gl_VertexID)-uHover),.1);
+      vC=aC;vA=uVis*(.8+aA*.6+h*.8);gl_PointSize=min((aS+h*4.+aA*3.*(.5+.5*sin(uTime*3.)))*uPix*(60./-mv.z),40.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    float core=smoothstep(.22,.0,d),halo=smoothstep(.5,.0,d)*.4;gl_FragColor=vec4(vC,(core+halo)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const beads=new THREE.Points(beadGeo,beadMat);beads.frustumCulled=false;cortex.add(beads);
+sess.forEach((s,i)=>{if(s.exit==='live')bA[i]=1});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 6. impulses: sparks (action potentials), pulse rings, recall threads, shockwave
+// ═══════════════════════════════════════════════════════════════════════════
+const SPK=56,SSEG=16;
+const spkPos=new Float32Array(SPK*SSEG*2*3),spkCol=new Float32Array(SPK*SSEG*2*3);
+const spkGeo=new THREE.BufferGeometry();
+spkGeo.setAttribute('position',new THREE.BufferAttribute(spkPos,3));spkGeo.setAttribute('color',new THREE.BufferAttribute(spkCol,3));
+const sparkLines=new THREE.LineSegments(spkGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+sparkLines.frustumCulled=false;scene.add(sparkLines);
+const headPos=new Float32Array(SPK*3),headCol=new Float32Array(SPK*3);
+const headGeo=new THREE.BufferGeometry();headGeo.setAttribute('position',new THREE.BufferAttribute(headPos,3));headGeo.setAttribute('color',new THREE.BufferAttribute(headCol,3));
+const heads=new THREE.Points(headGeo,new THREE.PointsMaterial({size:R*.09,map:GLOW,vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+heads.frustumCulled=false;scene.add(heads);
+const sparks=Array.from({length:SPK},()=>({on:false,a:new V3(),b:new V3(),c:new V3(),t:0,sp:1,col:new THREE.Color(),gain:1,done:null,jit:.05}));
+function spark(a,b,col,{speed=.8,gain=1,done=null,bend=.5,jit=.05,ctrl=null}={}){
+  const s=sparks.find(x=>!x.on);if(!s)return;
+  s.on=true;s.a.copy(a);s.b.copy(b);
+  if(ctrl)s.c.copy(ctrl);else{s.c.addVectors(a,b).multiplyScalar(.5);s.c.multiplyScalar(bend).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.08))}
+  s.t=0;s.sp=speed*(REDUCED?.5:1);s.col.set(col);s.gain=gain;s.done=done;s.jit=jit}
+function updateSparks(dt){
+  const P=new V3(),Q=new V3();
+  sparks.forEach((s,i)=>{
+    const base=i*SSEG*2*3;
+    if(!s.on){spkPos.fill(0,base,base+SSEG*6);spkCol.fill(0,base,base+SSEG*6);headCol.fill(0,i*3,i*3+3);return}
+    s.t+=dt*s.sp;
+    const head=Math.min(s.t,1),fade=s.t>1?Math.max(0,1-(s.t-1)*3):1;
+    let prev=null;
+    for(let k=0;k<=SSEG;k++){
+      const u=clamp(head-k*.022,0,1);bez(s.a,s.c,s.b,u,P);
+      if(k>0)P.add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*s.jit*.12));
+      if(prev&&k<=SSEG){const o=base+(k-1)*6,I=Math.pow(1-k/SSEG,1.6)*s.gain*fade*1.6;
+        spkPos.set([prev.x,prev.y,prev.z,P.x,P.y,P.z],o);
+        spkCol.set([s.col.r*I,s.col.g*I,s.col.b*I,s.col.r*I*.8,s.col.g*I*.8,s.col.b*I*.8],o)}
+      prev=P.clone();
+    }
+    bez(s.a,s.c,s.b,head,Q);headPos.set([Q.x,Q.y,Q.z],i*3);
+    headCol.set([s.col.r*s.gain*fade,s.col.g*s.gain*fade,s.col.b*s.gain*fade],i*3);
+    if(s.t>=1&&s.done){const d=s.done;s.done=null;d()}
+    if(s.t>1.35)s.on=false;
+  });
+  spkGeo.attributes.position.needsUpdate=spkGeo.attributes.color.needsUpdate=true;
+  headGeo.attributes.position.needsUpdate=headGeo.attributes.color.needsUpdate=true;
+}
+const pulseRings=Array.from({length:14},()=>{const m=new THREE.Mesh(new THREE.RingGeometry(.92,1,96),
+  new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}));
+  m.visible=false;scene.add(m);return {m,t:0,dur:1,max:1,on:false}});
+function pulseRing(pos,col,size,dur=1.4){const p=pulseRings.find(x=>!x.on);if(!p)return;p.on=true;p.t=0;p.dur=dur;p.max=size;p.m.position.copy(pos);
+  p.m.material.color.set(col);p.m.visible=true}
+function updateRings(dt){for(const p of pulseRings){if(!p.on)continue;p.t+=dt;const x=p.t/p.dur;if(x>=1){p.on=false;p.m.visible=false;continue}
+  p.m.scale.setScalar(p.max*(.15+easeIO(Math.min(1,x*1.3))*.85));p.m.material.opacity=Math.pow(1-x,1.6)*.9;p.m.lookAt(camera.position)}}
+const threads=Array.from({length:6},()=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(40*3),3));
+  const l=new THREE.Line(g,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false}));
+  l.frustumCulled=false;scene.add(l);return {l,t:0,life:0,on:false,a:new V3(),b:new V3(),c:new V3()}});
+function thread(a,b,col,life=4){const th=threads.find(x=>!x.on)||threads[0];th.on=true;th.t=0;th.life=life;th.a.copy(a);th.b.copy(b);
+  th.c.addVectors(a,b).multiplyScalar(.5).multiplyScalar(.6);th.l.material.color.set(col);
+  const arr=th.l.geometry.attributes.position.array,P=new V3();for(let k=0;k<40;k++){bez(th.a,th.c,th.b,k/39,P);arr.set([P.x,P.y,P.z],k*3)}
+  th.l.geometry.attributes.position.needsUpdate=true;return th}
+function updateThreads(dt){for(const th of threads){if(!th.on)continue;th.t+=dt;const x=th.t/th.life;if(x>=1){th.on=false;th.l.material.opacity=0;continue}
+  th.l.material.opacity=Math.min(1,th.t*3)*(1-x)*.8}}
+const shockMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false});
+const shockMesh=new THREE.Mesh(new THREE.TorusGeometry(R,R*.006,12,256),shockMat);shockMesh.visible=false;cortex.add(shockMesh);
+let shockT=-10;
+function shockwave(){shockT=clock.elapsedTime;shockMesh.visible=true}
+function shockAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 0;const x=d/D;if(x<.08)return x/.08;return Math.exp(-(x-.08)/.92*4)}
+function bounceAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 1;const x=d/D;return 1+Math.exp(-x*6)*Math.sin(x*Math.PI*4)*.06}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. a session = its own dimension: a VORTEX OF STRANDS you travel through (owner video 3).
+//    conversations.db gives the thick strands — the thread itself and any strand forked from it,
+//    one lit run of blocks per message. memory.db gives the thin strands — one per event family,
+//    one lit block per moment. They twist together as one rope; a moment and the message (turn)
+//    it belongs to are linked. Neurons the session touched sit on the rope as glyphs, joined by
+//    a tissue thread you can follow. The far end is a doorway, not a light.
+// ═══════════════════════════════════════════════════════════════════════════
+const TUN_OFF=new V3(0,0,-3000);
+let tunnel=null;
+const THREAD_COL=new THREE.Color('#c23aa8'),STRAND_COL=new THREE.Color('#e070d0');
+// conversations.db rows when the snapshot has them; otherwise the turns the events imply
+function sessionMessages(s){
+  if(s.messages&&s.messages.length)return s.messages;
+  const out=[];
+  for(const e of s.events){
+    if(e.actor==='user'&&(e.family==='intent'||e.family==='feedback'))out.push({ts:e.ts-1,role:'user',len:30+Math.floor((e.ts*7)%140),text:null});
+    else if(e.family==='delivery'&&/ANSWER_GIVEN|ARTIFACT_PRODUCED|NARRATED/.test(e.label))out.push({ts:e.ts,role:'iris',len:80+Math.floor((e.ts*13)%420),text:null})}
+  if(!out.length)out.push({ts:s.started,role:'user',len:60,text:null});
+  return out}
+// a hex cell drawn as light: the same cell as the orb's lattice (soft core, bright edge)
+// Each tile knows which way its ribbon faces (aN). Facing you, a tile glints like a sequin;
+// turned edge-on, it narrows and fades, so a twisting ribbon reads as a twisted cord (video 3).
+const HEX_VS=`uniform float uPix,uTime;attribute vec3 aC,aN;attribute float aB,aS,aR;varying vec3 vC;varying float vA;
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
+    float face=abs(dot(normalize(normalMatrix*aN),normalize(-mv.xyz)));
+    float glint=pow(face,7.)*(.55+.45*sin(uTime*2.6+aR*40.))+step(.965,fract(aR*13.+uTime*.25))*face;
+    vC=aC*aB*(.55+glint*1.9);
+    vA=smoothstep(140.,14.,d)*smoothstep(.3,2.,d)*min(aB,1.6)*(.3+.7*face);
+    gl_PointSize=min(aS*(.35+.65*face)*uPix*(115./max(d,.1)),64.*uPix);gl_Position=projectionMatrix*mv;}`; // ~ the tile's world size
+const HEX_FS=`varying vec3 vC;varying float vA;
+  void main(){vec2 p=abs(gl_PointCoord-.5);float h=max(p.x*.866+p.y*.5,p.y);if(h>.46)discard;
+    float rim=smoothstep(.34,.45,h);gl_FragColor=vec4(vC*(.35+.65*rim),vA*(.45+.55*rim));}`;
+function buildTunnel(s){
+  rng=mulberry32(s.id.split('').reduce((a,c)=>a*31+c.charCodeAt(0)|0,7));
+  const g=new THREE.Group();g.position.copy(TUN_OFF);
+  const ev=s.events;const L=90+Math.min(ev.length,260)*1.5;
+  const ctrl=[];for(let k=0;k<=12;k++)ctrl.push(new V3(Math.sin(k*.9)*2.2+gauss()*.4,Math.cos(k*.7)*1.4+gauss()*.3,-k*L/12));
+  const curve=new THREE.CatmullRomCurve3(ctrl);const FR=curve.computeFrenetFrames(600,false);
+  const tSpan=Math.max(1,(s.ended||nowS())-s.started);
+  const uOf=ts=>clamp(.04+.9*(ts-s.started)/tSpan,.02,.96);
+  const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const epS=eps.map(e=>uOf(e.ts));
+  const tr=s.traj.length?s.traj:[{x:0}];
+  const radius=u=>{const k=Math.floor(clamp(u,0,.999)*tr.length);let r=3.6*(.66+.6*clamp(.5+.5*tr[k].x,0,1));
+    for(const q of epS)r*=1+.35*Math.exp(-Math.pow((u-q)/.018,2));return r};
+  const frameAt=u=>{const i=Math.min(599,Math.floor(clamp(u,0,1)*600));return {N:FR.normals[i],B:FR.binormals[i],T:FR.tangents[i]}};
+  const onWall=(u,th,k=1)=>{u=clamp(u,0,1);const P=curve.getPointAt(u),{N,B}=frameAt(u);const r=radius(u)*k;
+    return P.addScaledVector(N,Math.cos(th)*r).addScaledVector(B,Math.sin(th)*r)};
+  const TW=6.283*2.2; // the rope turns 2.2 times through the session
+
+  // ── the strands
+  const msgs=sessionMessages(s);
+  const strands=[{kind:'thread',label:'this conversation',th0:0,u0:0,u1:1,w:.62,h:.3,k:1,col:THREAD_COL}];
+  (s.strands||[]).forEach((cs,j)=>strands.push({kind:'strand',label:cs.title||'a strand of this conversation',th0:Math.PI*(.9+.25*j),
+    u0:uOf(cs.started),u1:cs.ended?uOf(cs.ended):1,w:.5,h:.25,k:.98,col:STRAND_COL,id:cs.id}));
+  for(const e of ev)if(e.label==='SPLIT'){const u0=uOf(e.ts),u1=Math.min(.96,u0+rand(.04,.07)),k=randi(2,3);
+    for(let j=0;j<k;j++)strands.push({kind:'fan',label:'parallel paths (fan-out and fold-back)',fold:(j-(k-1)/2)*.42+.3,u0,u1,w:.28,h:.15,k:.99,col:new THREE.Color(FAM[FAMI.control].color)})}
+  const famStr=[];
+  FAM.forEach((f,fi)=>{if(!ev.some(e=>FAMI[e.family]===fi))return;
+    const st={kind:'family',fi,label:f.word,th0:6.283*(fi+1)/10,u0:0,u1:1,w:.3,h:.15,k:1,col:new THREE.Color(f.color)};strands.push(st);famStr[fi]=st});
+  const angle=(st,u)=>st.fold!=null?u*TW+st.fold*Math.sin(clamp((u-st.u0)/(st.u1-st.u0),0,1)*Math.PI):st.th0+u*TW;
+  // each strand is a RIBBON of hex tiles (the orb's lattice cell) that twists round its own axis as
+  // it spirals (owner video 3): rows are staggered half a step (honeycomb), and the ribbon turns
+  // once every ~10 widths, so at a distance it reads as a twisted beaded cord.
+  const rowsOf=st=>st.kind==='thread'?5:st.kind==='fan'?2:4;
+  const BLK=[];
+  // cells are spaced by each strand's REAL length, so neighbouring cells touch: one continuous thread
+  strands.forEach(st=>{let len=0,prev=null;for(let i=0;i<=240;i++){const u=st.u0+(st.u1-st.u0)*i/240,p=onWall(u,angle(st,u),st.k);if(prev)len+=p.distanceTo(prev);prev=p}
+    const cell=(st.kind==='thread'?.34:.26)*.92;st.len=len;
+    const n=Math.max(8,Math.round(len/cell));
+    st.n=n;st.base=BLK.length;for(let k=0;k<n;k++)BLK.push({st,u:st.u0+(k+.5)/n*(st.u1-st.u0)})});
+  const blockIx=(st,u)=>st.base+clamp(Math.floor((u-st.u0)/(st.u1-st.u0)*st.n),0,st.n-1);
+  const NH=BLK.reduce((a,b)=>a+rowsOf(b.st),0);
+  const hp=new Float32Array(NH*3),hc=new Float32Array(NH*3),hb=new Float32Array(NH).fill(1),hsz=new Float32Array(NH),hn=new Float32Array(NH*3),hr=new Float32Array(NH);
+  const col=new THREE.Color(),X=new V3(),Y=new V3(),Z=new V3(),D=new V3(),Nn=new V3();let o=0;
+  strands.forEach(st=>{st.phase=rng()*6.283});
+  BLK.forEach(b=>{const st=b.st,rows=rowsOf(st),du=(st.u1-st.u0)/st.n,cell=(st.kind==='thread'?.34:.26)*(radius(b.u)/3.6);
+    b.p0=o;b.rows=rows;const P=onWall(b.u,angle(st,b.u),st.k),Pf=onWall(b.u+du,angle(st,b.u+du),st.k);
+    X.subVectors(Pf,P);const pitch=X.length();X.normalize();Y.subVectors(P,curve.getPointAt(clamp(b.u,0,1))).normalize();Z.crossVectors(X,Y).normalize();
+    const sAlong=(b.u-st.u0)/(st.u1-st.u0)*st.len,phi=st.phase+6.283*sAlong/(rows*cell*10);
+    D.copy(Y).multiplyScalar(Math.sin(phi)).addScaledVector(Z,Math.cos(phi));Nn.copy(Y).multiplyScalar(Math.cos(phi)).addScaledVector(Z,-Math.sin(phi));
+    for(let r=0;r<rows;r++){col.copy(st.col).multiplyScalar((st.kind==='family'?.62:.8)*(.65+rng()*.7));
+      const Q=P.clone().addScaledVector(D,(r-(rows-1)/2)*cell*.95).addScaledVector(X,(r%2)*.5*pitch);
+      hp.set([Q.x,Q.y,Q.z],o*3);hn.set([Nn.x,Nn.y,Nn.z],o*3);hc.set([col.r,col.g,col.b],o*3);hsz[o]=st.kind==='thread'?1.15:.9;hr[o]=rng();o++}
+    b.world=P.clone().add(TUN_OFF)});
+  const blockMs=k=>{const b=BLK[k];return [b.p0,b.p0+b.rows]};
+  // items: a message lights a run of cells on the thread; a moment lights cells on its family strand
+  const items=[];
+  const lit=(k,c,sz)=>{const [a,z]=blockMs(k);for(let i=a;i<z;i++){hc.set([c.r,c.g,c.b],i*3);if(sz)hsz[i]=sz}};
+  msgs.forEach(m=>{const st=strands[0],u=uOf(m.ts),k0=blockIx(st,u),span=1+Math.min(6,Math.round((m.len||60)/90));
+    const c=new THREE.Color(m.role==='user'?'#ffe8fb':'#ff5fd6').multiplyScalar(m.role==='user'?1.1:.95);
+    for(let k=0;k<span&&k0+k<st.base+st.n;k++)lit(k0+k,c,1.35);
+    items.push({type:'msg',m,u,k0,k1:Math.min(st.base+st.n-1,k0+span-1),world:BLK[k0].world,links:[]})});
+  const msgItems=items.slice();
+  ev.forEach(e=>{const st=famStr[FAMI[e.family]??0];if(!st)return;const u=uOf(e.ts),k0=blockIx(st,u);
+    const c=e.valence==='sets_back'?new THREE.Color('#ff4a3d'):new THREE.Color(FAM[FAMI[e.family]].color);c.multiplyScalar(.5+(EVID[e.evidence]??.2)*.8+(e.actor==='user'?.3:0));
+    lit(k0,c,1.25);if(k0+1<st.base+st.n)lit(k0+1,c.clone().multiplyScalar(.65));
+    // the turn it belongs to: the latest message at or before it
+    let mi=null;for(const it of msgItems){if(it.m.ts<=e.ts+1)mi=it;else break}
+    const item={type:'event',e,u,k0,k1:Math.min(st.base+st.n-1,k0+1),world:BLK[k0].world,links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
+  // a spine of light runs through every strand's cells, so each strand reads as ONE thread
+  {const sp=[],sc=[];strands.forEach(st=>{const n=Math.max(40,Math.round(st.len/.5)),c=st.col.clone().multiplyScalar(st.kind==='family'?.55:.8);let prev=null;
+      for(let i=0;i<=n;i++){const u=st.u0+(st.u1-st.u0)*i/n,p=onWall(u,angle(st,u),st.k);if(prev){sp.push(prev.x,prev.y,prev.z,p.x,p.y,p.z);sc.push(c.r,c.g,c.b,c.r,c.g,c.b)}prev=p}});
+    const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.Float32BufferAttribute(sp,3));sg.setAttribute('color',new THREE.Float32BufferAttribute(sc,3));
+    g.add(Object.assign(new THREE.LineSegments(sg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:.14,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}
+  // the weave: every moment stays tied to the turn (message) it belongs to — faint until hovered
+  {const lp=[];items.forEach(it=>{if(it.type==='event'&&it.links[0]){const a=it.world.clone().sub(TUN_OFF),b=it.links[0].world.clone().sub(TUN_OFF);lp.push(a.x,a.y,a.z,b.x,b.y,b.z)}});
+    if(lp.length){const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(lp,3));
+      g.add(Object.assign(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xf2c6ff,transparent:true,opacity:.13,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}}
+  const hexGeo=new THREE.BufferGeometry();hexGeo.setAttribute('position',new THREE.BufferAttribute(hp,3));hexGeo.setAttribute('aC',new THREE.BufferAttribute(hc,3));
+  hexGeo.setAttribute('aB',new THREE.BufferAttribute(hb,1));hexGeo.setAttribute('aS',new THREE.BufferAttribute(hsz,1));
+  hexGeo.setAttribute('aN',new THREE.BufferAttribute(hn,3));hexGeo.setAttribute('aR',new THREE.BufferAttribute(hr,1));
+  g.add(Object.assign(new THREE.Points(hexGeo,new THREE.ShaderMaterial({uniforms:{...U},vertexShader:HEX_VS,fragmentShader:HEX_FS,
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}));
+  // the walls: dendritic veins of particles (owner video 1) just outside the rope, so the strands
+  // run INSIDE a living tunnel; veins near a family's moments take that family's tint
+  {const NW=26000,wP=new Float32Array(NW*3),wC=new Float32Array(NW*3),wR=new Float32Array(NW);
+    const VEINS=34,veinA=Array.from({length:VEINS},()=>rng()*6.283),baseC=new THREE.Color('#6aa3c4'),tc=new THREE.Color();
+    const evU=ev.map(e=>[uOf(e.ts),FAMI[e.family]??0]);
+    for(let i=0;i<NW;i++){const u=Math.pow(rng(),.92);let th,k;
+      if(rng()<.85){const v=i%VEINS,br=rng()<.22?gauss()*.18*(1+Math.sin(u*40+v)):0;th=veinA[v]+.45*Math.sin(u*6+v)+gauss()*.02+br;k=1.28+Math.abs(gauss())*.14+Math.abs(br)*.7}
+      else{th=rng()*6.283;k=1.25+rng()*.45}
+      const p=onWall(u,th,k);wP.set([p.x,p.y,p.z],i*3);tc.copy(baseC);
+      for(const [eu,fi] of evU)if(Math.abs(eu-u)<.006){tc.lerp(new THREE.Color(FAM[fi].color),.35);break}
+      wC.set([tc.r,tc.g,tc.b],i*3);wR[i]=rng()}
+    const wg=new THREE.BufferGeometry();wg.setAttribute('position',new THREE.BufferAttribute(wP,3));wg.setAttribute('aC',new THREE.BufferAttribute(wC,3));wg.setAttribute('aR',new THREE.BufferAttribute(wR,1));
+    g.add(Object.assign(new THREE.Points(wg,new THREE.ShaderMaterial({uniforms:{...U},
+      vertexShader:`uniform float uTime,uPix;attribute vec3 aC;attribute float aR;varying vec3 vC;varying float vA;
+        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
+          vA=smoothstep(115.,14.,d)*smoothstep(.2,2.5,d)*(.2+.16*sin(uTime*(.6+aR)+aR*50.));vC=aC; // walls stay quiet; the strands lead
+          gl_PointSize=min(1.7*uPix*(28./max(d,.1)),4.5*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(vC,smoothstep(.5,.1,d)*vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
+  // fine filaments between the strands (the dotted inner spirals of the reference)
+  {const NF=16,per=520,fp=new Float32Array(NF*per*3),fc=new Float32Array(NF*per*3);let o=0;
+    for(let f=0;f<NF;f++){const th0=rng()*6.283,kr=rand(.6,.9),tw=TW*rand(1.2,1.6),c=(f%3?THREAD_COL:BRAND).clone().multiplyScalar(rand(.35,.7));
+      for(let k=0;k<per;k++){const u=k/per,p=onWall(u,th0+u*tw,kr);fp.set([p.x+gauss()*.03,p.y+gauss()*.03,p.z+gauss()*.03],o*3);fc.set([c.r,c.g,c.b],o*3);o++}}
+    const fg=new THREE.BufferGeometry();fg.setAttribute('position',new THREE.BufferAttribute(fp,3));fg.setAttribute('aC',new THREE.BufferAttribute(fc,3));
+    g.add(Object.assign(new THREE.Points(fg,new THREE.ShaderMaterial({uniforms:{...U},
+      vertexShader:`uniform float uPix;attribute vec3 aC;varying vec3 vC;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
+        vC=aC;vA=smoothstep(110.,12.,d)*smoothstep(.3,2.,d);gl_PointSize=min(1.6*uPix*(14./max(d,.1)),3.5*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;if(length(c)>.5)discard;gl_FragColor=vec4(vC,vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
+  // episodes: a ring band round the whole rope; a correction by you is the brightest ring
+  const gates=[];
+  eps.forEach((ep,qi)=>{const u=epS[qi],P=curve.getPointAt(u),{T}=frameAt(u);
+    const c=ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff';
+    const m=new THREE.Mesh(new THREE.TorusGeometry(radius(u)*1.12,ep.corrected?.07:.035,8,160),
+      new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:ep.corrected?.95:.6,blending:THREE.AdditiveBlending,depthWrite:false}));
+    m.position.copy(P);m.lookAt(P.clone().add(T));g.add(m);gates.push({ep,u,world:P.clone().add(TUN_OFF),m})});
+  // neurons on the rope: the SAME glyph as in the cortex, beside the moment that touched them
+  const stars=[];
+  items.forEach(it=>{if(it.type!=='event'||it.e.landmark==null||it.e.landmark>=NL||stars.length>=60)return;
+    const st=famStr[FAMI[it.e.family]??0],th=angle(st,it.u)+.2,p=onWall(it.u,th,1.16);
+    stars.push({li:it.e.landmark,u:it.u,th,p,world:p.clone().add(TUN_OFF),item:it})});
+  const threadU={...U,uSel:{value:-1},uSelOn:{value:0}};
+  {const sP=[],sS=[],sL=[],sE=[],sI=[],sH=[],sC=[];
+    stars.forEach(st=>{const gl=GLYPHS[st.li],c=new THREE.Color(CELL_COL[lmBest[st.li]]||'#8aa3b0');
+      sP.push(st.p.x,st.p.y,st.p.z);sS.push(cellSize(LM[st.li]));sL.push(st.li);sE.push(...gl.ev);sI.push(...gl.info);sH.push(gl.hue.r,gl.hue.g,gl.hue.b);sC.push(c.r,c.g,c.b)});
+    const cg=new THREE.BufferGeometry();cg.setAttribute('position',new THREE.Float32BufferAttribute(sP,3));cg.setAttribute('aSize',new THREE.Float32BufferAttribute(sS,1));
+    cg.setAttribute('aLm',new THREE.Float32BufferAttribute(sL,1));cg.setAttribute('aEv',new THREE.Float32BufferAttribute(sE,4));
+    cg.setAttribute('aInfo',new THREE.Float32BufferAttribute(sI,4));cg.setAttribute('aHue',new THREE.Float32BufferAttribute(sH,3));cg.setAttribute('aCol',new THREE.Float32BufferAttribute(sC,3));
+    g.add(Object.assign(new THREE.Points(cg,new THREE.ShaderMaterial({uniforms:threadU,
+      vertexShader:`uniform float uPix,uSel,uSelOn;attribute float aSize,aLm;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
+        varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;
+        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;float on=step(abs(aLm-uSel),.1);
+          vC=aCol;vEv=aEv;vInfo=aInfo;vHue=aHue;vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*(.6+on*.4)*mix(1.,.35,uSelOn*(1.-on));
+          gl_PointSize=min(aSize*2.1*(1.+on*.3)*uPix*(10./max(d,.1)),120.*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}));
+    // a stem roots each neuron in its strand
+    const stem=[];stars.forEach(st=>{stem.push(st.item.world.clone().sub(TUN_OFF),st.p)});
+    if(stem.length)g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(stem),new THREE.LineBasicMaterial({color:0xf0c8ff,transparent:true,opacity:.45,blending:THREE.AdditiveBlending,depthWrite:false})))}
+  // the tissue thread: neurons joined in time order along the rope; linked neurons share extra strands
+  const linked=new Set(M.edges.map(e=>e.a+'-'+e.b));
+  {const tP=[],tQ=[],tA=[],tB=[],tK=[];
+    const angDiff=(a,b)=>{let d=(b-a)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Math.PI)d+=Math.PI*2;return d};
+    const fib=(a,b,kind)=>{const dth=angDiff(a.th,b.th)+(b.u-a.u)*TW;const n=Math.round(clamp(Math.abs(b.u-a.u)*L*7+Math.abs(dth)*20,14,300));
+      for(let i=0;i<n;i++){const f=(i+rng())/n,u=lerp(a.u,b.u,f),th=a.th+dth*f,p=onWall(u,th,1.16+.04*Math.sin(f*Math.PI)),r=(kind?.05:.08)*(.45+.55*Math.sin(f*Math.PI));
+        tP.push(p.x+gauss()*r,p.y+gauss()*r,p.z+gauss()*r);tQ.push(f);tA.push(a.li);tB.push(b.li);tK.push(kind)}};
+    const byU=stars.slice().sort((a,b)=>a.u-b.u);for(let i=1;i<byU.length;i++)fib(byU[i-1],byU[i],0);
+    let extra=0;for(let i=0;i<byU.length&&extra<90;i++)for(let j=i+2;j<byU.length&&extra<90;j++){const a=byU[i],b=byU[j];
+      if(a.li===b.li||linked.has(a.li+'-'+b.li)||linked.has(b.li+'-'+a.li)){fib(a,b,1);extra++}}
+    const tg_=new THREE.BufferGeometry();tg_.setAttribute('position',new THREE.Float32BufferAttribute(tP,3));tg_.setAttribute('aQ',new THREE.Float32BufferAttribute(tQ,1));
+    tg_.setAttribute('aA',new THREE.Float32BufferAttribute(tA,1));tg_.setAttribute('aB',new THREE.Float32BufferAttribute(tB,1));tg_.setAttribute('aK',new THREE.Float32BufferAttribute(tK,1));
+    g.add(Object.assign(new THREE.Points(tg_,new THREE.ShaderMaterial({uniforms:{...threadU,uBrand:{value:BRAND}},
+      vertexShader:`uniform float uTime,uPix,uSel,uSelOn;attribute float aQ,aA,aB,aK;varying float vA;varying float vOn;
+        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;float on=max(step(abs(aA-uSel),.1),step(abs(aB-uSel),.1));
+          float p=pow(.5+.5*sin(aQ*12.-uTime*2.2),10.);
+          vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*((aK>.5?.24:.4)+p*.5)*(1.+on*1.6)*mix(1.,.3,uSelOn*(1.-on));vOn=on;
+          gl_PointSize=min((1.6+on*.6)*uPix*(16./max(d,.1)),5.*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vOn;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+        gl_FragColor=vec4(mix(mix(vec3(.95,.7,1.),uBrand,.25),vec3(1.),vOn*.4),smoothstep(.5,0.,d)*vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
+  // home: the cortex glows behind the entrance, tied by an umbilical thread
+  const P0=curve.getPointAt(0),T0v=frameAt(0).T;const home=P0.clone().addScaledVector(T0v,-60);
+  const hs=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:BRAND,transparent:true,opacity:.9,blending:THREE.AdditiveBlending,depthWrite:false}));
+  hs.scale.setScalar(26);hs.position.copy(home);g.add(hs);
+  g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([home,P0]),new THREE.LineBasicMaterial({color:BRAND,transparent:true,opacity:.5,blending:THREE.AdditiveBlending})));
+  // the doorways at the far end: an iris that opens onto the NEXT thread, and a side door that
+  // takes you back to this thread's beginning
+  const si=sess.indexOf(s),next=si>=0&&si<sess.length-1?sess[si+1]:null;
+  const doorMat=(a,b,dir)=>new THREE.ShaderMaterial({uniforms:{...U,uOpen:{value:0},uA:{value:a},uB:{value:b},uDir:{value:dir}},
+    vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+    fragmentShader:`uniform float uTime,uOpen,uDir;uniform vec3 uA,uB;varying vec2 vUv;
+      void main(){vec2 p=vUv*2.-1.;float r=length(p);if(r>1.)discard;float a=atan(p.y,p.x);
+        float edge=mix(.07,.8,uOpen)*(1.+.07*sin(a*9.));float inside=1.-smoothstep(edge-.012,edge+.012,r);
+        float sp=sin(a*7.+uDir*log(max(r,.02))*9.-uTime*2.2*uDir);
+        vec3 beyond=mix(uB*.06,uB*.5,smoothstep(.55,1.,sp))*(1.-r*.5);
+        float blade=fract(a/6.2831853*9.+r*.7);float bl=smoothstep(0.,.05,blade)*smoothstep(1.,.9,blade);
+        vec3 bc=uA*(.1+.26*bl);float rim=smoothstep(.012,0.,abs(r-edge));
+        vec3 col=beyond*inside+bc*(1.-inside)+vec3(1.)*rim*.45;
+        gl_FragColor=vec4(col,(inside*.7+(1.-inside)*.4+rim*.6)*smoothstep(1.,.95,r));}`,
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  const P1=curve.getPointAt(1),T1=frameAt(1).T;
+  const door=new THREE.Mesh(new THREE.CircleGeometry(radius(1)*1.3,96),doorMat(THREAD_COL,new THREE.Color(next?'#7fe8ff':'#f4fbff'),1));
+  door.position.copy(P1);door.lookAt(P1.clone().sub(T1));g.add(door);
+  const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(new THREE.CircleGeometry(radius(.9)*.42,64),doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
+  backDoor.position.copy(backP);backDoor.lookAt(curve.getPointAt(.9));g.add(backDoor);
+  scene.add(g);rng=mulberry32(99);
+  return {g,curve,frameAt,session:s,items,hexGeo,BLK,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands,
+    door:{mesh:door,world:P1.clone().add(TUN_OFF),next},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},onWall};
+}
+// light an item and everything it is linked to (a message and its moments, or a moment and its turn)
+function tunnelHighlight(it){
+  const T=tunnel;if(!T||T.hl===it)return;const hb=T.hexGeo.attributes.aB;
+  const set=(x,f)=>{for(let k=x.k0;k<=x.k1;k++){const b=T.BLK[k];for(let i=b.p0;i<b.p0+b.rows;i++)hb.array[i]=f}};
+  if(T.hl){set(T.hl,1);T.hl.links.forEach(l=>set(l,1))}
+  T.hl=it;if(it){set(it,2.4);it.links.forEach(l=>set(l,2))}
+  hb.needsUpdate=true;bridges(it)}
+const bridgeLine=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xffe8fb,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false}));
+bridgeLine.frustumCulled=false;scene.add(bridgeLine);
+function bridges(it){const pts=[];if(it)it.links.slice(0,16).forEach(l=>{pts.push(it.world,l.world)});bridgeLine.geometry.setFromPoints(pts)}
+function disposeTunnel(){if(!tunnel)return;bridges(null);scene.remove(tunnel.g);tunnel.g.traverse(o=>{o.geometry?.dispose();o.material?.dispose?.()});tunnel=null;rail.build(null)}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 8. the tissue: artifacts exhaled as an organic Voronoi mosaic (video 2)
+// ═══════════════════════════════════════════════════════════════════════════
+const tcv=document.getElementById('tissue'),tg=tcv.getContext('2d');
+function makeThumb(kind,seed){
+  const r=mulberry32(seed),Rr=(a,b)=>a+(b-a)*r(),P=a=>a[Math.floor(r()*a.length)];
+  const c=document.createElement('canvas');c.width=c.height=256;const g=c.getContext('2d');
+  const bg=(col)=>{g.fillStyle=col;g.fillRect(0,0,256,256)};
+  if(kind==='code'){bg('#0b1118');let y=16;for(let i=0;i<17;i++){let x=12+Math.floor(Rr(0,4))*12;while(x<236&&r()<.82){const w=Rr(8,44);
+    g.globalAlpha=.85;g.fillStyle=P(['#7fd1ff','#c792ea','#ffcb6b','#89ddff','#a5e075','#5d6b78','#5d6b78']);g.fillRect(x,y,w,6);x+=w+6}y+=14}}
+  else if(kind==='terminal'){bg('#050607');g.font='11px monospace';let y=20;for(let i=0;i<15;i++){const ok=r()<.8;
+    g.fillStyle=i%4===0?'#8aa':ok?'#5dffb0':'#ff6a4a';g.fillText(i%4===0?'> pytest -x tests/'+P(['turn','ledger','oracle']):(ok?'PASSED  ':'FAILED  ')+P(['test_turn_end','test_lane_order','test_bar','test_store']),10,y);y+=15}}
+  else if(kind==='chart'){bg('#0a0f14');g.strokeStyle='rgba(120,160,190,.18)';for(let i=1;i<6;i++){g.beginPath();g.moveTo(16,i*42);g.lineTo(240,i*42);g.stroke()}
+    if(r()<.5){for(let i=0;i<11;i++){const h=Rr(20,190);g.fillStyle=i===7?'#00d4ff':'#2a6f8a';g.fillRect(22+i*20,236-h,13,h)}}
+    else{g.strokeStyle='#00d4ff';g.lineWidth=2.5;g.beginPath();let y=Rr(80,180);for(let x=16;x<=240;x+=8){y=clamp(y+Rr(-18,18),30,230);x===16?g.moveTo(x,y):g.lineTo(x,y)}g.stroke()}}
+  else if(kind==='screen'){bg('#0d1117');g.fillStyle='#161c24';g.fillRect(0,0,256,26);g.fillRect(0,26,58,230);
+    for(let i=0;i<5;i++){g.fillStyle='#1d2530';g.fillRect(70,38+i*42,172,32);g.fillStyle='rgba(0,212,255,.6)';g.fillRect(78,48+i*42,Rr(30,120),4)}
+    const gr=g.createRadialGradient(200,200,0,200,200,40);gr.addColorStop(0,'rgba(0,212,255,.9)');gr.addColorStop(1,'rgba(0,212,255,0)');g.fillStyle=gr;g.fillRect(150,150,100,100)}
+  else if(kind==='doc'){bg('#e8e4dc');g.fillStyle='#22262b';g.fillRect(24,26,Rr(110,190),11);g.fillStyle='#8b8f94';
+    for(let i=0;i<14;i++)g.fillRect(24,56+i*13,i%5===4?Rr(60,140):Rr(170,208),4)}
+  else if(kind==='web'){bg('#f4f5f7');g.fillStyle=P(['#3a5bd9','#1f8a70','#c2410c','#7c3aed']);g.fillRect(0,0,256,30);
+    const gr=g.createLinearGradient(0,40,256,140);gr.addColorStop(0,`hsl(${Rr(0,360)},55%,60%)`);gr.addColorStop(1,`hsl(${Rr(0,360)},45%,35%)`);g.fillStyle=gr;g.fillRect(16,42,224,96);
+    g.fillStyle='#9aa0a6';for(let i=0;i<7;i++)g.fillRect(16,152+i*13,Rr(120,224),4)}
+  else if(kind==='video'){const h=Rr(180,320),gr=g.createLinearGradient(0,0,256,256);gr.addColorStop(0,`hsl(${h},45%,30%)`);gr.addColorStop(1,`hsl(${h+50},55%,12%)`);
+    g.fillStyle=gr;g.fillRect(0,0,256,256);g.fillStyle='rgba(0,0,0,.35)';g.fillRect(0,0,256,26);g.fillRect(0,222,256,34);
+    g.fillStyle='rgba(255,255,255,.85)';g.beginPath();g.moveTo(108,96);g.lineTo(108,160);g.lineTo(160,128);g.closePath();g.fill();
+    g.fillStyle='rgba(255,255,255,.25)';g.fillRect(16,236,224,4);g.fillStyle='#ff5fd6';g.fillRect(16,236,Rr(40,200),4)}
+  else if(kind==='audio'){bg('#07090c');for(let x=10;x<246;x+=5){const h=Math.abs(Math.sin(x*.05+Rr(0,1)))*Rr(10,90);g.fillStyle='rgba(0,212,255,.8)';g.fillRect(x,128-h,3,h*2)}}
+  else{const h=Rr(0,360);const gr=g.createLinearGradient(0,0,0,256);gr.addColorStop(0,`hsl(${h},60%,62%)`);gr.addColorStop(1,`hsl(${h+40},50%,22%)`);g.fillStyle=gr;g.fillRect(0,0,256,256);
+    g.fillStyle=`hsla(${h+180},80%,80%,.9)`;g.beginPath();g.arc(Rr(60,200),Rr(50,110),Rr(14,30),0,7);g.fill();
+    for(let k=0;k<3;k++){g.fillStyle=`hsla(${h+20},40%,${16+k*7}%,1)`;g.beginPath();g.moveTo(0,256);let y=Rr(130,190)+k*20;
+      for(let x=0;x<=256;x+=16){y+=Rr(-14,14);g.lineTo(x,y)}g.lineTo(256,256);g.fill()}}
+  g.globalAlpha=1;return c}
+// Layered: formats (images, videos, audio, documents, code ...) -> folders -> the things themselves.
+// Strands in the tunnel's block style run from the orb to every cell: one strand per thread a thing
+// was made in, ending in a creation knot at the thing. Hover a strand to see its thread; click it
+// to step into that thread.
+const FORMAT_OF={image:'images',screen:'images',video:'videos',audio:'audio',doc:'documents',code:'code',web:'web captures',chart:'charts',terminal:'test runs'};
+const FORMAT_ORDER=['images','videos','audio','documents','code','web captures','charts','test runs'];
+const thumbCache=new Map();const thumbOf=a=>{if(!thumbCache.has(a.id))thumbCache.set(a.id,makeThumb(a.kind,a.seed||1));return thumbCache.get(a.id)};
+const tissue={on:false,t:0,cells:[],hover:-1,focus:-1,cx:0,cy:0,rad:200,path:[],threads:[],hoverThread:-1,crumbs:[],lvlT:1};
+function tissueNodes(){const P=tissue.path;
+  const arts=M.artifacts.filter(a=>(!P[0]||FORMAT_OF[a.kind]===P[0])&&(!P[1]||(a.folder||'unsorted')===P[1]));
+  if(P.length>=2)return arts.map(a=>({type:'item',a,items:[a],w:a.weight||1,label:a.name}));
+  const key=P.length===0?(a=>FORMAT_OF[a.kind]||'other'):(a=>a.folder||'unsorted');const m=new Map();
+  arts.forEach(a=>{const k=key(a);if(!m.has(k))m.set(k,[]);m.get(k).push(a)});
+  const keys=[...m.keys()].sort((x,y)=>P.length===0?FORMAT_ORDER.indexOf(x)-FORMAT_ORDER.indexOf(y):m.get(y).length-m.get(x).length);
+  return keys.map(k=>({type:'group',label:k,items:m.get(k).sort((x,y)=>y.ts-x.ts),w:.8+Math.sqrt(m.get(k).length)*1.4}))}
+function setTissueLevel(path,from){tissue.path=path;tissue.focus=-1;tissue.hover=-1;tissue.hoverThread=-1;clearAnno('focus');clearAnno('hover');
+  const nodes=tissueNodes(),n=nodes.length;
+  tissue.cells=nodes.map((nd,i)=>{const r=Math.sqrt((i+.5)/n)*tissue.rad*.8,th=i*2.39996;
+    const x=from?from.x+gauss()*8:tissue.cx+Math.cos(th)*r,y=from?from.y+gauss()*8:tissue.cy+Math.sin(th)*r;
+    return {...nd,x,y,sx:tissue.cx+gauss()*tissue.rad*.9,sy:tissue.cy+gauss()*tissue.rad*.7,wt:nd.w,poly:null}});
+  tissue.lvlT=from?0:1;buildTissueThreads()}
+function buildTissueThreads(){const by=new Map();
+  tissue.cells.forEach((c,ci)=>c.items.forEach(a=>{if(!a.session)return;if(!by.has(a.session))by.set(a.session,{cells:new Set(),n:0});const t=by.get(a.session);t.cells.add(ci);t.n++}));
+  tissue.threads=[...by.entries()].map(([sid,t])=>({sid,s:M.sById.get(sid),cells:[...t.cells],n:t.n})).filter(t=>t.s)
+    .sort((a,b)=>b.s.started-a.s.started).slice(0,22).map((t,i)=>({...t,hue:(300+i*37)%360,pts:[]}))}
+function initTissue(){layoutTissue(false);setTissueLevel([],null)}
+function layoutTissue(reset){
+  const c=project(new V3(-2.3*R,0,0)),e=project(new V3(-2.3*R+1.35*R,0,0));
+  tissue.rad=Math.max(120,Math.min(Math.abs(e.x-c.x),innerHeight*.4,innerWidth*.4));
+  tissue.cx=Math.max(c.x,tissue.rad+24);tissue.cy=c.y+10;
+  if(reset)setTissueLevel(tissue.path,null)}
+function clipConvex(poly,clip){let out=poly;for(let i=0;i<clip.length;i++){const A=clip[i],B=clip[(i+1)%clip.length];const inp=out;out=[];if(!inp.length)break;
+  const side=p=>(B[0]-A[0])*(p[1]-A[1])-(B[1]-A[1])*(p[0]-A[0]);
+  for(let j=0;j<inp.length;j++){const P=inp[j],Q=inp[(j+1)%inp.length];const sp=side(P),sq=side(Q);
+    if(sp>=0)out.push(P);if((sp>=0)!==(sq>=0)){const t=sp/(sp-sq);out.push([P[0]+(Q[0]-P[0])*t,P[1]+(Q[1]-P[1])*t])}}}return out}
+function chaikin(p,it){for(let k=0;k<it;k++){const q=[];for(let i=0;i<p.length;i++){const a=p[i],b=p[(i+1)%p.length];
+  q.push([a[0]*.75+b[0]*.25,a[1]*.75+b[1]*.25],[a[0]*.25+b[0]*.75,a[1]*.25+b[1]*.75])}p=q}return p}
+// a strand of small faceted blocks along a quadratic curve (the tunnel's language, flattened)
+function blockStrand(x0,y0,cx,cy,x1,y1,hue,alpha,size,store,knot){
+  const len=Math.hypot(cx-x0,cy-y0)+Math.hypot(x1-cx,y1-cy),n=Math.max(4,Math.floor(len/(7*size)));
+  for(let i=0;i<n;i++){const t=(i+.5)/n,u=1-t;
+    const x=u*u*x0+2*u*t*cx+t*t*x1,y=u*u*y0+2*u*t*cy+t*t*y1,dx=2*u*(cx-x0)+2*t*(x1-cx),dy=2*u*(cy-y0)+2*t*(y1-cy);
+    // two staggered rows of small hex cells: the tunnel's honeycomb ribbon, flattened
+    const light=50+((i*7919)%5)*6,nx=-dy/(Math.hypot(dx,dy)||1),ny=dx/(Math.hypot(dx,dy)||1);
+    for(const side of [-1,1]){const hx=x+nx*side*2.2*size+(side>0?dx:0)/(Math.hypot(dx,dy)||1)*1.8*size,hy=y+ny*side*2.2*size+(side>0?dy:0)/(Math.hypot(dx,dy)||1)*1.8*size;
+      tg.beginPath();for(let v=0;v<6;v++){const a=v/6*6.2832+Math.PI/6;tg.lineTo(hx+Math.cos(a)*2.1*size,hy+Math.sin(a)*2.1*size)}tg.closePath();
+      tg.fillStyle=`hsla(${hue},80%,${light}%,${alpha*.45})`;tg.fill();tg.strokeStyle=`hsla(${hue},95%,82%,${alpha*.8})`;tg.lineWidth=.8;tg.stroke()}
+    if(store&&i%2===0)store.push([x,y])}
+  if(knot){tg.save();tg.translate(x1,y1);tg.fillStyle=`hsla(${hue},95%,82%,${Math.min(1,alpha*1.4)})`;tg.fillRect(-5*size,-3*size,10*size,6*size);
+    tg.strokeStyle=`hsla(${hue},95%,90%,${alpha})`;tg.beginPath();tg.arc(0,0,8*size,0,7);tg.stroke();tg.restore()}}
+function drawTissue(dt){
+  const W=innerWidth,H=innerHeight;if(tcv.width!==W*DPR){tcv.width=W*DPR;tcv.height=H*DPR}
+  tg.setTransform(DPR,0,0,DPR,0,0);tg.clearRect(0,0,W,H);
+  if(!tissue.on&&tissue.t<=0)return;
+  tissue.t=clamp(tissue.t+dt*(tissue.on?.75:-1.6),0,1);tissue.lvlT=Math.min(1,tissue.lvlT+dt*1.6);
+  const cells=tissue.cells,n=cells.length;if(!n)return;
+  const el=clock.elapsedTime;
+  const hotThread=tissue.hoverThread>=0?tissue.threads[tissue.hoverThread]:null;
+  cells.forEach((c,i)=>{const lit=hotThread&&hotThread.cells.includes(i);
+    c.wt=c.w*(i===tissue.hover?2.4:1)*(lit?1.6:1)*(tissue.focus===i?26:1)*(tissue.focus>=0&&tissue.focus!==i?.55:1);c.ww=lerp(c.ww??c.w,c.wt,Math.min(1,dt*5))});
+  const sumW=cells.reduce((a,c)=>a+c.ww,0);
+  for(let it=0;it<2;it++){
+    for(let i=0;i<n;i++){const a=cells[i],ra=tissue.rad*Math.sqrt(a.ww/sumW)*.95;
+      for(let j=i+1;j<n;j++){const b=cells[j],rb=tissue.rad*Math.sqrt(b.ww/sumW)*.95;let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||.01;
+        const want=ra+rb;if(d<want){const f=(want-d)*.25/d;dx*=f;dy*=f;const sa=b.ww/(a.ww+b.ww),sb=a.ww/(a.ww+b.ww);a.x-=dx*sa;a.y-=dy*sa;b.x+=dx*sb;b.y+=dy*sb}}
+      let dx=a.x-tissue.cx,dy=a.y-tissue.cy,d=Math.hypot(dx,dy)||.01;const lim=tissue.rad-ra*.6;
+      if(d>lim){a.x-=dx/d*(d-lim)*.3;a.y-=dy/d*(d-lim)*.3}
+      if(n>1){a.x+=Math.sin(el*.4+i)*.08;a.y+=Math.cos(el*.35+i*1.3)*.08}}}
+  const fly=clamp(tissue.t/.55,0,1),grow=clamp((tissue.t-.42)/.58,0,1)*tissue.lvlT;
+  if(tissue.t<1){cells.forEach(c=>{const e=easeIO(fly),x=lerp(c.sx,c.x,e),y=lerp(c.sy,c.y,e),s=lerp(5,16,e);
+      tg.globalAlpha=(1-grow)*Math.min(1,tissue.t*4);tg.drawImage(thumbOf(c.items[0]),x-s/2,y-s/2,s,s)})}
+  if(grow<=0)return;
+  // cells
+  let polys=[];
+  if(n===1){const c=cells[0];const p=[];for(let k=0;k<64;k++){const a=k/64*6.283;p.push([tissue.cx+Math.cos(a)*tissue.rad*.98,tissue.cy+Math.sin(a)*tissue.rad*.98])}
+    c.poly=p;c.cx=tissue.cx;c.cy=tissue.cy}
+  else{const del=Delaunay.from(cells.map(c=>[c.x,c.y]));
+    const vor=del.voronoi([tissue.cx-tissue.rad*1.3,tissue.cy-tissue.rad*1.3,tissue.cx+tissue.rad*1.3,tissue.cy+tissue.rad*1.3]);
+    const circ=[];for(let k=0;k<72;k++){const a=k/72*6.283;const rr=tissue.rad*(1+.025*Math.sin(a*5+el*.6));circ.push([tissue.cx+Math.cos(a)*rr,tissue.cy+Math.sin(a)*rr])}
+    cells.forEach((c,i)=>{let poly=vor.cellPolygon(i);if(!poly){c.poly=null;return}poly=clipConvex(poly.slice(0,-1),circ);if(poly.length<3){c.poly=null;return}
+      let cx=0,cy=0;poly.forEach(p=>{cx+=p[0];cy+=p[1]});cx/=poly.length;cy/=poly.length;
+      poly=poly.map(p=>{const dx=cx-p[0],dy=cy-p[1],d=Math.hypot(dx,dy)||1;const k=Math.min(.45,2.4/d);return [p[0]+dx*k,p[1]+dy*k]});
+      c.poly=chaikin(poly,2);c.cx=cx;c.cy=cy})}
+  cells.forEach((c,i)=>{const poly=c.poly;if(!poly)return;
+    let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;poly.forEach(p=>{x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1])});
+    const s=Math.max(x1-x0,y1-y0),dim=(tissue.focus>=0&&tissue.focus!==i)||(hotThread&&!hotThread.cells.includes(i));
+    tg.save();tg.globalAlpha=grow*(dim?.45:1);tg.beginPath();poly.forEach((p,k)=>k?tg.lineTo(p[0],p[1]):tg.moveTo(p[0],p[1]));tg.closePath();tg.clip();
+    if(c.type==='item')tg.drawImage(thumbOf(c.a),(x0+x1)/2-s/2,(y0+y1)/2-s/2,s,s);
+    else{const th=c.items.slice(0,4),gw=(x1-x0)/2,gh=(y1-y0)/2;th.forEach((a,k)=>{const tx=x0+(k%2)*gw,ty=y0+Math.floor(k/2)*gh,ts=Math.max(gw,gh);
+        tg.drawImage(thumbOf(a),tx+gw/2-ts/2,ty+gh/2-ts/2,ts,ts)});if(th.length===1)tg.drawImage(thumbOf(th[0]),(x0+x1)/2-s/2,(y0+y1)/2-s/2,s,s);
+      tg.fillStyle='rgba(2,4,8,.55)';tg.fillRect(x0,y0,x1-x0,y1-y0)}
+    const vg=tg.createRadialGradient(c.cx,c.cy,s*.2,c.cx,c.cy,s*.75);vg.addColorStop(0,'rgba(2,3,6,0)');vg.addColorStop(1,i===tissue.hover?'rgba(2,3,6,.12)':'rgba(2,3,6,.5)');
+    tg.fillStyle=vg;tg.fillRect(x0,y0,x1-x0,y1-y0);tg.restore();
+    tg.save();tg.globalAlpha=grow*(i===tissue.hover||i===tissue.focus?.9:.25);tg.strokeStyle=i===tissue.hover||i===tissue.focus?'#f4fbff':THEMES[themeIdx][1];
+    tg.beginPath();poly.forEach((p,k)=>k?tg.lineTo(p[0],p[1]):tg.moveTo(p[0],p[1]));tg.closePath();tg.stroke();tg.restore();
+    if(c.type==='group'&&s>46){tg.save();tg.globalAlpha=grow;tg.textAlign='center';tg.textBaseline='middle';tg.shadowColor='#000';tg.shadowBlur=8;
+      tg.fillStyle='#ffffff';tg.font=`400 ${clamp(s*.11,12,19)}px "Inter Tight", sans-serif`;tg.fillText(c.label,c.cx,c.cy-6);
+      tg.fillStyle='#c3d6df';tg.font='10.5px "JetBrains Mono", monospace';tg.fillText(`${c.items.length} ${c.items.length===1?'thing':'things'} · open`,c.cx,c.cy+12);tg.restore()}});
+  // breadcrumb: where you are in the layers
+  tg.save();tg.font='11px "JetBrains Mono", monospace';tg.textBaseline='middle';tg.textAlign='left';
+  const crumbs=['things made',...tissue.path];let x=tissue.cx-tissue.rad,y=tissue.cy-tissue.rad-26;tissue.crumbs=[];
+  crumbs.forEach((c,k)=>{const last=k===crumbs.length-1,w=tg.measureText(c).width;tg.fillStyle=last?'#f4fbff':'#8fb0bf';tg.shadowColor='#000';tg.shadowBlur=6;tg.fillText(c,x,y);
+    tissue.crumbs.push({x,y,w,k});x+=w;if(!last){tg.fillStyle='#4d6573';tg.fillText('  ›  ',x,y);x+=tg.measureText('  ›  ').width}});
+  if(tissue.path.length){tg.fillStyle='#4d6573';tg.fillText('   esc · up a layer',x,y)}
+  tg.restore();tg.globalAlpha=1}
+function tissueHit(x,y){const cs=tissue.cells;for(let i=0;i<cs.length;i++){const p=cs[i].poly;if(!p)continue;let ins=false;
+  for(let a=0,b=p.length-1;a<p.length;b=a++){if((p[a][1]>y)!==(p[b][1]>y)&&x<(p[b][0]-p[a][0])*(y-p[a][1])/(p[b][1]-p[a][1])+p[a][0])ins=!ins}if(ins)return i}return -1}
+function threadHit(){return -1} // things made carry no strands; a focused item links to its thread
+function crumbHit(x,y){return tissue.crumbs.find(c=>x>=c.x&&x<=c.x+c.w&&Math.abs(y-c.y)<9)}
+function tissueUp(){if(tissue.focus>=0){tissue.focus=-1;clearAnno('focus');return true}
+  if(tissue.path.length){setTissueLevel(tissue.path.slice(0,-1),null);return true}return false}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 9. camera: orbit (outside), fly (inside the brain), tunnel (inside a session)
+// ═══════════════════════════════════════════════════════════════════════════
+const clock=new THREE.Clock();
+const cam={mode:'orbit',target:new V3(),targetT:new V3(),az:.7,el:.16,dist:58,azT:.7,elT:.16,distT:58,fov:38,fovT:38,
+  yaw:0,pitch:0,pos:new V3(),vel:new V3(),tp:0,tpT:0,tween:null,look:new V3(),idle:0};
+const mouse={x:innerWidth/2,y:innerHeight/2,nx:0,ny:0,down:false,dragged:0,lx:0,ly:0};
+function tweenTo(pos,look,fov,dur,done){cam.tween={p0:camera.position.clone(),l0:cam.look.clone(),f0:camera.fov,p1:pos.clone(),l1:look.clone(),f1:fov,
+  t:0,dur:REDUCED?.01:dur,done}}
+// one continuous flight along a spline (position and gaze each follow their own curve); onT(e)
+// lets a transition drive scene state (the aperture) from the same progress, so nothing pops
+function tweenPath(pts,looks,fov,dur,{done=null,onT=null,kick=0}={}){
+  cam.tween={path:new THREE.CatmullRomCurve3(pts,false,'centripetal'),lpath:new THREE.CatmullRomCurve3(looks,false,'centripetal'),
+    f0:camera.fov,f1:fov,t:0,dur:REDUCED?.01:dur,done,onT,kick}}
+// points on a great circle from the camera's side of the orb round to a region, so a flight to a
+// region on the far side swings round the orb instead of cutting through it
+function arcTo(from,toDir,r1,n){const d0=from.clone().normalize(),r0=from.length(),q=new THREE.Quaternion().setFromUnitVectors(d0,toDir),out=[];
+  for(let k=1;k<=n;k++){const qk=new THREE.Quaternion().slerp(q,k/n);out.push(d0.clone().applyQuaternion(qk).multiplyScalar(lerp(r0,r1,k/n)))}return out}
+function orbitFrom(pos,target){const d=pos.clone().sub(target);cam.dist=cam.distT=d.length();cam.az=cam.azT=Math.atan2(d.x,d.z);
+  cam.el=cam.elT=Math.asin(clamp(d.y/cam.dist,-1,1));cam.target.copy(target);cam.targetT.copy(target);cam.par=0}
+function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).normalize();cam.yaw=Math.atan2(d.x,d.z);cam.pitch=Math.asin(clamp(d.y,-1,1))}
+const keys={};
+window.__cortex={cam,mouse,keys,get state(){return state}}; // inspection handle for the mockup
+function updateCamera(dt){
+  if(cam.tween){const tw=cam.tween;tw.t+=dt/tw.dur;const e=easeIO(Math.min(1,tw.t));
+    if(tw.path){camera.position.copy(tw.path.getPoint(e));cam.look.copy(tw.lpath.getPoint(e))}
+    else{camera.position.lerpVectors(tw.p0,tw.p1,e);cam.look.lerpVectors(tw.l0,tw.l1,e)}
+    camera.fov=lerp(tw.f0,tw.f1,e)+Math.sin(e*Math.PI)*(tw.kick||0);
+    camera.lookAt(cam.look);camera.updateProjectionMatrix();tw.onT&&tw.onT(e);
+    if(tw.t>=1){cam.tween=null;tw.done&&tw.done()}return}
+  if(cam.mode==='orbit'){
+    cam.idle+=dt;if(!REDUCED&&cam.idle>4&&state.lens==='cortex'&&!state.diving)cam.azT+=dt*.035;
+    const k=1-Math.pow(.0015,dt);cam.az=lerp(cam.az,cam.azT,k);cam.el=lerp(cam.el,cam.elT,k);cam.dist=lerp(cam.dist,cam.distT,k);cam.target.lerp(cam.targetT,k);
+    cam.par=Math.min(1,(cam.par??1)+dt*.6); // mouse parallax eases back in after a flight
+    const az=cam.az+mouse.nx*.08*cam.par,el=cam.el+mouse.ny*.05*cam.par;
+    camera.position.set(cam.target.x+Math.sin(az)*Math.cos(el)*cam.dist,cam.target.y+Math.sin(el)*cam.dist,cam.target.z+Math.cos(az)*Math.cos(el)*cam.dist);
+    cam.look.copy(cam.target);camera.lookAt(cam.look)}
+  else if(cam.mode==='fly'){
+    const fwd=new V3(Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch));
+    const right=new V3().crossVectors(fwd,new V3(0,1,0)).normalize();
+    const acc=R*.9*dt;if(keys.w||keys.arrowup)cam.vel.addScaledVector(fwd,acc);if(keys.s||keys.arrowdown)cam.vel.addScaledVector(fwd,-acc);
+    if(keys.a||keys.arrowleft)cam.vel.addScaledVector(right,-acc);if(keys.d||keys.arrowright)cam.vel.addScaledVector(right,acc);
+    cam.pos.add(cam.vel);cam.vel.multiplyScalar(Math.pow(.02,dt));
+    const l=cam.pos.length();if(l>R*.94)cam.pos.multiplyScalar(R*.94/l);
+    camera.position.copy(cam.pos);cam.look.copy(cam.pos).add(fwd);camera.lookAt(cam.look)}
+  else if(cam.mode==='tunnel'&&tunnel){
+    if(!REDUCED&&cam.idle>2.5&&!tunnel.stops)cam.tpT+=dt*.0035;cam.idle+=dt; // no drift while following a thread
+    if(keys.w||keys.arrowup)cam.tpT+=dt*.05;if(keys.s||keys.arrowdown)cam.tpT-=dt*.05;
+    cam.tpT=clamp(cam.tpT,0,.985);cam.tp=lerp(cam.tp,cam.tpT,1-Math.pow(.02,dt));
+    const P=tunnel.curve.getPointAt(cam.tp).add(TUN_OFF);
+    const T=tunnel.curve.getTangentAt(Math.min(1,cam.tp+.01));const {N,B}=tunnel.frameAt(cam.tp);
+    const Q=P.clone().addScaledVector(T,20).addScaledVector(N,mouse.ny*-5).addScaledVector(B,mouse.nx*5);
+    camera.position.copy(P);cam.look.copy(Q);camera.lookAt(Q)}
+  const fk=1-Math.pow(.01,dt);if(Math.abs(camera.fov-cam.fovT)>.01){camera.fov=lerp(camera.fov,cam.fovT,fk);camera.updateProjectionMatrix()}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. HUD: scramble text (XurOrb), leader-line annotations (video 2), lenses
+// ═══════════════════════════════════════════════════════════════════════════
+const CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←';
+function scramble(el,text,frames=22){const len=text.length;let f=0;clearInterval(el._sc);
+  if(REDUCED){el.textContent=text;return}
+  el._sc=setInterval(()=>{f++;let o='';for(let i=0;i<len;i++)o+=f/frames>i/len||text[i]===' '?text[i]:CHARS[Math.floor(Math.random()*CHARS.length)];
+    el.textContent=o;if(f>=frames){clearInterval(el._sc);el.textContent=text}},30)}
+const $=id=>document.getElementById(id);
+const svg=$('leaders'),labelsEl=$('labels'),annosEl=$('annos');
+function project(v){const p=v.clone().project(camera);return {x:(p.x*.5+.5)*innerWidth,y:(-p.y*.5+.5)*innerHeight,front:p.z<1&&p.z>-1}}
+const slots={};
+function anno(name){if(slots[name])return slots[name];const el=document.createElement('div');el.className='anno';annosEl.appendChild(el);
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(path);
+  return slots[name]={el,path,anchor:null,on:false,key:null}}
+// cell=true: the point itself swells into an organic cell with the text INSIDE (like an artifact
+// cell on hover), centred on the anchor and grown from it; otherwise a leader-line label.
+const lmCell=k=>({cell:true,col:CELL_COL[lmBest[k]]||'#7fe8ff'});
+function setAnno(name,key,anchorFn,html,{hot=false,cell=false,col=null}={}){const s=anno(name);
+  if(s.cell!==cell){s.cell=cell;s.el.classList.toggle('cell',cell);s.key=null}
+  if(col)s.el.style.setProperty('--cell',col);
+  if(s.key!==key){s.el.innerHTML=html;s.key=key;const t=s.el.querySelector('.t');if(t)scramble(t,t.textContent,18);
+    if(cell){s.el.classList.remove('on');void s.el.offsetWidth}} // a new cell grows again from its own point
+  s.anchor=anchorFn;s.on=true;s.el.classList.add('on');s.path.classList.toggle('hot',hot)}
+function clearAnno(name){const s=slots[name];if(!s)return;s.on=false;s.key=null;s.el.classList.remove('on');s.path.setAttribute('d','')}
+function placeAnnos(){
+  for(const s of Object.values(slots)){if(!s.on||!s.anchor){continue}
+    const a=s.anchor();if(!a||!a.front){s.el.style.opacity=0;s.path.setAttribute('d','');continue}s.el.style.opacity='';
+    const w=s.el.offsetWidth,h=s.el.offsetHeight;
+    if(s.cell){ // centred on the point it grew from; the transform origin tracks the point when clamped
+      const left=clamp(a.x-w/2,12,innerWidth-w-12),top=clamp(a.y-h/2,60,innerHeight-h-60);
+      s.el.style.left=left+'px';s.el.style.top=top+'px';s.el.style.transformOrigin=`${a.x-left}px ${a.y-top}px`;
+      s.path.setAttribute('d','');s.el.classList.remove('left','right');continue}
+    const right=a.x<innerWidth*.62;const dx=right?1:-1;const ex=a.x+dx*38,ey=a.y-30,tx=ex+dx*46;
+    const fits=right?tx+8+w<innerWidth-12:tx-8-w>12;
+    if(fits){
+      s.path.setAttribute('d',`M${a.x},${a.y}L${ex},${ey}L${tx},${ey}`);
+      const left=right?tx+8:tx-8-w,top=clamp(ey-14,60,innerHeight-h-70);
+      s.el.style.left=left+'px';s.el.style.top=top+'px';s.el.classList.toggle('left',!right);s.el.classList.toggle('right',right)}
+    else{ // narrow window: the text hangs below (or above) its anchor and never covers it
+      const below=a.y<innerHeight*.55,vy=below?a.y+44:a.y-44;
+      s.path.setAttribute('d',`M${a.x},${a.y}L${a.x},${vy}`);
+      s.el.style.left=clamp(a.x-w/2,12,innerWidth-w-12)+'px';s.el.style.top=clamp(below?vy+6:vy-6-h,60,innerHeight-h-70)+'px';
+      s.el.classList.remove('left');s.el.classList.add('right')}}}
+// family region labels around the skin
+const regLabelEls=REG.map((d,i)=>{const el=document.createElement('div');el.className='rlabel';
+  el.innerHTML=`<b style="color:${DOM_COL[d]}">${DOM_WORD[d]||d}</b>${fmt(M.domCounts[d]||0)}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
+  const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
+function placeRegionLabels(show){
+  const c=project(new V3()),edge=project(new V3(R,0,0).applyQuaternion(camera.quaternion));const rs=Math.abs(edge.x-c.x)||200;
+  regC.forEach((v,i)=>{const L=regLabelEls[i];const camDir=camera.position.clone().normalize();const vis=show&&v.dot(camDir)>.15;
+    if(!vis){L.el.style.opacity=0;L.p.setAttribute('d','');return}
+    const a=project(v.clone().multiplyScalar(R));const side=a.x<c.x?-1:1;const lx=c.x+side*(rs+60),ly=a.y;
+    L.el.style.opacity=state.hoverReg===i?1:(state.hoverReg>=0?.35:.75);L.el.classList.toggle('hot',state.hoverReg===i);
+    const w=L.el.offsetWidth;const left=clamp(side>0?lx+6:lx-6-w,8,innerWidth-w-8);
+    L.el.style.left=left+'px';L.el.style.top=(ly-8)+'px';L.el.style.textAlign=side>0?'left':'right';
+    L.p.setAttribute('d',`M${a.x},${a.y}L${side>0?Math.min(lx,left-6):Math.max(lx,left+w+6)},${ly}`);L.p.classList.toggle('hot',state.hoverReg===i)})}
+const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','how iris decides']];
+LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
+  a.onmouseenter=()=>scramble(a,w,14);$('lenses').appendChild(a)});
+function hint(t){$('hint').innerHTML=t}
+const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').querySelector('.rl'),marks:[],pos:null,
+  build(T){const NS='http://www.w3.org/2000/svg',svg=this.svg;svg.innerHTML='';this.marks=[];this.el.classList.toggle('on',!!T);if(!T)return;
+    const W=svg.clientWidth||600,X=u=>8+u*(W-16),mk=(tag,at)=>{const e=document.createElementNS(NS,tag);for(const k in at)e.setAttribute(k,at[k]);svg.appendChild(e);return e};
+    mk('line',{x1:8,y1:14,x2:W-8,y2:14,stroke:'rgba(212,236,246,.22)'});
+    T.items.forEach(it=>{if(it.type==='msg')mk('line',{x1:X(it.u),y1:9,x2:X(it.u),y2:12,stroke:it.m.role==='user'?'#ffe8fb':'#ff5fd6','stroke-opacity':.6})});
+    T.gates.forEach(gt=>{const c=gt.ep.corrected?'#fff':gt.ep.outcome==='failure'?'#ff4a3d':gt.ep.outcome==='partial'?'#ffb547':'#7fe8ff';
+      const r=mk('rect',{x:X(gt.u)-1.5,y:6,width:3,height:16,fill:c,'fill-opacity':.7});r.onclick=()=>{cam.tpT=Math.max(0,gt.u-.02);cam.idle=-9};
+      r.onmouseenter=()=>this.lbl.textContent='task · '+gt.ep.summary});
+    T.stars.forEach((st,i)=>{const c=CELL_COL[lmBest[st.li]]||'#8aa3b0';
+      const e=mk('circle',{cx:X(st.u),cy:14,r:4.2,fill:'#020306',stroke:c,'stroke-width':1.4});e.onclick=()=>{cam.tpT=Math.max(0,st.u-.02);cam.idle=-9};
+      e.onmouseenter=()=>this.lbl.textContent=LM[st.li].claim;this.marks.push({e,st})});
+    const endM=mk('circle',{cx:W-8,cy:14,r:6,fill:'rgba(2,3,6,.6)',stroke:'#7fe8ff','stroke-dasharray':'2 2','pointer-events':'all'});
+    endM.onclick=()=>{cam.tpT=.95;cam.idle=-9};endM.onmouseenter=()=>this.lbl.textContent='the doorway: the next thread, or back to the beginning';
+    this.pos=mk('path',{d:'M0,0',fill:'#f4fbff'});this.W=W;this.lbl.textContent=T.session.objective},
+  update(tp){if(!this.pos||!tunnel)return;const x=8+clamp(tp+.02,0,1)*(this.W-16);this.pos.setAttribute('d',`M${x-4},29 L${x+4},29 L${x},23 Z`);
+    for(const m of this.marks){const on=tunnel.sel<0||m.st.li===tunnel.sel||tunnel.linked.has(tunnel.sel+'-'+m.st.li)||tunnel.linked.has(m.st.li+'-'+tunnel.sel);
+      m.e.setAttribute('opacity',on?1:.25)}}};
+function updateStats(fps){const c=M.meta.counts||{};
+  $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> certainties · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> sessions<br>`+
+  `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made<br>`+
+  `${Math.round(fps)} fps · ${fmt(NS+NI+mistN+(tunnel?26000:0))} points · ${esc(M.meta.source)}`}
+const tickLines=document.querySelectorAll('#ticker .line');
+function tick(e){const col=FAM[FAMI[e.family]]?.color||'#fff';const strong=e.evidence==='user';
+  tickLines[0].innerHTML=tickLines[1].innerHTML;
+  tickLines[1].innerHTML=`<span class="dot" style="background:${e.valence==='sets_back'?'#ff4a3d':col};box-shadow:0 0 8px ${col}"></span><span class="tx"></span><span style="color:var(--faint)"> · ${FAM[FAMI[e.family]]?.word||'other'}</span>`;
+  const tx=tickLines[1].querySelector('.tx');tx.style.color=strong?'#fff':`rgba(212,236,246,${.35+(EVID[e.evidence]??.2)*.65})`;tx.style.fontWeight=strong?600:400;scramble(tx,readEvent(e),16)}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 11. state, lenses, transitions
+// ═══════════════════════════════════════════════════════════════════════════
+const state={lens:'cortex',inside:false,diving:false,diveReg:-1,hoverReg:-1,hoverSoma:-1,focusSoma:-1,hoverBead:-1,hoverSec:-1,
+  hoverNode:-1,morph:{h:0,i:0,c:0},morphT:{h:0,i:0,c:0},vis:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},visT:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},
+  scrub:1,scrubT:1,replay:false,search:'',pupil:1,lastDecision:null,from:'cortex'};
+function setLens(l){
+  if(state.diving)return;
+  if(cam.mode==='tunnel'){exitTunnel(()=>setLens(l));return}
+  if(state.inside){exitInterior(()=>setLens(l));return}
+  state.lens=l;clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
+  document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
+  const m=state.morphT,v=state.visT;
+  m.h=l==='timeline'?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
+  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:l==='timeline'?0:1,
+    beads:l==='timeline'?1:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:l==='timeline'?.12:1});
+  tissue.on=l==='artifacts';tcv.classList.toggle('on',tissue.on);if(tissue.on){layoutTissue(true);tissue.t=Math.min(tissue.t,.05)}
+  $('scrub').classList.toggle('on',l==='cortex');
+  const T=$('title');T.style.opacity=0;
+  cam.mode='orbit';
+  if(l==='cortex'){cam.targetT.set(0,0,0);cam.distT=58;cam.elT=.16}
+  if(l==='timeline'){cam.targetT.set(0,0,0);cam.distT=66;cam.elT=.05}
+  if(l==='oracle'){cam.targetT.set(0,0,0);cam.distT=44;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0}
+  if(l==='artifacts'){cam.targetT.set(-1.0*R,0,0);cam.distT=62;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0;setTimeout(()=>layoutTissue(false),900)}
+  hint({cortex:'drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; t · theme',
+    timeline:'scroll · move through time &nbsp; click a session · step inside it',
+    artifacts:'hover · a cell swells &nbsp; click · open it',
+    oracle:'hover a sector · what IRIS is learning to decide'}[l]);
+}
+function regionWorld(i,s=R){return regC[i].clone().multiplyScalar(s)}
+function dive(i){
+  if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;clearAnno('hover');
+  const c=regC[i].clone(),lookIn=c.clone().multiplyScalar(-R*.25);
+  // one flight: swing round to the region, the cells open as we near, pass through, settle inside
+  const pts=[camera.position.clone(),...arcTo(camera.position,c,R*2.0,3),c.clone().multiplyScalar(R*1.08),c.clone().multiplyScalar(R*.6)];
+  const looks=[cam.look.clone(),new V3(),new V3(),lookIn.clone().multiplyScalar(.3),lookIn];
+  LM.forEach((l,k)=>{somaData[k*8+6]=l.dom===i?1:0});somaTex.needsUpdate=true;
+  tweenPath(pts,looks,64,REDUCED?.01:2.8,{kick:9,
+    onT:e=>{if(e>.42)state.openT=1;if(e>.6)state.focusDimT=1},
+    done:()=>{cam.mode='fly';flyFrom(camera.position,lookIn);cam.fovT=64;state.inside=true;state.diving=false;
+      hint('drag · look &nbsp; w a s d / scroll · move<br>click a thought · go to it &nbsp; esc · back out');
+      const T=$('title');T.innerHTML=`${esc(DOM_WORD[REG[i]]||REG[i])}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments</small>`;T.style.opacity=1}});
+}
+function exitInterior(done){
+  if(!state.inside)return done&&done();
+  const i=state.diveReg,c=regC[i];clearAnno('focus');clearAnno('hover');setFocusSoma(-1);state.focusDimT=0;
+  LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;$('title').style.opacity=0;
+  state.inside=false;state.diving=true;state.openT=1;satellites(-1);
+  // back out the way we came: through the opening, pulling away while the gaze settles on the whole mind
+  const end=c.clone().multiplyScalar(58).add(new V3(0,R*.4,0));
+  const pts=[camera.position.clone(),c.clone().multiplyScalar(R*.62),c.clone().multiplyScalar(R*1.1),c.clone().multiplyScalar(R*2.6),end];
+  const looks=[cam.look.clone(),c.clone().multiplyScalar(-R*.1),new V3(),new V3(),new V3()];
+  tweenPath(pts,looks,38,REDUCED?.01:2.4,{kick:6,
+    onT:e=>{if(e>.62)state.openT=0},
+    done:()=>{state.openT=0;cam.mode='orbit';orbitFrom(camera.position,new V3());state.diving=false;done&&done();
+      if(!done)hint('drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; t · theme')}});
+}
+function setFocusSoma(k){state.focusSoma=k;LM.forEach((_,j)=>{somaData[j*8+2]=j===k?1:(somaData[j*8+2]>0&&j!==k&&state.search?somaData[j*8+2]:0)});somaTex.needsUpdate=true}
+function somaWorld(k){return somaPos[k].clone()}
+function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
+  const counts=l.evidence_counts?{...l.evidence_counts}:{};if(!l.evidence_counts)l.evidence.forEach(e=>counts[e.kind]=(counts[e.kind]||0)+1);
+  const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
+  const s=M.sById.get(l.session);
+  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':String(l.cls).replace(/_/g,' '));
+  return `<div class="k">${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)}</div>
+    <div class="t">${esc(l.claim)}</div>
+    <div class="m">${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
+    ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
+    ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
+    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that session</span>`:''}`}
+annosEl.addEventListener('click',e=>{
+  if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
+  if(e.target.closest('[data-home]')){exitTunnel();return}
+  const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
+function flyToSoma(k){
+  const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16);
+  setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
+  setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');
+  // evidence satellites orbit the focused thought
+  satellites(k)}
+const satGroup=new THREE.Group();scene.add(satGroup);let satFor=-1;
+function satellites(k){satGroup.clear();satFor=k;if(k<0)return;
+  LM[k].evidence.forEach((e,i)=>{const s=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:new THREE.Color(EVID_COL[e.kind]||'#fff'),transparent:true,
+    opacity:.95,blending:THREE.AdditiveBlending,depthWrite:false}));s.scale.setScalar(e.kind==='user'?R*.016:R*.01);
+    s.userData={ph:i/LM[k].evidence.length*6.28,ax:new V3(gauss(),gauss(),gauss()).normalize(),r:R*(.045+.012*i)};satGroup.add(s)})}
+function updateSatellites(t){if(satFor<0)return;const c=somaWorld(satFor);satGroup.children.forEach(s=>{const u=s.userData;
+  const v=new V3(Math.cos(t*.8+u.ph),Math.sin(t*.8+u.ph),0).multiplyScalar(u.r).applyAxisAngle(u.ax,1.1);s.position.copy(c).add(v)})}
+function flash(on,ms=260){const f=$('flash');f.style.transition=`opacity ${ms}ms`;f.style.opacity=on?.85:0}
+function enterTunnel(s){
+  if(cam.mode==='tunnel'){disposeTunnel()}
+  state.from=state.inside?'cortex':state.lens;
+  clearAnno('focus');clearAnno('hover');satellites(-1);
+  const goIn=()=>{flash(true,REDUCED?1:220);setTimeout(()=>{
+      if(state.inside){state.inside=false;state.openT=0;LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;state.focusDimT=0}
+      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
+      cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
+      const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
+      T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks</small>`;T.style.opacity=1;
+      $('scrub').classList.remove('on');
+      document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
+      hint('scroll / w s · travel through the session &nbsp; ← → · neuron to neuron<br>hover · read a message or moment &nbsp; click a neuron · follow its thread &nbsp; esc · back');
+      flash(false,REDUCED?1:700)},REDUCED?0:240)};
+  if(state.lens==='timeline'&&!state.inside&&cam.mode==='orbit'){const bi=sess.indexOf(s);const p=new V3(0,helixY(sessS(s)),0);
+    tweenTo(p.clone().add(camera.position.clone().sub(p).normalize().multiplyScalar(4)),p,22,.9,goIn)}
+  else goIn();
+}
+function exitTunnel(done){
+  flash(true,REDUCED?1:200);
+  setTimeout(()=>{disposeTunnel();cortex.visible=true;clearAnno('hover');cam.mode='orbit';camera.fov=38;cam.fovT=38;camera.updateProjectionMatrix();
+    const back=state.from||'cortex';state.lens='';flash(false,REDUCED?1:600);
+    cam.tween=null;orbitFrom(new V3(0,R*.4,R*5.8),new V3());setLens(back==='cortex'||!back?'cortex':back);done&&done()},REDUCED?0:220);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 12. the agent at work (live tap: memory_event / landmark_update / episode_completed / oracle_decision)
+//     In the app these arrive as iris:ws_message (MEMORY-DASHBOARD-DESIGN §10.1); here a replay drives them.
+// ═══════════════════════════════════════════════════════════════════════════
+const queue=[];const after=(s,fn)=>queue.push({at:clock.elapsedTime+s,fn});
+let nextEv=1.2,nextRecall=5,nextPromo=18,nextCorr=34,nextDec=2,nextMote=6;
+function regionPoint(fi){return regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.12)).normalize().multiplyScalar(R)}
+function pickSoma(){if(!NL)return -1;const k=Math.floor(Math.pow(rng(),1.6)*NL);return LM.map((l,i)=>[i,l.activations]).sort((a,b)=>b[1]-a[1])[k%NL][0]}
+const somaByReg=REG.map((_,ri)=>LM.map((l,i)=>l.dom===ri?i:-1).filter(i=>i>=0));
+function pickSomaIn(fi){const s=somaByReg[fi];return s&&s.length?s[Math.floor(rng()*s.length)]:pickSoma()}
+function emit(e){
+  e.ts=nowS();tick(e);
+  // activity rises with each moment but is capped, so a busy region glows without washing out the orb
+  // the moment lands in its DOMAIN's territory; its family is the colour of the activity there
+  const fi=FAMI[e.family]??0,di=regOf(e.domain||(e.landmark!=null&&LM[e.landmark]?LM[e.landmark].domain:'general'));
+  regAct[di]=Math.min(regBase[di]+.45,regAct[di]+.22);
+  if(e.valence==='sets_back')state.warn=Math.min(1,(state.warn||0)+.7);
+  if(e.evidence==='user'){shockwave()}
+  if(cam.mode==='tunnel'&&tunnel&&tunnel.session.exit==='live'){
+    const n=tunnel.nodes;const a=tunnel.curve.getPointAt(Math.max(0,cam.tp)).add(TUN_OFF),b=tunnel.curve.getPointAt(.99).add(TUN_OFF);
+    spark(a,b,FAM[fi].color,{speed:.5,gain:1.2,bend:1,jit:.3});return}
+  if(!cortex.visible)return;
+  // the moment lands on its region's cells, then runs down a tract into a neuron wired to that region
+  const wired=e.landmark!=null&&e.landmark<NL?e.landmark:pickSomaIn(di);const k=wired;
+  const col=e.valence==='sets_back'?'#ff4a3d':e.evidence==='user'?'#ffffff':FAM[fi].color;
+  if(!cortexShown()||k<0)return;
+  const viaTract=LM[k].dom===di;const from=viaTract?somaAnchor[k]:regionPoint(di);
+  impact(from.clone().normalize(),col);
+  spark(from,somaWorld(k),col,{speed:.6,gain:.6+(EVID[e.evidence]??.2)*1.2,ctrl:viaTract?somaCtrl[k]:null,
+    done:()=>{somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}});
+}
+function cortexShown(){return cortex.visible&&(state.lens==='cortex'||state.inside)}
+function recallChain(){
+  const k=pickSoma();if(k<0)return;const mi=FAMI.memory;
+  const ev=lab=>({family:'memory',label:lab,actor:'agent',evidence:lab==='RECALL_HELPED'?'completion':'claim',valence:lab==='RECALL_MISLED'?'sets_back':'advances',landmark:k});
+  emit(ev('RECALL_DELIVERED'));somaData[k*8]=.4;somaTex.needsUpdate=true;if(cortexShown())reachOut(k);
+  after(1.7,()=>{emit(ev('RECALL_USED'));somaData[k*8]=.85;somaTex.needsUpdate=true;if(cortexShown())thread(somaAnchor[k],somaWorld(k),FAM[mi].color,4.5)});
+  after(3.9,()=>{const helped=rng()<.8;emit(ev(helped?'RECALL_HELPED':'RECALL_MISLED'));
+    if(helped){somaData[k*8+1]=1;LM[k].activations++;LM[k].last_activated=nowS();if(cortexShown())pulseRing(somaWorld(k),'#ffffff',R*.22)}
+    else{somaData[k*8+4]=1;LM[k].contradictions++;somaData[k*8+7]=1;if(cortexShown())pulseRing(somaWorld(k),'#ff4a3d',R*.18)}
+    somaTex.needsUpdate=true;
+    if(state.focusSoma===k||slots.hover?.key==='soma'+k){const s=slots[state.focusSoma===k?'focus':'hover'];s.key=null;setAnno(state.focusSoma===k?'focus':'hover','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,state.focusSoma===k),{hot:true,...lmCell(k)})}});
+}
+function promote(){const c=LM.map((l,i)=>[l,i]).filter(([l])=>l.tier==='candidate');if(!c.length)return;const [l,k]=pick(c);
+  l.tier='landmark';l.evidence.push({kind:pick(['test','completion','recurrence']),at:nowS(),session:l.session});lmBest[k]=bestEvidence(l);
+  somaData[k*8+5]=0;state.grow=state.grow||[];state.grow.push(k);somaData[k*8+1]=1;somaTex.needsUpdate=true;
+  emit({family:'memory',label:'LANDMARK_PROMOTED',actor:'agent',evidence:'test',valence:'advances',landmark:k});
+  if(cortexShown())pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2)}
+function userCorrection(){emit({family:'feedback',label:pick(['CORRECTION','CONFIRMATION']),actor:'user',evidence:'user',valence:'advances'})}
+function oracleDecision(){if(!ORC.length)return;const w=ORC.map((o,i)=>[i,o.rows]);const i=weighted(w);const o=ORC[i];
+  const conf=clamp(.5+gauss()*.2+(o.state==='enforced'?.25:0),.05,.99);const acted=o.state==='enforced'||(o.state==='sampled'&&rng()<.05);
+  state.secPulse[i]=1;state.pupilT=.75+conf*.6;state.lastDecision={o,conf,acted}}
+state.secPulse=new Array(16).fill(0);state.pupilT=1;state.openT=0;state.focusDimT=0;state.warn=0;
+function simulate(dt){
+  const t=clock.elapsedTime;
+  for(let i=queue.length-1;i>=0;i--)if(queue[i].at<=t){const q=queue.splice(i,1)[0];q.fn()}
+  if(t>nextEv){nextEv=t+rand(.9,2.4);const e=pick(M.events.length?M.events:[{family:'knowledge',label:'OBSERVED',actor:'tool',evidence:'claim',valence:'neutral'}]);
+    emit({...e,landmark:e.family==='memory'?e.landmark:null})}
+  if(t>nextRecall){nextRecall=t+rand(8,13);recallChain()}
+  if(t>nextPromo){nextPromo=t+rand(22,34);promote()}
+  if(t>nextCorr){nextCorr=t+rand(40,60);userCorrection()}
+  if(t>nextDec){nextDec=t+rand(1.4,3.2);oracleDecision()}
+  if(t>nextMote&&motes.length){nextMote=t+rand(5,8);const m=pick(motes);
+    if(m.state==='in'){m.state='out';m.rT=R*.58;emit({family:'memory',label:'OFFLOADED',actor:'agent',evidence:'claim',valence:'neutral'})}
+    else{m.state='in';m.rT=R*.3;emit({family:'memory',label:'RESTRETCHED',actor:'agent',evidence:'claim',valence:'advances'})}}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 13. input
+// ═══════════════════════════════════════════════════════════════════════════
+const ray=new THREE.Raycaster();
+function regionAt(x,y){
+  ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);
+  const hit=ray.ray.intersectSphere(new THREE.Sphere(new V3(),R),new V3());if(!hit)return -1;
+  const n=hit.clone().normalize();let best=-1,bd=1e9;
+  regC.forEach((c,i)=>{const d=Math.acos(clamp(n.dot(c),-1,1));if(d<regRad[i]&&d/regRad[i]<bd){bd=d/regRad[i];best=i}});return best}
+function nearestScreen(list,x,y,maxD){let best=-1,bd=maxD;list.forEach((p,i)=>{if(!p)return;const s=project(p);if(!s.front)return;const d=Math.hypot(s.x-x,s.y-y);
+  if(d<bd){bd=d;best=i}});return best}
+function coreHit(x,y){const c=project(new V3()),e=project(new V3(R*.2,0,0).applyQuaternion(camera.quaternion));return Math.hypot(x-c.x,y-c.y)<Math.abs(e.x-c.x)}
+function hover(x,y){
+  state.hoverReg=-1;skinMat.uniforms.uHoverReg.value=-1;state.hoverSec=-1;skinMat.uniforms.uHoverSec.value=-1;beadMat.uniforms.uHover.value=-1;
+  canvas.style.cursor='default';
+  if(cam.tween||state.diving)return;
+  if(cam.mode==='tunnel'&&tunnel){
+    const near=(w,d)=>w.distanceTo(camera.position)<d?w:null;
+    const k=nearestScreen(tunnel.items.map(n=>near(n.world,70)),x,y,14);
+    const st=nearestScreen(tunnel.stars.map(s=>near(s.world,90)),x,y,22);
+    state.hoverDoor=null;
+    if(st<0&&k<0){for(const [nm,d] of [['door',tunnel.door],['back',tunnel.back]]){const p=project(d.world);
+      const e=project(d.world.clone().add(new V3(0,d===tunnel.door?4:1.5,0)));if(p.front&&Math.hypot(p.x-x,p.y-y)<Math.max(30,Math.abs(e.y-p.y))&&d.world.distanceTo(camera.position)<70){
+        state.hoverDoor=nm;canvas.style.cursor='pointer';tunnelHighlight(null);
+        const nx=tunnel.door.next;
+        setAnno('hover','door-'+nm,()=>project(d.world),nm==='door'
+          ?`<div class="k">doorway</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><div class="m">${nx?`the next thread · ${ago(nx.started)}`:'this is the newest thread'}</div><span class="go">click · step through</span>`
+          :`<div class="k">doorway</div><div class="t">back to the beginning of this thread</div><span class="go">click · return to its first moment</span>`,{hot:true});return}}}
+    const gt=nearestScreen(tunnel.gates.map(g=>g.world.distanceTo(camera.position)<80?g.world:null),x,y,60);
+    if(st>=0){const s=tunnel.stars[st];canvas.style.cursor='pointer';tunnelHighlight(s.item);
+      setAnno('hover','star'+st,()=>project(s.world),landmarkHTML(s.li,false)+`<span class="go">${tunnel.sel===s.li?'enter · open this thought in the mind':'click · follow its thread'}</span>`,{hot:true});state.hoverStar=st;return}
+    state.hoverStar=-1;
+    if(k>=0){const n=tunnel.items[k];tunnelHighlight(n);canvas.style.cursor='default';
+      if(n.type==='msg'){const m=n.m,mins=Math.max(0,Math.round((m.ts-tunnel.session.started)/60));
+        setAnno('hover','item'+k,()=>project(n.world),`<div class="k">${m.role==='user'?'you':'IRIS'} · ${mins} min in · conversation</div>
+          <div class="t">${m.text?esc(m.text):(m.role==='user'?'you wrote':'IRIS replied')+` · about ${Math.max(5,Math.round((m.len||60)/6))} words`}</div>
+          <div class="m">linked to <em>${n.links.length}</em> moment${n.links.length===1?'':'s'} in memory${n.links.length?':<br>'+n.links.slice(0,4).map(l=>esc(readEvent(l.e))).join(' · '):''}</div>`,{hot:m.role==='user'});return}
+      const e=n.e;const ep=M.epById.get(e.episode);const turn=n.links[0];
+      setAnno('hover','item'+k,()=>project(n.world),`<div class="k">${FAM[FAMI[e.family]]?.word||'other'} · ${ago(e.ts)} · memory</div><div class="t">${esc(readEvent(e))}</div>
+        <div class="m">${EVID_WORD[e.evidence]||'unconfirmed'} · ${e.valence==='advances'?'helped the goal':e.valence==='sets_back'?'<span class="w">set the goal back</span>':'neither helped nor hurt'}
+        · by ${e.actor==='user'?'<span class="u">you</span>':e.actor==='agent'?'IRIS':e.actor==='tool'?'a tool':e.actor==='subagent'?'a helper':'the world'}
+        ${turn?`<br>in the turn where ${turn.m.role==='user'?'you wrote':'IRIS replied'}${turn.m.text?': <em>'+esc(turn.m.text.slice(0,70))+'</em>':''}`:''}
+        ${ep?`<br>during: <em>${esc(ep.summary)}</em>`:''}</div>`,{hot:e.evidence==='user'});return}
+    tunnelHighlight(null);
+    if(gt>=0){const g=tunnel.gates[gt],ep=g.ep;
+      setAnno('hover','gate'+gt,()=>project(g.world),`<div class="k">task · ${ep.outcome==='running'?'running now':ep.outcome==='success'?'went well':ep.outcome==='partial'?'partly done':'did not work'}</div>
+        <div class="t">${esc(ep.summary)}</div><div class="m">went well <em>${Math.round(ep.score*100)}</em> / 100 · took ${span(ep.duration/1)}
+        ${ep.corrected?'<br><span class="u">you corrected IRIS here</span>':ep.confirmed?'<br>you confirmed this':''}
+        ${ep.failure_reason?`<br><span class="w">${esc(ep.failure_reason)}</span>`:''}<br>what IRIS did: ${(ep.tools||[]).map(t=>t.replace(/_/g,' ')).join(' → ')}</div>`,{hot:ep.corrected});return}
+    clearAnno('hover');return}
+  if(state.lens==='artifacts'&&tissue.t>.5&&!state.inside){const i=tissueHit(x,y),th=i<0?threadHit(x,y):-1,cr=crumbHit(x,y);
+    tissue.hover=i;tissue.hoverThread=th;const pt=i>=0||th>=0||!!cr;canvas.style.cursor=tcv.style.cursor=pt?'pointer':'default';
+    if(i>=0&&tissue.focus<0&&tissue.cells[i].type==='item'){const c=tissue.cells[i];
+      setAnno('hover','art'+i,()=>({x:c.cx,y:c.cy,front:true}),`<div class="k">${KIND_WORD[c.a.kind]||c.a.kind} · ${esc(c.a.folder||'unsorted')} · ${ago(c.a.ts)}</div><div class="t">${esc(c.a.name)}</div>`)}
+    else clearAnno('hover');return}
+  if(state.inside){
+    const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaPos[i].distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
+    if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,false),lmCell(k));
+      for(let j=0;j<NL;j++)if(j!==state.focusSoma)somaData[j*8+2]=j===k?1:0;somaTex.needsUpdate=true}
+    else{if(k<0){clearAnno('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
+    return}
+  if(state.lens==='cortex'){
+    if(coreHit(x,y)){state.hoverCore=true;canvas.style.cursor='help';showMind(true);clearAnno('hover');return}
+    state.hoverCore=false;showMind(false);
+    const r=regionAt(x,y);state.hoverReg=r;skinMat.uniforms.uHoverReg.value=r;if(r>=0)canvas.style.cursor='pointer';return}
+  if(state.lens==='timeline'){const k=nearestScreen(sess.map(s=>new V3(0,helixY(sessS(s)),0)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
+    if(k>=0){const s=sess[k];canvas.style.cursor='pointer';
+      const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
+      setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
+        <div class="m">${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}</div><span class="go">click · step inside</span>`)}
+    else clearAnno('hover');return}
+  if(state.lens==='oracle'){
+    ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
+    if(ray.ray.intersectPlane(new THREE.Plane(new V3(0,0,1),0),p)){const r=p.length();
+      if(r>R*.28&&r<R*1.1){let a=Math.atan2(p.y,p.x)-Math.PI/2;a=((a%(Math.PI*2))+Math.PI*2)%(Math.PI*2);const sec=Math.floor(a/(Math.PI*2)*NSEC)%NSEC;
+        state.hoverSec=sec;skinMat.uniforms.uHoverSec.value=sec;const o=ORC[sec];const th=(sec+.5)/NSEC*Math.PI*2+Math.PI/2;
+        const st=o.state==='enforced'?'trusted':o.state==='sampled'?'trying out':'watching';
+        const right=o.precision>=.9?'right about 9 times in 10':o.precision>=.8?'right about 8 times in 10':o.precision>=.65?'right about 2 times in 3':'not reliable yet';
+        setAnno('hover','sec'+sec,()=>project(new V3(Math.cos(th)*R*1.02,Math.sin(th)*R*1.02,0)),`<div class="k">${st}</div><div class="t">${esc(ORACLE_PLAIN[o.consumer]||o.consumer.replace(/_/g,' '))}</div>
+          <div class="m">learned from <em>${fmt(o.rows)}</em> examples${o.rows<100?` · needs ${100-o.rows} more`:''}<br>${right}<br>${o.ece!=null&&o.ece<=.05?'its confidence is honest':'its confidence is not honest yet'}
+          ${o.state==='enforced'?'<br>it now makes this decision itself':o.state==='sampled'?'<br>it decides now and then, while IRIS checks it':'<br>it watches and learns; it does not act yet'}</div>`,{hot:o.state==='enforced'});return}}
+    clearAnno('hover')}
+}
+function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
+  if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
+canvas.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;mouse.nx=e.clientX/innerWidth*2-1;mouse.ny=-(e.clientY/innerHeight*2-1);
+  if(mouse.down&&e.buttons===0)mouse.down=false; // a lost pointerup must not turn hovering into dragging
+  if(mouse.down){const dx=e.clientX-mouse.lx,dy=e.clientY-mouse.ly;mouse.dragged+=Math.abs(dx)+Math.abs(dy);mouse.lx=e.clientX;mouse.ly=e.clientY;cam.idle=0;
+    if(cam.mode==='orbit'){cam.azT-=dx*.005;cam.elT=clamp(cam.elT+dy*.004,-1.2,1.2)}
+    else if(cam.mode==='fly'){cam.yaw-=dx*.003;cam.pitch=clamp(cam.pitch+dy*.003,-1.4,1.4)}}
+  else hover(e.clientX,e.clientY)});
+tcv.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;hover(e.clientX,e.clientY)});
+canvas.addEventListener('pointerdown',e=>{mouse.down=true;mouse.dragged=0;mouse.lx=e.clientX;mouse.ly=e.clientY});
+addEventListener('pointerup',e=>{const was=mouse.down;mouse.down=false;if(!was||mouse.dragged>6)return;click(e.clientX,e.clientY)});
+tcv.addEventListener('click',e=>{const x=e.clientX,y=e.clientY;
+  const cr=crumbHit(x,y);if(cr){setTissueLevel(tissue.path.slice(0,cr.k),null);return}
+  const i=tissueHit(x,y);
+  if(i<0){const th=threadHit(x,y);if(th>=0){enterTunnel(tissue.threads[th].s);return}tissue.focus=-1;clearAnno('focus');return}
+  const c=tissue.cells[i];
+  if(c.type==='group'){setTissueLevel([...tissue.path,c.label],{x:c.cx,y:c.cy});return} // open a layer: it blooms out of the cell
+  tissue.focus=tissue.focus===i?-1:i;clearAnno('hover');
+  if(tissue.focus>=0){const s=M.sById.get(c.a.session);
+    setAnno('focus','artf'+i,()=>({x:c.cx,y:c.cy,front:true}),`<div class="k">${KIND_WORD[c.a.kind]||c.a.kind} · ${esc(c.a.folder||'unsorted')} · made ${ago(c.a.ts)}</div><div class="t">${esc(c.a.name)}</div>
+      <div class="m">${s?`made while: <em>${esc(s.objective)}</em>`:''}</div>${s?`<span class="go" data-go="${s.id}">→ step into that thread</span>`:''}`,{hot:true})}
+  else clearAnno('focus')});
+// a thread = one thought and everything linked to it in this session; scrolling then travels
+// from one of its neurons to the next along the wall
+function selectThread(li){if(!tunnel)return;tunnel.sel=li;tunnel.threadU.uSel.value=li;tunnel.threadU.uSelOn.value=li>=0?1:0;
+  if(li<0){tunnel.stops=null;hint('scroll / w s · travel through the session<br>hover · read a moment &nbsp; esc · back to the mind');return}
+  const L_=tunnel.linked;const us=tunnel.stars.filter(s=>s.li===li||L_.has(li+'-'+s.li)||L_.has(s.li+'-'+li)).map(s=>s.u).sort((a,b)=>a-b);
+  tunnel.stops=us.filter((u,i)=>!i||u-us[i-1]>.004);
+  const next=tunnel.stops.find(u=>u>cam.tp+.01);if(next!=null)cam.tpT=Math.max(0,next-.02);cam.idle=-9;
+  hint(`following one thread · ${tunnel.stops.length} linked neurons<br>scroll · next / previous &nbsp; enter · open in the mind &nbsp; esc · let go`)}
+// step to the previous / next neuron: along the selected thread, or along every neuron of the session
+function neuronStep(dir){if(!tunnel)return;if(tunnel.stops)return threadStep(dir);
+  const us=[...new Set(tunnel.stars.map(s=>s.u))].sort((a,b)=>a-b);const now=cam.tpT+.02;
+  const u=dir>0?us.find(v=>v>now+.004):[...us].reverse().find(v=>v<now-.004);if(u!=null){cam.tpT=Math.max(0,u-.02);cam.idle=-9}}
+function throughDoor(){if(!tunnel||state.doorLock)return;state.doorLock=true;setTimeout(()=>state.doorLock=false,1500);
+  const nx=tunnel.door.next;if(nx)enterTunnel(nx);else exitTunnel()}
+function threadStep(dir){const st=tunnel.stops;if(!st||!st.length)return;const now=cam.tpT+.02;
+  const u=dir>0?st.find(v=>v>now+.004):[...st].reverse().find(v=>v<now-.004);if(u!=null)cam.tpT=Math.max(0,u-.02);cam.idle=-9}
+function openThreadInMind(){const li=tunnel?.sel;if(li==null||li<0)return;exitTunnel(()=>{const fi=LM[li].dom;
+  dive(fi);const wait=setInterval(()=>{if(state.inside){clearInterval(wait);flyToSoma(li)}},120)})}
+function click(x,y){
+  if(cam.tween||state.diving)return;
+  hover(x,y);
+  if(cam.mode==='tunnel'&&tunnel){if(state.hoverStar>=0)selectThread(tunnel.stars[state.hoverStar].li);
+    else if(state.hoverDoor==='door')throughDoor();else if(state.hoverDoor==='back'){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
+  if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1)}return}
+  if(state.lens==='cortex'&&state.hoverReg>=0)dive(state.hoverReg);
+  if(state.lens==='timeline'&&state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);
+}
+canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
+  if(cam.mode==='orbit'){if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
+  else if(cam.mode==='fly'){const fwd=new V3(Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch));cam.vel.addScaledVector(fwd,-e.deltaY*.0009)}
+  else if(cam.mode==='tunnel'){if(tunnel?.stops){const n=performance.now();if(n-(state.lastStep||0)>380){state.lastStep=n;threadStep(Math.sign(e.deltaY))}}
+    else{cam.tpT+=e.deltaY*.00012;if(cam.tp>.975&&e.deltaY>0)throughDoor()}}},{passive:false});
+addEventListener('keydown',e=>{
+  if(document.activeElement===$('q')){if(e.key==='Escape'){closeSearch()}if(e.key==='Enter'){goSearch()}return}
+  const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
+  if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
+  if(cam.mode==='tunnel'&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
+  if(k==='escape'){if(cam.mode==='tunnel'&&tunnel?.sel>=0)selectThread(-1);else if(cam.mode==='tunnel')exitTunnel();else if(state.inside)exitInterior();else if(state.lens==='artifacts')tissueUp()}
+  if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
+  if(k==='/'){e.preventDefault();openSearch()}
+  if(k==='g'&&state.lens==='cortex'&&!state.inside){state.scrub=0;state.scrubT=0;state.replay=true}
+  if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);
+    coreHalo.material.color.copy(BRAND)}});
+addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
+// time scrubber: memory as it was
+const scrubEl=$('scrub');
+function scrubFrom(e){const r=scrubEl.getBoundingClientRect();state.scrubT=state.scrub=clamp((e.clientX-r.left)/r.width,0,1);state.replay=false}
+scrubEl.addEventListener('pointerdown',e=>{scrubEl.setPointerCapture(e.pointerId);scrubFrom(e);scrubEl.onpointermove=scrubFrom});
+scrubEl.addEventListener('pointerup',()=>{scrubEl.onpointermove=null});
+scrubEl.addEventListener('dblclick',()=>{state.scrubT=1});
+// search lights the matching thoughts across the whole mind
+function openSearch(){$('search').classList.add('on');$('q').value='';$('q').focus();runSearch('')}
+function closeSearch(){$('search').classList.remove('on');$('q').blur();state.search='';forestU.uSearch.value=0;for(let j=0;j<NL;j++)somaData[j*8+2]=j===state.focusSoma?1:0;somaTex.needsUpdate=true;$('qres').textContent=''}
+let searchHits={lm:[],s:[],a:[]};
+function runSearch(q){state.search=q.trim().toLowerCase();const words=state.search.split(/\s+/).filter(Boolean);
+  const m=t=>words.length&&words.every(w=>t.toLowerCase().includes(w));
+  searchHits={lm:LM.map((l,i)=>m(l.claim)?i:-1).filter(i=>i>=0),s:sess.filter(s=>m(s.objective)),a:M.artifacts.filter(a=>m(a.name))};
+  for(let j=0;j<NL;j++)somaData[j*8+2]=searchHits.lm.includes(j)?1:0;somaTex.needsUpdate=true;forestU.uSearch.value=words.length?1:0;
+  $('qres').textContent=words.length?`${searchHits.lm.length} thoughts · ${searchHits.s.length} sessions · ${searchHits.a.length} things made${searchHits.lm.length+searchHits.s.length+searchHits.a.length?' · enter to go':' · nothing like that yet'}`:'type to light up what IRIS remembers'}
+$('q').addEventListener('input',e=>runSearch(e.target.value));
+function goSearch(){const h=searchHits;$('search').classList.remove('on');$('q').blur();
+  if(h.lm.length){const k=h.lm[0];const fi=LM[k].dom;const go=()=>{dive(fi);const w=setInterval(()=>{if(state.inside){clearInterval(w);flyToSoma(k)}},120)};
+    if(state.lens!=='cortex'){setLens('cortex');setTimeout(go,1600)}else go()}
+  else if(h.s.length)enterTunnel(h.s[0]);
+  else if(h.a.length){const a=h.a[0];setLens('artifacts');setTimeout(()=>{setTissueLevel([FORMAT_OF[a.kind]||'other',a.folder||'unsorted'],null);
+    tissue.focus=tissue.cells.findIndex(c=>c.a===a)},1800)}}
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();if(state.lens==='artifacts')layoutTissue(false)});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 14. the frame
+// ═══════════════════════════════════════════════════════════════════════════
+initTissue();
+camera.position.set(0,R*1.2,R*6);cam.look.set(0,0,0);
+setLens('cortex');
+ORC.forEach((o,i)=>{skinMat.uniforms.uSecProg.value[i]=barProgress(o);skinMat.uniforms.uSecState.value[i]=STATE_RANK[o.state]??0});
+{const d=new Date(T0*1000);$('scrub').querySelector('.lbl0').textContent=d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
+tick({family:'memory',label:'RECALL_DELIVERED',actor:'agent',evidence:'claim',valence:'neutral'});
+let fpsAcc=0,fpsN=0,fps=60,statT=0,slowFrames=0;
+renderer.setAnimationLoop(()=>{
+  const dt=Math.min(clock.getDelta(),.1),t=clock.elapsedTime; // flights keep real time on slow frames
+  U.uTime.value=t;
+  simulate(dt);
+  // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
+  const sx=Math.sin(t*.13)+.4*Math.sin(t*.31),su=.5+.5*Math.sin(t*.07);
+  // morph the organism
+  const mk=1-Math.pow(.25,dt);for(const k of ['h','i','c']){const d=state.morphT[k]-state.morph[k];state.morph[k]+=clamp(d,-dt*.62,dt*.62)}
+  skinMat.uniforms.uMH.value=state.morph.h;skinMat.uniforms.uMI.value=state.morph.i;skinMat.uniforms.uMC.value=state.morph.c;
+  for(const k in state.vis)state.vis[k]=lerp(state.vis[k],state.visT[k],1-Math.pow(.08,dt));
+  forestU.uVis.value=state.vis.forest;forestU.uNear.value=state.insideK||0;mistMat.uniforms.uMist.value=1-(state.insideK||0)*.75;wireMat.uniforms.uVis.value=state.vis.wire*(1-state.morph.h)*(1-state.morph.i);
+  xurMat.uniforms.uVis.value=state.vis.xur;beadMat.uniforms.uVis.value=state.vis.beads;rings.forEach(r=>r.material.uniforms.uVis.value=state.vis.rings*(1-(state.insideK||0)));
+  forestU.uFocusDim.value=lerp(forestU.uFocusDim.value,state.focusDimT,1-Math.pow(.1,dt));
+  // aperture
+  const op=skinMat.uniforms.uOpen;op.value=lerp(op.value,state.openT,1-Math.pow(.02,dt));skinMat.uniforms.uOpenReg.value=op.value>.005||state.openT>0?state.diveReg:-1;
+  // region activity decays to its base
+  for(let i=0;i<REG.length;i++){regAct[i]=lerp(regAct[i],regBase[i],1-Math.pow(.3,dt));SU.uRegAct.value[i]=regAct[i]}
+  state.warn=Math.max(0,state.warn-dt*.8);skinMat.uniforms.uWarn.value=wireMat.uniforms.uWarn.value=state.warn;
+  // shockwave (a user's word is the strongest thing on screen)
+  const sh=shockAt(t);skinMat.uniforms.uShock.value=wireMat.uniforms.uShock.value=sh*.6;const b=bounceAt(t);
+  skinMat.uniforms.uBounce.value=b;wire.scale.setScalar(b);
+  if(sh>.001){const d=t-shockT;shockMesh.scale.setScalar(Math.max(.01,1+d/1.2*2.5));shockMat.opacity=Math.max(0,1-d/1.2*2.2)*.5;shockMesh.lookAt(camera.position)}else{shockMesh.visible=false}
+  // soma state decay; promotions grow their dendrites outward
+  let dirty=false;for(let k=0;k<NL;k++){const o=k*8;if(somaData[o]>0){somaData[o]=Math.max(0,somaData[o]-dt*.12);dirty=true}
+    if(somaData[o+1]>0){somaData[o+1]=Math.max(0,somaData[o+1]-dt*.6);dirty=true}if(somaData[o+4]>0){somaData[o+4]=Math.max(0,somaData[o+4]-dt*.5);dirty=true}}
+  if(state.grow){state.grow=state.grow.filter(k=>{somaData[k*8+3]=Math.min(1,somaData[k*8+3]+dt*.35);dirty=true;return somaData[k*8+3]<1})}
+  if(dirty)somaTex.needsUpdate=true;
+  // time scrub / growth replay
+  if(state.replay){state.scrubT=Math.min(1,state.scrubT+dt/14);if(state.scrubT>=1)state.replay=false}
+  state.scrub=lerp(state.scrub,state.scrubT,1-Math.pow(.02,dt));forestU.uScrub.value=state.scrub;
+  scrubEl.classList.toggle('on',state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving);
+  scrubEl.querySelector('.fill').style.width=(state.scrub*100)+'%';
+  scrubEl.querySelector('.lbl').textContent=state.scrub>.995?'now':'as of '+new Date((T0+(nowS()-T0)*state.scrub)*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
+  // core, pupil, inner XurOrb shells
+  state.pupil=lerp(state.pupil,state.pupilT,1-Math.pow(.05,dt));state.pupilT=lerp(state.pupilT,1,dt*.4);
+  const pupilS=state.morph.i>.5?state.pupil*1.25:1;
+  // in the iris the core becomes the pupil: dark, with a bright rim that dilates on each decision
+  // dims by where the camera IS, so the core never flares while a flight passes through the skin
+  const camR=camera.position.length()/R;
+  state.insideK=lerp(state.insideK||0,cortex.visible?clamp((1.6-camR)/.7,0,1):0,1-Math.pow(.02,dt));
+  core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55);
+  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85);
+  cells.scale.setScalar(b);coreHalo.scale.setScalar(R*(1.0+.1*sx)*pupilS);
+  for(let i=0;i<16;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
+  {let o=0;const det=.52+.48*(.5+.5*Math.sin(t/4.2*Math.PI*2));const flat=state.morph.i;
+    const v=xurV,S=xurS,C=xurC,qt=xurQt;
+    for(let i=tendrils.length-1;i>=0;i--)if(t-tendrils[i].t0>4.2)tendrils.splice(i,1);
+    XUR.forEach((sh,si)=>{xurPhase[si]+=dt*(Math.PI*2/28)*sh.speed*(1+su*1.4)*(REDUCED?.3:1);
+      // tumble: each shell turns on its own axis (stopped and flattened when the iris forms)
+      qt.setFromAxisAngle(xurSpin[si],t*.05*sh.speed*(1-flat)).premultiply(xurQ[si]).slerp(xurFlat,flat);
+      // fills the interior (outer lobes graze the skin); shrinks to the collarette when the iris forms
+      const sc=R*lerp(.78,.33,flat)*sh.scale*(1+sx*.05);
+      const td=tendrils.filter(d=>d.si===si);
+      for(let k=0;k<sh.n;k++){const j=Math.floor(k/XTUBE);const tt=j/sh.count*Math.PI*2+xurPhase[si];const [x,y]=curvePoint(tt,det);
+        const lift=(1+.14*Math.cos(9*tt));
+        v.set(x*sc*lift,y*sc*lift,sc*det*.3*Math.sin(9*tt+si*2.1)*(1-flat)+flat*R*.12);
+        const oi=(o+k)*3,tub=sc*.035*(1-flat*.6);v.x+=xurOff[oi]*tub;v.y+=xurOff[oi+1]*tub;v.z+=xurOff[oi+2]*tub;
+        v.applyQuaternion(qt);
+        let a=sh.alpha*(.35+.65*(j/sh.count))*lerp(.42,.7,flat);
+        for(const d of td){let dj=j-d.j0;if(dj<0)dj+=sh.count;if(dj>=d.n)continue;
+          const u=(t-d.t0-dj*.012)/3.4;if(u<=0||u>=1)continue;const w=Math.sin(u*Math.PI);
+          S.copy(somaPos[d.k]);C.addVectors(v,S).multiplyScalar(.5).addScaledVector(v,.35);
+          const e=easeIO(w);bez(v,C,S,e,v);v.x+=xurOff[oi]*R*.012*w;v.y+=xurOff[oi+1]*R*.012*w;v.z+=xurOff[oi+2]*R*.012*w;a=Math.min(1,a+w*.6)}
+        xurPos[oi]=v.x;xurPos[oi+1]=v.y;xurPos[oi+2]=v.z;xurA[o+k]=a}
+      o+=sh.n})}
+  xurGeo.attributes.position.needsUpdate=xurGeo.attributes.aA.needsUpdate=true;
+  rings.forEach(r=>r.rotateZ(dt*.4*r.userData.sp*(.6+su)));
+  // motes
+  motes.forEach((m,i)=>{m.r=lerp(m.r,m.rT,1-Math.pow(.4,dt));m.ang+=dt*m.speed;const v=new V3(Math.cos(m.ang),Math.sin(m.ang),0).multiplyScalar(m.r).applyAxisAngle(m.axis,.9);
+    m.pos.copy(v);moteP.set([v.x,v.y,v.z],i*3);moteA[i]=(m.state==='in'?.9:.25)*(1-state.morph.h)*(1-state.morph.i)});
+  moteGeo.attributes.position.needsUpdate=moteGeo.attributes.aA.needsUpdate=true;
+  // impulses
+  updateSparks(dt);updateRings(dt);updateThreads(dt);updateSatellites(t);
+  updateCamera(dt);
+  if(cam.mode==='tunnel'&&tunnel){
+    // the far doorway opens as you near the end of the thread; the side door stays ajar
+    tunnel.door.mesh.material.uniforms.uOpen.value=smooth01((cam.tp-.78)/.18);
+    tunnel.back.mesh.material.uniforms.uOpen.value=state.hoverDoor==='back'?.85:.5;
+    rail.update(cam.tp);
+    // arriving at a neuron names it, without a hover
+    const here=cam.tp+.025;let best=-1,bd=.009;tunnel.stars.forEach((s,i)=>{const d=Math.abs(s.u-here);if(d<bd){bd=d;best=i}});
+    if(best>=0&&!slots.hover?.on){const s=tunnel.stars[best];
+      setAnno('arrive','arr'+best,()=>project(s.world),`<div class="k">neuron · ${tunnel.sel===s.li?'on your thread':'in this session'}</div><div class="t">${esc(LM[s.li].claim)}</div>`)}
+    else if(best<0)clearAnno('arrive');
+    // near the end the two doorways name themselves: the next thread ahead, the way back on the side
+    if(cam.tp>.86){const nx=tunnel.door.next;
+      setAnno('doorA','dA'+(nx?nx.id:'home'),()=>project(tunnel.door.world.clone().add(new V3(0,4,0))),
+        `<div class="k">doorway · ahead</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><span class="go" ${nx?`data-go="${nx.id}"`:'data-home="1"'}>${nx?'step through to the next thread':'this is the newest thread · return'}</span>`);
+      setAnno('doorB','dB',()=>project(tunnel.back.world),`<div class="k">doorway · beside you</div><span class="go" data-rewind="1">↺ back to the beginning of this thread</span>`)}
+    else{clearAnno('doorA');clearAnno('doorB')}}
+  else{clearAnno('arrive');clearAnno('doorA');clearAnno('doorB')}
+  // HUD
+  placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
+  placeAnnos();
+  drawTissue(dt);
+  if(state.lens==='oracle'&&state.lastDecision&&cam.mode==='orbit'){const d=state.lastDecision;
+    setAnno('decision','dec'+(d.o.consumer+d.conf.toFixed(2)),()=>{const c=project(new V3(0,-R*.22,0));return {x:c.x,y:c.y,front:true}},
+      `<div class="m">${esc(ORACLE_PLAIN[d.o.consumer]||d.o.consumer)} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}</div>`)}
+  else clearAnno('decision');
+  bloom.strength=.85-state.insideK*.35+sh*.8;
+  // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)
+  if(Math.abs(renderer.domElement.width-Math.floor(innerWidth*DPR))>2||Math.abs(renderer.domElement.height-Math.floor(innerHeight*DPR))>2){
+    renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix()}
+  composer.render();
+  // frame budget: the GPU is shared with local models
+  fpsAcc+=dt;fpsN++;if(fpsAcc>1){fps=fpsN/fpsAcc;fpsAcc=0;fpsN=0;
+    if(fps<28&&++slowFrames>2&&DPR>1){DPR=Math.max(1,DPR-.25);renderer.setPixelRatio(DPR);composer.setPixelRatio?.(DPR);U.uPix.value=DPR;slowFrames=0}}
+  statT-=dt;if(statT<=0){statT=1;updateStats(fps)}
+});
+</script>
+</body>
+</html>
