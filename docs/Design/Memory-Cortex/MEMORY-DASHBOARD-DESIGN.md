@@ -616,28 +616,29 @@ membrane in the evidence colour, high-contrast text); clicking flies to it, the 
 whole record, evidence orbits it as satellites (user = largest, brightest), and "→ step into
 that session" opens the thread it was learned in.
 
-**A session is its own dimension: fibre tissue** you travel through in time, like looking into
-the synapse of a neuron (owner, 2026-10-19; replaces the earlier hex-ribbon vortex). Each thread
-or strand is a **bundle of many fine fibres** — the threads of cloth, the fibres of a muscle
-bundle — that twist round their own axis, part and rejoin; never hex cells, never boxes. Thick
-bundles come from `conversations.db` (the thread, and any strand forked from it via
-`parent_id`; one lit run of fibres per message); thin bundles come from `memory.db` (one per
-event family; one lit run per moment). The bundles twist together round the tunnel; hovering a
-message lights the moments of that turn and draws the links, and hovering a moment lights its
-turn. A fan-out opens the thread into parallel bundles that fold back (DER). Each task is a
-band of fibres round the tunnel (red = failed, amber = partial, white = **you corrected
-IRIS**). A faint pulse runs along the fibres at the pace of the session's own attention
-(Caducean u); the tunnel's width follows x. Pins are fixed beads on the thread (§17.1). Neurons
-the session touched sit on the rope as the same glyph as in the cortex, joined by a tissue
-thread; click one to follow its thread (scroll / ← → step neuron to neuron; Enter opens it in
-the mind). A **thread rail** at the bottom shows the session's neurons and tasks in time; click
-to travel. The tunnel is lined with very faint background fibres and a fine haze of particles (the
-synaptic space). The far end is a **doorway** — an arch that opens onto the next thread (or back to
-the timeline for the newest); a side door returns to this thread's beginning. Rope width
-follows the Caducean trajectory; the cortex glows behind the entrance. **The doorway is a tall
-arch with a soft edge — no rim line, nothing round or puckered.** The tunnel's fibres part
-round it and end on its outline, so the arch is framed by them; inside it the swirl turns
-slowly. A checkpoint pin of the thread (§17.1) sits at the crown of the arch.
+**A session is its own dimension: vines** climbing the tunnel wall, travelled in time like looking into
+the synapse of a neuron (owner, 2026-10-19: fibre bundles were rejected — "try something similar to vines";
+before that the hex-ribbon vortex was rejected too). Each thread or strand is a **vine**: a stem that
+meanders and slowly twines round its own path, swells at nodes, thickens where the work was dense and tapers
+where it starts; never hex cells, never boxes, never fine-fibre bundles. Thick vines come from
+`conversations.db` — the thread, and any strand forked from it via `parent_id`, which **branches off the
+thread** where it starts and grows back into it if it ends early; **your messages are leaves, IRIS's are
+buds** on the thread. Thin vines come from `memory.db` (one per event family); **a moment curls a
+tendril** off its family's vine. Small dim leaves grow at the stems' nodes. Hovering a message lights the
+moments of that turn and draws the links; hovering a moment lights its turn. A fan-out opens the thread
+into parallel thin vines that fold back (DER). Each task is a thin ring vine round the tunnel (red =
+failed, amber = partial, white = **you corrected IRIS**). A faint pulse runs along the stems at the pace
+of the session's own attention (Caducean u); the tunnel's width follows x (smoothly). Pins are fixed
+knots on the thread (§17.1). Neurons the session touched sit on the wall as the same glyph as in the
+cortex, joined by a tissue thread; click one to follow its thread (scroll / ← → step neuron to neuron;
+Enter opens it in the mind). A **thread rail** at the bottom shows the session's neurons and tasks in
+time; click to travel. A few very faint wall vines and a fine haze of particles line the tunnel (the
+synaptic space). The vines are one opaque mesh with a soft rim light — no additive glare, nothing that
+brightens with time. The far end is a **doorway** — an arch that opens onto the next thread (or back to
+the timeline for the newest); a side door returns to this thread's beginning; the cortex glows behind
+the entrance. **The doorway is a tall arch with a soft edge — no rim line, nothing round or puckered
+(owner: kept).** The vines climb to its outline; inside it the swirl turns slowly. A checkpoint pin of
+the thread (§17.1) sits at the crown of the arch.
 
 **The neuron glyph** (cortex and tunnel alike): a small nucleus with radial spokes, one per
 share of evidence, coloured by kind (white you · green tests/finished · cyan held up again ·
@@ -732,7 +733,8 @@ same 500 ms cadence as `useCaducean`), and `landmark_id` on every `RECALL_*` eve
   Measured target: ≤ 8 ms GPU per frame at 1440×900 on the owner's machine, with the tool
   model loaded.
 - **Bounded scene.** ≤ 50k skin particles, ≤ 400 neurons drawn (the rest as dust), ≤ 3k axons,
-  tunnel built on entry and disposed on exit (about 200k fibre samples, one draw call for all fibres).
+  tunnel built on entry and disposed on exit (vines: one opaque mesh of tubes - 22.7k vertices in the demo's
+  session 14, against ~400k additive fibre samples before; measured in the in-app browser: 27-30 fps vs 20-23).
 - **Reduced motion.** `prefers-reduced-motion`: cuts instead of flights, no auto-drift,
   sparks slowed, shockwave becomes a brightness change.
 - **Not only visual.** Every object has a text equivalent reachable by keyboard (Tab through
@@ -773,7 +775,7 @@ dimmer as there are more of them (`uEdge`), so a store with 3,000 edges does not
   certainty, a node; a thing made — that tether shows in the artifacts lens, where the tissue settles). A
   thin ring round the base = held in context, and its tethers are a little brighter. Hover swells a cell
   with the title, type, link count and age. Timeline — a fixed bead of the same crystal on its thread at the
-  moment it was made; the thread's fibres part round it; a tether runs on to the doorway when later threads
+  moment it was made, a knot on the thread vine; a tether runs on to the doorway when later threads
   used it; a checkpoint pin sits at the crown of that thread's doorway. A diamond mark on the thread rail.
 - **Over time:** nothing moves or pulses. A pin appears when it is written and stays until removed.
 
@@ -864,5 +866,5 @@ dimmer as there are more of them (`uEdge`), so a store with 3,000 edges does not
 
 Open `index.html` (demo) and `index.html?real` (after `export_snapshot.py`). Cortex: nested patches inside
 territories; crystals set in the wall (fly inside); `s` for the layers; the ticker shows the guard's rows.
-Timeline lens, click a session (in the demo, `__cortex.enter(12)` and `__cortex.enter(14)` open one with a pin bead and one with a checkpoint): fibre bundles, the pins as beads, the arch at the
+Timeline lens, click a session (in the demo, `__cortex.enter(12)` and `__cortex.enter(14)` open one with a pin bead and one with a checkpoint): the vines (leaves, buds, tendrils, branches), the pins as knots, the arch at the
 end. Artifacts lens: pin tethers reach the tissue.

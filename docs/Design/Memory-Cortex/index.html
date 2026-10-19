@@ -14,7 +14,7 @@
   export_snapshot.py) when present; otherwise a generator that follows the same schema.
   Spec: docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md (section 16 = this experience model;
   section 17 = pins, trust channel, fading, landmark tracts, immune response, sectors, spaces).
-  2026-10-19: the timeline is fibre tissue (bundles of fine fibres, a soft arch for the doorway); the Kyudo and growth
+  2026-10-19: the timeline is vines climbing the tunnel wall (owner: fibre bundles out, vines in; the soft arch doorway stays); the Kyudo and growth
   concepts of MEMORY-FOUNDATION-ANALYSIS 5, 6, 11-14 are drawn from real values when ?real, demo data otherwise.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1360,13 +1360,12 @@ function shockAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 0;const x=d/D;if
 function bounceAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 1;const x=d/D;return 1+Math.exp(-x*6)*Math.sin(x*Math.PI*4)*.06}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. a session = its own dimension: FIBRE TISSUE you travel through, like looking into a synapse (owner, 2026-10-19).
-//    conversations.db gives the thick bundles — the thread itself and any strand forked from it, one lit run of
-//    fibres per message. memory.db gives the thin bundles — one per event family, one lit run per moment. Each
-//    bundle is many fine fibres that twist together, part where the work splits (or round a pin) and rejoin; a
-//    moment and the message (turn) it belongs to are linked. Neurons the session touched sit on the wall as glyphs,
-//    joined by a tissue thread you can follow. Pins are fixed beads on the thread. The far end is a tall soft arch
-//    the fibres frame, not a light.
+// 7. a session = its own dimension: VINES climbing the tunnel wall, like travelling through a synapse in time
+//    (owner, 2026-10-19). conversations.db gives the thick vines - the thread itself, and any strand forked from it,
+//    which branches off the thread; your messages are leaves on it, IRIS's are buds. memory.db gives the thin vines -
+//    one per event family; a moment curls a tendril. Neurons the session touched sit on the wall as glyphs, joined by
+//    a tissue thread you can follow. Pins are fixed knots on the thread. The far end is a tall soft arch the vines
+//    climb, not a light.
 // ═══════════════════════════════════════════════════════════════════════════
 const TUN_OFF=new V3(0,0,-3000);
 let tunnel=null;
@@ -1381,24 +1380,38 @@ function sessionMessages(s){
   if(!out.length)out.push({ts:s.started,role:'user',len:60,text:null});
   return out}
 // A session is looked at the way you would look into the synapse of a neuron and travel along it in time: every thread
-// and strand is FIBRE TISSUE, many fine fibres running together like the threads of cloth or the fibres of a muscle
-// bundle. They twist round their own axis, part where the work splits (or round a pin) and rejoin. Each fibre is a thin
-// soft-edged ribbon turned to the viewer in the vertex shader; a moment brightens a run of fibres, and a faint pulse
-// runs along them at the pace of the session's own attention (the Caducean u).
-const FIB_VS=`uniform float uTime,uFocal,uSpeed,uLen;uniform vec4 uHL[8];
-  attribute vec3 aSeg,aCol,aF;attribute float aS,aU;varying vec3 vC;varying float vA,vE;
+// and strand is a VINE climbing the tunnel wall (owner, 2026-10-19: "something similar to vines"). The stem meanders,
+// thickens where the work was dense and tapers where it starts and ends; tendrils curl off it at moments, leaves open
+// at your messages and buds at IRIS's; a strand forked from the thread branches off it and rejoins. One opaque mesh
+// with a soft rim light - no additive glare, nothing that brightens with time. A faint pulse runs along the stems at the
+// pace of the session's own attention (the Caducean u).
+const VINE_VS=`uniform float uTime,uSpeed,uLen;uniform vec4 uHL[8];
+  attribute vec3 aCol;attribute vec4 aLit;attribute float aU,aB,aAr,aL,aK;
+  varying vec3 vN,vV,vC,vLit;varying float vA,vAr,vL,vP;
   void main(){
-    vec4 mv=modelViewMatrix*vec4(position,1.);vec4 m1=modelViewMatrix*vec4(position+aSeg,1.);
-    float d=max(-mv.z,.05),d1=max(-m1.z,.05);
-    vec2 dir=m1.xy/d1-mv.xy/d;float dl=length(dir);dir=dl>1e-7?dir/dl:vec2(1.,0.);
-    float w=max(aF.z,1.25*d/uFocal);                         // never thinner than about a pixel: a thinner fibre dims instead
-    mv.xy+=vec2(-dir.y,dir.x)*aS*w*.5;
-    float pulse=pow(.5+.5*sin(aU*uLen*.5-uTime*uSpeed+aF.y*6.2832),14.);
-    float hl=0.;for(int j=0;j<8;j++){vec4 h=uHL[j];if(h.x>-.5&&abs(aF.x-h.x)<.5)hl+=h.w*smoothstep(h.y-.002,h.y+.002,aU)*(1.-smoothstep(h.z-.002,h.z+.002,aU));}
-    vC=aCol*(1.+hl+pulse*.45);
-    vA=smoothstep(170.,16.,d)*smoothstep(.6,5.,d)*min(1.,aF.z/w)*(1.-smoothstep(.985,1.,aU));vE=aS; // fibres thin out near the camera and as they reach the arch
+    vec4 mv=modelViewMatrix*vec4(position,1.);float d=max(-mv.z,.05);
+    vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);
+    float hl=0.;for(int j=0;j<8;j++){vec4 h=uHL[j];if(h.x>-.5&&abs(aB-h.x)<.5)hl+=h.w*smoothstep(h.y-.002,h.y+.002,aU)*(1.-smoothstep(h.z-.002,h.z+.002,aU));}
+    vP=pow(.5+.5*sin(aU*uLen*.5-uTime*uSpeed+aB*1.7),16.)*step(aK,.5);   // the attention pulse runs along stems only
+    vC=aCol*(1.+hl*.8);vLit=aLit.rgb*(aLit.a+hl*.5);vAr=aAr;vL=aL;
+    vA=smoothstep(170.,16.,d)*smoothstep(.35,2.6,d);                      // fade far away and right at the camera
     gl_Position=projectionMatrix*mv;}`;
-const FIB_FS=`varying vec3 vC;varying float vA,vE;void main(){float e=1.-vE*vE;gl_FragColor=vec4(vC,vA*e*e);}`;
+const VINE_FS=`varying vec3 vN,vV,vC,vLit;varying float vA,vAr,vL,vP;
+  void main(){float ndv=abs(dot(normalize(vN),normalize(vV)));float rim=pow(1.-ndv,2.2);
+    float bark=.78+.22*sin(vL*9.+2.*sin(vL*1.7)+vAr*12.566);                // grooves running along the stem
+    vec3 c=vC*(.12+.07*ndv)*bark+vC*rim*.28+vLit*(.05+.16*rim)+vC*rim*vP*.3;
+    gl_FragColor=vec4(c,vA);}`;
+// leaves (your messages) and buds (IRIS's): a soft leaf shape with a midrib, drawn on a small quad off the stem
+const LEAF_VS=`uniform vec4 uHL[8];attribute vec2 aUV;attribute vec3 aCol;attribute float aU,aB,aBud;
+  varying vec2 vUV;varying vec3 vC;varying float vA,vBud;
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=max(-mv.z,.05);
+    float hl=0.;for(int j=0;j<8;j++){vec4 h=uHL[j];if(h.x>-.5&&abs(aB-h.x)<.5)hl+=h.w*smoothstep(h.y-.002,h.y+.002,aU)*(1.-smoothstep(h.z-.002,h.z+.002,aU));}
+    vUV=aUV;vC=aCol*(1.+hl*.9);vBud=aBud;vA=smoothstep(150.,14.,d)*smoothstep(.35,2.2,d);gl_Position=projectionMatrix*mv;}`;
+const LEAF_FS=`varying vec2 vUV;varying vec3 vC;varying float vA,vBud;
+  void main(){float y=vUV.y,x=vUV.x;float hw=mix(.55,.3,vBud)*pow(max(sin(3.1416*y),0.),mix(.8,1.6,vBud));
+    float inside=1.-smoothstep(hw-.1,hw,abs(x));if(inside<.01)discard;
+    float rib=.65+.35*smoothstep(0.,.07,abs(x));float vein=.9+.1*sin(y*16.-abs(x)*7.);
+    gl_FragColor=vec4(vC*(.34+.14*y)*rib*vein,vA*inside*.92);}`;
 // the doorway: a tall arch with a soft edge (no rim line, nothing round); the fibres of the tunnel part round it and frame it.
 // Coordinates are in units of the tunnel radius at the door: half-width .55, sill -1.15, springing .35, crown .9
 const ARCH_SDF=`float archSdf(vec2 p){return p.y>.35?length(vec2(p.x,p.y-.35))-.55:max(abs(p.x)-.55,-1.15-p.y);}`;
@@ -1425,7 +1438,8 @@ function buildTunnel(s){
   const uOf=ts=>clamp(.04+.9*(ts-s.started)/tSpan,.02,.96);
   const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const epS=eps.map(e=>uOf(e.ts));
   const tr=s.traj.length?s.traj:[{x:0}];
-  const radius=u=>{const k=Math.floor(clamp(u,0,.999)*tr.length);let r=3.6*(.66+.6*clamp(.5+.5*tr[k].x,0,1));
+  const trX=k=>clamp(.5+.5*(tr[Math.min(tr.length-1,Math.max(0,k))].x||0),0,1);
+  const radius=u=>{const f=clamp(u,0,.999)*tr.length-.5,k=Math.floor(f),t=smooth01(f-k);let r=3.6*(.66+.6*lerp(trX(k),trX(k+1),t));
     for(const q of epS)r*=1+.2*Math.exp(-Math.pow((u-q)/.03,2));return r};
   const frameAt=u=>{const i=Math.min(599,Math.floor(clamp(u,0,1)*600));return {N:FR.normals[i],B:FR.binormals[i],T:FR.tangents[i]}};
   const onWall=(u,th,k=1)=>{u=clamp(u,0,1);const P=curve.getPointAt(u),{N,B}=frameAt(u);const r=radius(u)*k;
@@ -1446,107 +1460,134 @@ function buildTunnel(s){
     const st={kind:'family',fi,label:f.word,th0:6.283*(fi+1)/10,u0:0,u1:1,k:1,col:new THREE.Color(f.color)};strands.push(st);famStr[fi]=st});
   strands.forEach((st,i)=>{st.bi=i;st.phase=rng()*6.283});
   const angle=(st,u)=>st.fold!=null?u*TW+st.fold*Math.sin(clamp((u-st.u0)/(st.u1-st.u0),0,1)*Math.PI):st.th0+u*TW;
-  // br = brightness of one fibre (low on purpose: the tissue is a texture you travel through, never a glare)
-  const SPEC={thread:{F:40,sp:.15,wd:.03,br:.34,step:.34},strand:{F:16,sp:.1,wd:.025,br:.36,step:.4},fan:{F:6,sp:.075,wd:.022,br:.36,step:.4},
-    family:{F:10,sp:.07,wd:.02,br:.26,step:.5}};
-  const jobs=strands.map(st=>{const sp=SPEC[st.kind];st.len=(st.u1-st.u0)*CL*1.25;const ns=Math.max(12,Math.round(st.len/sp.step));
-    return {st,sp,ns,F:sp.F,lit:new Float32Array(ns),litC:new Float32Array(ns*3)}});
-  // light a run of a bundle's samples: a message or a moment brightens (and tints) the fibres there
+  // a forked strand branches off the thread where it starts (and grows back into it if it ends before the session)
+  const angleThread=u=>strands[0].th0+u*TW;
+  const angleV=(st,u)=>{const a=angle(st,u);if(st.kind!=='strand')return a;
+    const w=smooth01((u-st.u0)/.05)*(st.u1>=.99?1:smooth01((st.u1-u)/.05));return lerp(angleThread(u),a,w)};
+  // stem size and sampling per vine kind (radius in world units; the tunnel is ~2.4-6 across)
+  const SPEC={thread:{r:.085,step:.55,br:1},strand:{r:.06,step:.7,br:.95},fan:{r:.035,step:.7,br:.9},family:{r:.042,step:.8,br:.8}};
+  const jobs=strands.map(st=>{const sp=SPEC[st.kind];st.len=(st.u1-st.u0)*CL*1.15;const ns=Math.max(10,Math.round(st.len/sp.step));
+    return {st,sp,ns,lit:new Float32Array(ns),litC:new Float32Array(ns*3)}});
+  // light a run of a vine: a message or a moment tints the stem there (the tint, not a glare)
   const lightRun=(st,ua,ub,c,amt)=>{const j=jobs[st.bi],du=st.u1-st.u0,n=j.ns-1;
     const kA=Math.floor((ua-st.u0)/du*n),kB=Math.ceil((ub-st.u0)/du*n);
     for(let k=Math.max(0,kA-1);k<=Math.min(n,kB+1);k++){const f=k>=kA&&k<=kB?1:.5;if(amt*f>=j.lit[k]){j.lit[k]=amt*f;j.litC[k*3]=c.r*f;j.litC[k*3+1]=c.g*f;j.litC[k*3+2]=c.b*f}}};
 
-  // ── pins of this thread: a fixed bead on the thread at the moment it was made; the fibres part round it.
-  // A checkpoint pin marks the doorway.
+  // ── pins of this thread: a fixed knot on the thread vine at the moment it was made. A checkpoint pin marks the doorway.
   const pinsHere=M.pins.filter(p=>p.session===s.id&&p.type!=='checkpoint').slice(0,24);
   const ckHere=M.pins.filter(p=>p.session===s.id&&p.type==='checkpoint').slice(0,3);
   const pinU=p=>clamp(uOf(p.created),.04,.93);
 
-  // ── items: a message lights a run of the thread; a moment lights a run of its family's bundle (and is tied to its turn)
+  // ── items: a message tints a run of the thread (and grows a leaf or a bud); a moment tints its family's vine (and curls a
+  // tendril), and is tied to the turn it belongs to
   const items=[];
   msgs.forEach(m=>{const st=strands[0],u=uOf(m.ts),span=1+Math.min(6,Math.round((m.len||60)/90)),ub=Math.min(.99,u+span*.5*UW);
     lightRun(st,u,ub,new THREE.Color(m.role==='user'?'#ffe8fb':'#ff5fd6'),1);
-    items.push({type:'msg',m,u,bundle:0,ua:u,ub,world:onWall(u,angle(st,u),st.k).add(TUN_OFF),links:[]})});
+    items.push({type:'msg',m,u,bundle:0,ua:u,ub,world:onWall(u,angleV(st,u),st.k).add(TUN_OFF),links:[]})});
   const msgItems=items.slice();
   ev.forEach(e=>{const st=famStr[FAMI[e.family]??0];if(!st)return;const u=uOf(e.ts),ub=Math.min(.99,u+.9*UW);
     const c=(e.valence==='sets_back'?new THREE.Color('#ff4a3d'):new THREE.Color(FAM[FAMI[e.family]].color)).multiplyScalar(.5+(EVID[e.evidence]??.2)*.8+(e.actor==='user'?.3:0));
     lightRun(st,u,ub,c,1);
     let mi=null;for(const it of msgItems){if(it.m.ts<=e.ts+1)mi=it;else break}
-    const item={type:'event',e,u,bundle:st.bi,ua:u,ub,world:onWall(u,angle(st,u),st.k).add(TUN_OFF),links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
-
-  // ── where the thread parts: a few places along each bundle, where the work splits (opens at the fan-out, closes at the
-  // fold-back) and round every pin
-  const parts=strands.map(st=>{const a=[],n=st.kind==='thread'?5:st.kind==='family'?2:st.kind==='strand'?3:0,du=st.u1-st.u0;
-    for(let i=0;i<n;i++)a.push({u:rand(st.u0+.06*du,st.u1-.08*du),w:rand(.025,.05),amt:rand(.8,1.2)});return a});
-  const partAt=(st,u)=>{let a=0;for(const p of parts[st.bi]){const x=(u-p.u)/p.w;a+=p.amt*Math.exp(-x*x)}
-    if(st.kind==='thread'){for(const f of strands)if(f.kind==='fan')a+=1.1*smooth01((u-f.u0+.012)/.03)*(1-smooth01((u-f.u1+.012)/.03));
-      for(const p of pinsHere){const x=(u-pinU(p))/.02;a+=1.3*Math.exp(-x*x)}}
-    return a};
+    const item={type:'event',e,u,bundle:st.bi,ua:u,ub,col:c,world:onWall(u,angleV(st,u),st.k).add(TUN_OFF),links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
 
   // ── the door frame (the tunnel's end): up = world up made square to the tunnel, the arch stands in that plane
   const P1=curve.getPointAt(1),T1=frameAt(1).T.clone(),rad1=radius(1);
   const Ud=new V3(0,1,0).addScaledVector(T1,-T1.y);if(Ud.lengthSq()<1e-4)Ud.set(1,0,0);Ud.normalize();
   const Rd=new V3().crossVectors(T1,Ud).normalize();
 
-  // ── write every fibre of every bundle (plus the background tissue and the task rings) into one geometry
-  const WALLF=56,wallNs=Math.max(40,Math.round(CL*1.1/.9)),RING_N=3,RING_NS=73;
-  let total=jobs.reduce((a,j)=>a+j.ns*j.F,0)+WALLF*wallNs+eps.length*RING_N*RING_NS;
-  const nv=total*2,A={pos:new Float32Array(nv*3),seg:new Float32Array(nv*3),s:new Float32Array(nv),u:new Float32Array(nv),f:new Float32Array(nv*3),col:new Float32Array(nv*3)};
-  const idx=new Uint32Array(total*6);let N=0,IN=0;
-  const put=(P,u,r,g_,b_,bi,fr,wd)=>{for(let q=0;q<2;q++){const v=2*N+q;A.pos[v*3]=P.x;A.pos[v*3+1]=P.y;A.pos[v*3+2]=P.z;A.s[v]=q?1:-1;A.u[v]=u;
-    A.f[v*3]=bi;A.f[v*3+1]=fr;A.f[v*3+2]=wd;A.col[v*3]=r;A.col[v*3+1]=g_;A.col[v*3+2]=b_}N++};
-  const endFibre=(b0,ns)=>{for(let k=0;k<ns;k++){const a=b0+k,b=k<ns-1?a+1:a,c=k<ns-1?a:a-1;
-      const sx=A.pos[2*b*3]-A.pos[2*c*3],sy=A.pos[2*b*3+1]-A.pos[2*c*3+1],sz=A.pos[2*b*3+2]-A.pos[2*c*3+2];
-      for(let q=0;q<2;q++){const v=(2*a+q)*3;A.seg[v]=sx;A.seg[v+1]=sy;A.seg[v+2]=sz}}
-    for(let k=0;k<ns-1;k++){const i0=2*(b0+k);idx.set([i0,i0+1,i0+2,i0+1,i0+3,i0+2],IN);IN+=6}};
-  const tmp=new V3(),tgt=new V3(),vv=new V3();
-  jobs.forEach(({st,sp,ns,F,lit,litC})=>{
-    const u0=st.u0,du=st.u1-st.u0,Ps=[],Ys=[],Zs=[],us=new Float32Array(ns),part=new Float32Array(ns);
-    for(let k=0;k<ns;k++){const u=u0+du*k/(ns-1);us[k]=u;const P=onWall(u,angle(st,u),st.k);Ps.push(P);
-      Ys.push(P.clone().sub(curve.getPointAt(clamp(u,0,1))).normalize());part[k]=partAt(st,u)}
-    for(let k=0;k<ns;k++){const T=Ps[Math.min(k+1,ns-1)].clone().sub(Ps[Math.max(k-1,0)]).normalize();
-      const Z=new V3().crossVectors(T,Ys[k]).normalize();Ys[k].crossVectors(Z,T).normalize();Zs.push(Z)}
-    const fib=Array.from({length:F},(_,j)=>({rho:Math.min(1,Math.sqrt((j+.5)/F)*.95+.05*rng()),ph:rng()*6.283,tw:(rng()<.5?-1:1)*rand(.4,1.3),
-      side:j%3-1,br:rand(.7,1.3),wd:rand(.7,1.2),fr:rng()}));
-    const fpos=(f,k,out)=>{const t=(us[k]-u0)/du,sAl=t*st.len;
-      const tap=smooth01(t/.05)*(st.u1>=.99?1:smooth01((1-t)/.05));
-      const am=sp.sp*radius(us[k])*tap*(.62+.38*Math.sin(6.283*sAl/55+st.phase));
-      const phi=f.ph+f.tw*sAl*.22,wob=1+.18*Math.sin(sAl*.9+f.fr*20);
-      return out.copy(Ps[k]).addScaledVector(Ys[k],am*f.rho*Math.cos(phi)*wob).addScaledVector(Zs[k],am*f.rho*Math.sin(phi)*wob+f.side*part[k]*am*1.7)};
-    for(const f of fib){
-      const arch=st.u1>=.99;
-      if(arch){fpos(f,ns-1,tmp);vv.copy(tmp).sub(P1);const [ax,ay]=archRay(Math.atan2(vv.dot(Ud),vv.dot(Rd))),sc=rad1*(.97+.06*f.fr);
-        tgt.copy(P1).addScaledVector(Rd,ax*sc).addScaledVector(Ud,ay*sc)}  // this fibre's place on the arch: the same side it runs on
-      const b0=N;
-      for(let k=0;k<ns;k++){fpos(f,k,tmp);if(arch){const b=smooth01((us[k]-.93)/.07);if(b>0)tmp.lerp(tgt,b*b)}
-        const m=sp.br*f.br,l=lit[k];
-        put(tmp,us[k],st.col.r*m*(1+l*1.1)+litC[k*3]*l*.45*sp.br,st.col.g*m*(1+l*1.1)+litC[k*3+1]*l*.45*sp.br,st.col.b*m*(1+l*1.1)+litC[k*3+2]*l*.45*sp.br,st.bi,f.fr,sp.wd*f.wd)}
-      endFibre(b0,ns)}});
-  // the background tissue: very faint fibres that weave round the whole tunnel just outside the bundles
+  // ── every vine (stems, tendrils, the faint wall vines, the task rings) is a tube written into ONE mesh
+  const VB={pos:[],nrm:[],u:[],b:[],col:[],lit:[],ar:[],l:[],k:[],idx:[]};
+  const RS=7;   // sides of a stem (a tendril uses 4)
+  // a tube along points Ps with radii rs; per sample: u, lit amount + colour; kind 0 = stem (pulse), 1 = tendril / ring
+  const tube=(Ps,rs,us,bi,col,litA,litC,kind,sides=RS,closed=false)=>{
+    const n=Ps.length;if(n<2)return;const base=VB.pos.length/3;
+    let Nr=null;const T=new V3(),Bn=new V3(),off=new V3();let along=0;
+    for(let k=0;k<n;k++){
+      T.copy(Ps[Math.min(k+1,n-1)]).sub(Ps[Math.max(k-1,0)]).normalize();
+      if(!Nr){Nr=Math.abs(T.y)<.9?new V3(0,1,0):new V3(1,0,0);Nr.addScaledVector(T,-Nr.dot(T)).normalize()}
+      else{Nr.addScaledVector(T,-Nr.dot(T));if(Nr.lengthSq()<1e-8)Nr.set(T.y,-T.x,0);Nr.normalize()}   // parallel transport: no twist
+      Bn.crossVectors(T,Nr);if(k>0)along+=Ps[k].distanceTo(Ps[k-1]);
+      const li=litA?litA[k]:0,lr=litC?litC[k*3]:0,lg=litC?litC[k*3+1]:0,lb=litC?litC[k*3+2]:0;
+      for(let j=0;j<=sides;j++){const a=j/sides*6.2832;off.copy(Nr).multiplyScalar(Math.cos(a)).addScaledVector(Bn,Math.sin(a));
+        const P=Ps[k];VB.pos.push(P.x+off.x*rs[k],P.y+off.y*rs[k],P.z+off.z*rs[k]);VB.nrm.push(off.x,off.y,off.z);
+        VB.u.push(us[k]);VB.b.push(bi);VB.col.push(col.r,col.g,col.b);VB.lit.push(lr,lg,lb,li);VB.ar.push(j/sides);VB.l.push(along);VB.k.push(kind)}}
+    const segs=closed?n:n-1;
+    for(let k=0;k<segs;k++){const a=base+k*(sides+1),c=base+((k+1)%n)*(sides+1);
+      for(let j=0;j<sides;j++)VB.idx.push(a+j,c+j,a+j+1,a+j+1,c+j,c+j+1)}};
+  const wob=(u,ph,a)=>a*(Math.sin(u*CL*.07+ph)+.5*Math.sin(u*CL*.19+ph*2.3));   // the stem's own meander
+  const stemAt=(st,u)=>{const tw=u*CL*1.05+st.phase;   // a slow twining round its own path, like a climbing vine
+    return onWall(u,angleV(st,u)+wob(u,st.phase,.05)+.018*Math.sin(tw),st.k*(1+wob(u,st.phase+1,.012)+.012*Math.cos(tw)))};
+  const NODE=1.3;   // a node (a small swelling, where a leaf can grow) every NODE world units along a stem
+  // stems
+  jobs.forEach(({st,sp,ns,lit,litC})=>{
+    const u0=st.u0,du=st.u1-st.u0,Ps=[],rs=[],us=[];const arch=st.u1>=.99;let tgt=null;
+    if(arch){const e=stemAt(st,1).sub(P1);const [ax,ay]=archRay(Math.atan2(e.dot(Ud),e.dot(Rd)));
+      tgt=P1.clone().addScaledVector(Rd,ax*rad1).addScaledVector(Ud,ay*rad1)}   // where this vine climbs the arch
+    for(let k=0;k<ns;k++){const t=k/(ns-1),u=u0+du*t;us.push(u);const P=stemAt(st,u);
+      if(arch){const b=smooth01((u-.92)/.08);if(b>0)P.lerp(tgt,b*b)}
+      Ps.push(P);
+      const tap=smooth01(t/.06)*(arch?1:smooth01((1-t)/.06));
+      const sn=(t*st.len/NODE)%1,node=Math.exp(-Math.pow((sn-.5)/.07,2));
+      rs.push(sp.r*(.35+.65*tap)*(.82+.25*lit[k])*(1+.08*Math.sin(t*st.len*.9+st.phase)+.35*node))}
+    tube(Ps,rs,us,st.bi,st.col.clone().multiplyScalar(sp.br),lit,litC,0)});
+  // tendrils: a moment curls a tendril off its family's vine, a message one off the thread (capped, the newest first)
+  const tendrilAt=(st,it,len,col)=>{const u=it.u,P0=stemAt(st,u),C=curve.getPointAt(clamp(u,0,1));
+    const inw=C.clone().sub(P0).normalize(),T=stemAt(st,Math.min(1,u+.004)).sub(P0).normalize(),S=new V3().crossVectors(T,inw).normalize();
+    const n=18,Ps=[],rs=[],us=[],side=rng()<.5?-1:1,turns=rand(1.3,2.2);
+    for(let i=0;i<n;i++){const f=i/(n-1),a=f*turns*6.2832*side,rr=len*.22*(1-f*.7);
+      Ps.push(P0.clone().addScaledVector(inw,len*.55*f).addScaledVector(T,len*.35*f+Math.sin(a)*rr*f).addScaledVector(S,Math.cos(a)*rr*f));
+      rs.push(.022*(1-f*.8));us.push(u)}
+    tube(Ps,rs,us,st.bi,col,null,null,1,4)};
+  items.filter(it=>it.type==='event').slice(-140).forEach(it=>{const st=strands[it.bundle];tendrilAt(st,it,rand(.5,1),it.col.clone().multiplyScalar(.7))});
+  msgItems.slice(-60).forEach((it,i)=>{if(i%3===1)tendrilAt(strands[0],it,rand(.6,1.1),THREAD_COL.clone().multiplyScalar(.6))});
+  // the faint wall vines: a few thin, dim vines that wind round the whole tunnel just outside the others
   {const bc=new THREE.Color('#5d93b5');
-    for(let j=0;j<WALLF;j++){const th0=rng()*6.283,tw=TW*rand(.6,1.5)*(rng()<.5?-1:1),kk=1.22+rng()*.5,br=rand(.035,.07),fr=rng(),b0=N;
-      for(let k=0;k<wallNs;k++){const u=.01+.98*k/(wallNs-1);put(onWall(u,th0+u*tw+.15*Math.sin(u*30+j),kk),u,bc.r*br,bc.g*br,bc.b*br,800,fr,.06)}
-      endFibre(b0,wallNs)}}
-  // tasks: a band of fibres round the whole tunnel; a correction by you is the brightest, failure red, partial amber
+    for(let j=0;j<9;j++){const th0=rng()*6.283,tw=TW*rand(.5,1.2)*(rng()<.5?-1:1),kk=1.2+rng()*.4,ph=rng()*6.28,n=Math.max(40,Math.round(CL*1.1/1.2));
+      const Ps=[],rs=[],us=[];for(let k=0;k<n;k++){const u=.01+.98*k/(n-1);Ps.push(onWall(u,th0+u*tw+wob(u,ph,.08),kk));rs.push(.016);us.push(u)}
+      tube(Ps,rs,us,800,bc.clone().multiplyScalar(.45),null,null,1,4)}}
+  // tasks: a thin ring vine round the whole tunnel; a correction by you is the brightest, failure red, partial amber
   const gates=[];
   eps.forEach((ep,qi)=>{const u=epS[qi],P=curve.getPointAt(u);
-    const c=new THREE.Color(ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff');
-    const br=ep.corrected?.4:.2;
-    for(let i=0;i<RING_N;i++){const uu=clamp(u+(i-1)*.0035,0,1),Pc=curve.getPointAt(uu),{N:Nn,B:Bb}=frameAt(uu),Rr=radius(uu)*1.12,b0=N,fr=rng();
-      for(let n=0;n<RING_NS;n++){const th=n/(RING_NS-1)*6.2832,w=1+.015*Math.sin(th*5+i);
-        put(Pc.clone().addScaledVector(Nn,Math.cos(th)*Rr*w).addScaledVector(Bb,Math.sin(th)*Rr*w),uu,c.r*br,c.g*br,c.b*br,900,fr,.05)}
-      endFibre(b0,RING_NS)}
+    const c=new THREE.Color(ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff').multiplyScalar(ep.corrected?.7:.45);
+    const {N:Nn,B:Bb}=frameAt(u),Rr=radius(u)*1.1,Ps=[],rs=[],us=[];
+    for(let n=0;n<64;n++){const th=n/64*6.2832,w=1+.02*Math.sin(th*5+qi);Ps.push(P.clone().addScaledVector(Nn,Math.cos(th)*Rr*w).addScaledVector(Bb,Math.sin(th)*Rr*w));rs.push(.022);us.push(u)}
+    tube(Ps,rs,us,900,c,null,null,1,4,true);
     gates.push({ep,u,world:P.clone().add(TUN_OFF)})});
-  const fibGeo=new THREE.BufferGeometry();
-  fibGeo.setAttribute('position',new THREE.BufferAttribute(A.pos,3));fibGeo.setAttribute('aSeg',new THREE.BufferAttribute(A.seg,3));
-  fibGeo.setAttribute('aS',new THREE.BufferAttribute(A.s,1));fibGeo.setAttribute('aU',new THREE.BufferAttribute(A.u,1));
-  fibGeo.setAttribute('aF',new THREE.BufferAttribute(A.f,3));fibGeo.setAttribute('aCol',new THREE.BufferAttribute(A.col,3));
-  fibGeo.setIndex(new THREE.BufferAttribute(idx.subarray(0,IN),1));
+  const vineGeo=new THREE.BufferGeometry();
+  vineGeo.setAttribute('position',new THREE.Float32BufferAttribute(VB.pos,3));vineGeo.setAttribute('normal',new THREE.Float32BufferAttribute(VB.nrm,3));
+  vineGeo.setAttribute('aU',new THREE.Float32BufferAttribute(VB.u,1));vineGeo.setAttribute('aB',new THREE.Float32BufferAttribute(VB.b,1));
+  vineGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(VB.col,3));vineGeo.setAttribute('aLit',new THREE.Float32BufferAttribute(VB.lit,4));
+  vineGeo.setAttribute('aAr',new THREE.Float32BufferAttribute(VB.ar,1));vineGeo.setAttribute('aL',new THREE.Float32BufferAttribute(VB.l,1));
+  vineGeo.setAttribute('aK',new THREE.Float32BufferAttribute(VB.k,1));
+  vineGeo.setIndex(VB.pos.length/3>65535?new THREE.Uint32BufferAttribute(VB.idx,1):new THREE.Uint16BufferAttribute(VB.idx,1));
   const meanU=tr.reduce((a,p)=>a+Math.abs(p.u??.5),0)/tr.length;
   const hlU={value:Array.from({length:8},()=>new THREE.Vector4(-1,0,0,0))};
   const fibU={...U,uFocal:{value:700},uSpeed:{value:1.2+2.4*meanU},uLen:{value:L},uHL:hlU};
-  g.add(Object.assign(new THREE.Mesh(fibGeo,new THREE.ShaderMaterial({uniforms:fibU,vertexShader:FIB_VS,fragmentShader:FIB_FS,transparent:true,
-    depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})),{frustumCulled:false}));
+  g.add(Object.assign(new THREE.Mesh(vineGeo,new THREE.ShaderMaterial({uniforms:fibU,vertexShader:VINE_VS,fragmentShader:VINE_FS,transparent:true,
+    depthWrite:true,side:THREE.FrontSide})),{frustumCulled:false}));
+  // leaves on the thread vine: your messages open a leaf, IRIS's grow a bud
+  {const lp=[],luv=[],lc=[],lu=[],lb=[],lbud=[],li=[];let nv=0;
+    msgItems.slice(-90).forEach(it=>{const st=strands[0],u=it.u,P0=stemAt(st,u),C=curve.getPointAt(clamp(u,0,1));
+      const T=stemAt(st,Math.min(1,u+.004)).sub(P0).normalize(),inw=C.clone().sub(P0).normalize();
+      const side=rng()<.5?-1:1,S=new V3().crossVectors(T,inw).normalize().multiplyScalar(side);
+      const bud=it.m.role==='user'?0:1,len=bud?.4:.62,wd=len*.55;
+      const D=S.clone().multiplyScalar(.8).addScaledVector(inw,.35).addScaledVector(T,.3).normalize(),W=new V3().crossVectors(D,inw).normalize();
+      const c=new THREE.Color(it.m.role==='user'?'#e9b6e2':'#d454b6');
+      [[-1,0],[1,0],[-1,1],[1,1]].forEach(([x,y])=>{const p=P0.clone().addScaledVector(D,y*len).addScaledVector(W,x*wd);lp.push(p.x,p.y,p.z);luv.push(x,y);lc.push(c.r,c.g,c.b);lu.push(u);lb.push(0);lbud.push(bud)});
+      li.push(nv,nv+1,nv+2,nv+1,nv+3,nv+2);nv+=4});
+    // the vine's own leaves: small, dim, at every other node of the thread and strands, every fourth of the family vines
+    jobs.forEach(({st})=>{const every=st.kind==='family'?4:2,nN=Math.floor(st.len/NODE);
+      for(let q=1;q<nN&&q<70;q+=every){const u=st.u0+(st.u1-st.u0)*((q+.5)*NODE/st.len);if(u>.93)break;
+        const P0=stemAt(st,u),C=curve.getPointAt(clamp(u,0,1)),T=stemAt(st,Math.min(1,u+.004)).sub(P0).normalize(),inw=C.clone().sub(P0).normalize();
+        const S=new V3().crossVectors(T,inw).normalize().multiplyScalar(q%4<2?1:-1),len=(st.kind==='family'?.22:.3)*rand(.8,1.2),wd=len*.5;
+        const D=S.clone().multiplyScalar(.75).addScaledVector(inw,.3).addScaledVector(T,.45).normalize(),W=new V3().crossVectors(D,inw).normalize(),c=st.col.clone().multiplyScalar(.55);
+        [[-1,0],[1,0],[-1,1],[1,1]].forEach(([x,y])=>{const p=P0.clone().addScaledVector(D,y*len).addScaledVector(W,x*wd);lp.push(p.x,p.y,p.z);luv.push(x,y);lc.push(c.r,c.g,c.b);lu.push(u);lb.push(st.bi);lbud.push(0)});
+        li.push(nv,nv+1,nv+2,nv+1,nv+3,nv+2);nv+=4}});
+    if(nv){const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(lp,3));lg.setAttribute('aUV',new THREE.Float32BufferAttribute(luv,2));
+      lg.setAttribute('aCol',new THREE.Float32BufferAttribute(lc,3));lg.setAttribute('aU',new THREE.Float32BufferAttribute(lu,1));lg.setAttribute('aB',new THREE.Float32BufferAttribute(lb,1));
+      lg.setAttribute('aBud',new THREE.Float32BufferAttribute(lbud,1));lg.setIndex(li);
+      g.add(Object.assign(new THREE.Mesh(lg,new THREE.ShaderMaterial({uniforms:{uHL:hlU},vertexShader:LEAF_VS,fragmentShader:LEAF_FS,transparent:true,depthWrite:false,side:THREE.DoubleSide})),{frustumCulled:false}))}}
   // a fine cleft haze of particles between the walls and the bundles (the synaptic space)
   {const NW=7000,wP=new Float32Array(NW*3),wR=new Float32Array(NW);
     for(let i=0;i<NW;i++){const p=onWall(rng(),rng()*6.283,.2+rng()*1.1);wP.set([p.x,p.y,p.z],i*3);wR[i]=rng()}
@@ -1564,7 +1605,7 @@ function buildTunnel(s){
       g.add(Object.assign(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xf2c6ff,transparent:true,opacity:.1,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}}
 
   // ── pins: still faceted crystals (the same ones as in the cortex), small, fixed on the thread
-  const pinBeads=pinsHere.map(p=>{const u=pinU(p),st=strands[0],P=onWall(u,angle(st,u),st.k*.99);
+  const pinBeads=pinsHere.map(p=>{const u=pinU(p),st=strands[0],P=stemAt(st,u);
     const dir=P.clone().sub(curve.getPointAt(u)).normalize().negate();return {p,u,P,dir,world:P.clone().add(TUN_OFF)}});
   const crystals=pinBeads.map(b=>({pos:b.P,dir:b.dir,s:.16+.04*Math.sqrt(Math.max(1,b.p.links||1)),col:new THREE.Color(pinType(b.p.type).col),held:b.p.held?1:0}));
   const pinList=pinBeads.map(b=>({p:b.p,world:b.world,u:b.u}));
