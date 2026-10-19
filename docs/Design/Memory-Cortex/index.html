@@ -699,7 +699,7 @@ const skinMat=new THREE.ShaderMaterial({
       // ── sphere skin: fresnel (Aurora) + family swirls (video 2) + aperture
       vec3 nv=normalize(normalMatrix*n);
       float facing=abs(dot(nv,normalize(-mv.xyz)));
-      float fres=pow(1.-facing,2.2);
+      float fres=pow(max(1.-facing,0.),2.2);
       vec3 col=vec3(.55,.66,.75); float reg=0.; float hole=1.;
       for(int i=0;i<${MAXREG};i++){
         float d=acos(clamp(dot(n,uRegC[i]),-1.,1.)); float rr=uRegRad[i];
@@ -775,7 +775,8 @@ const REGION_GLSL=`
   float ripples(vec3 n,float t,out vec3 col){float s=0.;col=vec3(0.);
     for(int k=0;k<8;k++){float age=t-uImp[k].w;if(age<0.||age>3.)continue;
       float ang=acos(clamp(dot(n,normalize(uImp[k].xyz)),-1.,1.));
-      float r=exp(-pow((ang-age*.75)/.06,2.))*exp(-age*1.3)+exp(-pow(ang/.09,2.))*exp(-age*5.);
+      float q1=(ang-age*.75)/.06,q2=ang/.09;   // squared by hand: pow() of a negative base is NaN on most GPUs (the black-screen bug)
+      float r=exp(-q1*q1)*exp(-age*1.3)+exp(-q2*q2)*exp(-age*5.);
       s+=r;col+=uImpCol[k]*r;}
     if(s>0.)col/=s;return s;}`;
 
@@ -822,7 +823,7 @@ const cellMat=new THREE.ShaderMaterial({
       vec4 mv=modelViewMatrix*vec4(immune(q),1.);
       float rw,ra,rn,hole,rim;vec3 rc;region(n,rw,rc,ra,rn,hole,rim);vec3 ic;float rp=ripples(n,uTime,ic);
       float inR=step(.0001,rw);
-      vec3 nv=normalize(normalMatrix*n);float fres=pow(1.-abs(dot(nv,normalize(-mv.xyz))),1.4);
+      vec3 nv=normalize(normalMatrix*n);float fres=pow(max(1.-abs(dot(nv,normalize(-mv.xyz))),0.),1.4);
       float glint=pow(.5+.5*sin(uTime*(.4+aR*1.2)+aR*60.),14.)*(.3+ra*.5);rp=min(rp,1.);
       float a=inR*(.028+ra*.022+glint*.05+step(.8,rn)*.025)+rp*.13+rim*.4+uShock*.06;
       vC=mix(mix(vec3(.55,.7,.8),rc,inR),ic,clamp(rp,0.,1.));
@@ -1198,7 +1199,7 @@ SPACES.forEach((s,i)=>{const m=new THREE.Mesh(new THREE.IcosahedronGeometry(spR[
   uniforms:{uShow:spaceU.uShow,uVis:forestU.uVis,uTint:{value:new THREE.Color(chanTint(s.write_lock)).lerp(spCol[i],.4)},uLock:{value:s.write_lock==null?2:s.write_lock}},
   vertexShader:`varying vec3 vN,vV;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`uniform float uShow,uVis,uLock;uniform vec3 uTint;varying vec3 vN,vV;
-    void main(){float f=pow(1.-abs(dot(vN,vV)),1.6);gl_FragColor=vec4(uTint,(.004+.012*f+uShow*(.03+.07*f))*(.55+.1*uLock)*uVis);}`,
+    void main(){float f=pow(max(1.-abs(dot(vN,vV)),0.),1.6);gl_FragColor=vec4(uTint,(.004+.012*f+uShow*(.03+.07*f))*(.55+.1*uLock)*uVis);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true}));cortex.add(m)});
 
 // NODES (mycelium_nodes): small cells on their space's shell. FADING (the 11 law, MEMORY-FOUNDATION-ANALYSIS 11.2):
@@ -1465,7 +1466,7 @@ const TILE_VS=`uniform float uTime,uAsm,uLen;uniform vec4 uDes[8];attribute vec3
     // shedding: where the session was quiet a few fragments come loose, drift into the corridor and fade
     float shed=step(aR,.06*(1.-aAct)),sp=fract(uTime*.045+aR*17.);
     vec3 p=aCen+(position-aCen)*mix(.62,.9,aAct)*mix(.4,1.,asb)*(1.-shed*sp*.5)+aNrm*(br-shed*sp*1.4)+sc;
-    float g=0.;for(int j=0;j<8;j++){vec4 d=uDes[j];if(d.w<=0.)continue;float w=exp(-pow((aU-d.x)/.01,2.));
+    float g=0.;for(int j=0;j<8;j++){vec4 d=uDes[j];if(d.w<=0.)continue;float q=(aU-d.x)/.01,w=exp(-q*q);
       float on=step(.82,h1(floor(uTime*5.)+d.x*91.));                               // the desync comes and goes (a glitch, not a state)
       g+=w*on*d.w;}
     p+=(vec3(h1(floor(uTime*12.)+aR*31.),h1(floor(uTime*12.)+aR*17.),h1(floor(uTime*12.)+aR*5.))-.5)*g*.3;
