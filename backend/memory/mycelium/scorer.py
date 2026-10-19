@@ -22,21 +22,12 @@ from .spaces import (
     HIGHWAY_THRESHOLD,
     PRUNE_THRESHOLD,
     SPLIT_THRESHOLD,
-    TOOLPATH_DECAY_RATE,
 )
 
 logger = logging.getLogger(__name__)
 
-# Fixed space order for condense and expand passes (Req 7.10)
-_SPACE_ORDER: List[str] = [
-    "domain",
-    "style",
-    "conduct",
-    "chrono",
-    "capability",
-    "context",
-    "toolpath",
-]
+# The fixed space order for condense and expand passes (Req 7.10) is the
+# registry's row order: store.spaces.ids (a new space is appended).
 
 # Outcome score deltas (Req 7.1) — now the PER-OBSERVATION base impact of a
 # REQ-26/T40 evidence-weighted update, not a fixed applied delta.
@@ -209,8 +200,9 @@ class EdgeScorer:
         (decay.py; MEMORY-FOUNDATION-ANALYSIS §11).
 
           score -= rate * m * days * a(n)
-          rate = TOOLPATH_DECAY_RATE (0.02) for toolpath edges, else the
-                 stored per-edge decay_rate
+          rate = the space's own rate (toolpath 0.02) for the edges of a
+                 never-rendered, behavioural space (registry.edge_rate_override),
+                 else the stored per-edge decay_rate
           a(n) = 1 / (1 + observation_count) - the SAME weight record_outcome
                  gives an observation, so growth and decay run at one speed
           m    = m_channel (the weaker endpoint's Kyudo channel)
@@ -292,7 +284,8 @@ class EdgeScorer:
             if days <= 0.0:
                 continue
 
-            rate = TOOLPATH_DECAY_RATE if space_id == "toolpath" else decay_rate
+            override = self._store.spaces.edge_rate_override(space_id)
+            rate = decay_rate if override is None else override
             amount = _decay.edge_decay_amount(
                 rate, _decay.channel_multiplier(channel) * phase * quorum,
                 days, observation_count,
@@ -332,8 +325,9 @@ class EdgeScorer:
         floor (decay.node_confidence_after) - the counterpart of
         store._accumulate_confidence: a node that stops recurring loses what
         recurrence gave it and keeps what was stated. Same multipliers and
-        incremental span as apply_decay; the space's own rate (conduct 0.008,
-        toolpath 0.02, context 0.025, else 0.005).
+        incremental span as apply_decay; the space's own rate and floor, as
+        its registry row declares them (conduct 0.008, toolpath 0.02,
+        context 0.025, else 0.005; floor 0.4).
 
         quorum_since: the reorganization form - nodes updated at or after it,
         one QUORUM_SPAN_DAYS at m * QUORUM_DECAY_MULTIPLIER.
@@ -342,13 +336,8 @@ class EdgeScorer:
             Number of nodes whose confidence was lowered.
         """
         from . import decay as _decay  # noqa: PLC0415
-        from .spaces import CONDUCT_DECAY_RATE, CONTEXT_DECAY_RATE  # noqa: PLC0415
 
-        rates = {
-            "conduct": CONDUCT_DECAY_RATE,
-            "toolpath": TOOLPATH_DECAY_RATE,
-            "context": CONTEXT_DECAY_RATE,
-        }
+        spaces = self._store.spaces
         now = time.time()
         conn = self._store._conn
         if not _decay.has_decay_columns(conn, "mycelium_nodes"):
@@ -360,7 +349,9 @@ class EdgeScorer:
         rows = conn.execute(
             "SELECT node_id, space_id, confidence, updated_at, last_decayed_at, "
             "source_channel FROM mycelium_nodes WHERE confidence > ?",
-            (_decay.NODE_CONFIDENCE_FLOOR,),
+            # Rows at or below every floor have nothing earned to lose; the
+            # per-space floor is applied in node_confidence_after.
+            (min([_decay.NODE_CONFIDENCE_FLOOR] + [spaces.confidence_floor(s) for s in spaces.ids]),),
         ).fetchall()
         refs = [
             max(r[3] or 0.0, r[4] or 0.0) for r in rows
@@ -387,9 +378,10 @@ class EdgeScorer:
                 continue
             new_conf = _decay.node_confidence_after(
                 confidence,
-                rates.get(space_id, _decay.NODE_DECAY_RATE_DEFAULT),
+                spaces.decay_rate(space_id),
                 _decay.channel_multiplier(channel) * phase * quorum,
                 days,
+                floor=spaces.confidence_floor(space_id),
             )
             # updated_at is NOT bumped: decay is not an observation.
             if quorum_since is not None:
@@ -429,25 +421,25 @@ class MapManager:
 
     def run_condense(self) -> int:
         """
-        Run condense pass across all 7 spaces in fixed order (Req 7.10).
+        Run condense pass across every registered space in registry order (Req 7.10).
 
         Returns:
             Total nodes merged (removed) across all spaces.
         """
         total = 0
-        for space_id in _SPACE_ORDER:
+        for space_id in self._store.spaces.ids:
             total += self.condense(space_id)
         return total
 
     def run_expand(self) -> int:
         """
-        Run expand pass across all 7 spaces in fixed order (Req 7.10).
+        Run expand pass across every registered space in registry order (Req 7.10).
 
         Returns:
             Total nodes split across all spaces.
         """
         total = 0
-        for space_id in _SPACE_ORDER:
+        for space_id in self._store.spaces.ids:
             total += self.expand(space_id)
         return total
 

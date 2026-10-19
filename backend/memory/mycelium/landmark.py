@@ -396,8 +396,7 @@ class LandmarkCondenser:
 
         # Collect all traversed nodes for this session from every space
         candidate_nodes = []
-        from .spaces import SPACES
-        for space_id in SPACES:
+        for space_id in self._store.spaces.ids:
             candidate_nodes.extend(self._store.get_nodes_by_space(space_id))
 
         if not candidate_nodes:

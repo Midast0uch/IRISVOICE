@@ -30,7 +30,7 @@ from .profile import LandmarkMerger, ProfileRenderer
 from .resonance import EpisodeIndexer, ResonanceScorer
 from .scorer import EdgeScorer, MapManager
 from .store import CoordinateStore, MemoryPath
-from .spaces import RENDER_ORDER, SPACES
+from .registry import SpaceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -141,8 +141,14 @@ class MyceliumInterface:
         self._maturity_threshold = graph_maturity_threshold
         self._idle_threshold = distillation_idle_threshold
 
+        # The coordinate spaces: seeded where a row is missing, then read ONCE.
+        # Every list of spaces and every Kyudo term below derives from it.
+        self._spaces: SpaceRegistry = SpaceRegistry.load(conn)
+        # Writes the spaces' locks refused: (space_id, channel name) -> count.
+        self.refused_writes: Dict[Tuple[str, str], int] = {}
+
         # Core components
-        self._store = CoordinateStore(conn)
+        self._store = CoordinateStore(conn, self._spaces)
         self._registry = SessionRegistry()
         self._navigator = CoordinateNavigator(self._store, self._registry)
         self._encoder = PathEncoder()
@@ -202,17 +208,14 @@ class MyceliumInterface:
         self._quorum_sensor: QuorumSensor = QuorumSensor()
         self._lm_index.activation_observer = self._observe_activation
         self._rag_bridge: RagIngestionBridge = RagIngestionBridge()
-        self._cell_wall: CellWall = CellWall()
-        self._task_classifier: TaskClassifier = TaskClassifier()
-        self._predictive_loader: PredictiveLoader = PredictiveLoader()
+        self._cell_wall: CellWall = CellWall(self._spaces)
+        self._task_classifier: TaskClassifier = TaskClassifier(self._spaces)
+        self._predictive_loader: PredictiveLoader = PredictiveLoader(self._spaces)
         self._channel_weights = CHANNEL_WEIGHTS
 
         # MCP trust registry
         self._mcp_trust_registry: Dict[str, dict] = {}
         self._load_mcp_trust_registry()
-
-        # Register all 7 spaces in the DB
-        self._ensure_spaces_registered()
 
         # Plan stats table (DER Gate 1 Step 1.8)
         self._ensure_tables()
@@ -403,26 +406,24 @@ class MyceliumInterface:
     # Space registration
     # ------------------------------------------------------------------
 
-    def _ensure_spaces_registered(self) -> None:
-        """
-        Upsert all 7 coordinate spaces into `mycelium_spaces` (Req 12.2).
+    # The rows of `mycelium_spaces` are seeded and read once in __init__
+    # (registry.SpaceRegistry.load, Req 12.2): a row that exists is never rewritten.
 
-        Sets render_order from RENDER_ORDER constants.
-        toolpath has no render_order entry — it never produces a profile section.
-        """
-        for space_id, space in SPACES.items():
-            render_order = RENDER_ORDER.get(space_id, 0)
-            axes_json = json.dumps(space.axes)
-            value_range_json = json.dumps(list(space.value_range))
-            app_write(
-                self._conn,
-                """
-                INSERT OR REPLACE INTO mycelium_spaces
-                    (space_id, axes, dtype, value_range, description, active)
-                VALUES (?, ?, ?, ?, ?, 1)
-                """,
-                (space_id, axes_json, space.dtype, value_range_json, space.description),
-            )
+    def _write_allowed(self, channel: Any, space_id: str, source: str) -> bool:
+        """The CellWall write lock of ``space_id`` for ``channel``. A refusal is
+        logged and counted (``refused_writes``); it is a normal boundary, not a
+        threat signal, so the QuorumSensor is not told (Kyudo Guide, Part 5)."""
+        if self._cell_wall.can_write_space(channel, space_id):
+            return True
+        name = getattr(channel, "name", str(channel))
+        key = (space_id, name)
+        self.refused_writes[key] = self.refused_writes.get(key, 0) + 1
+        logger.info(
+            "[interface] write refused by lock: channel=%s space=%s lock=%d source=%s total=%d",
+            name, space_id, self._spaces.write_lock(space_id), source,
+            self.refused_writes[key],
+        )
+        return False
 
     # ------------------------------------------------------------------
     # MCP registry
@@ -476,7 +477,7 @@ class MyceliumInterface:
             return True
 
         mature_spaces = 0
-        for space_id in SPACES:
+        for space_id in self._spaces.ids:
             nodes = self._store.get_nodes_by_space(space_id)
             if any(n.confidence >= 0.6 for n in nodes):
                 mature_spaces += 1
@@ -488,7 +489,7 @@ class MyceliumInterface:
             if not self._is_mature_logged:
                 mature_space_list = [
                     s
-                    for s in SPACES
+                    for s in self._spaces.ids
                     if any(
                         n.confidence >= 0.6 for n in self._store.get_nodes_by_space(s)
                     )
@@ -593,12 +594,12 @@ class MyceliumInterface:
         # Step 5b — partial profile: only the spaces in space_subset, render_order sequence
         partial_profile = ""
         try:
-            from .spaces import RENDER_ORDER  # noqa: PLC0415
+            render_order = self._spaces.render_order
 
-            target_spaces = space_subset if space_subset else list(RENDER_ORDER.keys())
+            target_spaces = space_subset if space_subset else list(render_order)
             ordered_spaces = sorted(
-                (s for s in target_spaces if s in RENDER_ORDER),
-                key=lambda s: RENDER_ORDER[s],
+                (s for s in target_spaces if s in render_order),
+                key=lambda s: render_order[s],
             )
             sections = []
             for space_id in ordered_spaces:
@@ -789,13 +790,8 @@ class MyceliumInterface:
             # Extract coordinates — conduct space will be skipped for low-trust channels
             results = self._extractor.extract_from_statement(content)
             for space_id, coords, confidence, label in results:
-                # Skip conduct writes from non-trusted channels
-                if not self._cell_wall.can_write_space(ingested.channel, space_id):
-                    logger.debug(
-                        "[interface] RAG channel %s blocked from writing space '%s'",
-                        ingested.channel.name,
-                        space_id,
-                    )
+                # Skip writes the space's lock refuses (conduct from a weak channel, ...)
+                if not self._write_allowed(ingested.channel, space_id, "rag"):
                     continue
                 self._store.upsert_node(
                     space_id, coords, label, confidence, channel=int(ingested.channel)
@@ -832,10 +828,15 @@ class MyceliumInterface:
         PERMANENCE_THRESHOLD (landmark.py:414).
 
         Trust routing (CellWall-enforced, never bypassed):
-          * trust == "trusted"   -> HyphaChannel.VERIFIED -> writes TOOL_ZONE
-                                     (context space)
-          * trust == "untrusted" -> HyphaChannel.EXTERNAL -> writes REFERENCE_ZONE
-                                     (toolpath space only)
+          * trust == "trusted"   -> HyphaChannel.VERIFIED -> the context space
+                                     (write lock VERIFIED)
+          * trust == "untrusted" -> HyphaChannel.EXTERNAL -> the toolpath space
+                                     (REFERENCE_ZONE before the write locks).
+                                     toolpath is SYSTEM-locked (a behavioural
+                                     space), so this node write is REFUSED: it
+                                     is logged and counted (``refused_writes``)
+                                     and no node is written. The episode index
+                                     row (with its channel) is still written.
 
         The LandmarkCondenser trust-cap (landmark.py:40, kyudo.py:63, 0.30)
         excludes untrusted sessions from crystallization when ``source_channel``
@@ -851,13 +852,10 @@ class MyceliumInterface:
             )
             space_id = "context" if channel == HyphaChannel.VERIFIED else "toolpath"
 
-            # CellWall guard — never bypass the trust boundary.
-            if not self._cell_wall.can_write_space(channel, space_id):
-                logger.debug(
-                    "[interface] ingest_document_data: channel %s blocked from '%s'",
-                    channel.name,
-                    space_id,
-                )
+            # CellWall guard — never bypass the trust boundary. A refused node
+            # write (EXTERNAL into toolpath) still leaves its episode index row.
+            if not self._write_allowed(channel, space_id, "document_data"):
+                self._index_document_episode(session_id, channel)
                 return
 
             # Normalize coordinates (accept "x,y,xi,u" string or list of floats).
@@ -888,22 +886,28 @@ class MyceliumInterface:
             if not norm_coords:
                 return
 
+            # NOTE: ``coords`` here is the agent's reasoning state ("x,y,xi,u" from the
+            # caller), not a coordinate in this space's own axes (context: project_id,
+            # stack_id, constraint_flags, freshness). Reported, not redesigned.
             self._store.upsert_node(
                 space_id, norm_coords, label or "document_data", 0.8, channel=int(channel)
             )
             self._note_upserts(session_id)
 
-            # Record source_channel so crystallization can honor the trust-cap.
-            try:
-                self._ep_indexer.index_episode(
-                    episode_id=f"doc_{session_id}_{int(time.time() * 1000)}",
-                    session_id=session_id,
-                    source_channel=channel.value,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[interface] ingest_document_data index failed: %s", exc)
+            self._index_document_episode(session_id, channel)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[interface] ingest_document_data failed: %s", exc)
+
+    def _index_document_episode(self, session_id: str, channel: Any) -> None:
+        """Record source_channel so crystallization can honor the trust-cap."""
+        try:
+            self._ep_indexer.index_episode(
+                episode_id=f"doc_{session_id}_{int(time.time() * 1000)}",
+                session_id=session_id,
+                source_channel=channel.value,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[interface] ingest_document_data index failed: %s", exc)
 
     def _check_quorum_and_reorganize(self, session_id: str) -> None:
         """
@@ -1030,7 +1034,7 @@ class MyceliumInterface:
         # Record session position in topology chart (Task 11.3)
         try:
             active_nodes: List[Any] = []
-            for space_id in SPACES:
+            for space_id in self._spaces.ids:
                 active_nodes.extend(self._store.get_nodes_by_space(space_id))
             self._topology_layer.record_session_position(session_id, active_nodes)
         except Exception as exc:  # noqa: BLE001
@@ -1331,7 +1335,7 @@ class MyceliumInterface:
             )
 
         nodes_by_space: Dict[str, list] = {}
-        for space_id in SPACES:
+        for space_id in self._spaces.ids:
             nodes = self._store.get_nodes_by_space(space_id)
             nodes_by_space[space_id] = [
                 {

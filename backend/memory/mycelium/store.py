@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from backend.memory.db import app_flush, app_write
+from .registry import SpaceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -145,15 +146,22 @@ class CoordinateStore:
     One instance is created by MyceliumInterface and shared internally.
     """
 
-    def __init__(self, conn: "sqlcipher3.Connection") -> None:
+    def __init__(
+        self, conn: "sqlcipher3.Connection", spaces: Optional[SpaceRegistry] = None
+    ) -> None:
         """
         Initialise the store with the shared database connection.
 
         Args:
             conn: Open SQLCipher connection to data/memory.db.
                   MUST be the shared connection — never pass a db_path here.
+            spaces: The coordinate-space registry every component built on this
+                  store derives its space lists and Kyudo terms from.
+                  MyceliumInterface passes the one it loaded from
+                  mycelium_spaces; a bare store uses the code definitions.
         """
         self._conn = conn
+        self.spaces: SpaceRegistry = spaces if spaces is not None else SpaceRegistry.from_seed()
         from .decay import has_decay_columns  # noqa: PLC0415
 
         # The node's Kyudo channel is recorded where the column exists (the

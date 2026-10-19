@@ -814,6 +814,16 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _ec_exc:
         logger.warning("[db] episode index channel backfill skipped: %s", _ec_exc)
 
+    # The spaces registry (mycelium/registry.py): each mycelium_spaces row declares
+    # its Kyudo terms (write lock, decay rate, render order, ...). The rows are
+    # seeded by MyceliumInterface; only the columns are added here.
+    try:
+        from backend.memory.mycelium.registry import ensure_space_columns
+
+        ensure_space_columns(conn)
+    except Exception as _sp_exc:
+        logger.warning("[db] mycelium_spaces column ALTER skipped: %s", _sp_exc)
+
     # Landmark policy columns + typed-event cases (spec research-memory-chain-
     # browser D9 / Wave E). Idempotent; never blocks store init.
     try:

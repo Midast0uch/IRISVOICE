@@ -7,7 +7,25 @@ All constants used across the layer are defined here once and imported elsewhere
 
 import hashlib
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Decay rate constants (Req 1.6, 1.8, 1.9)
+# ---------------------------------------------------------------------------
+
+CONDUCT_DECAY_RATE: float = 0.008   # Req 1.9 — slower than toolpath, reflects stable behaviour
+TOOLPATH_DECAY_RATE: float = 0.02   # Req 1.8 — tool patterns shift faster than identity
+CONTEXT_DECAY_RATE: float = 0.025   # Req 1.6 — freshness axis decays per day
+DEFAULT_DECAY_RATE: float = 0.005   # a space with no rate of its own (= decay.NODE_DECAY_RATE_DEFAULT)
+
+# Node confidence never decays below the stated value (Req 4.4); the floor of a
+# space that declares none (= decay.NODE_CONFIDENCE_FLOOR).
+DEFAULT_CONFIDENCE_FLOOR: float = 0.4
+
+# HyphaChannel values (kyudo.HyphaChannel; a guard pins them equal). This module
+# imports nothing, so the write locks below are plain ints.
+_SYSTEM, _USER, _VERIFIED, _EXTERNAL = 4, 3, 2, 1
 
 
 # ---------------------------------------------------------------------------
@@ -16,13 +34,29 @@ from typing import Dict, List, Tuple
 
 @dataclass(frozen=True)
 class CoordinateSpace:
-    """Immutable definition of one of the seven Mycelium coordinate spaces."""
+    """
+    Definition of one Mycelium coordinate space: its geometry AND its Kyudo terms.
+
+    The definitions below SEED the ``mycelium_spaces`` table; the table is the
+    source of truth once a row exists (registry.SpaceRegistry). The defaults of
+    the Kyudo terms FAIL CLOSED: a space that declares no write lock needs SYSTEM,
+    and is never rendered, never resonates and belongs to no task class.
+    """
 
     space_id: str
     axes: List[str]
     dtype: str
     value_range: Tuple[float, float]
     description: str
+    # -- Kyudo terms (MEMORY-FOUNDATION-ANALYSIS §12.3) ------------------------
+    write_lock: int = _SYSTEM                   # lowest HyphaChannel value that may write
+    decay_rate: float = DEFAULT_DECAY_RATE      # node decay rate per active day
+    confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR
+    render_order: Optional[int] = None          # None = never rendered to the profile
+    position: Optional[int] = None              # place in the fixed pass order (Req 7.10); None = last
+    resonance: bool = False                     # takes part in resonance overlap
+    task_classes: Tuple[str, ...] = ()          # task classes that navigate it
+    writers: Tuple[str, ...] = ()               # subagent profiles that may write it
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +70,12 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 1.0),
         description="Behavioural profile — how the user prefers to work with an agent",
+        write_lock=_USER,
+        decay_rate=CONDUCT_DECAY_RATE,
+        render_order=2,
+        position=2,
+        resonance=True,
+        task_classes=("quick_edit", "code_task", "planning_task", "full"),
     ),
     "domain": CoordinateSpace(
         space_id="domain",
@@ -43,6 +83,14 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 1.0),
         description="Knowledge domain the user is working in, normalised proficiency, and recency",
+        # A weak source may inform topic expertise: it enters capped at 0.30, decays 3x
+        # and cannot make a landmark permanent (decay.py, landmark trust cap).
+        write_lock=_EXTERNAL,
+        render_order=1,
+        position=0,
+        resonance=True,
+        task_classes=("code_task", "research_task", "planning_task", "full"),
+        writers=("research_worker",),
     ),
     "style": CoordinateSpace(
         space_id="style",
@@ -50,6 +98,11 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 1.0),
         description="Communication style preferences",
+        write_lock=_USER,
+        render_order=4,
+        position=1,
+        resonance=True,
+        task_classes=("research_task", "planning_task", "full"),
     ),
     "chrono": CoordinateSpace(
         space_id="chrono",
@@ -57,6 +110,11 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 24.0),  # peak_activity_hour_utc spans [0, 24]; others [0, 1]
         description="Temporal patterns — when and how long the user typically works",
+        write_lock=_USER,
+        render_order=3,
+        position=3,
+        resonance=True,
+        task_classes=("research_task", "full"),
     ),
     "context": CoordinateSpace(
         space_id="context",
@@ -64,6 +122,13 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 1.0),
         description="Active project context — project identity, tech stack, constraints, and freshness",
+        write_lock=_VERIFIED,
+        decay_rate=CONTEXT_DECAY_RATE,
+        render_order=6,
+        position=5,
+        resonance=True,
+        task_classes=("quick_edit", "code_task", "research_task", "planning_task", "full"),
+        writers=("code_worker", "research_worker", "vision_worker"),
     ),
     "capability": CoordinateSpace(
         space_id="capability",
@@ -71,6 +136,12 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 5.0),  # gpu_tier spans [0, 5]; others [0, 1]
         description="Hardware and environment capabilities of the user's machine",
+        write_lock=_SYSTEM,  # hardware — only the kernel may write
+        render_order=5,
+        position=4,
+        resonance=True,
+        task_classes=("planning_task", "full"),
+        writers=("vision_worker",),
     ),
     "toolpath": CoordinateSpace(
         space_id="toolpath",
@@ -78,6 +149,13 @@ SPACES: Dict[str, CoordinateSpace] = {
         dtype="float",
         value_range=(0.0, 1.0),
         description="Per-tool usage patterns — which tools are called, how often, and how successfully",
+        # Behavioural: what IRIS's own tools did. No outside source may write it
+        # (it sat in REFERENCE_ZONE, so any channel could). Never rendered, never resonates.
+        write_lock=_SYSTEM,
+        decay_rate=TOOLPATH_DECAY_RATE,
+        position=6,
+        task_classes=("code_task",),
+        writers=("code_worker",),
     ),
 }
 
@@ -113,26 +191,13 @@ OS_ID_WINDOWS: float = 1.0
 
 
 # ---------------------------------------------------------------------------
-# Decay rate constants (Req 1.6, 1.8, 1.9)
-# ---------------------------------------------------------------------------
-
-CONDUCT_DECAY_RATE: float = 0.008   # Req 1.9 — slower than toolpath, reflects stable behaviour
-TOOLPATH_DECAY_RATE: float = 0.02   # Req 1.8 — tool patterns shift faster than identity
-CONTEXT_DECAY_RATE: float = 0.025   # Req 1.6 — freshness axis decays per day
-
-
-# ---------------------------------------------------------------------------
-# Profile render order (fixed — toolpath absent, never rendered) (Req 12.4)
+# Profile render order (toolpath absent, never rendered) (Req 12.4)
+# DERIVED from the seed definitions above; a running store derives it from its
+# registry (registry.SpaceRegistry.render_order) instead.
 # ---------------------------------------------------------------------------
 
 RENDER_ORDER: Dict[str, int] = {
-    "domain":     1,
-    "conduct":    2,
-    "chrono":     3,
-    "style":      4,
-    "capability": 5,
-    "context":    6,
-    # toolpath deliberately absent — never rendered to profile
+    s.space_id: s.render_order for s in SPACES.values() if s.render_order is not None
 }
 
 
@@ -185,9 +250,8 @@ LANDMARK_MATCH_BONUS: float           = 0.40   # bonus when current landmark mat
 SUPPRESSION_COVERAGE_THRESHOLD: float = 0.70   # suppress success episode at this coverage ratio
 
 # Resonance spaces — toolpath explicitly excluded (Req 11.5)
-RESONANCE_SPACES: frozenset = frozenset({
-    "domain", "conduct", "chrono", "style", "capability", "context"
-})
+# (derived from the seed definitions; a running store derives it from its registry)
+RESONANCE_SPACES: frozenset = frozenset(s.space_id for s in SPACES.values() if s.resonance)
 # toolpath is task-local, not session-persistent; including it inflates scores
 # for structurally unrelated tasks
 

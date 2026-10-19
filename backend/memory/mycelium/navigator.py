@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from backend.memory.db import app_flush, app_write
 from .store import CoordNode, CoordEdge, CoordinateStore, MemoryPath, _short_uuid
-from .spaces import SPACES, CONDUCT_COLD_START_DEFAULT
+from .spaces import CONDUCT_COLD_START_DEFAULT
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +261,8 @@ class CoordinateNavigator:
         if none, we inject the synthetic node unconditionally (maturity is gated
         upstream in MyceliumInterface.get_context_path).
         """
-        profile_spaces = [s for s in SPACES if s != "toolpath"]
+        rendered = self._store.spaces.render_order  # toolpath has none: never in the profile
+        profile_spaces = [s for s in self._store.spaces.ids if s in rendered]
         result: List[CoordNode] = []
 
         for space_id in profile_spaces:
@@ -427,7 +428,7 @@ class CoordinateNavigator:
         results: List[CoordNode] = []
         seen: Set[str] = set()
 
-        spaces_to_search = list(allowed_spaces) if allowed_spaces else list(SPACES.keys())
+        spaces_to_search = list(allowed_spaces) if allowed_spaces else list(self._store.spaces.ids)
 
         for space_id in spaces_to_search:
             for node in self._store.get_nodes_by_space(space_id):
@@ -458,8 +459,7 @@ class CoordinateNavigator:
 
         return results
 
-    @staticmethod
-    def _get_profile_readable_spaces(channel_profile: str) -> Set[str]:
+    def _get_profile_readable_spaces(self, channel_profile: str) -> Set[str]:
         """
         Get readable spaces for a channel profile.
 
@@ -472,7 +472,7 @@ class CoordinateNavigator:
             profile = SUBAGENT_CHANNEL_PROFILES.get(channel_profile, {})
             readable = profile.get("read", [])
             if readable == "all":
-                return set(SPACES.keys())
+                return set(self._store.spaces.ids)
             return set(readable)
         except ImportError:
             logger.debug("[navigator] kyudo not available yet — ignoring channel_profile filter")
