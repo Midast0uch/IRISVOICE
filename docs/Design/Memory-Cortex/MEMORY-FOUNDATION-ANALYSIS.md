@@ -556,3 +556,21 @@ Work to make pins real (not built): a session-scoped id for DER links (`node:<se
 so the lineage stops collapsing; a production writer for user pins (the "keep this in mind"
 action and an agent tool), routed through Kyudo with the pinner's channel; fix the `mito_inject`
 count; then the cortex reads `mycelium_pins` + `mycelium_pin_links`.
+
+
+---
+
+## 14. §12.2 proposals — status (2026-10-19)
+
+| # | Proposal | Status | Commit | Measured / open |
+|---|---|---|---|---|
+| 3 | Every write through the trust bridge | **built** | `588036cd` | one vocabulary (zones, document labels → HyphaChannel; unknown = UNTRUSTED); bookkeeping (2,775 card rows, skills) no longer filed as the user's words; episode-index rows carry a channel (backfill 387 + 2,349); channel-weighted retrieval in SHADOW (`kyudo.trust_rank.*` counters). Open: a failed web-tool step still fragments into the `tool` zone (`agent_kernel.py` der_failure). |
+| 7 | Landmark edges grow | **built** | `bcb6c8ea`, `d1f255e1` | landmarks activate when the session's region overlaps their cluster (≤ 6), and their edges take one observation per turn by the §11 law. Found: the region was cleared before the turn-end job, so every episode-index row had `'[]'` — fixed. Open: 91 live landmarks share 7 clusters (duplicates that never merged — W9). |
+| 1+2 | Immune signals in shadow + durable immune memory | **built** | `526a6d03` | `mycelium_quorum_log`, threat level restored on start, retention 2,000 rows; TOPO violation has its own label. Velocity shadow (> 11 upserts) fires on 5 of 2,365 sessions — all honest long sessions: it does not separate an attack. Activation shadow: 0 fires (no activation history until now). `channel_mismatch` not built. |
+| 6 | Write lock separate from the render zone (W10) | **built** | `c209f33a` | `mycelium_spaces` is the registry; locks: conduct/style/chrono ≥ USER, capability/toolpath = SYSTEM, context ≥ VERIFIED, domain ≥ EXTERNAL; fails closed; an 8th test space works end to end; untrusted documents no longer write toolpath. |
+| 4 | MCP pin check | **built, dormant** | `0c9341ca` | identity hash over endpoint + serverInfo + tools (with descriptions); drift → UNTRUSTED + conflict row + signal. Nothing in production connects an external MCP server yet. Pin creation is an owner decision. |
+| 5 | Subagent write limits | **closed** | — | no production path writes nodes under a worker identity; the profiles are read-only (evidence in `0c9341ca`). |
+| — | Precision half | **measured** | — | §13.2: three components dead, the predictive loader half-wired; tied to §13.1. |
+
+The largest open item is not in §12: **§13.1, the memory never reaches the agent's step
+prompts.**
