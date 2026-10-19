@@ -395,7 +395,13 @@ class MyceliumInterface:
         and the nodes it wrote) and their spaces, for the episode index.
         Never raises."""
         try:
-            ids = sorted(self._registry.get_region(session_id))[: self._MAX_INDEXED_NODES]
+            # The turn ends the session (clear_session, answer path) BEFORE the
+            # turn-end job stores the episode (memory lane), so the live region
+            # is already empty here: read the one the session had when cleared.
+            # (All 2,857 live index rows carry '[]' for this reason.)
+            region = (self._registry.get_region(session_id)
+                      or self._registry.get_last_region(session_id))
+            ids = sorted(region)[: self._MAX_INDEXED_NODES]
             spaces = sorted({
                 n.space_id for n in (self._store.get_node_by_id(i) for i in ids) if n
             })

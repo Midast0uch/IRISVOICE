@@ -108,3 +108,15 @@ def test_distillation_feeds_the_chrono_space_from_episode_timestamps():
     asyncio.run(dp._run_mycelium_maintenance(episodes, myc))
     # 2026-10-17 10:00:00 UTC = 1792231200
     assert seen.get("ts") == [1792231200.0 + 3600.0 * h for h in range(5)]
+
+
+def test_the_episode_index_sees_the_region_after_the_turn_ended(mem_conn):
+    # Production order: the turn ends the session (clear_session, answer path)
+    # and THEN the turn-end job stores the episode and indexes it (memory lane).
+    # The index read the live region, already empty: 2,857 of 2,857 live rows
+    # carry node_ids '[]'.
+    mi = MyceliumInterface(mem_conn)
+    _tool_calls(mi, "sess-order")
+    mi.clear_session("sess-order")
+    ids, spaces = mi._active_node_state("sess-order")
+    assert ids and spaces == ["toolpath"]

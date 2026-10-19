@@ -477,3 +477,82 @@ channel that may write it), **render zone** (where its profile section enters th
 subagent **write owners**, the **task classes** that navigate it, resonance participation,
 extractor, schema version. A new space is added deliberately (a reviewed row), and inherits the
 law and the immune response with no new code.
+
+
+---
+
+## 13. Findings while building §12 (2026-10-19)
+
+### 13.1 The memory never reaches the agent's step prompts (largest gap)
+
+The DER loop expects a `ContextPackage` object (`memory/mycelium/interface.py:48`: tier-1
+directives, tier-2 predictions, tier-3 failures, gradient warnings, the Mycelium path, the
+topology path) and reads it at `agent_kernel.py:8191-8198`, `:10653`, `:16736`, and through
+`LiveContextPackage` (`memory/live_context.py`). **Nothing in production constructs a
+`ContextPackage`.** `MemoryInterface.get_task_context_package` always returns a plain string
+(its direct `get_context_path(..., space_subset=...)` call raises `TypeError` — the parameter does
+not exist — and the fallback returns the prose/coordinate string), so every attribute read is
+empty. The coordinate graph, landmarks, failure warnings and predictions are computed and
+**never shown to the agent**. This is not a Kyudo item; it is the connection from memory to
+answers, and it changes every prompt — so it needs the measured loop (CLAUDE.md "BUILD + VERIFY
+IRIS"): build the package, run the eval tasks before/after, keep it only if pass and reply_s do
+not regress, with an off switch.
+
+### 13.2 The precision half (proposal from §12.1, measured)
+
+| Component | Live? | Finding |
+|---|---|---|
+| TaskClassifier | live (keyword path) | its labels (`research_task` …) never match the kernel's `research/explore/investigate` check (`agent_kernel.py:18688`) |
+| PredictiveLoader | half-wired | `pre_warm` calls `navigator.navigate_subgraph`, which does not exist (error swallowed at debug); the cached hint text is `""`, so the Jaccard check is 0 and every lookup misses; `hit_rate` is never logged |
+| MicroAbstractEncoder | dead | no production caller; the 30 `micro_abstract` rows are bootstrap seeds |
+| WhiteboardSlicer | dead | no caller; `whiteboard_broadcast_tokens` hard-coded 0 |
+| DeltaEncoder / PathDelta | dead | no caller; `mycelium_path_deltas` table never created |
+
+Decision: the dead three stay dormant (their tests pin them; deleting them is an owner call);
+each is wired only together with a consumer that changes behaviour. PredictiveLoader and the
+TaskClassifier labels are fixed as part of §13.1, because they only matter once the package
+reaches the prompt.
+
+### 13.3 Pins in the application memory
+
+Pins are a port of the MCM PiN into the app store (`backend/memory/pin_store.py`: types note,
+file, folder, image, doc, url, decision, fragment, checkpoint).
+
+- `mycelium_pins`: **0 rows**. `PinStore.add/update/checkpoint` have no production caller; the
+  two raw inserts (`agent/swarm/coordinator.py:162`, `agent/swarm/context_control.py:104`) run
+  only with swarm on (default off).
+- The recall path for pins (`recall_decoder._resolve_pin`) is unreachable: nothing imports
+  `recall_phases` / `recall_decoder` in production.
+- `mito_inject.py:50` counts permanent pins from table `pins` / column `permanent` (the build
+  store's shape) every turn; the error is swallowed, so the count is always 0.
+- `mycelium_pin_links`: 16,578 rows — not pins. They are DER step links (`relevant_to` 12,757,
+  `depends_on` 3,535, `part_of` 279, `failed_like` 7). Their ids are `node:<step_id>` with plan-
+  local step ids (`s1`, `s2` …), so **every plan's `s1` is the same node**: 16,569 of the links
+  resolve to `der_fan_traces.step_id`, but without a session scope the lineage graph collapses
+  onto ~64 ids. `weight` is 1.0 on every row.
+- `docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md:712` lists a "Keep this in mind: pin into
+  the context window" action; nothing implements it, and the mockup draws no pins.
+
+**What a pin is in IRIS (proposal).** Learned memory grows (neurons, edges, landmarks); a pin is
+**explicit** memory — something the user or IRIS chose to hold: a file, a URL, a decision, a
+note, a checkpoint. It does not decay by the §11 law (it is held, not earned), it carries the
+channel of whoever pinned it (user = USER), and it is either *resting* or *held in context*
+(the dashboard action).
+
+**How pins look in the cortex (proposal).**
+- **Cortex level:** a pin is a small **faceted crystal set into the inner wall**, in the territory
+  (sector) of its topic — still, not pulsing, which is what separates held memory from living
+  neurons. Its facets take the pin-type colour; its size follows its link count. Fine, taut
+  **tethers** run from it to what it references (an artifact in the format layers, a landmark
+  cluster, a thread) — straight and tense, unlike the soft fibre tissue.
+- **Held in context:** the crystal gets a thin bright ring and its tethers brighten — "IRIS is
+  holding this right now".
+- **Timeline:** a pin sits on its thread at the moment it was made, as a fixed bead the fibres
+  part around; scrolling past it shows its tethers to later threads that used it.
+- **Checkpoint pins** (session checkpoints) mark doorways: the tunnel's doorway to a thread can
+  carry the checkpoint crystal of where that thread was paused.
+
+Work to make pins real (not built): a session-scoped id for DER links (`node:<session>:<step>`)
+so the lineage stops collapsing; a production writer for user pins (the "keep this in mind"
+action and an agent tool), routed through Kyudo with the pinner's channel; fix the `mito_inject`
+count; then the cortex reads `mycelium_pins` + `mycelium_pin_links`.
