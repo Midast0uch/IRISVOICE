@@ -20,7 +20,7 @@ import struct
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from backend.memory.db import app_flush, app_write
 
@@ -365,6 +365,7 @@ class LandmarkCondenser:
         outcome: str,
         task_entry_label: Optional[str],
         source_channel: Optional[str] = None,
+        region: Optional[Iterable[str]] = None,
     ) -> Optional["Landmark"]:
         """
         Attempt to crystallise a Landmark from the current session (Req 8.4–8.7).
@@ -387,6 +388,11 @@ class LandmarkCondenser:
             outcome:          "hit", "partial", or "miss".
             task_entry_label: Short task description (used for task_class and label).
             source_channel:   Optional source channel level for trust cap check.
+            region:           The node ids the session walked or wrote. When given, the
+                              cluster is drawn from them. Without it the cluster is the
+                              top nodes of the WHOLE graph by access_count - the same
+                              few always-present nodes for every session, which is why
+                              91 live landmarks shared 7 clusters (2026-10-19).
 
         Returns:
             A new Landmark, or None if threshold/trust checks fail.
@@ -398,6 +404,12 @@ class LandmarkCondenser:
         candidate_nodes = []
         for space_id in self._store.spaces.ids:
             candidate_nodes.extend(self._store.get_nodes_by_space(space_id))
+
+        region_ids = set(region) if region else set()
+        if region_ids:
+            candidate_nodes = [n for n in candidate_nodes if n.node_id in region_ids]
+            if not candidate_nodes:
+                logger.debug("[landmark] condense: session %s region holds no live node", session_id)
 
         if not candidate_nodes:
             return None
@@ -597,6 +609,16 @@ class LandmarkIndex:
         # Auto-connect to similar existing landmarks
         self._auto_connect(landmark)
 
+        # Sector membership (MEMORY-FOUNDATION-ANALYSIS 5.1, SHADOW: nothing reads it).
+        try:
+            from .sectors import assign_landmark_sectors
+
+            assign_landmark_sectors(self._conn, landmark.landmark_id, landmark.label,
+                                    landmark.coordinate_cluster)
+        except Exception as exc:  # noqa: BLE001 - shadow data never blocks a landmark
+            logger.warning("[landmark] counter sector_assign_failed landmark=%s: %s",
+                           landmark.landmark_id, exc)
+
     def _auto_connect(self, landmark: Landmark) -> None:
         """Write landmark edges to all existing non-absorbed landmarks with overlap ≥ 0.30."""
         # One writer: landmarks saved just before this one are still queued.
@@ -730,13 +752,16 @@ class LandmarkIndex:
         """
         The landmarks a session's region overlaps: non-absorbed landmarks with
         at least one region node id in their coordinate cluster, the ``limit``
-        largest overlaps first (ties by landmark_id, so the pick is stable).
+        largest overlaps first. Equal overlaps go to the MORE SPECIFIC landmark
+        (overlap / cluster size: a 2-node cluster that the region covers beats a
+        6-node cluster it touches once), then the higher cumulative_score, then
+        landmark_id so the pick is stable.
         """
         if not region:
             return []
         ranked = []
-        for landmark_id, cluster_json in self._conn.execute(
-            "SELECT landmark_id, coordinate_cluster FROM mycelium_landmarks "
+        for landmark_id, cluster_json, score in self._conn.execute(
+            "SELECT landmark_id, coordinate_cluster, cumulative_score FROM mycelium_landmarks "
             "WHERE absorbed IS NULL"
         ):
             try:
@@ -745,11 +770,12 @@ class LandmarkIndex:
                 continue
             if not isinstance(cluster, list):   # bootstrap landmarks hold a dict
                 continue
-            overlap = len({d.get("node_id") for d in cluster if isinstance(d, dict)} & region)
+            ids = {d.get("node_id") for d in cluster if isinstance(d, dict)}
+            overlap = len(ids & region)
             if overlap:
-                ranked.append((-overlap, landmark_id))
+                ranked.append((-overlap, -overlap / len(ids), -(score or 0.0), landmark_id))
         ranked.sort()
-        return [landmark_id for _, landmark_id in ranked[:limit]]
+        return [row[-1] for row in ranked[:limit]]
 
     def record_co_activation(self, landmark_ids: List[str], outcome: str) -> int:
         """

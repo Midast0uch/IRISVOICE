@@ -29,6 +29,7 @@ from .spaces import (
     CONSTRAINT_WEIGHT_PUBLIC,
     CONSTRAINT_WEIGHT_SECURITY,
     DOMAIN_IDS,
+    domain_coordinate,
     OS_ID_LINUX,
     OS_ID_MAC,
     OS_ID_WINDOWS,
@@ -187,7 +188,7 @@ class CoordinateExtractor:
         # -- domain --
         for pattern, domain_key in _DOMAIN_KEYWORDS:
             if re.search(pattern, text_lower, re.IGNORECASE):
-                domain_id_val = DOMAIN_IDS[domain_key] / 12.0  # normalize to [0,1]
+                domain_id_val = domain_coordinate(domain_key)  # stable ordinal / scale
                 # proficiency=0.5 (unknown), recency=1.0 (just mentioned)
                 domain_coords = [domain_id_val, 0.5, 1.0]
                 results.append(("domain", domain_coords, 0.4, f"domain_{domain_key}"))

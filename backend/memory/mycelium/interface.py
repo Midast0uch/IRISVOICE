@@ -1071,12 +1071,23 @@ class MyceliumInterface:
             )
             return None
 
+        # The cluster is drawn from the nodes THIS session walked or wrote (the turn
+        # ended the session already, so read the region it had when cleared). Without
+        # it every landmark took the graph's top nodes by access_count - the same few.
+        try:
+            region = (self._registry.get_region(session_id)
+                      or self._registry.get_last_region(session_id))
+        except Exception as exc:  # noqa: BLE001 - no region = the condenser's old default
+            logger.warning("[interface] crystallize region unavailable session=%s: %s",
+                           session_id, exc)
+            region = None
         landmark = self._condenser.condense(
             session_id=session_id,
             cumulative_score=cumulative_score,
             outcome=outcome,
             task_entry_label=task_entry_label,
             source_channel=source_channel,
+            region=region,
         )
         if landmark is None:
             return None
@@ -1085,7 +1096,8 @@ class MyceliumInterface:
         merged = self._merger.try_merge(landmark)
         surviving = merged or landmark
 
-        self._apply_landmark_policy(session_id, landmark, surviving, evidence_kinds)
+        self._apply_landmark_policy(session_id, landmark, surviving, evidence_kinds,
+                                    absorbed_ids=list(self._merger.last_absorbed))
 
         self._ep_indexer.backfill_landmark(session_id, surviving.landmark_id)
 
@@ -1100,7 +1112,8 @@ class MyceliumInterface:
 
         return surviving
 
-    def _apply_landmark_policy(self, session_id, new_lm, surviving, evidence_kinds) -> None:
+    def _apply_landmark_policy(self, session_id, new_lm, surviving, evidence_kinds,
+                               absorbed_ids=None) -> None:
         """Spec D9: event-level route + dependencies, evidence, recurrence. Never raises."""
         try:
             from backend.memory.memory_events import session_evidence
@@ -1117,20 +1130,24 @@ class MyceliumInterface:
                                        ev["verified_steps"])
             recurrence = False
             if surviving is not new_lm:
-                # A merge happened: the absorbed landmark's evidence moves to the
+                # A merge happened: the absorbed landmarks' evidence moves to the
                 # survivor, and a merge across sessions is independent recurrence.
-                absorbed_id = (
-                    new_lm.landmark_id if surviving.landmark_id != new_lm.landmark_id
-                    else (conn.execute(
-                        "SELECT absorbed_id FROM mycelium_landmark_merges WHERE survivor_id = ? "
-                        "ORDER BY created_at DESC LIMIT 1", (surviving.landmark_id,),
-                    ).fetchone() or (None,))[0]
-                )
-                row = conn.execute(
-                    "SELECT evidence, conversation_ref FROM mycelium_landmarks WHERE landmark_id = ?",
-                    (absorbed_id,),
-                ).fetchone() if absorbed_id else None
-                if row is not None:
+                # One crystallization can absorb a whole group (the merger's list).
+                if not absorbed_ids:
+                    absorbed_ids = [
+                        new_lm.landmark_id if surviving.landmark_id != new_lm.landmark_id
+                        else (conn.execute(
+                            "SELECT absorbed_id FROM mycelium_landmark_merges WHERE survivor_id = ? "
+                            "ORDER BY created_at DESC LIMIT 1", (surviving.landmark_id,),
+                        ).fetchone() or (None,))[0]
+                    ]
+                for absorbed_id in absorbed_ids:
+                    row = conn.execute(
+                        "SELECT evidence, conversation_ref FROM mycelium_landmarks WHERE landmark_id = ?",
+                        (absorbed_id,),
+                    ).fetchone() if absorbed_id else None
+                    if row is None:
+                        continue
                     for e in json.loads(row[0] or "[]"):
                         add_landmark_evidence(conn, surviving.landmark_id, e.get("kind", ""),
                                               e.get("ref", ""), e.get("session", ""))
@@ -1298,6 +1315,23 @@ class MyceliumInterface:
             logger.debug("[interface] maintenance: topology pass complete")
         except Exception as exc:  # noqa: BLE001
             logger.warning("[interface] maintenance: topology pass failed: %s", exc)
+
+        # Step 7 - landmarks that should have merged and never did are ABSORBED
+        # (rows kept, idempotent), so the sector pass sees one landmark per pattern.
+        try:
+            absorbed = self._merger.collapse_duplicates()
+            logger.debug("[interface] maintenance: %d duplicate landmarks absorbed", absorbed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interface] maintenance: collapse_duplicates failed: %s", exc)
+
+        # Step 8 - sectors, SHADOW: computed and logged (SECTOR_* events), read by nothing.
+        try:
+            from .sectors import run_sector_lifecycle
+
+            run_sector_lifecycle(
+                self._conn, can_write=lambda ch: self._spaces.can_write(ch, "domain"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interface] maintenance: sector lifecycle failed: %s", exc)
 
         self._last_distillation_at = time.time()
         self._maintenance_needed = False

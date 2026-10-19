@@ -180,6 +180,26 @@ DOMAIN_IDS: Dict[str, int] = {
     "general":   12,
 }
 
+# The domain coordinate's first axis is a STABLE ORDINAL of the registry key,
+# never a position in the registry and never len(DOMAIN_IDS): a new root takes
+# the next ordinal and every stored coordinate keeps decoding to the same key.
+# 12.0 is the ordinal of "general" when the registry was frozen; stored domain
+# nodes hold ordinal / 12.0, so the scale is a constant, not a derived value.
+# (A root above ordinal 12 encodes above 1.0: widening the domain axis range is
+# a deliberate step, taken with that root - MEMORY-FOUNDATION-ANALYSIS 5.1.)
+DOMAIN_ORDINAL_SCALE: float = 12.0
+
+
+def domain_coordinate(domain_key: str) -> float:
+    """The domain-space axis 0 value of a registry key (its ordinal / scale)."""
+    return DOMAIN_IDS[domain_key] / DOMAIN_ORDINAL_SCALE
+
+
+def domain_from_coordinate(value: float) -> str:
+    """The registry key whose coordinate is nearest ``value`` (decode of
+    ``domain_coordinate``)."""
+    return min(DOMAIN_IDS, key=lambda k: abs(domain_coordinate(k) - value))
+
 
 # ---------------------------------------------------------------------------
 # OS encoding constants (Req 1.7)

@@ -11,16 +11,17 @@ sections that describe the user's working style, preferences, and environment.
 import json
 import logging
 import time
+import uuid
 from typing import Any, Dict, List, Optional
 
 from backend.memory.db import app_flush, app_write
 
-from .landmark import Landmark, LandmarkIndex, _jaccard
+from .landmark import Landmark, LandmarkIndex, _jaccard, add_landmark_evidence
 from .store import CoordNode, CoordinateStore
 from .spaces import (
     CLUSTER_MAX_NODES,
-    DOMAIN_IDS,
     MERGE_OVERLAP_THRESHOLD,
+    domain_from_coordinate,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,12 +43,82 @@ class LandmarkMerger:
 
     def __init__(self, index: LandmarkIndex) -> None:
         self._index = index
+        # The landmark ids the last try_merge / collapse_duplicates absorbed
+        # (the caller moves their evidence to the survivor).
+        self.last_absorbed: List[str] = []
 
     def try_merge(self, new_landmark: Landmark) -> Optional[Landmark]:
         """
-        Attempt to merge new_landmark into an existing landmark (Req 10.1–10.5).
+        Merge new_landmark with EVERY live landmark whose cluster overlaps it
+        >= MERGE_OVERLAP_THRESHOLD, not only the best one.
 
-        Called immediately after every `LandmarkIndex.save()`.
+        One merge absorbs one landmark. With a single merge per crystallization,
+        a group of k identical landmarks was never reduced: each new landmark
+        absorbed one member and joined the group, so the group stayed at k for
+        ever (measured 2026-10-19: 45 live landmarks with one identical
+        cluster, 24 with another; the backlog came from before merges worked).
+        Looping until no candidate is left collapses the whole group.
+
+        Returns the surviving Landmark, or None if no merge occurred.
+        """
+        self.last_absorbed = []
+        current = new_landmark
+        merged_any = False
+        while True:
+            merged = self._merge_once(current)
+            if merged is None:
+                break
+            merged_any = True
+            current = merged
+        return current if merged_any else None
+
+    def collapse_duplicates(self) -> int:
+        """
+        Idempotent cleanup of landmarks that should have merged and never did:
+        runs the merge over every live landmark, oldest first. It ABSORBS
+        (absorbed = 1, rows kept, edges re-pointed to the survivor) - it never
+        deletes a landmark - and the survivor takes the absorbed landmarks'
+        outside evidence (so a promoted landmark is never lost to a candidate).
+        Returns the number absorbed; a second pass returns 0.
+        """
+        absorbed_all: List[str] = []
+        gone: set = set()
+        for lm in sorted(self._index.get_all_active(), key=lambda l: l.created_at):
+            if lm.landmark_id in gone:
+                continue
+            app_flush()
+            fresh = self._index.get_by_id(lm.landmark_id)   # its cluster may have grown
+            if fresh is None:
+                continue
+            survivor = self.try_merge(fresh)
+            if survivor is not None:
+                gone.update(self.last_absorbed)
+                absorbed_all.extend(self.last_absorbed)
+                self._move_evidence(survivor.landmark_id, list(self.last_absorbed))
+        self.last_absorbed = absorbed_all
+        if absorbed_all:
+            logger.info("[profile] counter duplicate_landmarks_absorbed n=%d", len(absorbed_all))
+        return len(absorbed_all)
+
+    def _move_evidence(self, survivor_id: str, absorbed_ids: List[str]) -> None:
+        """The absorbed landmarks' evidence entries become the survivor's (the tier
+        re-derives from them). Never raises: a failure is logged, the merge stands."""
+        conn = self._index._conn
+        app_flush()
+        for aid in absorbed_ids:
+            try:
+                row = conn.execute(
+                    "SELECT evidence FROM mycelium_landmarks WHERE landmark_id = ?", (aid,)).fetchone()
+                for e in json.loads((row or ("[]",))[0] or "[]"):
+                    add_landmark_evidence(conn, survivor_id, e.get("kind", ""),
+                                          e.get("ref", ""), e.get("session", ""))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[profile] evidence move failed absorbed=%s survivor=%s: %s",
+                               aid, survivor_id, exc)
+
+    def _merge_once(self, new_landmark: Landmark) -> Optional[Landmark]:
+        """
+        Attempt to merge new_landmark into the best existing landmark (Req 10.1–10.5).
 
         Merge logic:
           - Candidate: any non-absorbed landmark with cluster overlap ≥ MERGE_OVERLAP_THRESHOLD (0.50).
@@ -66,7 +137,8 @@ class LandmarkMerger:
         # One writer: the landmark just saved (and its edges) may still be queued.
         app_flush()
         all_landmarks = self._index.get_all_active()
-        ids_new = {d.get("node_id") for d in new_landmark.coordinate_cluster}
+        ids_new = {d.get("node_id") for d in new_landmark.coordinate_cluster
+                   if isinstance(d, dict)}
 
         best_candidate: Optional[Landmark] = None
         best_overlap: float = 0.0
@@ -74,7 +146,9 @@ class LandmarkMerger:
         for lm in all_landmarks:
             if lm.landmark_id == new_landmark.landmark_id:
                 continue
-            ids_other = {d.get("node_id") for d in lm.coordinate_cluster}
+            # A bootstrap landmark holds a dict, not a list of nodes: no overlap.
+            ids_other = {d.get("node_id") for d in lm.coordinate_cluster
+                         if isinstance(d, dict)}
             overlap = _jaccard(ids_new, ids_other)
             if overlap >= MERGE_OVERLAP_THRESHOLD and overlap > best_overlap:
                 best_overlap = overlap
@@ -121,6 +195,7 @@ class LandmarkMerger:
             merged_score=merged_score,
             overlap_score=best_overlap,
         )
+        self.last_absorbed.append(absorbed.landmark_id)
 
         # Return updated survivor as a new Landmark object
         return Landmark(
@@ -265,7 +340,8 @@ class LandmarkMerger:
         )
 
         # Log merge
-        merge_id = f"mrg_{now:.0f}"
+        # Unique per merge: the second merge in one second used to collide on the PK.
+        merge_id = f"mrg_{now:.0f}_{uuid.uuid4().hex[:6]}"
         app_write(
             conn,
             """
@@ -424,10 +500,7 @@ class ProfileRenderer:
 
     def _render_domain(self, nodes: List[CoordNode]) -> str:
         """Describe primary and familiar knowledge domains."""
-        # domain axes: domain_id (normalized), proficiency, recency
-        # Reverse-map domain_id_val → domain name
-        id_to_name = {v / 12.0: k for k, v in DOMAIN_IDS.items()}
-
+        # domain axes: domain_id (stable ordinal / scale), proficiency, recency
         expert: List[str] = []
         familiar: List[str] = []
 
@@ -437,9 +510,7 @@ class ProfileRenderer:
             domain_norm = node.coordinates[0]
             proficiency = node.coordinates[1]
 
-            # Find closest domain name
-            closest = min(id_to_name.keys(), key=lambda k: abs(k - domain_norm))
-            name = id_to_name[closest]
+            name = domain_from_coordinate(domain_norm)
 
             if proficiency >= 0.8:
                 expert.append(name)
