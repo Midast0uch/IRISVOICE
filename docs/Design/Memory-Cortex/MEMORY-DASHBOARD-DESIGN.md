@@ -544,7 +544,7 @@ Reference mockup: `docs/Design/Memory-Cortex/index.html` (+ `export_snapshot.py`
 | §1, §13, §15 "read-only" | The user only looks | The owner wants **one place to see AND manage** what IRIS keeps. The surface still never writes the store; management actions are *requests to the agent* (§16.5). |
 | §3 row counts | `mycelium_landmarks` 2.0k | **120 are live**; 1,907 are absorbed into survivors. Count and draw live ones (`COALESCE(absorbed,0)=0`); merges are history inside a survivor. |
 | §3 "no blobs" | Never send images | Images and captures ARE content the owner wants to see. Add a bounded **thumbnail endpoint** (§16.3); never send the raw blob or an embedding. |
-| §6.2, §9 `sessions` (108) | Session headers | `sessions` is **build-store (MCM) data**, like `code_events`, `file_nodes`, `landmarks`, `pins`. A session on this surface is a **thread**: `memory_events.thread_id` (2,850), titled from `data/conversations.db conversations.title`, shaped by `caducean_trajectories` (`session_id` = thread id; `caducean_session_exits.conversation_id` maps the rest). |
+| §6.2, §9 `sessions` (108) | Session headers | `sessions` is **build-store (MCM) data**, like `code_events`, `file_nodes` and `landmarks` there. (Pins are not in that list: the application has its own, `mycelium_pins`, and the cortex draws them — §17.1.) A session on this surface is a **thread**: `memory_events.thread_id` (2,850), titled from `data/conversations.db conversations.title`, shaped by `caducean_trajectories` (`session_id` = thread id; `caducean_session_exits.conversation_id` maps the rest). |
 | §8.2 "16 consumers" | 16 | `consumer_bar_record.json` holds **24** (3 enforced, 1 sampled, 20 shadow). Read the list from the file; never hard-code it. |
 | §5.1 evidence kinds | The alphabet's eight | Landmark evidence is written as `task_complete` / `test_pass` / `recurrence` (60,960 entries over 2,027 rows). Map: `task_complete→completion`, `test_pass→test`. |
 | §2, §5-§8 suggested layouts | Cards, strips, rows, panels | **Superseded by §16.4.** No card grids, list panels or side drawers. Text appears as typography anchored to the thing it describes, with a leader line. |
@@ -616,21 +616,28 @@ membrane in the evidence colour, high-contrast text); clicking flies to it, the 
 whole record, evidence orbits it as satellites (user = largest, brightest), and "→ step into
 that session" opens the thread it was learned in.
 
-**A session is its own dimension: a vortex of strands** (owner video 3) you travel through
-in time. Each strand is a **honeycomb ribbon of hex particles** — the orb's lattice cell drawn
-as light, never solid blocks. Thick strands come from `conversations.db` (the thread, and any
-strand forked from it via `parent_id`; one lit run of cells per message); thin strands come
-from `memory.db` (one per event family; one lit cell per moment). They twist together as one
-rope; hovering a message lights the moments of that turn and draws the links, and hovering a
-moment lights its turn. A fan-out splits into strands that fold back (DER). Each task is a
-ring round the rope (red = failed, amber = partial, white = **you corrected IRIS**). Neurons
+**A session is its own dimension: fibre tissue** you travel through in time, like looking into
+the synapse of a neuron (owner, 2026-10-19; replaces the earlier hex-ribbon vortex). Each thread
+or strand is a **bundle of many fine fibres** — the threads of cloth, the fibres of a muscle
+bundle — that twist round their own axis, part and rejoin; never hex cells, never boxes. Thick
+bundles come from `conversations.db` (the thread, and any strand forked from it via
+`parent_id`; one lit run of fibres per message); thin bundles come from `memory.db` (one per
+event family; one lit run per moment). The bundles twist together round the tunnel; hovering a
+message lights the moments of that turn and draws the links, and hovering a moment lights its
+turn. A fan-out opens the thread into parallel bundles that fold back (DER). Each task is a
+band of fibres round the tunnel (red = failed, amber = partial, white = **you corrected
+IRIS**). A faint pulse runs along the fibres at the pace of the session's own attention
+(Caducean u); the tunnel's width follows x. Pins are fixed beads on the thread (§17.1). Neurons
 the session touched sit on the rope as the same glyph as in the cortex, joined by a tissue
 thread; click one to follow its thread (scroll / ← → step neuron to neuron; Enter opens it in
 the mind). A **thread rail** at the bottom shows the session's neurons and tasks in time; click
-to travel. The rope runs inside **particle walls** — dendritic veins of particles (owner video 1),
-tinted by the family of nearby moments. The far end is a **doorway** — an iris that opens onto the next thread (or back to
+to travel. The tunnel is lined with very faint background fibres and a fine haze of particles (the
+synaptic space). The far end is a **doorway** — an arch that opens onto the next thread (or back to
 the timeline for the newest); a side door returns to this thread's beginning. Rope width
-follows the Caducean trajectory; the cortex glows behind the entrance.
+follows the Caducean trajectory; the cortex glows behind the entrance. **The doorway is a tall
+arch with a soft edge — no rim line, nothing round or puckered.** The tunnel's fibres part
+round it and end on its outline, so the arch is framed by them; inside it the swirl turns
+slowly. A checkpoint pin of the thread (§17.1) sits at the crown of the arch.
 
 **The neuron glyph** (cortex and tunnel alike): a small nucleus with radial spokes, one per
 share of evidence, coloured by kind (white you · green tests/finished · cyan held up again ·
@@ -725,9 +732,137 @@ same 500 ms cadence as `useCaducean`), and `landmark_id` on every `RECALL_*` eve
   Measured target: ≤ 8 ms GPU per frame at 1440×900 on the owner's machine, with the tool
   model loaded.
 - **Bounded scene.** ≤ 50k skin particles, ≤ 400 neurons drawn (the rest as dust), ≤ 3k axons,
-  tunnel built on entry and disposed on exit.
+  tunnel built on entry and disposed on exit (about 200k fibre samples, one draw call for all fibres).
 - **Reduced motion.** `prefers-reduced-motion`: cuts instead of flights, no auto-drift,
   sparks slowed, shockwave becomes a brightness change.
 - **Not only visual.** Every object has a text equivalent reachable by keyboard (Tab through
   regions → thoughts → sessions; Enter goes in, Esc comes out); the search box is the
   accessible entry point.
+
+
+---
+
+## 17. The Kyudo and growth concepts in the cortex (2026-10-19)
+
+Source of each concept: `MEMORY-FOUNDATION-ANALYSIS.md` §5 (sectors, spaces), §6 (Σ as the visual
+expression), §11 (the growth and decay law), §12-§14 (Kyudo), §13.3 (pins). Every one is driven by a
+real value when the page runs with `?real` (`export_snapshot.py` reads the tables read-only and detects
+missing tables and columns with `PRAGMA table_info`; `meta.available` lists what it found) and by
+plausible demo data otherwise. A store that has none of a concept's data shows none of it, with no error.
+
+Rules that hold for all of them (owner, standing): low brightness that never builds up over time;
+glyphs not too bright; neurons distinguishable, not hair-like; smooth transitions; text inside a swelling
+cell only at cortex level (the timeline keeps leader-line labels). Strands of landmark tracts are drawn
+dimmer as there are more of them (`uEdge`), so a store with 3,000 edges does not glare.
+
+### 17.1 Pins — explicit memory
+
+- **Means:** something the user or IRIS chose to hold: a note, file, folder, image, document, web page,
+  decision, fragment or checkpoint. Held, not earned: a pin does **not** fade by the §11 law.
+- **Data:** `mycelium_pins` (type, title, tags, refs, created, is_permanent) and `mycelium_pin_links`
+  (what it references). Link count = refs in the links table + file, image and URL refs. "Held in
+  context" has no stored flag yet; the exporter reads the tag `held` or `context` (the live context
+  window would send `mind_window`, §16.6). The territory comes from a tag or project naming a sector, else
+  from the landmarks the pin is tied to, else "everyday". The thread comes from a `thread` link, else from
+  the thread whose time span contains the pin. **The live table has 0 rows (2026-10-19): `?real` shows
+  no pins.** The demo shows 17.
+- **Looks:** cortex — a small, still, faceted crystal (a slim hexagonal point, like quartz) set into the
+  inner wall in its territory (its nested sector when it has one), pin-type colour (note warm yellow,
+  file blue, folder slate, image pink, document pale, web page teal, decision amber, fragment violet,
+  checkpoint pale gold), size by link count. Fine, taut, straight tethers run to what it references (a
+  certainty, a node; a thing made — that tether shows in the artifacts lens, where the tissue settles). A
+  thin ring round the base = held in context, and its tethers are a little brighter. Hover swells a cell
+  with the title, type, link count and age. Timeline — a fixed bead of the same crystal on its thread at the
+  moment it was made; the thread's fibres part round it; a tether runs on to the doorway when later threads
+  used it; a checkpoint pin sits at the crown of that thread's doorway. A diamond mark on the thread rail.
+- **Over time:** nothing moves or pulses. A pin appears when it is written and stays until removed.
+
+### 17.2 Trust channel (Kyudo) — the membrane
+
+- **Means:** the channel a source arrived on sets how much it may write, how fast it fades and what it
+  can become: 4 system, 3 you, 2 verified, 1 outside, 0 untrusted; NULL = legacy internal (§12).
+- **Data:** `mycelium_nodes.source_channel` for a node; for a landmark, the highest `source_channel` of the
+  episode-index rows that name it (`mycelium_episode_index`). Both columns may be missing or NULL on a store
+  that predates Kyudo: the page then draws the plain sealed membrane.
+- **Looks:** the membrane of a neuron glyph (cortex and timeline) and of a node. A strong source keeps it
+  sealed and a little warm; a weak one leaves gaps in the ring (up to most of it for untrusted), a faint
+  dashed halo that leaks outward, and a paler, cooler hue. It only ever dims: never brighter than a sealed
+  cell.
+- **Over time:** static texture. It changes only when the stored channel does (a reconfirmation by a better
+  source raises it, §12.1).
+
+### 17.3 Fading — the §11 law
+
+- **Means:** only confidence above the 0.4 floor was earned; what is not renewed sinks back to the floor.
+  Edge and tract strength follows score, firmed by evidence (§11.2: a belief with more proofs moves more
+  slowly in both directions).
+- **Data:** `mycelium_nodes.confidence`; `mycelium_edges.score`, `observation_count`, `traversal_count`;
+  `mycelium_landmark_edges.score`, `traversal_count`.
+- **Looks:** a node's opacity and saturation follow `(confidence - 0.4) / 0.6`: a node on the floor is a
+  pale, nearly grey ghost, a well-earned one is full colour. A tract's thickness (particle count and spread)
+  follows `(0.3 + 0.7 score) * (0.55 + 0.45 evidence)`, with evidence = log of the count. On the live store
+  every landmark edge has score 0.4 and no traversals, so every landmark tract is equally thin: that is true.
+- **Over time:** what fades dims visibly; **nothing brightens with age**. Brightness depends only on the
+  current confidence and score, never on how long ago something was written.
+
+### 17.4 Landmark tracts
+
+- **Means:** the routes between certainties (`mycelium_landmark_edges`), and between clusters of them.
+- **Looks:** a tract between two certainties is a tapered particle strand (§17.3 thickness); between two
+  clusters (task classes) the tracts run as one thicker bundle, thickness by mean score and number of links.
+- **Over time:** a tract is still. It carries a faint pulse **only when its traversal count grew**: in `?real`
+  the page remembers the last counts it saw in the browser (`localStorage`, key `iris.memory.edgeSeen`) and
+  pulses the edges that rose since; the first visit pulses none. The demo flags a few as grown. Tissue that
+  always carries signal (tracts to the skin, links to near neighbours) keeps its ordinary pulse.
+
+### 17.5 Immune response (`mycelium_quorum_log`)
+
+- **Means:** the durable memory of the Kyudo guard: each signal that counted toward the threat
+  (`shadow = 0`), each signal that was only measured (`shadow = 1`), each reorganization reset
+  (`quorum_reorganization_reset`).
+- **Data:** the newest 80 rows (ts, session, signal type, weight, shadow, the landmark an activation anomaly
+  names). The territory it touched is the landmark's, else the session's busiest territory; with neither, the
+  whole lattice at half strength. The live table is empty today, so `?real` shows nothing. The page replays
+  the log oldest first, one row every 6 to 10 seconds, and the ticker says when each truly happened.
+- **Looks:** a live signal — a brief, low-amplitude tightening of the touched territory (its lattice is
+  pulled about 1% toward its centre) with a small flicker (at most about +14% brightness). A shadow signal —
+  only a faint mark on the skin that fades over about 25 seconds, with no motion. A reset — the territory
+  relaxes outward and dims slightly, then settles.
+- **Over time:** amplitudes only decay: a tightening lasts about a second, a relaxation a few. A signal sets
+  the amplitude (it never adds), so a busy log cannot build up brightness.
+
+### 17.6 Sectors — the territories
+
+- **Means:** territories are the sector registry (§5.1): roots are large territories, children nested
+  sub-territories (depth 1 drawn; deeper ones fold into their depth-1 ancestor; at most 12 roots and 12
+  children).
+- **Data:** `mycelium_sectors` (key, parent, label, status, members) and `mycelium_landmark_sectors`
+  (landmark to sector, by weight). Both tables may not exist yet (another build is creating them): the
+  exporter and the page treat that as "not there", and **the topic-domain territories stand in** (the 12
+  registry values), as before.
+- **Looks:** a child is a smaller cap of a lighter shade of its root's colour, set toward one side inside
+  it; the lattice draws it as its own patch. The root's label lists its children (`↳ name count`, "still
+  forming" for a candidate).
+- **Over time:** a territory's size follows its members. A candidate sector that closes becomes proven and
+  loses the "still forming" mark; a dissolved one disappears.
+
+### 17.7 Spaces — the layers
+
+- **Means:** the coordinate spaces of `mycelium_spaces` (conduct, domain, style, chrono, context,
+  capability, toolpath today). Each is a layer of the mind with its own write lock (§12.3).
+- **Data:** the registry rows (description, active, `write_lock`, `render_order`; the last two may be
+  missing) and the nodes in each space.
+- **Looks:** one very faint geodesic shell per space inside the orb, innermost = render order 0, a space with
+  no render order (toolpath) outermost; its tint is its write lock. Nodes sit on their shell (small cells with
+  the §17.2 membrane and the §17.3 fade); their tracts (`mycelium_edges`) run between them. Press `s`: the
+  shells brighten and each names itself in plain words with who may write there ("only you and the system
+  write here"). Hover a node: what space, where it came from, how sure IRIS is, and whether it is only on the
+  floor it was given.
+- **Over time:** static; a space added to the registry gets its own shell with no code change.
+
+### 17.8 What to look at in a browser
+
+Open `index.html` (demo) and `index.html?real` (after `export_snapshot.py`). Cortex: nested patches inside
+territories; crystals set in the wall (fly inside); `s` for the layers; the ticker shows the guard's rows.
+Timeline lens, click a session (in the demo, `__cortex.enter(12)` and `__cortex.enter(14)` open one with a pin bead and one with a checkpoint): fibre bundles, the pins as beads, the arch at the
+end. Artifacts lens: pin tethers reach the tissue.

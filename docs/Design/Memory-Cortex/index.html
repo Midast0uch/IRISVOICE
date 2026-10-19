@@ -12,7 +12,10 @@
   exhales its media into an organic Voronoi tissue).
   Data: loads ./memory-snapshot.js (window.IRIS_MEMORY, exported read-only from data/memory.db by
   export_snapshot.py) when present; otherwise a generator that follows the same schema.
-  Spec: docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md (section 16 = this experience model).
+  Spec: docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md (section 16 = this experience model;
+  section 17 = pins, trust channel, fading, landmark tracts, immune response, sectors, spaces).
+  2026-10-19: the timeline is fibre tissue (bundles of fine fibres, a soft arch for the doorway); the Kyudo and growth
+  concepts of MEMORY-FOUNDATION-ANALYSIS 5, 6, 11-14 are drawn from real values when ?real, demo data otherwise.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Inter+Tight:wght@300;400;500&display=swap" rel="stylesheet">
@@ -243,6 +246,31 @@ const ORACLE_PLAIN={tool_choice:'picking the next tool',escalate_incomplete:'kno
   click_safety:'knowing if a click is safe',call_closing:'knowing a call was the last one',recovery_strategy:'choosing how to recover',
   sufficient:'knowing an answer is enough',event_family:'sorting what happened',event_type:'naming what happened'};
 
+// ── Kyudo trust channel (nodes.source_channel): 4 system · 3 you · 2 verified · 1 outside · 0 untrusted;
+// null = legacy internal. The membrane carries it as texture (porous + pale when weak), never as glare.
+const CHAN_WORD={4:'set by the system',3:'came from you',2:'came from a verified source',1:'came from an outside source',0:'came from a source nobody vouches for'};
+const chanWord=c=>c==null?'an older memory, from inside IRIS':CHAN_WORD[c]||'';
+const LOCK_WORD={4:'only the system writes here',3:'only you and the system write here',2:'verified sources and above write here',
+  1:'outside sources may write here',0:'any source may write here'};
+const SPACE_WORD={conduct:'how you like to work',domain:'what you work on',style:'how you like to be spoken to',chrono:'when you work',
+  context:'what goes on around the work',capability:'what IRIS can do',toolpath:'which tools worked'};
+// membrane tint per channel: cool and grey when weak, warm when strong (dim on purpose)
+const CHAN_TINT=['#7d7a8c','#8793ad','#9fb8c8','#cdd6d2','#dcd2b4'];
+const chanTint=c=>CHAN_TINT[c==null?3:clamp(Math.round(c),0,4)];
+// pins (MEMORY-FOUNDATION-ANALYSIS 13.3): explicit memory, held not earned
+const PIN_TYPES={note:{col:'#e6d79c',word:'a note'},file:{col:'#8fb8ff',word:'a file'},folder:{col:'#7fa0d8',word:'a folder'},
+  image:{col:'#ff9ec4',word:'an image'},doc:{col:'#d3dbe2',word:'a document'},url:{col:'#6fe3d2',word:'a web page'},
+  decision:{col:'#ffb066',word:'a decision'},fragment:{col:'#b9a0ff',word:'a fragment'},checkpoint:{col:'#f3ead0',word:'a checkpoint'}};
+const pinType=t=>PIN_TYPES[t]||PIN_TYPES.note;
+// the immune response, in plain words
+const QUORUM_WORD={update_velocity_anomaly:'something was written unusually fast',topological_violation:'the work drifted off its path',
+  channel_trust_violation:'an untrusted source touched trusted ground',landmark_activation_anomaly:'a certainty fired unusually often',
+  quorum_reorganization_reset:'the guard relaxed the territory'};
+// territories whose key the registry does not know get a stable hue from the key
+const hueCol=k=>{let h=0;for(const c of String(k))h=(h*31+c.charCodeAt(0))%360;return `hsl(${h},50%,64%)`};
+const domCol=k=>DOM_COL[k]||hueCol(k);
+const domWord=k=>DOM_WORD[k]||String(k).replace(/[_\/-]+/g,' ');
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 2. memory — real snapshot when present, otherwise a schema-faithful generator
 // ═══════════════════════════════════════════════════════════════════════════
@@ -314,12 +342,14 @@ function synthMemory(){
       activations:cand?randi(0,4):Math.round(Math.pow(rng(),2)*120)+1,contradictions:rng()<.12?randi(1,3):0,
       last_activated:T-rand(60,DAY*20),last_verified:T-rand(DAY,DAY*40),born,session:pick(sessions).id,
       fams:[FAMI.knowledge,FAMI.memory,pick([0,1,2,4,5,7,8])],
-      domain:rng()<.7?({preference:'general',implement:'systems',research:'web',debug:'systems',voice:'ai',environment:'hardware',workflow:'general'}[cls]||'general'):pick(DOMAINS)};
+      domain:rng()<.7?({preference:'general',implement:'systems',research:'web',debug:'systems',voice:'ai',environment:'hardware',workflow:'general'}[cls]||'general'):pick(DOMAINS),
+      // Kyudo channel: what you confirmed came from you; learned certainties came through a verified path; a candidate may rest on weak sources
+      channel:ev.some(e=>e.kind==='user')?3:(cand?pick([1,1,0,2,null]):pick([2,2,2,4,3]))};
   });
   const edges=[];
   for(let i=0;i<landmarks.length;i++){const k=randi(1,3);for(let j=0;j<k;j++){
     let b=rng()<.75?landmarks.findIndex((l,ix)=>ix>i&&l.cls===landmarks[i].cls&&rng()<.3):randi(0,landmarks.length-1);
-    if(b<0||b===i)continue;edges.push({a:i,b,score:rand(.3,1),traversals:randi(0,60),hits:randi(0,30),misses:randi(0,6)})}}
+    if(b<0||b===i)continue;const used=rng()<.55;edges.push({id:'le_'+edges.length,a:i,b,score:rand(.3,1),traversals:used?randi(1,60):0,hits:randi(0,30),misses:randi(0,6),grew:used&&rng()<.22})}}
   const merges=[];for(let i=0;i<34;i++)merges.push({survivor:randi(0,landmarks.length-1),absorbed_label:pick(claims)[0],overlap:rand(.7,.97)});
 
   const TOOLSEQ=['search','read_file','run_tests','edit_file','browser_open','browser_click','shell','vision','write_file','speak'];
@@ -385,28 +415,99 @@ function synthMemory(){
   const mind=['your exact request','plan · step 3 of 5','turn_store.py · lines 40–120','the failing test output','what "the wing" means to you',
     'run one test file, not the suite','last week\'s similar fix','the project folder layout','your voice speed preference','an open question for you',
     'the search results from step 2','the error from the shell'];
+  // ── sectors: roots are the topic-domain territories, children nest inside them (MEMORY-FOUNDATION-ANALYSIS 5.1)
+  const KIDS={systems:['memory','tests','lanes'],web:['research','browsing'],ai:['voice','oracle'],devops:['ports'],data:['store'],design:['orb']};
+  const sectors=DOMAINS.map(d=>({key:d,parent:null,label:DOM_WORD[d],status:'proven',members:0}));
+  for(const [d,ks] of Object.entries(KIDS))ks.forEach((k,j)=>sectors.push({key:d+'/'+k,parent:d,label:k,status:(d+k).length%3===0?'candidate':'proven',members:0}));
+  landmarks.forEach(l=>{const ks=KIDS[l.domain];if(ks&&rng()<.55){l.sector=l.domain+'/'+pick(ks)}});
+  sectors.forEach(s=>{s.members=landmarks.filter(l=>s.parent?l.sector===s.key:l.domain===s.key).length});
+  // ── coordinate spaces (the registry) and the nodes in them; a node's channel is never below its space's write lock
+  const spaces=[['conduct',3,0],['domain',1,1],['style',3,2],['chrono',3,3],['context',2,4],['capability',4,5],['toolpath',4,null]]
+    .map(([id,lock,ro])=>({id,description:SPACE_WORD[id],active:true,write_lock:lock,render_order:ro}));
+  const NPER={conduct:6,domain:18,style:8,chrono:6,context:20,capability:12,toolpath:64};
+  const nodes=[];
+  for(const sp of spaces)for(let k=0;k<NPER[sp.id];k++){
+    const floor=rng()<.28;  // a quarter sit on the stated floor: stated, never re-earned
+    nodes.push({id:'nd_'+nodes.length,space:sp.id,label:sp.id==='toolpath'?pick(['write_file','read_file','run_tests','tool_none','search']):sp.id+' '+(k+1),
+      conf:floor?.4:clamp(.4+Math.pow(rng(),.8)*.55,.4,.95),chan:rng()<.1?null:clamp(sp.write_lock+(rng()<.45?0:randi(0,4-sp.write_lock)),0,4),
+      born:T-rand(DAY*.5,DAY*55),used:Math.round(Math.pow(rng(),2.4)*40)})}
+  const nodeEdges=[];
+  for(let i=0;i<46;i++){const a=randi(0,nodes.length-1),b=randi(0,nodes.length-1);if(a===b)continue;
+    nodeEdges.push({a,b,score:rand(.3,.95),traversals:randi(0,16),observations:randi(0,18),last:T-rand(0,DAY*30)})}
+  // ── pins: explicit memory (note/file/folder/image/doc/url/decision/fragment/checkpoint)
+  const PT=[['folder','IRISVOICE repo root','systems'],['file','memory.db schema','systems'],['decision','Every store write goes through a lane','systems'],
+    ['doc','Oracle bar report','ai'],['url','Nostr protocol spec','web'],['image','Strand cascade sketch','design'],['note','You prefer short spoken replies','general'],
+    ['fragment','Argument-repair snippet','systems'],['decision','Keep the orb readable on pale wallpapers','design'],['url','GGUF quantization table','ai'],
+    ['file','port_registry.ts','devops'],['note','Landlord answers email faster than calls','finance'],['doc','Weekly status note','general'],
+    ['checkpoint','Paused: turn store tests','systems'],['checkpoint','Paused: strand cascade delete','design'],['image','Lisbon tram map','general'],['decision','Measure first, then fix, then guard','systems']];
+  const pins=PT.map(([type,title,domain],i)=>{const near=landmarks.map((l,k)=>[l,k]).filter(([l])=>l.domain===domain);
+    const nl=type==='checkpoint'?0:randi(1,4),refs=[];for(let j=0;j<nl&&near.length;j++)refs.push({t:'landmark',id:pick(near)[0].id});
+    if(rng()<.5&&artifacts.length)refs.push({t:'artifact',id:pick(artifacts).id});if(rng()<.35)refs.push({t:'node',id:pick(nodes).id});
+    const sess=pick(sessions);if(type==='checkpoint'){refs.push({t:'thread',id:sess.id})}else if(rng()<.5)refs.push({t:'thread',id:pick(sessions).id});
+    const kids=KIDS[domain];
+    return {id:'pin_'+i,title,type,created:type==='checkpoint'?(sess.ended||sess.started+600)-30:sess.started+rand(60,900),permanent:rng()<.3,held:i%4===1||type==='checkpoint'&&i%2===1,
+      links:refs.length+randi(0,3),refs,domain,sector:kids&&rng()<.5?domain+'/'+pick(kids):null,session:sess.id}});
+  // ── immune response: the quorum log. Live rows count toward the threat; shadow rows are only measured; the reset is the region relaxing
+  const live=landmarks.length-1;
+  const quorum=[['topological_violation',.20,.20,0],['channel_trust_violation',.25,.45,0],['landmark_activation_anomaly',0,.45,1],['topological_violation',.20,.65,0],
+    ['quorum_reorganization_reset',0,0,0],['update_velocity_anomaly',.15,0,1],['topological_violation',.20,.20,0],['landmark_activation_anomaly',0,.20,1],
+    ['update_velocity_anomaly',.15,.20,1],['channel_trust_violation',.25,.45,0],['topological_violation',.20,.65,0],['quorum_reorganization_reset',0,0,0]]
+    .map(([signal,weight,threat,shadow],i)=>({ts:T-(12-i)*DAY*.18,session:pick(sessions).id,signal,weight,threat,shadow:!!shadow,landmark:signal==='landmark_activation_anomaly'?landmarks[randi(0,live)].id:null}));
   return {meta:{source:'synthetic — follows the data/memory.db schema',generated:T,counts:{events:18801,chain:20743,landmarks:2027,edges:6628,merges:1806,
-    episodes:407,sessions:108,fragments:84712,artifacts:artifacts.length}},famCounts,sessions,events,landmarks,edges,merges,episodes,artifacts,oracle,mind};
+    episodes:407,sessions:108,fragments:84712,artifacts:artifacts.length,pins:pins.length,nodes:nodes.length,spaces:spaces.length,quorum:quorum.length}},
+    famCounts,sessions,events,landmarks,edges,merges,episodes,artifacts,oracle,mind,sectors,spaces,nodes,nodeEdges,pins,quorum};
 }
 function normalizeMemory(M){
   M.sessions=M.sessions||[];M.events=M.events||[];M.landmarks=M.landmarks||[];M.edges=M.edges||[];M.merges=M.merges||[];
   M.episodes=M.episodes||[];M.artifacts=M.artifacts||[];M.oracle=M.oracle||[];M.mind=M.mind||[];
   M.famCounts=M.famCounts||{};
   for(const f of FAM)if(M.famCounts[f.key]==null)M.famCounts[f.key]=M.events.filter(e=>e.family===f.key).length;
-  for(const e of M.events)e.domain=DOMAINS.includes(e.domain)?e.domain:'general';
+  // the newer concepts: a snapshot or a store that predates one simply has none of it
+  M.sectors=(M.sectors||[]).filter(s=>s&&s.key&&s.status!=='dissolved');M.pins=M.pins||[];M.spaces=M.spaces||[];
+  M.nodes=M.nodes||[];M.nodeEdges=M.nodeEdges||[];M.quorum=M.quorum||[];M.meta=M.meta||{};
+  // sectors: roots are the territories, children nest inside them; with no registry the topic domains stand in
+  const secBy=new Map(M.sectors.map(s=>[s.key,s]));
+  const par=k=>{const p=secBy.get(k)?.parent;return p&&secBy.has(p)?p:null};
+  const rootOf=k=>{let n=0;while(par(k)&&n++<6)k=par(k);return k};
+  const childOf=k=>{let n=0;while(par(k)&&par(par(k))&&n++<6)k=par(k);return par(k)?k:null}; // the depth-1 ancestor
+  M.sectorsOn=M.sectors.some(s=>!s.parent);
+  const rootKeys=M.sectors.filter(s=>!s.parent).map(s=>s.key);
+  const mapDom=d=>M.sectorsOn?(secBy.has(d)?rootOf(d):(secBy.has('general')?'general':rootKeys[0])):(DOMAINS.includes(d)?d:'general');
+  for(const e of M.events){e.sector=M.sectorsOn&&secBy.has(e.domain)?childOf(e.domain):null;e.domain=mapDom(e.domain)}
   if(!M.domCounts){M.domCounts={};const k=(M.meta?.counts?.events||M.events.length)/Math.max(1,M.events.length);
     for(const e of M.events)M.domCounts[e.domain]=(M.domCounts[e.domain]||0)+k;for(const d in M.domCounts)M.domCounts[d]=Math.round(M.domCounts[d])}
+  else if(M.sectorsOn){const dc={};for(const [k,n] of Object.entries(M.domCounts))dc[mapDom(k)]=(dc[mapDom(k)]||0)+n;M.domCounts=dc}
+  if(M.sectorsOn)for(const s of M.sectors)if(!s.parent&&M.domCounts[s.key]==null)M.domCounts[s.key]=s.members||0;
   const sById=new Map(M.sessions.map(s=>[s.id,s]));
   for(const s of M.sessions){s.events=s.events||[];s.episodes=s.episodes||[];s.traj=s.traj||[]}
   if(M.sessions.every(s=>!s.events.length))for(const e of M.events){const s=sById.get(e.session);if(s)s.events.push(e)}
   for(const s of M.sessions)s.events.sort((a,b)=>a.ts-b.ts);
   M.sessions.sort((a,b)=>a.started-b.started);
   for(const l of M.landmarks){l.evidence=l.evidence||[];l.cls=l.cls||'workflow';l.fams=l.fams||[FAMI.knowledge,FAMI.memory];
-    l.domain=DOMAINS.includes(l.domain)?l.domain:'general';
+    l.sector=M.sectorsOn&&l.sector&&secBy.has(l.sector)?childOf(l.sector):null;
+    l.domain=mapDom(l.domain);l.channel=l.channel==null?null:clamp(Math.round(l.channel),0,4);
     l.born=l.born||l.last_verified||l.last_activated||nowS()}
   M.sById=sById;M.epById=new Map(M.episodes.map(e=>[e.id,e]));
   M.lmIndex=new Map(M.landmarks.map((l,i)=>[l.id,i]));
   for(const e of M.events)if(typeof e.landmark==='string')e.landmark=M.lmIndex.has(e.landmark)?M.lmIndex.get(e.landmark):null;
+  // a session's own territory: where most of its moments landed
+  for(const s of M.sessions)if(!s.domain){const c={};for(const e of s.events)c[e.domain]=(c[e.domain]||0)+1;
+    s.domain=Object.entries(c).sort((a,b)=>b[1]-a[1])[0]?.[0]||'general'}
+  // nodes: confidence and channel come from the store; edges refer to nodes by index
+  M.nIndex=new Map(M.nodes.map((n,i)=>[n.id,i]));
+  for(const n of M.nodes){n.conf=clamp(n.conf??.5,0,1);n.chan=n.chan==null?null:clamp(Math.round(n.chan),0,4);n.born=n.born||nowS()-86400}
+  M.nodeEdges=M.nodeEdges.filter(e=>e.a<M.nodes.length&&e.b<M.nodes.length);
+  // pins: a territory (by domain, else the landmarks it ties to), the thread it belongs to, what it is tied to
+  M.pins=M.pins.filter(p=>p&&p.id);
+  for(const p of M.pins){p.refs=p.refs||[];p.type=PIN_TYPES[p.type]?p.type:'note';
+    const lms=p.refs.filter(r=>r.t==='landmark'&&M.lmIndex.has(r.id)).map(r=>M.lmIndex.get(r.id));
+    if(!p.domain&&lms.length){const c={};lms.forEach(k=>c[M.landmarks[k].domain]=(c[M.landmarks[k].domain]||0)+1);p.domain=Object.entries(c).sort((a,b)=>b[1]-a[1])[0][0]}
+    p.sector=M.sectorsOn&&p.sector&&secBy.has(p.sector)?childOf(p.sector):null;p.domain=mapDom(p.domain||'general');
+    p.links=Math.max(p.links||0,p.refs.length);
+    if(!p.session||!sById.has(p.session)){const tr=p.refs.find(r=>(r.t==='thread'||r.t==='session')&&sById.has(r.id));
+      p.session=tr?tr.id:(M.sessions.find(s=>s.started<=p.created&&p.created<=(s.ended||nowS()))?.id||null)}}
+  // the immune log, oldest first
+  M.quorum=M.quorum.filter(q=>q&&q.signal).sort((a,b)=>a.ts-b.ts);
   return M;
 }
 // index.html?real shows the exported snapshot of this machine's memory; the default is the
@@ -422,9 +523,19 @@ if(!REG.length)REG.push('general');
 const REGI=Object.fromEntries(REG.map((d,i)=>[d,i]));
 const regOf=d=>REGI[d]??REGI.general??0;
 M.landmarks.forEach(l=>{l.dom=regOf(l.domain)});
-// what happens inside each territory: its three busiest kinds of event, in plain words
-const domTop=REG.map(d=>{const c={};for(const e of M.events)if(e.domain===d)c[e.family]=(c[e.family]||0)+1;
-  return Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([f,n])=>`${FAM[FAMI[f]]?.word||f} ${n}`)});
+// nested sub-territories: the children of the sector registry that sit under a drawn territory (depth 1; at most 12)
+const SUB=(M.sectorsOn?M.sectors.filter(s=>s.parent&&REGI[s.parent]!=null):[]).sort((a,b)=>(b.members||0)-(a.members||0)).slice(0,12)
+  .map(s=>({key:s.key,label:s.label||domWord(String(s.key).split('/').pop()),status:s.status||'proven',members:s.members||0,ri:REGI[s.parent]}));
+const SUBI=Object.fromEntries(SUB.map((s,i)=>[s.key,i]));
+M.landmarks.forEach(l=>{l.sub=l.sector&&SUBI[l.sector]!=null?SUBI[l.sector]:-1});
+// landmark tracts grow only when their traversal count did: real = the count rose since this browser last saw the store
+if(USE_REAL){let seen={};try{seen=JSON.parse(localStorage.getItem('iris.memory.edgeSeen')||'{}')}catch(e){}
+  for(const e of M.edges){const k=e.id||('e'+e.a+'-'+e.b),prev=seen[k];e.grew=prev!=null&&(e.traversals||0)>prev;seen[k]=e.traversals||0}
+  try{localStorage.setItem('iris.memory.edgeSeen',JSON.stringify(seen))}catch(e){}}
+// what happens inside each territory: its three busiest kinds of event, in plain words; nested sectors follow
+const domTop=REG.map((d,ri)=>{const c={};for(const e of M.events)if(e.domain===d)c[e.family]=(c[e.family]||0)+1;
+  return [...Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([f,n])=>`${FAM[FAMI[f]]?.word||f} ${n}`),
+    ...SUB.filter(s=>s.ri===ri).slice(0,3).map(s=>`↳ ${s.label}${s.status==='candidate'?' (still forming)':''} ${s.members}`)]});
 const famTop={};
 for(const f of FAM){const c={};for(const e of M.events)if(e.family===f.key)c[e.label]=(c[e.label]||0)+1;
   famTop[f.key]=Object.entries(c).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([l])=>READ[l]||l.toLowerCase())}
@@ -463,13 +574,19 @@ const GLOW=glowTexture();
 const cortex=new THREE.Group();scene.add(cortex);
 const NS=42000;
 // regions: one per event family, painted onto the skin as swirls (video 2)
-const MAXREG=12;
+const NROOT=12,MAXREG=24; // shader slots: 12 territories, then up to 12 nested sectors
 const regC=REG.map((d,i)=>{const v=fib(REG.length,i);v.applyAxisAngle(new V3(1,.3,0).normalize(),.6);return v.normalize()});
 const domMax=Math.max(1,...REG.map(d=>M.domCounts[d]||0));
 const regRad=REG.map(d=>(REG.length>8?.26:.3)+.34*Math.sqrt((M.domCounts[d]||0)/domMax));
 const regBase=REG.map(d=>.12+.28*Math.sqrt((M.domCounts[d]||0)/domMax));
 // pad the shader's 12 region slots (an empty slot has radius 0 and never matches)
-const pad=(a,v)=>{const o=a.slice();while(o.length<MAXREG)o.push(typeof v==='function'?v():v);return o};
+const pad=(a,v,n=NROOT)=>{const o=a.slice();while(o.length<n)o.push(typeof v==='function'?v():v);return o};
+// nested sectors sit inside their territory: a smaller cap, set toward one side, in a lighter shade of its colour
+const subC=SUB.map((s,i)=>{const k=SUB.filter((q,j)=>j<i&&q.ri===s.ri).length,c=regC[s.ri],t1=new V3().crossVectors(c,new V3(0,1,.2)).normalize(),t2=new V3().crossVectors(c,t1);
+  const a=k*2.4+s.ri,off=regRad[s.ri]*.42;return c.clone().addScaledVector(t1,Math.cos(a)*off).addScaledVector(t2,Math.sin(a)*off).normalize()});
+const subRad=SUB.map(s=>regRad[s.ri]*clamp(.24+.5*Math.sqrt((s.members||1)/Math.max(1,M.domCounts[REG[s.ri]]||1)),.24,.4));
+const subCol=SUB.map(s=>{const c=new THREE.Color(domCol(REG[s.ri]));const h={};c.getHSL(h);return c.setHSL((h.h+.05)%1,Math.min(1,h.s+.1),Math.min(.8,h.l+.12))});
+const regSlots=(roots,subs,v)=>pad(roots,v).concat(pad(subs,v,MAXREG-NROOT));
 const regAct=regBase.slice();
 
 // session time axis for the caduceus
@@ -527,14 +644,14 @@ skinGeo.setAttribute('aInfo',new THREE.BufferAttribute(sInfo,3));
 const U={uTime:{value:0},uPix:{value:DPR}};
 const skinMat=new THREE.ShaderMaterial({
   uniforms:{...U,uMH:{value:0},uMI:{value:0},uMC:{value:0},uBounce:{value:1},uWarn:{value:0},uShock:{value:0},
-    uRegC:{value:pad(regC,()=>new V3(0,1,0))},uRegCol:{value:pad(REG.map(d=>new THREE.Color(DOM_COL[d]||'#9fb4c4')),()=>new THREE.Color())},uRegRad:{value:pad(regRad,0)},uRegAct:{value:pad(regAct,0)},
+    uRegC:{value:regSlots(regC,subC,()=>new V3(0,1,0))},uRegCol:{value:regSlots(REG.map(d=>new THREE.Color(domCol(d))),subCol,()=>new THREE.Color())},uRegRad:{value:regSlots(regRad,subRad,0)},uRegAct:{value:regSlots(regAct,SUB.map(s=>regAct[s.ri]),0)},
     uHoverReg:{value:-1},uOpenReg:{value:-1},uOpen:{value:0},uBrand:{value:BRAND},uR:{value:R},
     uSecProg:{value:new Array(16).fill(0)},uSecState:{value:new Array(16).fill(0)},uSecPulse:{value:new Array(16).fill(0)},uHoverSec:{value:-1},
     uScrollY:{value:0}},
   vertexShader:`
     uniform float uTime,uPix,uMH,uMI,uMC,uBounce,uWarn,uShock,uOpen,uR;
     uniform int uHoverReg,uOpenReg,uHoverSec;
-    uniform vec3 uRegC[12]; uniform vec3 uRegCol[12]; uniform float uRegRad[12]; uniform float uRegAct[12];
+    uniform vec3 uRegC[${MAXREG}]; uniform vec3 uRegCol[${MAXREG}]; uniform float uRegRad[${MAXREG}]; uniform float uRegAct[${MAXREG}];
     uniform float uSecProg[16]; uniform float uSecState[16]; uniform float uSecPulse[16];
     uniform vec3 uBrand;
     attribute vec3 aHelix,aIris,aCloud; attribute vec4 aRand; attribute vec3 aInfo;
@@ -554,7 +671,7 @@ const skinMat=new THREE.ShaderMaterial({
       float facing=abs(dot(nv,normalize(-mv.xyz)));
       float fres=pow(1.-facing,2.2);
       vec3 col=vec3(.55,.66,.75); float reg=0.; float hole=1.;
-      for(int i=0;i<12;i++){
+      for(int i=0;i<${MAXREG};i++){
         float d=acos(clamp(dot(n,uRegC[i]),-1.,1.)); float rr=uRegRad[i];
         if(d<rr){
           // the skin only takes the region's colour; the pattern lives in the lattice cells
@@ -602,17 +719,29 @@ const SU=skinMat.uniforms;
 const impacts=Array.from({length:8},()=>new THREE.Vector4(0,1,0,-99)),impactCol=Array.from({length:8},()=>new THREE.Color());
 let impactIx=0;
 function impact(dir,col){impacts[impactIx].set(dir.x,dir.y,dir.z,clock.elapsedTime);impactCol[impactIx].set(col);impactIx=(impactIx+1)%8}
+// immune response (Kyudo): one signed amplitude per territory slot. + = the region tightens and flickers briefly,
+// - = it relaxes. Always decays to 0, so nothing ever builds up (see immuneSignal / the frame loop).
+const IMM=new Array(MAXREG).fill(0);
 const LATTICE_U={uRegC:SU.uRegC,uRegCol:SU.uRegCol,uRegRad:SU.uRegRad,uRegAct:SU.uRegAct,uHoverReg:SU.uHoverReg,uOpenReg:SU.uOpenReg,uOpen:SU.uOpen,
-  uImp:{value:impacts},uImpCol:{value:impactCol}};
+  uImp:{value:impacts},uImpCol:{value:impactCol},uImm:{value:IMM}};
 const REGION_GLSL=`
-  uniform vec3 uRegC[12]; uniform vec3 uRegCol[12]; uniform float uRegRad[12]; uniform float uRegAct[12];
+  uniform vec3 uRegC[${MAXREG}]; uniform vec3 uRegCol[${MAXREG}]; uniform float uRegRad[${MAXREG}]; uniform float uRegAct[${MAXREG}]; uniform float uImm[${MAXREG}];
   uniform int uHoverReg,uOpenReg; uniform float uOpen; uniform vec4 uImp[8]; uniform vec3 uImpCol[8];
+  // slots 12.. are nested sectors: they win inside their own cap (bias), so a child reads as its own patch inside its territory
   void region(vec3 n,out float rw,out vec3 rc,out float ra,out float rn,out float hole,out float rim){
-    rw=0.;rc=vec3(0.);ra=0.;rn=1.;hole=1.;rim=0.;
-    for(int i=0;i<12;i++){if(uRegRad[i]<=0.)continue;float d=acos(clamp(dot(n,uRegC[i]),-1.,1.));float q=d/uRegRad[i];
-      if(q<1.&&1.-q>rw*.999){rw=1.-q;rc=uRegCol[i];ra=uRegAct[i]+(uHoverReg==i?.9:0.);rn=q;
-        if(i==uOpenReg){if(q<uOpen*1.12)hole=0.;rim=smoothstep(.12,0.,abs(q-uOpen*1.12))*uOpen;}}}
+    rw=0.;rc=vec3(0.);ra=0.;rn=1.;hole=1.;rim=0.;float best=0.;
+    for(int i=0;i<${MAXREG};i++){if(uRegRad[i]<=0.)continue;float d=acos(clamp(dot(n,uRegC[i]),-1.,1.));float q=d/uRegRad[i];float sc=(1.-q)+(i>=${NROOT}?.4:0.);
+      if(q<1.&&sc>best*.999){best=sc;rw=1.-q;rc=uRegCol[i];ra=uRegAct[i]+(uHoverReg==i?.9:0.);rn=q;}}
+    if(uOpenReg>=0&&uOpenReg<${NROOT}){float d=acos(clamp(dot(n,uRegC[uOpenReg]),-1.,1.));float q=d/max(uRegRad[uOpenReg],.001);
+      if(q<1.){if(q<uOpen*1.12)hole=0.;rim=smoothstep(.12,0.,abs(q-uOpen*1.12))*uOpen;}}
   }
+  // the touched territory tightens (pulled toward its centre and pressed in about 1%); a negative amplitude relaxes it outward
+  float immAmp(vec3 n){float s=0.;for(int i=0;i<${NROOT};i++){float a=uImm[i];if(a==0.||uRegRad[i]<=0.)continue;
+      float q=acos(clamp(dot(n,uRegC[i]),-1.,1.))/uRegRad[i];s+=a*(1.-smoothstep(.35,1.,q));}return s;}
+  vec3 immune(vec3 p){vec3 n=normalize(p);float r=length(p);float s=0.;vec3 pull=vec3(0.);
+    for(int i=0;i<${NROOT};i++){float a=uImm[i];if(a==0.||uRegRad[i]<=0.)continue;
+      float q=acos(clamp(dot(n,uRegC[i]),-1.,1.))/uRegRad[i];float w=1.-smoothstep(.35,1.,q);s+=a*w;pull+=(uRegC[i]-n)*a*w;}
+    return normalize(n+pull*.035)*r*(1.-.013*s);}
   float ripples(vec3 n,float t,out vec3 col){float s=0.;col=vec3(0.);
     for(int k=0;k<8;k++){float age=t-uImp[k].w;if(age<0.||age>3.)continue;
       float ang=acos(clamp(dot(n,normalize(uImp[k].xyz)),-1.,1.));
@@ -623,8 +752,8 @@ const REGION_GLSL=`
 // Aurora wireframe with travelling pulse bands; inside a region its lines take the family colour
 const wireMat=new THREE.ShaderMaterial({
   uniforms:{...U,...LATTICE_U,uVis:{value:1},uWarn:{value:0},uShock:{value:0},uBrand:{value:BRAND},uR:{value:R}},
-  vertexShader:`varying vec3 vP;void main(){vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
-  fragmentShader:`uniform float uTime,uVis,uWarn,uShock,uR;uniform vec3 uBrand;varying vec3 vP;${REGION_GLSL}
+  vertexShader:`${REGION_GLSL}varying vec3 vP;varying float vI;void main(){vP=position;vI=immAmp(normalize(position));gl_Position=projectionMatrix*modelViewMatrix*vec4(immune(position),1.);}`,
+  fragmentShader:`uniform float uTime,uVis,uWarn,uShock,uR;uniform vec3 uBrand;varying vec3 vP;varying float vI;${REGION_GLSL}
     void main(){vec3 n=normalize(vP);float lat=vP.y/uR;float lon=atan(vP.z,vP.x);float t=uTime*2.;
       float w1=sin(lat*5.2-t*1.5);float w2=sin(lon*3.+lat*2.+t*.8);
       float band=pow((w1*.7+w2*.3)*.5+.5,4.);
@@ -633,8 +762,10 @@ const wireMat=new THREE.ShaderMaterial({
       float inR=step(.0001,rw);
       vec3 pc=mix(uBrand,rc,inR*.85);pc=mix(pc,vec3(1.,.16,.16),uWarn);pc=mix(pc,ic,clamp(rp,0.,1.));pc=mix(pc,vec3(1.),uShock*.7);
       rp=min(rp,1.);
-      float br=(.06+band*.8+inR*(.12+ra*.12)+rp*.6+rim*1.6)*(1.+uShock*2.5);
-      gl_FragColor=vec4(pc*br,(band*.24+.02+inR*(.07+ra*.04)+rp*.22+rim*.8+uShock*.3)*uVis*hole);}`,
+      // immune flicker: brief and small (at most about +14% at the strongest), dimmer while a region relaxes
+      float fl=(1.+max(vI,0.)*.55*(.5+.5*sin(uTime*38.+vP.x*11.+vP.z*7.)))*(1.-max(-vI,0.)*.35);
+      float br=(.06+band*.8+inR*(.12+ra*.12)+rp*.6+rim*1.6)*(1.+uShock*2.5)*fl;
+      gl_FragColor=vec4(pc*br,(band*.24+.02+inR*(.07+ra*.04)+rp*.22+rim*.8+uShock*.3)*uVis*hole*fl);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true});
 const wire=new THREE.Mesh(new THREE.IcosahedronGeometry(R*1.015,4),wireMat);cortex.add(wire);
 
@@ -648,14 +779,14 @@ const cellGeo=new THREE.IcosahedronGeometry(R*1.012,4);
 const cellMat=new THREE.ShaderMaterial({
   uniforms:{...U,...LATTICE_U,uVis:wireMat.uniforms.uVis,uShock:wireMat.uniforms.uShock},
   vertexShader:`uniform float uTime,uVis,uShock;attribute vec3 aFace;attribute float aR;varying vec3 vC;varying float vA;${REGION_GLSL}
-    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vec3 n=normalize(aFace);
+    void main(){vec4 mv=modelViewMatrix*vec4(immune(position),1.);vec3 n=normalize(aFace);float im=immAmp(n);
       float rw,ra,rn,hole,rim;vec3 rc;region(n,rw,rc,ra,rn,hole,rim);vec3 ic;float rp=ripples(n,uTime,ic);
       float inR=step(.0001,rw);
       vec3 nv=normalize(normalMatrix*n);float fres=pow(1.-abs(dot(nv,normalize(-mv.xyz))),1.4);
       float glint=pow(.5+.5*sin(uTime*(.4+aR*1.2)+aR*60.),14.)*(.3+ra*.5);rp=min(rp,1.);
       float a=inR*(.028+ra*.022+glint*.05+step(.8,rn)*.025)+rp*.13+rim*.4+uShock*.06;
       vC=mix(mix(vec3(.55,.7,.8),rc,inR),ic,clamp(rp,0.,1.));
-      vA=a*mix(.35,1.,fres)*hole*uVis;gl_Position=projectionMatrix*mv;}`,
+      vA=a*mix(.35,1.,fres)*hole*uVis*(1.+max(im,0.)*.55*(.5+.5*sin(uTime*37.+aR*50.)))*(1.-max(-im,0.)*.35);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
 const cells=new THREE.Mesh(cellGeo,cellMat);cortex.add(cells);
@@ -825,7 +956,9 @@ const forest=new THREE.Points(forestGeo,forestMat);forest.frustumCulled=false;co
 //                grey = only IRIS's own word); spoke length = how much it is used
 //   short faded spokes = still learning · a thin outer ring = permanent
 //   red, broken spokes = contradicted · soft membrane = the kind of knowledge (hue)
-const GLYPH_FRAG=`varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;
+//   trust channel (Kyudo) = the membrane itself: a strong source keeps it sealed and warm; a weak one leaves gaps in it,
+//   a faint leaking dashed halo, and a paler, cooler hue. It only ever dims - never brighter than a sealed cell.
+const GLYPH_FRAG=`varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
   void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
     const float N=11.;float k=floor(ang*N);float f=(k+.5)/N;
@@ -840,8 +973,16 @@ const GLYPH_FRAG=`varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4
     spoke*=mix(1.,step(.5,fract(d*22.)),bad);
     float body=smoothstep(.12,.07,d);float mem=smoothstep(.02,0.,abs(d-.11));
     float perm=vInfo.y*smoothstep(.012,0.,abs(d-.47))*.6;
-    vec3 col=mix(ec,vec3(1.,.25,.2),bad)*spoke*(1.-cand*.45)+vHue*(mem*.9+body*.35)+mix(vC,vec3(1.),.2)*smoothstep(.05,.02,d)+vec3(.8,.9,1.)*perm;
-    gl_FragColor=vec4(col,(spoke*(1.-cand*.45)+mem*.7+body*.35+smoothstep(.05,.02,d)+perm)*vA);}`;
+    float por=vChan<0.?0.:clamp((4.-vChan)/4.,0.,1.);                       // porosity: 0 sealed .. 1 untrusted
+    float seg=floor(ang*18.),hh=fract(sin(seg*12.9898+vInfo.w*78.233+vChan*3.1)*43758.5453);
+    float gap=step(1.-por*.85,hh);                                           // share of the membrane that is missing
+    float leak=por*smoothstep(.014,0.,abs(d-.165))*step(.5,fract(ang*18.+.5))*.35;
+    vec3 tint=vChan<0.?vec3(1.):mix(vec3(.66,.7,.92),vec3(1.,.96,.84),clamp(vChan/4.,0.,1.));
+    vec3 hue=mix(vHue,vec3(dot(vHue,vec3(.33))),por*.55)*tint;
+    float pale=1.-por*.35;
+    float memP=mem*(1.-gap*.9);
+    vec3 col=mix(ec,vec3(1.,.25,.2),bad)*spoke*(1.-cand*.45)+hue*(memP*.9+body*.35*(1.-por*.3)+leak)+mix(vC,vec3(1.),.2)*smoothstep(.05,.02,d)+vec3(.8,.9,1.)*perm;
+    gl_FragColor=vec4(col,(spoke*(1.-cand*.45)+memP*.7+body*.35+leak*.6+smoothstep(.05,.02,d)+perm)*vA*pale);}`;
 const KIND_HUE=cls=>new THREE.Color().setHSL((CL.indexOf(cls)/Math.max(1,CL.length)+.52)%1,.6,.62);
 function glyphOf(i){const l=LM[i],c={};
   if(l.evidence_counts)Object.assign(c,l.evidence_counts);else l.evidence.forEach(e=>c[e.kind]=(c[e.kind]||0)+1);
@@ -861,11 +1002,12 @@ somaCellGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(LM.flatMap((l,i
 somaCellGeo.setAttribute('aEv',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>g.ev),4));
 somaCellGeo.setAttribute('aInfo',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>g.info),4));
 somaCellGeo.setAttribute('aHue',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>[g.hue.r,g.hue.g,g.hue.b]),3));
+somaCellGeo.setAttribute('aChan',new THREE.Float32BufferAttribute(LM.map(l=>l.channel==null?-1:l.channel),1));
 const somaCellMat=new THREE.ShaderMaterial({uniforms:forestU,
   vertexShader:`uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis,uNear;uniform sampler2D uSomaTex;
-    attribute float aSoma,aSize,aBorn;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
-    varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;
-    void main(){ivec2 ix=ivec2(int(aSoma+.5)*2,0);vec4 s0=texelFetch(uSomaTex,ix,0),s1=texelFetch(uSomaTex,ix+ivec2(1,0),0);
+    attribute float aSoma,aSize,aBorn,aChan;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
+    varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
+    void main(){vChan=aChan;ivec2 ix=ivec2(int(aSoma+.5)*2,0);vec4 s0=texelFetch(uSomaTex,ix,0),s1=texelFetch(uSomaTex,ix+ivec2(1,0),0);
       float hl=max(s0.b,s1.b);vec4 mv=modelViewMatrix*vec4(position,1.);
       float a=(.5+s0.r*.4+s0.g*.6+hl*.35)*mix(.35,1.,uNear)*mix(1.,.12,uSearch*(1.-s0.b))*mix(1.,.42,uFocusDim*(1.-hl))*step(aBorn,uScrub)*uVis;
       vC=mix(mix(aCol,vec3(1.),s0.g*.6),vec3(1.,.3,.24),s1.r);vA=a;vEv=aEv;vHue=aHue;
@@ -877,23 +1019,33 @@ const somaCells=new THREE.Points(somaCellGeo,somaCellMat);somaCells.frustumCulle
 // fibres: connections are TISSUE, not hair — each is a tapered strand of particles (thick in the
 // middle, thin where it meets a cell), so neurons, tracts and skin read as one connected mass.
 // Similarity edges link neurons; tracts wire every neuron to the skin region its knowledge belongs to.
-const ax=[],axT=[],axPh=[],axW=[],axAB=[];
+const ax=[],axT=[],axPh=[],axW=[],axAB=[],axG=[];
 function bez(a,c,b,t,out){const u=1-t;return out.set(u*u*a.x+2*u*t*c.x+t*t*b.x,u*u*a.y+2*u*t*c.y+t*t*b.y,u*u*a.z+2*u*t*c.z+t*t*b.z)}
 // every strand of tissue also carries a fine line down its centre: the connection you can follow
-const lnP=[],lnT=[],lnPh=[],lnW=[],lnAB=[];
-function fibre(A,C,B,n,thick,w,ia,ib,fan=0){const P=new V3(),ph=rng()*6.28;
+const lnP=[],lnT=[],lnPh=[],lnW=[],lnAB=[],lnG=[];
+// g = how much the strand pulses: 1 for tissue that always carries signal; for a landmark tract, 1 only when its
+// traversal count grew since last seen (0 = it stays still)
+function fibre(A,C,B,n,thick,w,ia,ib,fan=0,g=1){const P=new V3(),ph=rng()*6.28;
   {const P0=new V3(),P1=new V3();const SEG=14;for(let k=0;k<SEG;k++){bez(A,C,B,k/SEG,P0);bez(A,C,B,(k+1)/SEG,P1);
-    lnP.push(P0.x,P0.y,P0.z,P1.x,P1.y,P1.z);lnT.push(k/SEG,(k+1)/SEG);lnPh.push(ph,ph);lnW.push(w,w);lnAB.push(ia,ib,ia,ib)}}
+    lnP.push(P0.x,P0.y,P0.z,P1.x,P1.y,P1.z);lnT.push(k/SEG,(k+1)/SEG);lnPh.push(ph,ph);lnW.push(w,w);lnG.push(g,g);lnAB.push(ia,ib,ia,ib)}}
   for(let k=0;k<n;k++){const t=(k+rng())/n;bez(A,C,B,t,P);
     // fan > 0: the tract opens into a terminal arbor where it meets the skin, rooting in the cells
     const r=thick*(.35+.65*Math.sin(t*Math.PI))+fan*Math.max(0,t-.75)/.25*R*.06;
     P.x+=gauss()*r;P.y+=gauss()*r;P.z+=gauss()*r;if(fan){const l=P.length();if(l>R*.995)P.multiplyScalar(R*.995/l)}
-    ax.push(P.x,P.y,P.z);axT.push(t);axPh.push(ph);axW.push(w);axAB.push(ia,ib)}}
+    ax.push(P.x,P.y,P.z);axT.push(t);axPh.push(ph);axW.push(w);axG.push(g);axAB.push(ia,ib)}}
 {const E=M.edges.filter(e=>e.a<NL&&e.b<NL);const per=clamp(Math.round(26000/Math.max(1,E.length)),8,40);
   for(const e of E){const A=somaPos[e.a],B=somaPos[e.b];
     const C=A.clone().add(B).multiplyScalar(.5*.72).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.05));
-    const w=clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)*.7+(e.score||.5)*.3;
-    fibre(A,C,B,per,R*.007,w,e.a,e.b)}}
+    // tract thickness = the standing score, firmed by use (traversal count); on real data every edge is one weak score today
+    const sc=clamp(e.score??.5,0,1),ev=clamp(Math.log10(1+(e.traversals||0))/1.8,0,1),body=(.3+.7*sc)*(.55+.45*ev);
+    const w=ev*.7+sc*.3;
+    fibre(A,C,B,Math.max(6,Math.round(per*(.45+.9*body))),R*(.0035+.0065*body),w,e.a,e.b,0,e.grew?1:0)}
+  // between clusters the tracts run as one bundle: one cable per pair of clusters, thickness by their mean score and number of links
+  const pairs=new Map();for(const e of E){const ca=LM[e.a].cls,cb=LM[e.b].cls;if(ca===cb)continue;const k=ca<cb?ca+'|'+cb:cb+'|'+ca;
+    if(!pairs.has(k))pairs.set(k,{ca,cb,n:0,s:0,grew:0,ia:e.a,ib:e.b});const p=pairs.get(k);p.n++;p.s+=e.score??.5;p.grew+=e.grew?1:0}
+  const cen=cls=>{const c=new V3();let n=0;LM.forEach((l,i)=>{if(l.cls===cls){c.add(somaPos[i]);n++}});return c.multiplyScalar(1/Math.max(1,n))};
+  for(const p of pairs.values()){const A=cen(p.ca),B=cen(p.cb),C=A.clone().add(B).multiplyScalar(.5*.6);const mean=p.s/p.n,body=(.3+.7*mean)*Math.min(1,.5+Math.log10(1+p.n)/1.5);
+    fibre(A,C,B,Math.round(30+60*body),R*(.006+.01*body),.35,p.ia,p.ib,0,p.grew?1:0)}}
 // every neuron also links to its two nearest neighbours, so the web is continuous from the core
 // to the skin rather than a cluster in the middle
 {const E=new Set(M.edges.map(e=>Math.min(e.a,e.b)+'-'+Math.max(e.a,e.b)));
@@ -917,14 +1069,17 @@ LM.forEach((l,i)=>{const fi=l.dom;
 const axGeo=new THREE.BufferGeometry();
 axGeo.setAttribute('position',new THREE.Float32BufferAttribute(ax,3));axGeo.setAttribute('aT',new THREE.Float32BufferAttribute(axT,1));
 axGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(axPh,1));axGeo.setAttribute('aW',new THREE.Float32BufferAttribute(axW,1));
-axGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(axAB,2));
-const axMat=new THREE.ShaderMaterial({uniforms:{...U,uSomaTex:{value:somaTex},uSearch:forestU.uSearch,uVis:forestU.uVis,uFocusDim:forestU.uFocusDim,uNear:forestU.uNear,uBrand:{value:BRAND}},
-  vertexShader:`uniform float uTime,uPix,uSearch,uFocusDim,uVis;uniform sampler2D uSomaTex;attribute float aT,aPh,aW;attribute vec2 aAB;varying float vA;varying float vH;
+axGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(axAB,2));axGeo.setAttribute('aG',new THREE.Float32BufferAttribute(axG,1));
+// brightness never builds up with the amount of memory: strands overlap in proportion to the number of tracts, so each one
+// is drawn dimmer as there are more (the real store has about 3,000 landmark edges where the demo has 800)
+const uEdge={value:clamp(Math.sqrt(500/Math.max(1,M.edges.length)),.3,1)};
+const axMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uSomaTex:{value:somaTex},uSearch:forestU.uSearch,uVis:forestU.uVis,uFocusDim:forestU.uFocusDim,uNear:forestU.uNear,uBrand:{value:BRAND}},
+  vertexShader:`uniform float uTime,uPix,uSearch,uFocusDim,uVis,uEdge;uniform sampler2D uSomaTex;attribute float aT,aPh,aW,aG;attribute vec2 aAB;varying float vA;varying float vH;
     void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
       vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
       float hl=max(max(a0.b,b0.b),max(a1.b,b1.b)); float wake=max(a0.r,b0.r);
-      float p=pow(.5+.5*sin(aT*9.-uTime*(.8+aW*2.5)+aPh),10.);
-      vA=(.075+aW*.05+p*(.12+aW*.3)+wake*.3)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.45,uFocusDim*(1.-hl))*uVis;vH=hl;
+      float p=pow(.5+.5*sin(aT*9.-uTime*(.8+aW*2.5)+aPh),10.)*aG;
+      vA=(.075+aW*.05+p*(.12+aW*.3)+wake*.3)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.45,uFocusDim*(1.-hl))*uVis*uEdge;vH=hl;
       vec4 mv=modelViewMatrix*vec4(position,1.);gl_PointSize=min((1.25+p*.8)*uPix*(70./-mv.z),5.*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     gl_FragColor=vec4(mix(mix(uBrand,vec3(.6,.8,.95),.45),vec3(1.),vH*.5),smoothstep(.5,0.,d)*vA);}`,
@@ -933,14 +1088,14 @@ const axons=new THREE.Points(axGeo,axMat);axons.frustumCulled=false;cortex.add(a
 const lnGeo=new THREE.BufferGeometry();
 lnGeo.setAttribute('position',new THREE.Float32BufferAttribute(lnP,3));lnGeo.setAttribute('aT',new THREE.Float32BufferAttribute(lnT,1));
 lnGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(lnPh,1));lnGeo.setAttribute('aW',new THREE.Float32BufferAttribute(lnW,1));
-lnGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(lnAB,2));
+lnGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(lnAB,2));lnGeo.setAttribute('aG',new THREE.Float32BufferAttribute(lnG,1));
 const lnMat=new THREE.ShaderMaterial({uniforms:axMat.uniforms,
-  vertexShader:`uniform float uTime,uSearch,uFocusDim,uVis,uNear;uniform sampler2D uSomaTex;attribute float aT,aPh,aW;attribute vec2 aAB;varying float vA;varying float vH;
+  vertexShader:`uniform float uTime,uSearch,uFocusDim,uVis,uNear,uEdge;uniform sampler2D uSomaTex;attribute float aT,aPh,aW,aG;attribute vec2 aAB;varying float vA;varying float vH;
     void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
       vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
       float hl=max(max(a0.b,b0.b),max(a1.b,b1.b));float wake=max(a0.r,b0.r);
-      float p=pow(.5+.5*sin(aT*12.-uTime*(.8+aW*2.5)+aPh),10.);
-      vA=(.035+aW*.05+p*(.14+aW*.3)+wake*.3)*mix(.6,.75,uNear)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis;vH=hl;
+      float p=pow(.5+.5*sin(aT*12.-uTime*(.8+aW*2.5)+aPh),10.)*aG;
+      vA=(.035+aW*.05+p*(.14+aW*.3)+wake*.3)*mix(.6,.75,uNear)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis*uEdge;vH=hl;
       gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
   fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){gl_FragColor=vec4(mix(mix(uBrand,vec3(.7,.88,1.),.35),vec3(1.),vH*.5),vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
@@ -985,6 +1140,158 @@ const beadMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0},uHover:{va
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const beads=new THREE.Points(beadGeo,beadMat);beads.frustumCulled=false;cortex.add(beads);
 sess.forEach((s,i)=>{if(s.exit==='live')bA[i]=1});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5b. coordinate spaces as layers, the nodes in them (trust channel + fading), pins, the immune response
+// ═══════════════════════════════════════════════════════════════════════════
+// SPACES (mycelium_spaces): one faint shell per registered space, innermost = render_order 0, a space with no
+// render order outermost. Its tint is its write lock: the lowest trust channel allowed to write there.
+const SPACES=M.spaces.filter(s=>s.active!==false).sort((a,b)=>(a.render_order??99)-(b.render_order??99)||String(a.id).localeCompare(String(b.id))).slice(0,12);
+const spR=SPACES.map((s,i)=>R*(.36+.5*(i+.5)/SPACES.length));
+const spI=new Map(SPACES.map((s,i)=>[s.id,i]));
+const spCol=SPACES.map((s,i)=>new THREE.Color().setHSL((.52+i*.11)%1,.45,.64));
+const spaceU={uShow:{value:0}};
+SPACES.forEach((s,i)=>{const m=new THREE.Mesh(new THREE.IcosahedronGeometry(spR[i],2),new THREE.ShaderMaterial({
+  uniforms:{uShow:spaceU.uShow,uVis:forestU.uVis,uTint:{value:new THREE.Color(chanTint(s.write_lock)).lerp(spCol[i],.4)},uLock:{value:s.write_lock==null?2:s.write_lock}},
+  vertexShader:`varying vec3 vN,vV;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform float uShow,uVis,uLock;uniform vec3 uTint;varying vec3 vN,vV;
+    void main(){float f=pow(1.-abs(dot(vN,vV)),1.6);gl_FragColor=vec4(uTint,(.004+.012*f+uShow*(.03+.07*f))*(.55+.1*uLock)*uVis);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true}));cortex.add(m)});
+
+// NODES (mycelium_nodes): small cells on their space's shell. FADING (the 11 law, MEMORY-FOUNDATION-ANALYSIS 11.2):
+// only confidence ABOVE the 0.4 floor was earned, so opacity and saturation follow (confidence-0.4)/0.6; what is not
+// renewed sinks back to the floor and dims. Nothing here ever brightens with age. The membrane carries the trust channel.
+const NDS=M.nodes.filter(n=>spI.has(n.space));
+const nodePos=[],nodeSlot=new Map();
+{const per=SPACES.map(()=>0),cnt=SPACES.map(()=>0);NDS.forEach(n=>per[spI.get(n.space)]++);
+  const rot=SPACES.map((s,i)=>new THREE.Quaternion().setFromEuler(new THREE.Euler(i*1.3,i*2.1,i*.7)));
+  NDS.forEach((n,j)=>{const si=spI.get(n.space);n.si=si;nodeSlot.set(M.nIndex.get(n.id),j);
+    nodePos.push(fib(Math.max(1,per[si]),cnt[si]++).applyQuaternion(rot[si]).multiplyScalar(spR[si]*(1+gauss()*.012)))})}
+const nodeGeo=new THREE.BufferGeometry();
+nodeGeo.setAttribute('position',new THREE.Float32BufferAttribute(nodePos.flatMap(p=>[p.x,p.y,p.z]),3));
+nodeGeo.setAttribute('aSize',new THREE.Float32BufferAttribute(NDS.map(n=>2.6+Math.min(2,Math.sqrt(n.used||0)*.35)),1));
+nodeGeo.setAttribute('aConf',new THREE.Float32BufferAttribute(NDS.map(n=>n.conf),1));
+nodeGeo.setAttribute('aChan',new THREE.Float32BufferAttribute(NDS.map(n=>n.chan==null?-1:n.chan),1));
+nodeGeo.setAttribute('aBorn',new THREE.Float32BufferAttribute(NDS.map(n=>clamp((n.born-T0)/Math.max(1,nowS()-T0),0,1)),1));
+nodeGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(NDS.flatMap(n=>{const c=spCol[n.si];return [c.r,c.g,c.b]}),3));
+const nodeMat=new THREE.ShaderMaterial({uniforms:{...U,uScrub:forestU.uScrub,uVis:forestU.uVis,uNear:forestU.uNear},
+  vertexShader:`uniform float uPix,uScrub,uVis,uNear;attribute float aSize,aConf,aChan,aBorn;attribute vec3 aCol;
+    varying vec3 vC;varying float vA,vChan,vF;
+    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);
+      float f=smoothstep(0.,1.,clamp((aConf-.4)/.6,0.,1.));vF=f;vChan=aChan;
+      vA=mix(.14,.58,f)*mix(.45,1.,uNear)*step(aBorn,uScrub)*uVis;
+      vC=mix(vec3(dot(aCol,vec3(.33))),aCol,mix(.12,1.,f));
+      gl_PointSize=min(aSize*uPix*(60./-mv.z),60.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`varying vec3 vC;varying float vA,vChan,vF;
+    void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
+      float por=vChan<0.?0.:clamp((4.-vChan)/4.,0.,1.);
+      float seg=floor(ang*14.),hh=fract(sin(seg*12.9898+vF*78.233)*43758.5453);float gap=step(1.-por*.85,hh);
+      float mem=smoothstep(.035,0.,abs(d-.3))*(1.-gap*.9);
+      float leak=por*smoothstep(.02,0.,abs(d-.43))*step(.5,fract(ang*14.+.5))*.35;
+      float body=smoothstep(.3,0.,d)*.3+smoothstep(.07,.03,d)*.6;
+      vec3 tint=vChan<0.?vec3(1.):mix(vec3(.66,.7,.92),vec3(1.,.96,.84),clamp(vChan/4.,0.,1.));
+      gl_FragColor=vec4(vC*tint*(mem*.9+body+leak),(mem*.8+body+leak*.6)*vA*(1.-por*.35));}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+if(NDS.length){const o=new THREE.Points(nodeGeo,nodeMat);o.frustumCulled=false;cortex.add(o)}
+// node tracts (mycelium_edges): thickness from score, firmed by evidence (observations / traversals)
+{const ntP=[],ntW=[],P=new V3();
+  for(const e of M.nodeEdges){const ia=nodeSlot.get(e.a),ib=nodeSlot.get(e.b);if(ia==null||ib==null)continue;
+    const A=nodePos[ia],B=nodePos[ib],C=A.clone().add(B).multiplyScalar(.5*.8);
+    const ev=clamp(Math.log10(1+Math.max(e.observations||0,e.traversals||0))/1.4,0,1),th=(.3+.7*clamp(e.score??.5,0,1))*(.45+.55*ev);
+    const n=Math.round(10+26*th);
+    for(let k=0;k<n;k++){const t=(k+rng())/n;bez(A,C,B,t,P);const r=R*(.0022+.004*th)*(.4+.6*Math.sin(t*Math.PI));
+      ntP.push(P.x+gauss()*r,P.y+gauss()*r,P.z+gauss()*r);ntW.push(th)}}
+  if(ntP.length){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(ntP,3));g.setAttribute('aTh',new THREE.Float32BufferAttribute(ntW,1));
+    const o=new THREE.Points(g,new THREE.ShaderMaterial({uniforms:{...U,uVis:forestU.uVis,uNear:forestU.uNear},
+      vertexShader:`uniform float uPix,uVis,uNear;attribute float aTh;varying float vA;
+        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=(.03+.2*aTh)*mix(.45,1.,uNear)*uVis;
+          gl_PointSize=min((.9+1.1*aTh)*uPix*(70./-mv.z),4.*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(.62,.78,.88,smoothstep(.5,0.,d)*vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));o.frustumCulled=false;cortex.add(o)}}
+
+// PINS (mycelium_pins): explicit memory, held not earned (it does not fade by the 11 law). A still, faceted crystal set
+// into the inner wall in its territory (its nested sector when it has one), pin-type colour, size by link count. Taut
+// straight tethers run to what it references; a thin ring = held in context. The page shows none when the store has none.
+function crystalGeo(list){ // list: {pos,dir (base->tip, unit),s,col,held}
+  const V=[],C=[],Hh=[],q=new THREE.Quaternion(),up=new V3(0,1,0),m=new V3();
+  const ring=(y,r)=>Array.from({length:6},(_,k)=>[Math.cos(k/6*6.2832+.3)*r,y,Math.sin(k/6*6.2832+.3)*r]);
+  const base=ring(0,.28),sh=ring(1.15,.28),tip=[0,2.0,0];   // a slim hexagonal point, like a quartz crystal
+  for(const c of list){q.setFromUnitVectors(up,c.dir);
+    const put=a=>{m.set(a[0],a[1],a[2]).multiplyScalar(c.s).applyQuaternion(q).add(c.pos);V.push(m.x,m.y,m.z);C.push(c.col.r,c.col.g,c.col.b);Hh.push(c.held)};
+    for(let k=0;k<6;k++){const k2=(k+1)%6;
+      put(base[k]);put(base[k2]);put(sh[k2]);put(base[k]);put(sh[k2]);put(sh[k]);   // the side of the prism
+      put(sh[k]);put(sh[k2]);put(tip)}}                                             // the pointed tip
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(V,3));
+  g.setAttribute('aCol',new THREE.Float32BufferAttribute(C,3));g.setAttribute('aHeld',new THREE.Float32BufferAttribute(Hh,1));return g}
+function crystalMat(uVis){return new THREE.ShaderMaterial({uniforms:{uVis},
+  vertexShader:`attribute vec3 aCol;attribute float aHeld;varying vec3 vP,vC;varying float vH;
+    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vP=mv.xyz;vC=aCol;vH=aHeld;gl_Position=projectionMatrix*mv;}`,
+  // flat facets from the screen-space derivatives; a fixed dim light, no glare (colour stays under the bloom threshold)
+  fragmentShader:`uniform float uVis;varying vec3 vP,vC;varying float vH;
+    void main(){vec3 n=normalize(cross(dFdx(vP),dFdy(vP)));float l=abs(dot(n,normalize(vec3(.4,.6,.7))));
+      gl_FragColor=vec4(vC*(.1+.38*l)*(.85+.15*vH),.62*uVis);}`,
+  transparent:true,depthWrite:false,side:THREE.DoubleSide})}
+const PINS=M.pins.slice(0,80);let pinArtTethers=null;const pinTethers=[];
+const cloudPt=id=>{let h=7;for(const ch of String(id))h=(h*31+ch.charCodeAt(0))>>>0;const r=mulberry32(h);return new V3(-2.3*R+(r()-.5)*1.6*R,(r()-.5)*1.6*R,(r()-.5)*.8*R)};
+const pinInfo=PINS.map(p=>{const ri=REGI[p.domain]??0;let c=regC[ri],rad=regRad[ri];
+  if(p.sector&&SUBI[p.sector]!=null){c=subC[SUBI[p.sector]];rad=subRad[SUBI[p.sector]]}
+  const dir=c.clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(rad*.45)).normalize(),s=R*(.02+.011*Math.sqrt(Math.max(1,p.links||1)));
+  const base=dir.clone().multiplyScalar(R*.985);
+  return {p,dir,base,s,tip:base.clone().addScaledVector(dir,-s*2.0),col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}});
+if(PINS.length){
+  const g=crystalGeo(pinInfo.map(q=>({pos:q.base,dir:q.dir.clone().negate(),s:q.s,col:q.col,held:q.held})));
+  const mesh=new THREE.Mesh(g,crystalMat(forestU.uVis));mesh.frustumCulled=false;mesh.renderOrder=2;cortex.add(mesh);
+  // held in context: a thin ring round the base
+  const held=pinInfo.filter(q=>q.held);
+  if(held.length){const hg=new THREE.BufferGeometry();hg.setAttribute('position',new THREE.Float32BufferAttribute(held.flatMap(q=>[q.base.x,q.base.y,q.base.z]),3));
+    hg.setAttribute('aSize',new THREE.Float32BufferAttribute(held.map(q=>q.s*6),1));hg.setAttribute('aCol',new THREE.Float32BufferAttribute(held.flatMap(q=>[q.col.r,q.col.g,q.col.b]),3));
+    const ho=new THREE.Points(hg,new THREE.ShaderMaterial({uniforms:{...U,uVis:forestU.uVis},
+      vertexShader:`uniform float uPix;attribute float aSize;attribute vec3 aCol;varying vec3 vC;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aCol;
+        gl_PointSize=min(aSize*uPix*(60./-mv.z),90.*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`uniform float uVis;varying vec3 vC;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);gl_FragColor=vec4(mix(vC,vec3(1.),.35),smoothstep(.018,0.,abs(d-.4))*.32*uVis);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));ho.frustumCulled=false;cortex.add(ho)}
+  // tethers: straight from the tip to what the pin references (a certainty, a node, a thing made)
+  // (a tether to a thing made reaches out of the orb to where the artifact tissue settles, so it shows in that lens only)
+  const tp=[],tc=[],ap=[],ac=[];
+  for(const q of pinInfo)for(const r of q.p.refs){let to=null,art=false;
+    if(r.t==='landmark'){const k=M.lmIndex.get(r.id);if(k!=null)to=somaPos[k]}
+    else if(r.t==='node'){const k=nodeSlot.get(M.nIndex.get(r.id));if(k!=null)to=nodePos[k]}
+    else if(r.t==='artifact'||r.t==='document'){to=cloudPt(r.id);art=true}
+    if(!to)continue;const f=q.held?.3:.12,P=art?ap:tp,Cc=art?ac:tc;
+    P.push(q.tip.x,q.tip.y,q.tip.z,to.x,to.y,to.z);Cc.push(q.col.r*f,q.col.g*f,q.col.b*f,q.col.r*f*.6,q.col.g*f*.6,q.col.b*f*.6)}
+  const tether=(P,Cc)=>{if(!P.length)return null;const g_=new THREE.BufferGeometry();g_.setAttribute('position',new THREE.Float32BufferAttribute(P,3));g_.setAttribute('color',new THREE.Float32BufferAttribute(Cc,3));
+    const l=new THREE.LineSegments(g_,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));l.frustumCulled=false;cortex.add(l);return l};
+  const t1=tether(tp,tc);if(t1)pinTethers.push(t1);
+  pinArtTethers=tether(ap,ac);if(pinArtTethers){pinArtTethers.visible=false;pinTethers.push(pinArtTethers)}}
+const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
+  return `<div class="k">${t.word} · ${p.held?'held in context right now':'resting'}${p.permanent?' · permanent':''}</div><div class="t">${esc(p.title)}</div>
+    <div class="m">tied to <em>${p.links}</em> thing${p.links===1?'':'s'}${th?` · used in <em>${th}</em> thread${th===1?'':'s'}`:''} · pinned ${ago(p.created)}<br>pins do not fade: they are held, not earned</div>`};
+const nodeHTML=k=>{const n=NDS[k],sp=SPACES[n.si],f=clamp((n.conf-.4)/.6,0,1);
+  return `<div class="k">${esc(SPACE_WORD[sp.id]||sp.id)} · ${esc(chanWord(n.chan))}</div><div class="t">${esc(n.label||sp.id)}</div>
+    <div class="m">how sure IRIS is: <em>${Math.round(n.conf*100)}%</em> · ${f<.02?'on the floor it was given: nothing has earned it more':'earned above the floor'}<br>used <em>${fmt(n.used||0)}</em> times${sp.write_lock!=null?`<br>${esc(LOCK_WORD[sp.write_lock]||'')}`:''}</div>`};
+
+// IMMUNE RESPONSE (Kyudo, mycelium_quorum_log): a live signal = a brief, small tightening + flicker of the territory it
+// touched; a shadow signal (measured, never counted) = only a faint mark that fades; a reorganization reset = the
+// territory relaxing. Amplitudes only ever decay toward 0 (see the frame loop), so nothing builds up over time.
+const MARKN=24,markP=new Float32Array(MARKN*3),markA=new Float32Array(MARKN),marks=Array.from({length:MARKN},()=>({t0:-999}));
+const markGeo=new THREE.BufferGeometry();markGeo.setAttribute('position',new THREE.BufferAttribute(markP,3));markGeo.setAttribute('aA',new THREE.BufferAttribute(markA,1));
+const marksObj=new THREE.Points(markGeo,new THREE.ShaderMaterial({uniforms:{...U},
+  vertexShader:`uniform float uPix;attribute float aA;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=aA;
+    gl_PointSize=min(7.*uPix*(95./-mv.z),12.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);gl_FragColor=vec4(.66,.74,.8,(smoothstep(.04,0.,abs(d-.32))*.8+smoothstep(.08,.02,d)*.5)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));marksObj.frustumCulled=false;cortex.add(marksObj);
+function addMark(p){const m=marks.reduce((a,b)=>a.t0<b.t0?a:b);m.t0=clock.elapsedTime;const i=marks.indexOf(m);markP.set([p.x,p.y,p.z],i*3)}
+function updateMarks(t){for(let i=0;i<MARKN;i++){const age=t-marks[i].t0,life=26;markA[i]=age<0||age>life?0:Math.min(1,age/1.2)*(1-age/life)*.16}
+  markGeo.attributes.aA.needsUpdate=markGeo.attributes.position.needsUpdate=true}
+function quorumRegion(q){if(q.landmark!=null){const k=M.lmIndex.get(q.landmark);if(k!=null)return LM[k].dom}
+  const s=q.session&&M.sById.get(q.session);return s?regOf(s.domain):-1}
+function setImm(ri,a){const set=(i,v)=>{IMM[i]=v>0?Math.max(IMM[i],v):Math.min(IMM[i],v)};
+  if(ri>=0)set(ri,a);else for(let i=0;i<REG.length;i++)set(i,a*.5)} // no known territory: the whole lattice, at half strength
+function immuneSignal(q){const ri=quorumRegion(q);tickGuard(q,ri);
+  if(q.signal==='quorum_reorganization_reset')setImm(ri,-.5);
+  else if(q.shadow){if(ri>=0)addMark(regionPoint(ri))}
+  else setImm(ri,clamp(.2+.8*(q.weight||.15),.2,.55)*(REDUCED?.5:1))}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 6. impulses: sparks (action potentials), pulse rings, recall threads, shockwave
@@ -1053,12 +1360,13 @@ function shockAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 0;const x=d/D;if
 function bounceAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 1;const x=d/D;return 1+Math.exp(-x*6)*Math.sin(x*Math.PI*4)*.06}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. a session = its own dimension: a VORTEX OF STRANDS you travel through (owner video 3).
-//    conversations.db gives the thick strands — the thread itself and any strand forked from it,
-//    one lit run of blocks per message. memory.db gives the thin strands — one per event family,
-//    one lit block per moment. They twist together as one rope; a moment and the message (turn)
-//    it belongs to are linked. Neurons the session touched sit on the rope as glyphs, joined by
-//    a tissue thread you can follow. The far end is a doorway, not a light.
+// 7. a session = its own dimension: FIBRE TISSUE you travel through, like looking into a synapse (owner, 2026-10-19).
+//    conversations.db gives the thick bundles — the thread itself and any strand forked from it, one lit run of
+//    fibres per message. memory.db gives the thin bundles — one per event family, one lit run per moment. Each
+//    bundle is many fine fibres that twist together, part where the work splits (or round a pin) and rejoin; a
+//    moment and the message (turn) it belongs to are linked. Neurons the session touched sit on the wall as glyphs,
+//    joined by a tissue thread you can follow. Pins are fixed beads on the thread. The far end is a tall soft arch
+//    the fibres frame, not a light.
 // ═══════════════════════════════════════════════════════════════════════════
 const TUN_OFF=new V3(0,0,-3000);
 let tunnel=null;
@@ -1072,159 +1380,229 @@ function sessionMessages(s){
     else if(e.family==='delivery'&&/ANSWER_GIVEN|ARTIFACT_PRODUCED|NARRATED/.test(e.label))out.push({ts:e.ts,role:'iris',len:80+Math.floor((e.ts*13)%420),text:null})}
   if(!out.length)out.push({ts:s.started,role:'user',len:60,text:null});
   return out}
-// a hex cell drawn as light: the same cell as the orb's lattice (soft core, bright edge)
-// Each tile knows which way its ribbon faces (aN). Facing you, a tile glints like a sequin;
-// turned edge-on, it narrows and fades, so a twisting ribbon reads as a twisted cord (video 3).
-const HEX_VS=`uniform float uPix,uTime;attribute vec3 aC,aN;attribute float aB,aS,aR;varying vec3 vC;varying float vA;
-  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
-    float face=abs(dot(normalize(normalMatrix*aN),normalize(-mv.xyz)));
-    float glint=pow(face,7.)*(.55+.45*sin(uTime*2.6+aR*40.))+step(.965,fract(aR*13.+uTime*.25))*face;
-    vC=aC*aB*(.55+glint*1.9);
-    vA=smoothstep(140.,14.,d)*smoothstep(.3,2.,d)*min(aB,1.6)*(.3+.7*face);
-    gl_PointSize=min(aS*(.35+.65*face)*uPix*(115./max(d,.1)),64.*uPix);gl_Position=projectionMatrix*mv;}`; // ~ the tile's world size
-const HEX_FS=`varying vec3 vC;varying float vA;
-  void main(){vec2 p=abs(gl_PointCoord-.5);float h=max(p.x*.866+p.y*.5,p.y);if(h>.46)discard;
-    float rim=smoothstep(.34,.45,h);gl_FragColor=vec4(vC*(.35+.65*rim),vA*(.45+.55*rim));}`;
+// A session is looked at the way you would look into the synapse of a neuron and travel along it in time: every thread
+// and strand is FIBRE TISSUE, many fine fibres running together like the threads of cloth or the fibres of a muscle
+// bundle. They twist round their own axis, part where the work splits (or round a pin) and rejoin. Each fibre is a thin
+// soft-edged ribbon turned to the viewer in the vertex shader; a moment brightens a run of fibres, and a faint pulse
+// runs along them at the pace of the session's own attention (the Caducean u).
+const FIB_VS=`uniform float uTime,uFocal,uSpeed,uLen;uniform vec4 uHL[8];
+  attribute vec3 aSeg,aCol,aF;attribute float aS,aU;varying vec3 vC;varying float vA,vE;
+  void main(){
+    vec4 mv=modelViewMatrix*vec4(position,1.);vec4 m1=modelViewMatrix*vec4(position+aSeg,1.);
+    float d=max(-mv.z,.05),d1=max(-m1.z,.05);
+    vec2 dir=m1.xy/d1-mv.xy/d;float dl=length(dir);dir=dl>1e-7?dir/dl:vec2(1.,0.);
+    float w=max(aF.z,1.25*d/uFocal);                         // never thinner than about a pixel: a thinner fibre dims instead
+    mv.xy+=vec2(-dir.y,dir.x)*aS*w*.5;
+    float pulse=pow(.5+.5*sin(aU*uLen*.5-uTime*uSpeed+aF.y*6.2832),14.);
+    float hl=0.;for(int j=0;j<8;j++){vec4 h=uHL[j];if(h.x>-.5&&abs(aF.x-h.x)<.5)hl+=h.w*smoothstep(h.y-.002,h.y+.002,aU)*(1.-smoothstep(h.z-.002,h.z+.002,aU));}
+    vC=aCol*(1.+hl+pulse*.45);
+    vA=smoothstep(170.,16.,d)*smoothstep(.6,5.,d)*min(1.,aF.z/w)*(1.-smoothstep(.985,1.,aU));vE=aS; // fibres thin out near the camera and as they reach the arch
+    gl_Position=projectionMatrix*mv;}`;
+const FIB_FS=`varying vec3 vC;varying float vA,vE;void main(){float e=1.-vE*vE;gl_FragColor=vec4(vC,vA*e*e);}`;
+// the doorway: a tall arch with a soft edge (no rim line, nothing round); the fibres of the tunnel part round it and frame it.
+// Coordinates are in units of the tunnel radius at the door: half-width .55, sill -1.15, springing .35, crown .9
+const ARCH_SDF=`float archSdf(vec2 p){return p.y>.35?length(vec2(p.x,p.y-.35))-.55:max(abs(p.x)-.55,-1.15-p.y);}`;
+const archSdfJS=(x,y)=>y>.35?Math.hypot(x,y-.35)-.55:Math.max(Math.abs(x)-.55,-1.15-y);
+function archRay(al){const dx=Math.cos(al),dy=Math.sin(al);let lo=0,hi=6;for(let i=0;i<26;i++){const m=(lo+hi)/2;archSdfJS(dx*m,dy*m)<0?lo=m:hi=m}return [dx*lo,dy*lo]}
+const archGeo=new THREE.PlaneGeometry(1.5,2.5).translate(0,-.125,0);
+const doorMat=(a,b,dir)=>new THREE.ShaderMaterial({uniforms:{...U,uOpen:{value:0},uA:{value:a},uB:{value:b},uDir:{value:dir}},
+  vertexShader:`varying vec2 vXY;void main(){vXY=position.xy;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader:`uniform float uTime,uOpen,uDir;uniform vec3 uA,uB;varying vec2 vXY;${ARCH_SDF}
+    void main(){vec2 p=vXY;float open=mix(.28,1.,uOpen);
+      float sd=archSdf(p/open)*open;float inside=1.-smoothstep(-.7,0.,sd);inside*=inside;   // soft edge: it fades over the outer half, no line
+      vec2 q=p-vec2(0.,-.1);float r=length(q),a=atan(q.y,q.x);
+      float sp=sin(a*7.+uDir*log(max(r,.02))*9.-uTime*2.2*uDir);              // the swirl beyond
+      vec3 beyond=mix(uB*.05,uB*.3,smoothstep(.55,1.,sp))*(1.-clamp(r,0.,1.3)*.4);
+      gl_FragColor=vec4(beyond*inside+uA*.05*inside,inside*.72);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
 function buildTunnel(s){
   rng=mulberry32(s.id.split('').reduce((a,c)=>a*31+c.charCodeAt(0)|0,7));
   const g=new THREE.Group();g.position.copy(TUN_OFF);
   const ev=s.events;const L=90+Math.min(ev.length,260)*1.5;
   const ctrl=[];for(let k=0;k<=12;k++)ctrl.push(new V3(Math.sin(k*.9)*2.2+gauss()*.4,Math.cos(k*.7)*1.4+gauss()*.3,-k*L/12));
-  const curve=new THREE.CatmullRomCurve3(ctrl);const FR=curve.computeFrenetFrames(600,false);
+  const curve=new THREE.CatmullRomCurve3(ctrl);const FR=curve.computeFrenetFrames(600,false);const CL=curve.getLength();
   const tSpan=Math.max(1,(s.ended||nowS())-s.started);
   const uOf=ts=>clamp(.04+.9*(ts-s.started)/tSpan,.02,.96);
   const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const epS=eps.map(e=>uOf(e.ts));
   const tr=s.traj.length?s.traj:[{x:0}];
   const radius=u=>{const k=Math.floor(clamp(u,0,.999)*tr.length);let r=3.6*(.66+.6*clamp(.5+.5*tr[k].x,0,1));
-    for(const q of epS)r*=1+.35*Math.exp(-Math.pow((u-q)/.018,2));return r};
+    for(const q of epS)r*=1+.2*Math.exp(-Math.pow((u-q)/.03,2));return r};
   const frameAt=u=>{const i=Math.min(599,Math.floor(clamp(u,0,1)*600));return {N:FR.normals[i],B:FR.binormals[i],T:FR.tangents[i]}};
   const onWall=(u,th,k=1)=>{u=clamp(u,0,1);const P=curve.getPointAt(u),{N,B}=frameAt(u);const r=radius(u)*k;
     return P.addScaledVector(N,Math.cos(th)*r).addScaledVector(B,Math.sin(th)*r)};
-  const TW=6.283*2.2; // the rope turns 2.2 times through the session
+  const TW=6.283*2.2; // the bundles turn 2.2 times round the tunnel through the session
+  const UW=1/(CL*1.2); // u per world unit along a bundle
 
-  // ── the strands
+  // ── the bundles: the thread itself and any strand forked from it (conversations.db), parallel paths of a fan-out, and
+  // one thin bundle per event family (memory.db)
   const msgs=sessionMessages(s);
-  const strands=[{kind:'thread',label:'this conversation',th0:0,u0:0,u1:1,w:.62,h:.3,k:1,col:THREAD_COL}];
+  const strands=[{kind:'thread',label:'this conversation',th0:0,u0:0,u1:1,k:1,col:THREAD_COL}];
   (s.strands||[]).forEach((cs,j)=>strands.push({kind:'strand',label:cs.title||'a strand of this conversation',th0:Math.PI*(.9+.25*j),
-    u0:uOf(cs.started),u1:cs.ended?uOf(cs.ended):1,w:.5,h:.25,k:.98,col:STRAND_COL,id:cs.id}));
+    u0:uOf(cs.started),u1:cs.ended?uOf(cs.ended):1,k:.98,col:STRAND_COL,id:cs.id}));
   for(const e of ev)if(e.label==='SPLIT'){const u0=uOf(e.ts),u1=Math.min(.96,u0+rand(.04,.07)),k=randi(2,3);
-    for(let j=0;j<k;j++)strands.push({kind:'fan',label:'parallel paths (fan-out and fold-back)',fold:(j-(k-1)/2)*.42+.3,u0,u1,w:.28,h:.15,k:.99,col:new THREE.Color(FAM[FAMI.control].color)})}
+    for(let j=0;j<k;j++)strands.push({kind:'fan',label:'parallel paths (fan-out and fold-back)',fold:(j-(k-1)/2)*.42+.3,u0,u1,k:.99,col:new THREE.Color(FAM[FAMI.control].color)})}
   const famStr=[];
   FAM.forEach((f,fi)=>{if(!ev.some(e=>FAMI[e.family]===fi))return;
-    const st={kind:'family',fi,label:f.word,th0:6.283*(fi+1)/10,u0:0,u1:1,w:.3,h:.15,k:1,col:new THREE.Color(f.color)};strands.push(st);famStr[fi]=st});
+    const st={kind:'family',fi,label:f.word,th0:6.283*(fi+1)/10,u0:0,u1:1,k:1,col:new THREE.Color(f.color)};strands.push(st);famStr[fi]=st});
+  strands.forEach((st,i)=>{st.bi=i;st.phase=rng()*6.283});
   const angle=(st,u)=>st.fold!=null?u*TW+st.fold*Math.sin(clamp((u-st.u0)/(st.u1-st.u0),0,1)*Math.PI):st.th0+u*TW;
-  // each strand is a RIBBON of hex tiles (the orb's lattice cell) that twists round its own axis as
-  // it spirals (owner video 3): rows are staggered half a step (honeycomb), and the ribbon turns
-  // once every ~10 widths, so at a distance it reads as a twisted beaded cord.
-  const rowsOf=st=>st.kind==='thread'?5:st.kind==='fan'?2:4;
-  const BLK=[];
-  // cells are spaced by each strand's REAL length, so neighbouring cells touch: one continuous thread
-  strands.forEach(st=>{let len=0,prev=null;for(let i=0;i<=240;i++){const u=st.u0+(st.u1-st.u0)*i/240,p=onWall(u,angle(st,u),st.k);if(prev)len+=p.distanceTo(prev);prev=p}
-    const cell=(st.kind==='thread'?.34:.26)*.92;st.len=len;
-    const n=Math.max(8,Math.round(len/cell));
-    st.n=n;st.base=BLK.length;for(let k=0;k<n;k++)BLK.push({st,u:st.u0+(k+.5)/n*(st.u1-st.u0)})});
-  const blockIx=(st,u)=>st.base+clamp(Math.floor((u-st.u0)/(st.u1-st.u0)*st.n),0,st.n-1);
-  const NH=BLK.reduce((a,b)=>a+rowsOf(b.st),0);
-  const hp=new Float32Array(NH*3),hc=new Float32Array(NH*3),hb=new Float32Array(NH).fill(1),hsz=new Float32Array(NH),hn=new Float32Array(NH*3),hr=new Float32Array(NH);
-  const col=new THREE.Color(),X=new V3(),Y=new V3(),Z=new V3(),D=new V3(),Nn=new V3();let o=0;
-  strands.forEach(st=>{st.phase=rng()*6.283});
-  BLK.forEach(b=>{const st=b.st,rows=rowsOf(st),du=(st.u1-st.u0)/st.n,cell=(st.kind==='thread'?.34:.26)*(radius(b.u)/3.6);
-    b.p0=o;b.rows=rows;const P=onWall(b.u,angle(st,b.u),st.k),Pf=onWall(b.u+du,angle(st,b.u+du),st.k);
-    X.subVectors(Pf,P);const pitch=X.length();X.normalize();Y.subVectors(P,curve.getPointAt(clamp(b.u,0,1))).normalize();Z.crossVectors(X,Y).normalize();
-    const sAlong=(b.u-st.u0)/(st.u1-st.u0)*st.len,phi=st.phase+6.283*sAlong/(rows*cell*10);
-    D.copy(Y).multiplyScalar(Math.sin(phi)).addScaledVector(Z,Math.cos(phi));Nn.copy(Y).multiplyScalar(Math.cos(phi)).addScaledVector(Z,-Math.sin(phi));
-    for(let r=0;r<rows;r++){col.copy(st.col).multiplyScalar((st.kind==='family'?.62:.8)*(.65+rng()*.7));
-      const Q=P.clone().addScaledVector(D,(r-(rows-1)/2)*cell*.95).addScaledVector(X,(r%2)*.5*pitch);
-      hp.set([Q.x,Q.y,Q.z],o*3);hn.set([Nn.x,Nn.y,Nn.z],o*3);hc.set([col.r,col.g,col.b],o*3);hsz[o]=st.kind==='thread'?1.15:.9;hr[o]=rng();o++}
-    b.world=P.clone().add(TUN_OFF)});
-  const blockMs=k=>{const b=BLK[k];return [b.p0,b.p0+b.rows]};
-  // items: a message lights a run of cells on the thread; a moment lights cells on its family strand
+  // br = brightness of one fibre (low on purpose: the tissue is a texture you travel through, never a glare)
+  const SPEC={thread:{F:40,sp:.15,wd:.03,br:.34,step:.34},strand:{F:16,sp:.1,wd:.025,br:.36,step:.4},fan:{F:6,sp:.075,wd:.022,br:.36,step:.4},
+    family:{F:10,sp:.07,wd:.02,br:.26,step:.5}};
+  const jobs=strands.map(st=>{const sp=SPEC[st.kind];st.len=(st.u1-st.u0)*CL*1.25;const ns=Math.max(12,Math.round(st.len/sp.step));
+    return {st,sp,ns,F:sp.F,lit:new Float32Array(ns),litC:new Float32Array(ns*3)}});
+  // light a run of a bundle's samples: a message or a moment brightens (and tints) the fibres there
+  const lightRun=(st,ua,ub,c,amt)=>{const j=jobs[st.bi],du=st.u1-st.u0,n=j.ns-1;
+    const kA=Math.floor((ua-st.u0)/du*n),kB=Math.ceil((ub-st.u0)/du*n);
+    for(let k=Math.max(0,kA-1);k<=Math.min(n,kB+1);k++){const f=k>=kA&&k<=kB?1:.5;if(amt*f>=j.lit[k]){j.lit[k]=amt*f;j.litC[k*3]=c.r*f;j.litC[k*3+1]=c.g*f;j.litC[k*3+2]=c.b*f}}};
+
+  // ── pins of this thread: a fixed bead on the thread at the moment it was made; the fibres part round it.
+  // A checkpoint pin marks the doorway.
+  const pinsHere=M.pins.filter(p=>p.session===s.id&&p.type!=='checkpoint').slice(0,24);
+  const ckHere=M.pins.filter(p=>p.session===s.id&&p.type==='checkpoint').slice(0,3);
+  const pinU=p=>clamp(uOf(p.created),.04,.93);
+
+  // ── items: a message lights a run of the thread; a moment lights a run of its family's bundle (and is tied to its turn)
   const items=[];
-  const lit=(k,c,sz)=>{const [a,z]=blockMs(k);for(let i=a;i<z;i++){hc.set([c.r,c.g,c.b],i*3);if(sz)hsz[i]=sz}};
-  msgs.forEach(m=>{const st=strands[0],u=uOf(m.ts),k0=blockIx(st,u),span=1+Math.min(6,Math.round((m.len||60)/90));
-    const c=new THREE.Color(m.role==='user'?'#ffe8fb':'#ff5fd6').multiplyScalar(m.role==='user'?1.1:.95);
-    for(let k=0;k<span&&k0+k<st.base+st.n;k++)lit(k0+k,c,1.35);
-    items.push({type:'msg',m,u,k0,k1:Math.min(st.base+st.n-1,k0+span-1),world:BLK[k0].world,links:[]})});
+  msgs.forEach(m=>{const st=strands[0],u=uOf(m.ts),span=1+Math.min(6,Math.round((m.len||60)/90)),ub=Math.min(.99,u+span*.5*UW);
+    lightRun(st,u,ub,new THREE.Color(m.role==='user'?'#ffe8fb':'#ff5fd6'),1);
+    items.push({type:'msg',m,u,bundle:0,ua:u,ub,world:onWall(u,angle(st,u),st.k).add(TUN_OFF),links:[]})});
   const msgItems=items.slice();
-  ev.forEach(e=>{const st=famStr[FAMI[e.family]??0];if(!st)return;const u=uOf(e.ts),k0=blockIx(st,u);
-    const c=e.valence==='sets_back'?new THREE.Color('#ff4a3d'):new THREE.Color(FAM[FAMI[e.family]].color);c.multiplyScalar(.5+(EVID[e.evidence]??.2)*.8+(e.actor==='user'?.3:0));
-    lit(k0,c,1.25);if(k0+1<st.base+st.n)lit(k0+1,c.clone().multiplyScalar(.65));
-    // the turn it belongs to: the latest message at or before it
+  ev.forEach(e=>{const st=famStr[FAMI[e.family]??0];if(!st)return;const u=uOf(e.ts),ub=Math.min(.99,u+.9*UW);
+    const c=(e.valence==='sets_back'?new THREE.Color('#ff4a3d'):new THREE.Color(FAM[FAMI[e.family]].color)).multiplyScalar(.5+(EVID[e.evidence]??.2)*.8+(e.actor==='user'?.3:0));
+    lightRun(st,u,ub,c,1);
     let mi=null;for(const it of msgItems){if(it.m.ts<=e.ts+1)mi=it;else break}
-    const item={type:'event',e,u,k0,k1:Math.min(st.base+st.n-1,k0+1),world:BLK[k0].world,links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
-  // a spine of light runs through every strand's cells, so each strand reads as ONE thread
-  {const sp=[],sc=[];strands.forEach(st=>{const n=Math.max(40,Math.round(st.len/.5)),c=st.col.clone().multiplyScalar(st.kind==='family'?.55:.8);let prev=null;
-      for(let i=0;i<=n;i++){const u=st.u0+(st.u1-st.u0)*i/n,p=onWall(u,angle(st,u),st.k);if(prev){sp.push(prev.x,prev.y,prev.z,p.x,p.y,p.z);sc.push(c.r,c.g,c.b,c.r,c.g,c.b)}prev=p}});
-    const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.Float32BufferAttribute(sp,3));sg.setAttribute('color',new THREE.Float32BufferAttribute(sc,3));
-    g.add(Object.assign(new THREE.LineSegments(sg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:.14,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}
-  // the weave: every moment stays tied to the turn (message) it belongs to — faint until hovered
+    const item={type:'event',e,u,bundle:st.bi,ua:u,ub,world:onWall(u,angle(st,u),st.k).add(TUN_OFF),links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
+
+  // ── where the thread parts: a few places along each bundle, where the work splits (opens at the fan-out, closes at the
+  // fold-back) and round every pin
+  const parts=strands.map(st=>{const a=[],n=st.kind==='thread'?5:st.kind==='family'?2:st.kind==='strand'?3:0,du=st.u1-st.u0;
+    for(let i=0;i<n;i++)a.push({u:rand(st.u0+.06*du,st.u1-.08*du),w:rand(.025,.05),amt:rand(.8,1.2)});return a});
+  const partAt=(st,u)=>{let a=0;for(const p of parts[st.bi]){const x=(u-p.u)/p.w;a+=p.amt*Math.exp(-x*x)}
+    if(st.kind==='thread'){for(const f of strands)if(f.kind==='fan')a+=1.1*smooth01((u-f.u0+.012)/.03)*(1-smooth01((u-f.u1+.012)/.03));
+      for(const p of pinsHere){const x=(u-pinU(p))/.02;a+=1.3*Math.exp(-x*x)}}
+    return a};
+
+  // ── the door frame (the tunnel's end): up = world up made square to the tunnel, the arch stands in that plane
+  const P1=curve.getPointAt(1),T1=frameAt(1).T.clone(),rad1=radius(1);
+  const Ud=new V3(0,1,0).addScaledVector(T1,-T1.y);if(Ud.lengthSq()<1e-4)Ud.set(1,0,0);Ud.normalize();
+  const Rd=new V3().crossVectors(T1,Ud).normalize();
+
+  // ── write every fibre of every bundle (plus the background tissue and the task rings) into one geometry
+  const WALLF=56,wallNs=Math.max(40,Math.round(CL*1.1/.9)),RING_N=3,RING_NS=73;
+  let total=jobs.reduce((a,j)=>a+j.ns*j.F,0)+WALLF*wallNs+eps.length*RING_N*RING_NS;
+  const nv=total*2,A={pos:new Float32Array(nv*3),seg:new Float32Array(nv*3),s:new Float32Array(nv),u:new Float32Array(nv),f:new Float32Array(nv*3),col:new Float32Array(nv*3)};
+  const idx=new Uint32Array(total*6);let N=0,IN=0;
+  const put=(P,u,r,g_,b_,bi,fr,wd)=>{for(let q=0;q<2;q++){const v=2*N+q;A.pos[v*3]=P.x;A.pos[v*3+1]=P.y;A.pos[v*3+2]=P.z;A.s[v]=q?1:-1;A.u[v]=u;
+    A.f[v*3]=bi;A.f[v*3+1]=fr;A.f[v*3+2]=wd;A.col[v*3]=r;A.col[v*3+1]=g_;A.col[v*3+2]=b_}N++};
+  const endFibre=(b0,ns)=>{for(let k=0;k<ns;k++){const a=b0+k,b=k<ns-1?a+1:a,c=k<ns-1?a:a-1;
+      const sx=A.pos[2*b*3]-A.pos[2*c*3],sy=A.pos[2*b*3+1]-A.pos[2*c*3+1],sz=A.pos[2*b*3+2]-A.pos[2*c*3+2];
+      for(let q=0;q<2;q++){const v=(2*a+q)*3;A.seg[v]=sx;A.seg[v+1]=sy;A.seg[v+2]=sz}}
+    for(let k=0;k<ns-1;k++){const i0=2*(b0+k);idx.set([i0,i0+1,i0+2,i0+1,i0+3,i0+2],IN);IN+=6}};
+  const tmp=new V3(),tgt=new V3(),vv=new V3();
+  jobs.forEach(({st,sp,ns,F,lit,litC})=>{
+    const u0=st.u0,du=st.u1-st.u0,Ps=[],Ys=[],Zs=[],us=new Float32Array(ns),part=new Float32Array(ns);
+    for(let k=0;k<ns;k++){const u=u0+du*k/(ns-1);us[k]=u;const P=onWall(u,angle(st,u),st.k);Ps.push(P);
+      Ys.push(P.clone().sub(curve.getPointAt(clamp(u,0,1))).normalize());part[k]=partAt(st,u)}
+    for(let k=0;k<ns;k++){const T=Ps[Math.min(k+1,ns-1)].clone().sub(Ps[Math.max(k-1,0)]).normalize();
+      const Z=new V3().crossVectors(T,Ys[k]).normalize();Ys[k].crossVectors(Z,T).normalize();Zs.push(Z)}
+    const fib=Array.from({length:F},(_,j)=>({rho:Math.min(1,Math.sqrt((j+.5)/F)*.95+.05*rng()),ph:rng()*6.283,tw:(rng()<.5?-1:1)*rand(.4,1.3),
+      side:j%3-1,br:rand(.7,1.3),wd:rand(.7,1.2),fr:rng()}));
+    const fpos=(f,k,out)=>{const t=(us[k]-u0)/du,sAl=t*st.len;
+      const tap=smooth01(t/.05)*(st.u1>=.99?1:smooth01((1-t)/.05));
+      const am=sp.sp*radius(us[k])*tap*(.62+.38*Math.sin(6.283*sAl/55+st.phase));
+      const phi=f.ph+f.tw*sAl*.22,wob=1+.18*Math.sin(sAl*.9+f.fr*20);
+      return out.copy(Ps[k]).addScaledVector(Ys[k],am*f.rho*Math.cos(phi)*wob).addScaledVector(Zs[k],am*f.rho*Math.sin(phi)*wob+f.side*part[k]*am*1.7)};
+    for(const f of fib){
+      const arch=st.u1>=.99;
+      if(arch){fpos(f,ns-1,tmp);vv.copy(tmp).sub(P1);const [ax,ay]=archRay(Math.atan2(vv.dot(Ud),vv.dot(Rd))),sc=rad1*(.97+.06*f.fr);
+        tgt.copy(P1).addScaledVector(Rd,ax*sc).addScaledVector(Ud,ay*sc)}  // this fibre's place on the arch: the same side it runs on
+      const b0=N;
+      for(let k=0;k<ns;k++){fpos(f,k,tmp);if(arch){const b=smooth01((us[k]-.93)/.07);if(b>0)tmp.lerp(tgt,b*b)}
+        const m=sp.br*f.br,l=lit[k];
+        put(tmp,us[k],st.col.r*m*(1+l*1.1)+litC[k*3]*l*.45*sp.br,st.col.g*m*(1+l*1.1)+litC[k*3+1]*l*.45*sp.br,st.col.b*m*(1+l*1.1)+litC[k*3+2]*l*.45*sp.br,st.bi,f.fr,sp.wd*f.wd)}
+      endFibre(b0,ns)}});
+  // the background tissue: very faint fibres that weave round the whole tunnel just outside the bundles
+  {const bc=new THREE.Color('#5d93b5');
+    for(let j=0;j<WALLF;j++){const th0=rng()*6.283,tw=TW*rand(.6,1.5)*(rng()<.5?-1:1),kk=1.22+rng()*.5,br=rand(.035,.07),fr=rng(),b0=N;
+      for(let k=0;k<wallNs;k++){const u=.01+.98*k/(wallNs-1);put(onWall(u,th0+u*tw+.15*Math.sin(u*30+j),kk),u,bc.r*br,bc.g*br,bc.b*br,800,fr,.06)}
+      endFibre(b0,wallNs)}}
+  // tasks: a band of fibres round the whole tunnel; a correction by you is the brightest, failure red, partial amber
+  const gates=[];
+  eps.forEach((ep,qi)=>{const u=epS[qi],P=curve.getPointAt(u);
+    const c=new THREE.Color(ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff');
+    const br=ep.corrected?.4:.2;
+    for(let i=0;i<RING_N;i++){const uu=clamp(u+(i-1)*.0035,0,1),Pc=curve.getPointAt(uu),{N:Nn,B:Bb}=frameAt(uu),Rr=radius(uu)*1.12,b0=N,fr=rng();
+      for(let n=0;n<RING_NS;n++){const th=n/(RING_NS-1)*6.2832,w=1+.015*Math.sin(th*5+i);
+        put(Pc.clone().addScaledVector(Nn,Math.cos(th)*Rr*w).addScaledVector(Bb,Math.sin(th)*Rr*w),uu,c.r*br,c.g*br,c.b*br,900,fr,.05)}
+      endFibre(b0,RING_NS)}
+    gates.push({ep,u,world:P.clone().add(TUN_OFF)})});
+  const fibGeo=new THREE.BufferGeometry();
+  fibGeo.setAttribute('position',new THREE.BufferAttribute(A.pos,3));fibGeo.setAttribute('aSeg',new THREE.BufferAttribute(A.seg,3));
+  fibGeo.setAttribute('aS',new THREE.BufferAttribute(A.s,1));fibGeo.setAttribute('aU',new THREE.BufferAttribute(A.u,1));
+  fibGeo.setAttribute('aF',new THREE.BufferAttribute(A.f,3));fibGeo.setAttribute('aCol',new THREE.BufferAttribute(A.col,3));
+  fibGeo.setIndex(new THREE.BufferAttribute(idx.subarray(0,IN),1));
+  const meanU=tr.reduce((a,p)=>a+Math.abs(p.u??.5),0)/tr.length;
+  const hlU={value:Array.from({length:8},()=>new THREE.Vector4(-1,0,0,0))};
+  const fibU={...U,uFocal:{value:700},uSpeed:{value:1.2+2.4*meanU},uLen:{value:L},uHL:hlU};
+  g.add(Object.assign(new THREE.Mesh(fibGeo,new THREE.ShaderMaterial({uniforms:fibU,vertexShader:FIB_VS,fragmentShader:FIB_FS,transparent:true,
+    depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})),{frustumCulled:false}));
+  // a fine cleft haze of particles between the walls and the bundles (the synaptic space)
+  {const NW=7000,wP=new Float32Array(NW*3),wR=new Float32Array(NW);
+    for(let i=0;i<NW;i++){const p=onWall(rng(),rng()*6.283,.2+rng()*1.1);wP.set([p.x,p.y,p.z],i*3);wR[i]=rng()}
+    const wg=new THREE.BufferGeometry();wg.setAttribute('position',new THREE.BufferAttribute(wP,3));wg.setAttribute('aR',new THREE.BufferAttribute(wR,1));
+    g.add(Object.assign(new THREE.Points(wg,new THREE.ShaderMaterial({uniforms:{...U},
+      vertexShader:`uniform float uTime,uPix;attribute float aR;varying float vA;
+        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
+          vA=smoothstep(90.,10.,d)*smoothstep(.2,2.5,d)*(.1+.08*sin(uTime*(.5+aR)+aR*50.));
+          gl_PointSize=min(1.5*uPix*(24./max(d,.1)),3.5*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(.55,.75,.9,smoothstep(.5,.1,d)*vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
+  // the weave: every moment stays tied to the turn (message) it belongs to - faint until hovered
   {const lp=[];items.forEach(it=>{if(it.type==='event'&&it.links[0]){const a=it.world.clone().sub(TUN_OFF),b=it.links[0].world.clone().sub(TUN_OFF);lp.push(a.x,a.y,a.z,b.x,b.y,b.z)}});
     if(lp.length){const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(lp,3));
-      g.add(Object.assign(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xf2c6ff,transparent:true,opacity:.13,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}}
-  const hexGeo=new THREE.BufferGeometry();hexGeo.setAttribute('position',new THREE.BufferAttribute(hp,3));hexGeo.setAttribute('aC',new THREE.BufferAttribute(hc,3));
-  hexGeo.setAttribute('aB',new THREE.BufferAttribute(hb,1));hexGeo.setAttribute('aS',new THREE.BufferAttribute(hsz,1));
-  hexGeo.setAttribute('aN',new THREE.BufferAttribute(hn,3));hexGeo.setAttribute('aR',new THREE.BufferAttribute(hr,1));
-  g.add(Object.assign(new THREE.Points(hexGeo,new THREE.ShaderMaterial({uniforms:{...U},vertexShader:HEX_VS,fragmentShader:HEX_FS,
-    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}));
-  // the walls: dendritic veins of particles (owner video 1) just outside the rope, so the strands
-  // run INSIDE a living tunnel; veins near a family's moments take that family's tint
-  {const NW=26000,wP=new Float32Array(NW*3),wC=new Float32Array(NW*3),wR=new Float32Array(NW);
-    const VEINS=34,veinA=Array.from({length:VEINS},()=>rng()*6.283),baseC=new THREE.Color('#6aa3c4'),tc=new THREE.Color();
-    const evU=ev.map(e=>[uOf(e.ts),FAMI[e.family]??0]);
-    for(let i=0;i<NW;i++){const u=Math.pow(rng(),.92);let th,k;
-      if(rng()<.85){const v=i%VEINS,br=rng()<.22?gauss()*.18*(1+Math.sin(u*40+v)):0;th=veinA[v]+.45*Math.sin(u*6+v)+gauss()*.02+br;k=1.28+Math.abs(gauss())*.14+Math.abs(br)*.7}
-      else{th=rng()*6.283;k=1.25+rng()*.45}
-      const p=onWall(u,th,k);wP.set([p.x,p.y,p.z],i*3);tc.copy(baseC);
-      for(const [eu,fi] of evU)if(Math.abs(eu-u)<.006){tc.lerp(new THREE.Color(FAM[fi].color),.35);break}
-      wC.set([tc.r,tc.g,tc.b],i*3);wR[i]=rng()}
-    const wg=new THREE.BufferGeometry();wg.setAttribute('position',new THREE.BufferAttribute(wP,3));wg.setAttribute('aC',new THREE.BufferAttribute(wC,3));wg.setAttribute('aR',new THREE.BufferAttribute(wR,1));
-    g.add(Object.assign(new THREE.Points(wg,new THREE.ShaderMaterial({uniforms:{...U},
-      vertexShader:`uniform float uTime,uPix;attribute vec3 aC;attribute float aR;varying vec3 vC;varying float vA;
-        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
-          vA=smoothstep(115.,14.,d)*smoothstep(.2,2.5,d)*(.2+.16*sin(uTime*(.6+aR)+aR*50.));vC=aC; // walls stay quiet; the strands lead
-          gl_PointSize=min(1.7*uPix*(28./max(d,.1)),4.5*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(vC,smoothstep(.5,.1,d)*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // fine filaments between the strands (the dotted inner spirals of the reference)
-  {const NF=16,per=520,fp=new Float32Array(NF*per*3),fc=new Float32Array(NF*per*3);let o=0;
-    for(let f=0;f<NF;f++){const th0=rng()*6.283,kr=rand(.6,.9),tw=TW*rand(1.2,1.6),c=(f%3?THREAD_COL:BRAND).clone().multiplyScalar(rand(.35,.7));
-      for(let k=0;k<per;k++){const u=k/per,p=onWall(u,th0+u*tw,kr);fp.set([p.x+gauss()*.03,p.y+gauss()*.03,p.z+gauss()*.03],o*3);fc.set([c.r,c.g,c.b],o*3);o++}}
-    const fg=new THREE.BufferGeometry();fg.setAttribute('position',new THREE.BufferAttribute(fp,3));fg.setAttribute('aC',new THREE.BufferAttribute(fc,3));
-    g.add(Object.assign(new THREE.Points(fg,new THREE.ShaderMaterial({uniforms:{...U},
-      vertexShader:`uniform float uPix;attribute vec3 aC;varying vec3 vC;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
-        vC=aC;vA=smoothstep(110.,12.,d)*smoothstep(.3,2.,d);gl_PointSize=min(1.6*uPix*(14./max(d,.1)),3.5*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;if(length(c)>.5)discard;gl_FragColor=vec4(vC,vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // episodes: a ring band round the whole rope; a correction by you is the brightest ring
-  const gates=[];
-  eps.forEach((ep,qi)=>{const u=epS[qi],P=curve.getPointAt(u),{T}=frameAt(u);
-    const c=ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff';
-    const m=new THREE.Mesh(new THREE.TorusGeometry(radius(u)*1.12,ep.corrected?.07:.035,8,160),
-      new THREE.MeshBasicMaterial({color:c,transparent:true,opacity:ep.corrected?.95:.6,blending:THREE.AdditiveBlending,depthWrite:false}));
-    m.position.copy(P);m.lookAt(P.clone().add(T));g.add(m);gates.push({ep,u,world:P.clone().add(TUN_OFF),m})});
-  // neurons on the rope: the SAME glyph as in the cortex, beside the moment that touched them
+      g.add(Object.assign(new THREE.LineSegments(lg,new THREE.LineBasicMaterial({color:0xf2c6ff,transparent:true,opacity:.1,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}}
+
+  // ── pins: still faceted crystals (the same ones as in the cortex), small, fixed on the thread
+  const pinBeads=pinsHere.map(p=>{const u=pinU(p),st=strands[0],P=onWall(u,angle(st,u),st.k*.99);
+    const dir=P.clone().sub(curve.getPointAt(u)).normalize().negate();return {p,u,P,dir,world:P.clone().add(TUN_OFF)}});
+  const crystals=pinBeads.map(b=>({pos:b.P,dir:b.dir,s:.16+.04*Math.sqrt(Math.max(1,b.p.links||1)),col:new THREE.Color(pinType(b.p.type).col),held:b.p.held?1:0}));
+  const pinList=pinBeads.map(b=>({p:b.p,world:b.world,u:b.u}));
+  ckHere.forEach((p,i)=>{const pos=P1.clone().addScaledVector(Ud,(.9+.1)*rad1+i*.7).addScaledVector(T1,-.3);
+    crystals.push({pos,dir:Ud.clone(),s:.45,col:new THREE.Color(pinType('checkpoint').col),held:p.held?1:0});pinList.push({p,world:pos.clone().add(TUN_OFF),u:1})});
+  if(crystals.length)g.add(Object.assign(new THREE.Mesh(crystalGeo(crystals),crystalMat({value:1})),{frustumCulled:false,renderOrder:2}));
+  // a pin used by later threads has a taut tether running on to the doorway
+  {const tp=[],tc=[],si_=sess.indexOf(s),apex=P1.clone().addScaledVector(Ud,.9*rad1);
+    for(const b of pinBeads){const later=b.p.refs.some(r=>(r.t==='thread'||r.t==='session')&&r.id!==s.id&&sess.findIndex(q=>q.id===r.id)>si_);
+      if(!later)continue;const c=new THREE.Color(pinType(b.p.type).col).multiplyScalar(b.p.held?.3:.12);tp.push(b.P.x,b.P.y,b.P.z,apex.x,apex.y,apex.z);tc.push(c.r,c.g,c.b,c.r*.5,c.g*.5,c.b*.5)}
+    if(tp.length){const tg_=new THREE.BufferGeometry();tg_.setAttribute('position',new THREE.Float32BufferAttribute(tp,3));tg_.setAttribute('color',new THREE.Float32BufferAttribute(tc,3));
+      g.add(Object.assign(new THREE.LineSegments(tg_,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false})),{frustumCulled:false}))}}
+
+  // ── neurons on the thread: the SAME glyph as in the cortex (with its trust channel), beside the moment that touched them
   const stars=[];
   items.forEach(it=>{if(it.type!=='event'||it.e.landmark==null||it.e.landmark>=NL||stars.length>=60)return;
     const st=famStr[FAMI[it.e.family]??0],th=angle(st,it.u)+.2,p=onWall(it.u,th,1.16);
     stars.push({li:it.e.landmark,u:it.u,th,p,world:p.clone().add(TUN_OFF),item:it})});
   const threadU={...U,uSel:{value:-1},uSelOn:{value:0}};
-  {const sP=[],sS=[],sL=[],sE=[],sI=[],sH=[],sC=[];
+  {const sP=[],sS=[],sL=[],sE=[],sI=[],sH=[],sC=[],sCh=[];
     stars.forEach(st=>{const gl=GLYPHS[st.li],c=new THREE.Color(CELL_COL[lmBest[st.li]]||'#8aa3b0');
-      sP.push(st.p.x,st.p.y,st.p.z);sS.push(cellSize(LM[st.li]));sL.push(st.li);sE.push(...gl.ev);sI.push(...gl.info);sH.push(gl.hue.r,gl.hue.g,gl.hue.b);sC.push(c.r,c.g,c.b)});
+      sP.push(st.p.x,st.p.y,st.p.z);sS.push(cellSize(LM[st.li]));sL.push(st.li);sE.push(...gl.ev);sI.push(...gl.info);sH.push(gl.hue.r,gl.hue.g,gl.hue.b);sC.push(c.r,c.g,c.b);
+      sCh.push(LM[st.li].channel==null?-1:LM[st.li].channel)});
     const cg=new THREE.BufferGeometry();cg.setAttribute('position',new THREE.Float32BufferAttribute(sP,3));cg.setAttribute('aSize',new THREE.Float32BufferAttribute(sS,1));
     cg.setAttribute('aLm',new THREE.Float32BufferAttribute(sL,1));cg.setAttribute('aEv',new THREE.Float32BufferAttribute(sE,4));
     cg.setAttribute('aInfo',new THREE.Float32BufferAttribute(sI,4));cg.setAttribute('aHue',new THREE.Float32BufferAttribute(sH,3));cg.setAttribute('aCol',new THREE.Float32BufferAttribute(sC,3));
+    cg.setAttribute('aChan',new THREE.Float32BufferAttribute(sCh,1));
     g.add(Object.assign(new THREE.Points(cg,new THREE.ShaderMaterial({uniforms:threadU,
-      vertexShader:`uniform float uPix,uSel,uSelOn;attribute float aSize,aLm;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
-        varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;
+      vertexShader:`uniform float uPix,uSel,uSelOn;attribute float aSize,aLm,aChan;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
+        varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
         void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;float on=step(abs(aLm-uSel),.1);
-          vC=aCol;vEv=aEv;vInfo=aInfo;vHue=aHue;vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*(.6+on*.4)*mix(1.,.35,uSelOn*(1.-on));
+          vC=aCol;vEv=aEv;vInfo=aInfo;vHue=aHue;vChan=aChan;vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*(.6+on*.4)*mix(1.,.35,uSelOn*(1.-on));
           gl_PointSize=min(aSize*2.1*(1.+on*.3)*uPix*(10./max(d,.1)),120.*uPix);gl_Position=projectionMatrix*mv;}`,
       fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}));
     // a stem roots each neuron in its strand
     const stem=[];stars.forEach(st=>{stem.push(st.item.world.clone().sub(TUN_OFF),st.p)});
-    if(stem.length)g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(stem),new THREE.LineBasicMaterial({color:0xf0c8ff,transparent:true,opacity:.45,blending:THREE.AdditiveBlending,depthWrite:false})))}
-  // the tissue thread: neurons joined in time order along the rope; linked neurons share extra strands
+    if(stem.length)g.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(stem),new THREE.LineBasicMaterial({color:0xf0c8ff,transparent:true,opacity:.4,blending:THREE.AdditiveBlending,depthWrite:false})))}
+  // the tissue thread: neurons joined in time order along the wall; linked neurons share extra strands
   const linked=new Set(M.edges.map(e=>e.a+'-'+e.b));
   {const tP=[],tQ=[],tA=[],tB=[],tK=[];
     const angDiff=(a,b)=>{let d=(b-a)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Math.PI)d+=Math.PI*2;return d};
@@ -1250,37 +1628,24 @@ function buildTunnel(s){
   const hs=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:BRAND,transparent:true,opacity:.9,blending:THREE.AdditiveBlending,depthWrite:false}));
   hs.scale.setScalar(26);hs.position.copy(home);g.add(hs);
   g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([home,P0]),new THREE.LineBasicMaterial({color:BRAND,transparent:true,opacity:.5,blending:THREE.AdditiveBlending})));
-  // the doorways at the far end: an iris that opens onto the NEXT thread, and a side door that
-  // takes you back to this thread's beginning
+  // the doorways: a tall arch at the far end (the fibres part round it and frame it) that opens onto the NEXT thread, and a
+  // small side arch on the wall that takes you back to this thread's beginning
   const si=sess.indexOf(s),next=si>=0&&si<sess.length-1?sess[si+1]:null;
-  const doorMat=(a,b,dir)=>new THREE.ShaderMaterial({uniforms:{...U,uOpen:{value:0},uA:{value:a},uB:{value:b},uDir:{value:dir}},
-    vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
-    fragmentShader:`uniform float uTime,uOpen,uDir;uniform vec3 uA,uB;varying vec2 vUv;
-      void main(){vec2 p=vUv*2.-1.;float r=length(p);if(r>1.)discard;float a=atan(p.y,p.x);
-        float edge=mix(.07,.8,uOpen)*(1.+.07*sin(a*9.));float inside=1.-smoothstep(edge-.012,edge+.012,r);
-        float sp=sin(a*7.+uDir*log(max(r,.02))*9.-uTime*2.2*uDir);
-        vec3 beyond=mix(uB*.06,uB*.5,smoothstep(.55,1.,sp))*(1.-r*.5);
-        float blade=fract(a/6.2831853*9.+r*.7);float bl=smoothstep(0.,.05,blade)*smoothstep(1.,.9,blade);
-        vec3 bc=uA*(.1+.26*bl);float rim=smoothstep(.012,0.,abs(r-edge));
-        vec3 col=beyond*inside+bc*(1.-inside)+vec3(1.)*rim*.45;
-        gl_FragColor=vec4(col,(inside*.7+(1.-inside)*.4+rim*.6)*smoothstep(1.,.95,r));}`,
-    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
-  const P1=curve.getPointAt(1),T1=frameAt(1).T;
-  const door=new THREE.Mesh(new THREE.CircleGeometry(radius(1)*1.3,96),doorMat(THREAD_COL,new THREE.Color(next?'#7fe8ff':'#f4fbff'),1));
-  door.position.copy(P1);door.lookAt(P1.clone().sub(T1));g.add(door);
-  const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(new THREE.CircleGeometry(radius(.9)*.42,64),doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
-  backDoor.position.copy(backP);backDoor.lookAt(curve.getPointAt(.9));g.add(backDoor);
+  const door=new THREE.Mesh(archGeo,doorMat(THREAD_COL,new THREE.Color(next?'#7fe8ff':'#f4fbff'),1));
+  door.scale.setScalar(rad1);door.position.copy(P1);door.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(Rd,Ud,T1.clone().negate()));g.add(door);
+  const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(archGeo,doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
+  backDoor.scale.setScalar(radius(.9)*.3);backDoor.position.copy(backP);backDoor.lookAt(curve.getPointAt(.9));g.add(backDoor);
   scene.add(g);rng=mulberry32(99);
-  return {g,curve,frameAt,session:s,items,hexGeo,BLK,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands,
+  return {g,curve,frameAt,session:s,items,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands,hlU,fibU,pins:pinList,
     door:{mesh:door,world:P1.clone().add(TUN_OFF),next},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},onWall};
 }
 // light an item and everything it is linked to (a message and its moments, or a moment and its turn)
 function tunnelHighlight(it){
-  const T=tunnel;if(!T||T.hl===it)return;const hb=T.hexGeo.attributes.aB;
-  const set=(x,f)=>{for(let k=x.k0;k<=x.k1;k++){const b=T.BLK[k];for(let i=b.p0;i<b.p0+b.rows;i++)hb.array[i]=f}};
-  if(T.hl){set(T.hl,1);T.hl.links.forEach(l=>set(l,1))}
-  T.hl=it;if(it){set(it,2.4);it.links.forEach(l=>set(l,2))}
-  hb.needsUpdate=true;bridges(it)}
+  const T=tunnel;if(!T||T.hl===it)return;T.hl=it;
+  const H=T.hlU.value;H.forEach(v=>v.set(-1,0,0,0));let j=0;
+  const put=(x,gain)=>{if(j<H.length)H[j++].set(x.bundle,x.ua-.003,x.ub+.003,gain)};
+  if(it){put(it,2.4);it.links.slice(0,7).forEach(l=>put(l,2))}
+  bridges(it)}
 const bridgeLine=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xffe8fb,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false}));
 bridgeLine.frustumCulled=false;scene.add(bridgeLine);
 function bridges(it){const pts=[];if(it)it.links.slice(0,16).forEach(l=>{pts.push(it.world,l.world)});bridgeLine.geometry.setFromPoints(pts)}
@@ -1453,7 +1818,8 @@ function orbitFrom(pos,target){const d=pos.clone().sub(target);cam.dist=cam.dist
   cam.el=cam.elT=Math.asin(clamp(d.y/cam.dist,-1,1));cam.target.copy(target);cam.targetT.copy(target);cam.par=0}
 function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).normalize();cam.yaw=Math.atan2(d.x,d.z);cam.pitch=Math.asin(clamp(d.y,-1,1))}
 const keys={};
-window.__cortex={cam,mouse,keys,get state(){return state}}; // inspection handle for the mockup
+window.__cortex={cortex,camera,project:v=>project(v),cam,mouse,keys,get state(){return state},M,IMM,get tunnel(){return tunnel},setLens:l=>setLens(l),enter:i=>enterTunnel(sess[i]),
+  dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length}; // inspection handle for the mockup
 function updateCamera(dt){
   if(cam.tween){const tw=cam.tween;tw.t+=dt/tw.dur;const e=easeIO(Math.min(1,tw.t));
     if(tw.path){camera.position.copy(tw.path.getPoint(e));cam.look.copy(tw.lpath.getPoint(e))}
@@ -1533,8 +1899,19 @@ function placeAnnos(){
       s.el.classList.remove('left');s.el.classList.add('right')}}}
 // family region labels around the skin
 const regLabelEls=REG.map((d,i)=>{const el=document.createElement('div');el.className='rlabel';
-  el.innerHTML=`<b style="color:${DOM_COL[d]}">${DOM_WORD[d]||d}</b>${fmt(M.domCounts[d]||0)}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
+  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
+// the coordinate spaces as layers: press s and each shell names itself, with who may write there
+const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el.className='rlabel';
+  el.innerHTML=`<b style="color:${chanTint(s.write_lock)}">${esc(SPACE_WORD[s.id]||String(s.id).replace(/_/g,' '))}</b>${s.write_lock!=null?`<i>${esc(LOCK_WORD[s.write_lock]||'')}</i>`:''}`;labelsEl.appendChild(el);
+  const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
+function placeSpaceLabels(show){
+  const c=project(new V3()),e=project(new V3(R,0,0).applyQuaternion(camera.quaternion)),rs=Math.abs(e.x-c.x)||200;
+  const right=new V3(1,0,0).applyQuaternion(camera.quaternion),up=new V3(0,1,0).applyQuaternion(camera.quaternion);
+  spaceLabelEls.forEach((L,i)=>{if(!show){L.el.style.opacity=0;L.p.setAttribute('d','');return}
+    const a=-.6+i*.19,pt=project(right.clone().multiplyScalar(Math.cos(a)*spR[i]).addScaledVector(up,Math.sin(a)*spR[i]));
+    const lx=c.x+rs+50,ly=c.y-130+i*40;L.el.style.opacity=.85;L.el.style.left=(lx+6)+'px';L.el.style.top=(ly-8)+'px';L.el.style.textAlign='left';
+    L.p.setAttribute('d',`M${pt.x},${pt.y}L${lx},${ly}`)})}
 function placeRegionLabels(show){
   const c=project(new V3()),edge=project(new V3(R,0,0).applyQuaternion(camera.quaternion));const rs=Math.abs(edge.x-c.x)||200;
   regC.forEach((v,i)=>{const L=regLabelEls[i];const camDir=camera.position.clone().normalize();const vis=show&&v.dot(camDir)>.15;
@@ -1556,6 +1933,9 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
     T.gates.forEach(gt=>{const c=gt.ep.corrected?'#fff':gt.ep.outcome==='failure'?'#ff4a3d':gt.ep.outcome==='partial'?'#ffb547':'#7fe8ff';
       const r=mk('rect',{x:X(gt.u)-1.5,y:6,width:3,height:16,fill:c,'fill-opacity':.7});r.onclick=()=>{cam.tpT=Math.max(0,gt.u-.02);cam.idle=-9};
       r.onmouseenter=()=>this.lbl.textContent='task · '+gt.ep.summary});
+    T.pins.forEach(b=>{const x=X(b.u),c=pinType(b.p.type).col;
+      const e=mk('path',{d:`M${x},9 L${x+3.5},14 L${x},19 L${x-3.5},14 Z`,fill:c,'fill-opacity':b.p.held?.95:.6});e.onclick=()=>{cam.tpT=Math.max(0,b.u-.02);cam.idle=-9};
+      e.onmouseenter=()=>this.lbl.textContent='pin · '+b.p.title});
     T.stars.forEach((st,i)=>{const c=CELL_COL[lmBest[st.li]]||'#8aa3b0';
       const e=mk('circle',{cx:X(st.u),cy:14,r:4.2,fill:'#020306',stroke:c,'stroke-width':1.4});e.onclick=()=>{cam.tpT=Math.max(0,st.u-.02);cam.idle=-9};
       e.onmouseenter=()=>this.lbl.textContent=LM[st.li].claim;this.marks.push({e,st})});
@@ -1567,9 +1947,16 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
       m.e.setAttribute('opacity',on?1:.25)}}};
 function updateStats(fps){const c=M.meta.counts||{};
   $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> certainties · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> sessions<br>`+
-  `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made<br>`+
+  `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
+  `${PINS.length||NDS.length?` · <em>${PINS.length}</em> pins · <em>${NDS.length}</em> nodes in <em>${SPACES.length}</em> layers`:''}<br>`+
   `${Math.round(fps)} fps · ${fmt(NS+NI+mistN+(tunnel?26000:0))} points · ${esc(M.meta.source)}`}
 const tickLines=document.querySelectorAll('#ticker .line');
+// the immune response in the ticker: what the guard noticed, where, and whether it counted
+function tickGuard(q,ri){const col=q.shadow?'#7d8f9b':q.signal==='quorum_reorganization_reset'?'#9fd8c8':'#ffb547';
+  tickLines[0].innerHTML=tickLines[1].innerHTML;
+  tickLines[1].innerHTML=`<span class="dot" style="background:${col}"></span><span class="tx"></span><span style="color:var(--faint)"> · guard${q.shadow?' · measured, not counted':''}${ri>=0?' · '+esc(domWord(REG[ri])):''}</span>`;
+  const tx=tickLines[1].querySelector('.tx');tx.style.color='rgba(212,236,246,.55)';
+  scramble(tx,(QUORUM_WORD[q.signal]||String(q.signal).replace(/_/g,' '))+' · '+ago(q.ts),16)}
 function tick(e){const col=FAM[FAMI[e.family]]?.color||'#fff';const strong=e.evidence==='user';
   tickLines[0].innerHTML=tickLines[1].innerHTML;
   tickLines[1].innerHTML=`<span class="dot" style="background:${e.valence==='sets_back'?'#ff4a3d':col};box-shadow:0 0 8px ${col}"></span><span class="tx"></span><span style="color:var(--faint)"> · ${FAM[FAMI[e.family]]?.word||'other'}</span>`;
@@ -1578,7 +1965,7 @@ function tick(e){const col=FAM[FAMI[e.family]]?.color||'#fff';const strong=e.evi
 // ═══════════════════════════════════════════════════════════════════════════
 // 11. state, lenses, transitions
 // ═══════════════════════════════════════════════════════════════════════════
-const state={lens:'cortex',inside:false,diving:false,diveReg:-1,hoverReg:-1,hoverSoma:-1,focusSoma:-1,hoverBead:-1,hoverSec:-1,
+const state={showSpaces:false,lens:'cortex',inside:false,diving:false,diveReg:-1,hoverReg:-1,hoverSoma:-1,focusSoma:-1,hoverBead:-1,hoverSec:-1,
   hoverNode:-1,morph:{h:0,i:0,c:0},morphT:{h:0,i:0,c:0},vis:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},visT:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},
   scrub:1,scrubT:1,replay:false,search:'',pupil:1,lastDecision:null,from:'cortex'};
 function setLens(l){
@@ -1599,7 +1986,7 @@ function setLens(l){
   if(l==='timeline'){cam.targetT.set(0,0,0);cam.distT=66;cam.elT=.05}
   if(l==='oracle'){cam.targetT.set(0,0,0);cam.distT=44;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0}
   if(l==='artifacts'){cam.targetT.set(-1.0*R,0,0);cam.distT=62;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0;setTimeout(()=>layoutTissue(false),900)}
-  hint({cortex:'drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; t · theme',
+  hint({cortex:'drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme',
     timeline:'scroll · move through time &nbsp; click a session · step inside it',
     artifacts:'hover · a cell swells &nbsp; click · open it',
     oracle:'hover a sector · what IRIS is learning to decide'}[l]);
@@ -1616,7 +2003,7 @@ function dive(i){
     onT:e=>{if(e>.42)state.openT=1;if(e>.6)state.focusDimT=1},
     done:()=>{cam.mode='fly';flyFrom(camera.position,lookIn);cam.fovT=64;state.inside=true;state.diving=false;
       hint('drag · look &nbsp; w a s d / scroll · move<br>click a thought · go to it &nbsp; esc · back out');
-      const T=$('title');T.innerHTML=`${esc(DOM_WORD[REG[i]]||REG[i])}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments</small>`;T.style.opacity=1}});
+      const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments</small>`;T.style.opacity=1}});
 }
 function exitInterior(done){
   if(!state.inside)return done&&done();
@@ -1630,7 +2017,7 @@ function exitInterior(done){
   tweenPath(pts,looks,38,REDUCED?.01:2.4,{kick:6,
     onT:e=>{if(e>.62)state.openT=0},
     done:()=>{state.openT=0;cam.mode='orbit';orbitFrom(camera.position,new V3());state.diving=false;done&&done();
-      if(!done)hint('drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; t · theme')}});
+      if(!done)hint('drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme')}});
 }
 function setFocusSoma(k){state.focusSoma=k;LM.forEach((_,j)=>{somaData[j*8+2]=j===k?1:(somaData[j*8+2]>0&&j!==k&&state.search?somaData[j*8+2]:0)});somaTex.needsUpdate=true}
 function somaWorld(k){return somaPos[k].clone()}
@@ -1693,7 +2080,7 @@ function exitTunnel(done){
 //     In the app these arrive as iris:ws_message (MEMORY-DASHBOARD-DESIGN §10.1); here a replay drives them.
 // ═══════════════════════════════════════════════════════════════════════════
 const queue=[];const after=(s,fn)=>queue.push({at:clock.elapsedTime+s,fn});
-let nextEv=1.2,nextRecall=5,nextPromo=18,nextCorr=34,nextDec=2,nextMote=6;
+let nextEv=1.2,nextRecall=5,nextPromo=18,nextCorr=34,nextDec=2,nextMote=6,nextQ=8,qIx=0;
 function regionPoint(fi){return regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.12)).normalize().multiplyScalar(R)}
 function pickSoma(){if(!NL)return -1;const k=Math.floor(Math.pow(rng(),1.6)*NL);return LM.map((l,i)=>[i,l.activations]).sort((a,b)=>b[1]-a[1])[k%NL][0]}
 const somaByReg=REG.map((_,ri)=>LM.map((l,i)=>l.dom===ri?i:-1).filter(i=>i>=0));
@@ -1750,6 +2137,8 @@ function simulate(dt){
   if(t>nextPromo){nextPromo=t+rand(22,34);promote()}
   if(t>nextCorr){nextCorr=t+rand(40,60);userCorrection()}
   if(t>nextDec){nextDec=t+rand(1.4,3.2);oracleDecision()}
+  // the guard's log, replayed oldest first at a calm cadence (each row names when it truly happened)
+  if(t>nextQ){nextQ=t+rand(6,10);if(M.quorum.length&&cortexShown()){immuneSignal(M.quorum[qIx%M.quorum.length]);qIx++}}
   if(t>nextMote&&motes.length){nextMote=t+rand(5,8);const m=pick(motes);
     if(m.state==='in'){m.state='out';m.rT=R*.58;emit({family:'memory',label:'OFFLOADED',actor:'agent',evidence:'claim',valence:'neutral'})}
     else{m.state='in';m.rT=R*.3;emit({family:'memory',label:'RESTRETCHED',actor:'agent',evidence:'claim',valence:'advances'})}}
@@ -1767,6 +2156,15 @@ function regionAt(x,y){
 function nearestScreen(list,x,y,maxD){let best=-1,bd=maxD;list.forEach((p,i)=>{if(!p)return;const s=project(p);if(!s.front)return;const d=Math.hypot(s.x-x,s.y-y);
   if(d<bd){bd=d;best=i}});return best}
 function coreHit(x,y){const c=project(new V3()),e=project(new V3(R*.2,0,0).applyQuaternion(camera.quaternion));return Math.hypot(x-c.x,y-c.y)<Math.abs(e.x-c.x)}
+// pins and nodes answer a hover with a swelling cell at their own point (cortex level only)
+function hoverThing(x,y){
+  const ok=state.inside?p=>p.distanceTo(camera.position)<R*1.1:p=>p.dot(camera.position)>0;
+  const pk=nearestScreen(pinInfo.map(q=>ok(q.tip)?q.tip:null),x,y,15);
+  if(pk>=0){canvas.style.cursor='default';setAnno('hover','pin'+pk,()=>project(pinInfo[pk].tip),pinHTML(pk),{cell:true,col:pinType(PINS[pk].type).col});return true}
+  const nk=nearestScreen(nodePos.map(p=>ok(p)?p:null),x,y,11);
+  if(nk>=0){canvas.style.cursor='default';setAnno('hover','node'+nk,()=>project(nodePos[nk]),nodeHTML(nk),{cell:true,col:chanTint(NDS[nk].chan)});return true}
+  if(slots.hover?.key&&/^(pin|node)/.test(slots.hover.key))clearAnno('hover');
+  return false}
 function hover(x,y){
   state.hoverReg=-1;skinMat.uniforms.uHoverReg.value=-1;state.hoverSec=-1;skinMat.uniforms.uHoverSec.value=-1;beadMat.uniforms.uHover.value=-1;
   canvas.style.cursor='default';
@@ -1783,6 +2181,11 @@ function hover(x,y){
         setAnno('hover','door-'+nm,()=>project(d.world),nm==='door'
           ?`<div class="k">doorway</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><div class="m">${nx?`the next thread · ${ago(nx.started)}`:'this is the newest thread'}</div><span class="go">click · step through</span>`
           :`<div class="k">doorway</div><div class="t">back to the beginning of this thread</div><span class="go">click · return to its first moment</span>`,{hot:true});return}}}
+    const pk=nearestScreen(tunnel.pins.map(b=>near(b.world,70)),x,y,16);
+    if(pk>=0&&st<0&&k<0){const b=tunnel.pins[pk],p=b.p,t=pinType(p.type),later=p.refs.filter(r=>(r.t==='thread'||r.t==='session')&&r.id!==tunnel.session.id).length;
+      canvas.style.cursor='default';tunnelHighlight(null);
+      setAnno('hover','tpin'+pk,()=>project(b.world),`<div class="k">${t.word} · ${p.held?'held in context right now':'resting'}${p.type==='checkpoint'?' · where this thread was paused':''}</div><div class="t">${esc(p.title)}</div>
+        <div class="m">pinned ${ago(p.created)} · tied to <em>${p.links}</em> thing${p.links===1?'':'s'}${later?`<br>also used in <em>${later}</em> other thread${later===1?'':'s'}`:''}</div>`);return}  // the timeline keeps leader-line labels; cells are cortex-only
     const gt=nearestScreen(tunnel.gates.map(g=>g.world.distanceTo(camera.position)<80?g.world:null),x,y,60);
     if(st>=0){const s=tunnel.stars[st];canvas.style.cursor='pointer';tunnelHighlight(s.item);
       setAnno('hover','star'+st,()=>project(s.world),landmarkHTML(s.li,false)+`<span class="go">${tunnel.sel===s.li?'enter · open this thought in the mind':'click · follow its thread'}</span>`,{hot:true});state.hoverStar=st;return}
@@ -1814,11 +2217,12 @@ function hover(x,y){
     const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaPos[i].distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
     if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,false),lmCell(k));
       for(let j=0;j<NL;j++)if(j!==state.focusSoma)somaData[j*8+2]=j===k?1:0;somaTex.needsUpdate=true}
-    else{if(k<0){clearAnno('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
+    else{if(k<0){if(!hoverThing(x,y))clearAnno('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
     return}
   if(state.lens==='cortex'){
     if(coreHit(x,y)){state.hoverCore=true;canvas.style.cursor='help';showMind(true);clearAnno('hover');return}
     state.hoverCore=false;showMind(false);
+    if(hoverThing(x,y))return;
     const r=regionAt(x,y);state.hoverReg=r;skinMat.uniforms.uHoverReg.value=r;if(r>=0)canvas.style.cursor='pointer';return}
   if(state.lens==='timeline'){const k=nearestScreen(sess.map(s=>new V3(0,helixY(sessS(s)),0)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
     if(k>=0){const s=sess[k];canvas.style.cursor='pointer';
@@ -1900,6 +2304,7 @@ addEventListener('keydown',e=>{
   if(k==='escape'){if(cam.mode==='tunnel'&&tunnel?.sel>=0)selectThread(-1);else if(cam.mode==='tunnel')exitTunnel();else if(state.inside)exitInterior();else if(state.lens==='artifacts')tissueUp()}
   if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
   if(k==='/'){e.preventDefault();openSearch()}
+  if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
   if(k==='g'&&state.lens==='cortex'&&!state.inside){state.scrub=0;state.scrubT=0;state.replay=true}
   if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);
     coreHalo.material.color.copy(BRAND)}});
@@ -1956,6 +2361,12 @@ renderer.setAnimationLoop(()=>{
   const op=skinMat.uniforms.uOpen;op.value=lerp(op.value,state.openT,1-Math.pow(.02,dt));skinMat.uniforms.uOpenReg.value=op.value>.005||state.openT>0?state.diveReg:-1;
   // region activity decays to its base
   for(let i=0;i<REG.length;i++){regAct[i]=lerp(regAct[i],regBase[i],1-Math.pow(.3,dt));SU.uRegAct.value[i]=regAct[i]}
+  SUB.forEach((s,j)=>{SU.uRegAct.value[NROOT+j]=regAct[s.ri]});
+  // immune amplitudes only ever decay toward 0: a tightening lasts about a second, a relaxation a few; no build-up
+  for(let i=0;i<NROOT;i++){if(IMM[i]===0)continue;IMM[i]*=Math.exp(-dt/(IMM[i]>0?1.3:3.4));if(Math.abs(IMM[i])<.004)IMM[i]=0}
+  if(pinArtTethers)pinArtTethers.visible=state.lens==='artifacts';
+  for(const l of pinTethers)l.material.opacity=state.vis.forest; // tethers fade with the rest of the cortex when another lens is up
+  updateMarks(t);spaceU.uShow.value=lerp(spaceU.uShow.value,state.showSpaces&&state.lens==='cortex'?1:0,1-Math.pow(.02,dt));
   state.warn=Math.max(0,state.warn-dt*.8);skinMat.uniforms.uWarn.value=wireMat.uniforms.uWarn.value=state.warn;
   // shockwave (a user's word is the strongest thing on screen)
   const sh=shockAt(t);skinMat.uniforms.uShock.value=wireMat.uniforms.uShock.value=sh*.6;const b=bounceAt(t);
@@ -2015,6 +2426,7 @@ renderer.setAnimationLoop(()=>{
   updateCamera(dt);
   if(cam.mode==='tunnel'&&tunnel){
     // the far doorway opens as you near the end of the thread; the side door stays ajar
+    tunnel.fibU.uFocal.value=(innerHeight*DPR*.5)/Math.tan(camera.fov*Math.PI/360); // fibres keep a minimum width on screen
     tunnel.door.mesh.material.uniforms.uOpen.value=smooth01((cam.tp-.78)/.18);
     tunnel.back.mesh.material.uniforms.uOpen.value=state.hoverDoor==='back'?.85:.5;
     rail.update(cam.tp);
@@ -2031,7 +2443,8 @@ renderer.setAnimationLoop(()=>{
     else{clearAnno('doorA');clearAnno('doorB')}}
   else{clearAnno('arrive');clearAnno('doorA');clearAnno('doorB')}
   // HUD
-  placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
+  placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
+  placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   drawTissue(dt);
   if(state.lens==='oracle'&&state.lastDecision&&cam.mode==='orbit'){const d=state.lastDecision;
