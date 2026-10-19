@@ -753,7 +753,25 @@ def main():
             while True:
                 time.sleep(1)
                 if not _is_alive(pid):
-                    print(f"\n[manager] child pid {pid} exited.")
+                    # 2026-10-19: report the EXIT CODE. Three backend deaths on
+                    # 2026-10-18 left no crash record and no traceback - the
+                    # exit code is the one fact that distinguishes a native
+                    # access violation (0xC0000005) from an external
+                    # TerminateProcess (the Job Object's KILL_ON_JOB_CLOSE)
+                    # from a clean exit, and nothing was recording it.
+                    _code = None
+                    try:
+                        import ctypes
+
+                        _h = ctypes.windll.kernel32.OpenProcess(0x0400, False, pid)
+                        if _h:
+                            _ec = ctypes.c_ulong()
+                            if ctypes.windll.kernel32.GetExitCodeProcess(_h, ctypes.byref(_ec)):
+                                _code = hex(_ec.value)
+                            ctypes.windll.kernel32.CloseHandle(_h)
+                    except Exception:
+                        pass
+                    print(f"\n[manager] child pid {pid} exited, exit code: {_code}")
                     _clear_pid(args.name)
                     return 0
         except KeyboardInterrupt:

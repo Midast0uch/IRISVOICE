@@ -51,7 +51,12 @@ try:
     if _fh_every > 0:
         import faulthandler as _faulthandler
 
-        _fh_path = base_dir / "faulthandler_dump.log"
+        # PER-PID, APPEND (2026-10-19): the old fixed name was opened with
+        # "w", so every backend start TRUNCATED the previous process's dumps -
+        # the pre-death evidence of the silent crashes (2026-10-18: three
+        # backend deaths, the periodic dumps of each lost at the next start).
+        # A per-pid file survives the restart and keeps the last seconds.
+        _fh_path = base_dir / f"faulthandler_dump_{os.getpid()}.log"
         _fh_file = open(_fh_path, "w", encoding="utf-8", errors="replace")
         _faulthandler.dump_traceback_later(_fh_every, repeat=True, file=_fh_file)
         print(f"   Faulthandler: dumping all thread stacks every {_fh_every:g}s -> {_fh_path}")
