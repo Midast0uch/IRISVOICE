@@ -89,7 +89,7 @@ svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
 #lenses{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:26px;pointer-events:auto}
 #lenses a{font-size:11px;letter-spacing:.22em;color:var(--faint);cursor:pointer;text-transform:lowercase;user-select:none;transition:color .25s}
 #lenses a:hover{color:var(--dim)} #lenses a.on{color:var(--white);text-shadow:0 0 12px rgba(0,212,255,.6)}
-#key{position:absolute;right:22px;bottom:64px;display:flex;flex-direction:column;gap:9px;pointer-events:auto;opacity:0;transition:opacity .5s}
+#key{position:absolute;right:22px;bottom:104px;display:flex;flex-direction:column;gap:9px;pointer-events:auto;opacity:0;transition:opacity .5s}
 #key.on{opacity:1}#key:not(.on){pointer-events:none}
 #key a{display:flex;align-items:center;justify-content:flex-end;gap:9px;font-size:10px;letter-spacing:.08em;color:var(--faint);cursor:pointer;user-select:none;transition:color .25s,opacity .25s}
 #key a:hover{color:var(--dim)}#key a.on{color:var(--white)}#key.iso a:not(.on){opacity:.35}#key canvas{width:22px;height:22px}
@@ -927,25 +927,6 @@ const iP=[],iSoma=[],iT=[],iRand=[],iCol=[],iBorn=[];
     const push=(p,t)=>{iP.push(p.x,p.y,p.z);iSoma.push(si);iT.push(t);iRand.push(rng(),rng(),rng(),rng());
       const c=t<.001?tmp.clone():tmp.clone().lerp(hue,.55+Math.min(1,t)*.25);iCol.push(c.r,c.g,c.b);iBorn.push(born)};
     push(S,0);
-    // cell body: a crisp membrane shell, with a clear gap before the dendrites begin, so the
-    // neuron reads as a distinct cell inside the tissue
-    for(let q=0;q<56;q++){const v=new V3(gauss(),gauss(),gauss()).normalize().multiplyScalar(R*(.021+Math.abs(gauss())*.0015));push(S.clone().add(v),.015)}
-    const strength=Math.min(1,.35+Math.log10(1+l.activations)/2.2);
-    const branches=l.tier==='candidate'?randi(3,4):randi(4,7);
-    const maxSteps=Math.round(10+strength*12);
-    const walk=(start,dir,steps,depth,t0)=>{
-      const p=start.clone(),d=dir.clone();
-      for(let k=0;k<steps;k++){
-        // dendrites drift outward, so the tissue grows toward the skin and meets it
-        d.add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.33)).addScaledVector(p.clone().normalize(),.1).normalize();
-        p.addScaledVector(d,R*.02*(1-depth*.2));
-        const t=t0+(k+1)/maxSteps;
-        // tapered tissue: thick where the branch leaves the cell body, thin at its tip
-        const jit=R*.0065*(1-Math.min(1,t)*.75)*(1-depth*.3);
-        for(let q=0;q<3;q++)push(p.clone().addScaledVector(d,-R*.005*q).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(jit)),Math.min(1,t));
-        if(depth<2&&rng()<.1)walk(p,d.clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.8)).normalize(),Math.floor((steps-k)*.7),depth+1,t);
-      }};
-    for(let b=0;b<branches;b++){const dir=new V3(gauss(),gauss(),gauss()).normalize();walk(S.clone().addScaledVector(dir,R*.03),dir,maxSteps,0,0)}
   });
 }
 const NI=iSoma.length;
@@ -1060,45 +1041,15 @@ const somaCellMat=new THREE.ShaderMaterial({uniforms:{...forestU,uTier:tierU},
   fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const somaCells=new THREE.Points(somaCellGeo,somaCellMat);somaCells.frustumCulled=false;cortex.add(somaCells);KIND_OBJ.claim.push(somaCells);
 
-// fibres: connections are TISSUE, not hair — each is a tapered strand of particles (thick in the
-// middle, thin where it meets a cell), so neurons, tracts and skin read as one connected mass.
-// Similarity edges link neurons; tracts wire every neuron to the skin region its knowledge belongs to.
-const ax=[],axT=[],axPh=[],axW=[],axAB=[],axG=[];
+// a point on a quadratic curve a -> c -> b (sparks, threads and node tracts run along these)
 function bez(a,c,b,t,out){const u=1-t;return out.set(u*u*a.x+2*u*t*c.x+t*t*b.x,u*u*a.y+2*u*t*c.y+t*t*b.y,u*u*a.z+2*u*t*c.z+t*t*b.z)}
-// every strand of tissue also carries a fine line down its centre: the connection you can follow
-const lnP=[],lnT=[],lnPh=[],lnW=[],lnAB=[],lnG=[];
-// g = how much the strand pulses: 1 for tissue that always carries signal; for a landmark tract, 1 only when its
-// traversal count grew since last seen (0 = it stays still)
-function fibre(A,C,B,n,thick,w,ia,ib,fan=0,g=1){const P=new V3(),ph=rng()*6.28;
-  {const P0=new V3(),P1=new V3();const SEG=14;for(let k=0;k<SEG;k++){bez(A,C,B,k/SEG,P0);bez(A,C,B,(k+1)/SEG,P1);
-    lnP.push(P0.x,P0.y,P0.z,P1.x,P1.y,P1.z);lnT.push(k/SEG,(k+1)/SEG);lnPh.push(ph,ph);lnW.push(w,w);lnG.push(g,g);lnAB.push(ia,ib,ia,ib)}}
-  for(let k=0;k<n;k++){const t=(k+rng())/n;bez(A,C,B,t,P);
-    // fan > 0: the tract opens into a terminal arbor where it meets the skin, rooting in the cells
-    const r=thick*(.35+.65*Math.sin(t*Math.PI))+fan*Math.max(0,t-.75)/.25*R*.06;
-    P.x+=gauss()*r;P.y+=gauss()*r;P.z+=gauss()*r;if(fan){const l=P.length();if(l>R*.995)P.multiplyScalar(R*.995/l)}
-    ax.push(P.x,P.y,P.z);axT.push(t);axPh.push(ph);axW.push(w);axG.push(g);axAB.push(ia,ib)}}
-{const E=M.edges.filter(e=>e.a<NL&&e.b<NL);const per=clamp(Math.round(26000/Math.max(1,E.length)),8,40);
-  for(const e of E){const A=somaPos[e.a],B=somaPos[e.b];
-    const C=A.clone().add(B).multiplyScalar(.5*.72).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.05));
-    // tract thickness = the standing score, firmed by use (traversal count); on real data every edge is one weak score today
-    const sc=clamp(e.score??.5,0,1),ev=clamp(Math.log10(1+(e.traversals||0))/1.8,0,1),body=(.3+.7*sc)*(.55+.45*ev);
-    const w=ev*.7+sc*.3;
-    fibre(A,C,B,Math.max(6,Math.round(per*(.45+.9*body))),R*(.0035+.0065*body),w,e.a,e.b,0,e.grew?1:0)}
-  // between clusters the tracts run as one bundle: one cable per pair of clusters, thickness by their mean score and number of links
-  const pairs=new Map();for(const e of E){const ca=LM[e.a].cls,cb=LM[e.b].cls;if(ca===cb)continue;const k=ca<cb?ca+'|'+cb:cb+'|'+ca;
-    if(!pairs.has(k))pairs.set(k,{ca,cb,n:0,s:0,grew:0,ia:e.a,ib:e.b});const p=pairs.get(k);p.n++;p.s+=e.score??.5;p.grew+=e.grew?1:0}
-  const cen=cls=>{const c=new V3();let n=0;LM.forEach((l,i)=>{if(l.cls===cls){c.add(somaPos[i]);n++}});return c.multiplyScalar(1/Math.max(1,n))};
-  for(const p of pairs.values()){const A=cen(p.ca),B=cen(p.cb),C=A.clone().add(B).multiplyScalar(.5*.6);const mean=p.s/p.n,body=(.3+.7*mean)*Math.min(1,.5+Math.log10(1+p.n)/1.5);
-    fibre(A,C,B,Math.round(30+60*body),R*(.006+.01*body),.35,p.ia,p.ib,0,p.grew?1:0)}}
-// every neuron also links to its two nearest neighbours, so the web is continuous from the core
-// to the skin rather than a cluster in the middle
-{const E=new Set(M.edges.map(e=>Math.min(e.a,e.b)+'-'+Math.max(e.a,e.b)));
-  for(let i=0;i<NL;i++){const d=[];for(let j=0;j<NL;j++)if(j!==i)d.push([somaPos[i].distanceToSquared(somaPos[j]),j]);d.sort((a,b)=>a[0]-b[0]);
-    for(const [,j] of d.slice(0,2)){const key=Math.min(i,j)+'-'+Math.max(i,j);if(E.has(key))continue;E.add(key);
-      const A=somaPos[i],B=somaPos[j],C=A.clone().add(B).multiplyScalar(.5).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.025));
-      fibre(A,C,B,18,R*.005,.12,i,j)}}}
-// tracts land on real nodes of the skin's lattice (the wireframe vertices), so the interior is
-// wired INTO the hex structure: one tract to the neuron's region, one straight out to the skin
+// ── NEURON ARBORS (owner, 2026-10-19: "I still don't like how neurons look"). A claim's connections grow like FROST on
+// glass: straight segments that fork at 60 degrees, thinner each generation - the crystal's own geometry carried
+// outward, not hair. Every claim grows a small frost star round its crystal (more arms the more kinds of evidence it
+// has) and sends one arm to its territory on the skin, where it lands on a lattice node and spreads along the lattice
+// (the same path the sparks of section 6 run). Linked claims are joined by a frost bridge whose width is the link's
+// standing score, firmed by use. A claim still learning has a shorter arbor (its reach). Light runs out along a claim's
+// arbor when IRIS uses it, and along a bridge whose use grew since it was last seen.
 const latticeV=(()=>{const p=wire.geometry.attributes.position,out=[],seen=new Set();for(let i=0;i<p.count;i++){const v=new V3().fromBufferAttribute(p,i);
   const k=v.x.toFixed(2)+','+v.y.toFixed(2)+','+v.z.toFixed(2);if(!seen.has(k)){seen.add(k);out.push(v.normalize())}}return out})();
 const snap=dir=>{let best=latticeV[0],bd=-2;for(const v of latticeV){const d=v.dot(dir);if(d>bd){bd=d;best=v}}return best.clone().multiplyScalar(R*1.012)};
@@ -1106,44 +1057,69 @@ const somaAnchor=[],somaCtrl=[];
 LM.forEach((l,i)=>{const fi=l.dom;
   const dir=regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(regRad[fi]*.45)).normalize();
   const A=somaPos[i],B=snap(dir);
-  const C=A.clone().lerp(B,.55).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.06));
-  somaAnchor.push(B.clone());somaCtrl.push(C.clone());fibre(A,C,B,70,R*.011,.2,i,i,1);
-  const B2=snap(A.clone().normalize().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.15)).normalize());
-  fibre(A,A.clone().lerp(B2,.5),B2,40,R*.008,.14,i,i,1)});
-const axGeo=new THREE.BufferGeometry();
-axGeo.setAttribute('position',new THREE.Float32BufferAttribute(ax,3));axGeo.setAttribute('aT',new THREE.Float32BufferAttribute(axT,1));
-axGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(axPh,1));axGeo.setAttribute('aW',new THREE.Float32BufferAttribute(axW,1));
-axGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(axAB,2));axGeo.setAttribute('aG',new THREE.Float32BufferAttribute(axG,1));
-// brightness never builds up with the amount of memory: strands overlap in proportion to the number of tracts, so each one
-// is drawn dimmer as there are more (the real store has about 3,000 landmark edges where the demo has 800)
-const uEdge={value:clamp(Math.sqrt(500/Math.max(1,M.edges.length)),.3,1)};
-const axMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uSomaTex:{value:somaTex},uSearch:forestU.uSearch,uVis:forestU.uVis,uFocusDim:forestU.uFocusDim,uNear:forestU.uNear,uBrand:{value:BRAND}},
-  vertexShader:`uniform float uTime,uPix,uSearch,uFocusDim,uVis,uEdge;uniform sampler2D uSomaTex;attribute float aT,aPh,aW,aG;attribute vec2 aAB;varying float vA;varying float vH;
+  somaAnchor.push(B.clone());somaCtrl.push(A.clone().lerp(B,.55).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.06)))});
+const arborRes={value:new THREE.Vector2(innerWidth,innerHeight)};
+const AR={pos:[],nx:[],side:[],t:[],w:[],ab:[],g:[],k:[],born:[],idx:[]};
+const bornOf=i=>clamp((LM[i].born-T0)/Math.max(1,nowS()-T0),0,1);
+// one straight segment as a screen-space ribbon (w in pixels); t = how far along its arbor (0 at the crystal)
+function arSeg(A,B,tA,tB,w,ia,ib,g,kind,born){const base=AR.pos.length/3,d=B.clone().sub(A);
+  for(const [P,t] of [[A,tA],[B,tB]])for(const sd of [-1,1]){AR.pos.push(P.x,P.y,P.z);AR.nx.push(d.x,d.y,d.z);AR.side.push(sd);AR.t.push(t);AR.w.push(w);
+    AR.ab.push(ia,ib);AR.g.push(g);AR.k.push(kind);AR.born.push(born)}
+  AR.idx.push(base,base+1,base+2,base+1,base+3,base+2)}
+// frost: the segment, plus spurs that leave it at 60 degrees in the plane facing the core, alternating sides,
+// each a shorter, thinner copy of the same rule
+function frost(A,B,tA,tB,w,ia,ib,g,kind,born,depth){arSeg(A,B,tA,tB,w,ia,ib,g,kind,born);if(depth>=2)return;
+  const D=B.clone().sub(A),len=D.length();if(len<R*.012)return;D.normalize();
+  let n=A.clone().add(B).normalize();const perp=new V3().crossVectors(n,D);if(perp.lengthSq()<1e-6)perp.set(D.y,-D.x,0);perp.normalize();
+  const nS=Math.min(3,Math.floor(len/(R*.035)));
+  for(let s=0;s<nS;s++){const f=(s+.6+rng()*.3)/(nS+.4),P=A.clone().lerp(B,f),side=(s+depth)%2?1:-1;
+    const dir=D.clone().multiplyScalar(.5).addScaledVector(perp,side*.866).normalize(),l=len*(.3+.15*rng())*(1-depth*.25);
+    const t=lerp(tA,tB,f);frost(P,P.clone().addScaledVector(dir,l),t,t+(tB-tA)*.35,w*.6,ia,ib,g,kind,born,depth+1)}}
+LM.forEach((l,i)=>{const S=somaPos[i],born=bornOf(i),cand=l.tier==='candidate';
+  // the frost star round the crystal: arms = kinds of evidence (3 at least), in the plane facing the core
+  const kinds=new Set(l.evidence.map(e=>e.kind)).size,arms=cand?3:clamp(3+kinds,3,6);
+  const n=S.clone().normalize(),u=new V3().crossVectors(n,Math.abs(n.y)<.9?new V3(0,1,0):new V3(1,0,0)).normalize(),v=new V3().crossVectors(n,u),ph=rng()*6.283;
+  for(let a=0;a<arms;a++){const th=ph+a/arms*6.2832,d=u.clone().multiplyScalar(Math.cos(th)).addScaledVector(v,Math.sin(th)).addScaledVector(n,(rng()-.5)*.4).normalize();
+    const len=R*(.045+.03*Math.min(1,Math.log10(1+(l.activations||0))/2));frost(S.clone().addScaledVector(d,R*.012),S.clone().addScaledVector(d,len),0,.3,1,i,i,0,0,born,0)}
+  // the arm to its territory: the spark path (soma -> ctrl -> anchor) in straight pieces, then along the lattice on the skin
+  const A=S,C=somaCtrl[i],B=somaAnchor[i],K=7,pts=[];
+  for(let k=0;k<=K;k++){const t=k/K,q=1-t;pts.push(new V3(q*q*A.x+2*q*t*C.x+t*t*B.x,q*q*A.y+2*q*t*C.y+t*t*B.y,q*q*A.z+2*q*t*C.z+t*t*B.z))}
+  for(let k=0;k<K;k++)frost(pts[k],pts[k+1],k/K*.85,(k+1)/K*.85,1.25*(1-k/K*.45),i,i,0,0,born,k===K-1?2:1);
+  // on the skin it spreads along two or three lattice edges from the node it landed on
+  const Bn=B.clone().normalize(),near=latticeV.map(vv=>[vv.dot(Bn),vv]).filter(([dd])=>dd<.9999).sort((a,b)=>b[0]-a[0]).slice(0,3);
+  near.forEach(([,vv],j)=>{if(j===2&&rng()<.5)return;arSeg(B,vv.clone().multiplyScalar(R*1.012).lerp(B,.35),.85,1,.8,i,i,0,0,born)})});
+// bridges between linked claims: a frost bridge, width by the standing score firmed by use; light when its use grew
+{const E=M.edges.filter(e=>e.a<NL&&e.b<NL);
+  for(const e of E){const A=somaPos[e.a],B=somaPos[e.b],C=A.clone().add(B).multiplyScalar(.5*.78).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.04));
+    const sc=clamp(e.score??.5,0,1),ev=clamp(Math.log10(1+(e.traversals||0))/1.8,0,1),body=(.3+.7*sc)*(.55+.45*ev),K=5,pts=[];
+    for(let k=0;k<=K;k++){const t=k/K,q=1-t;pts.push(new V3(q*q*A.x+2*q*t*C.x+t*t*B.x,q*q*A.y+2*q*t*C.y+t*t*B.y,q*q*A.z+2*q*t*C.z+t*t*B.z))}
+    const born=Math.max(bornOf(e.a),bornOf(e.b));
+    for(let k=0;k<K;k++)frost(pts[k],pts[k+1],k/K,(k+1)/K,.4+1.2*body,e.a,e.b,e.grew?1:0,1,born,k===2&&body>.5?1:2)}}   // one frost knot mid-way on a strong bridge
+const arGeo=new THREE.BufferGeometry();
+[['position',AR.pos,3],['aNx',AR.nx,3],['aSide',AR.side,1],['aT',AR.t,1],['aW',AR.w,1],['aAB',AR.ab,2],['aG',AR.g,1],['aK',AR.k,1],['aBorn',AR.born,1]]
+  .forEach(([n,a,k])=>arGeo.setAttribute(n,new THREE.Float32BufferAttribute(a,k)));
+arGeo.setIndex(AR.pos.length/3>65535?new THREE.Uint32BufferAttribute(AR.idx,1):new THREE.Uint16BufferAttribute(AR.idx,1));
+// brightness never builds up with the amount of memory: more bridges, each one dimmer
+const uEdge={value:clamp(Math.sqrt(500/Math.max(1,M.edges.length)),.35,1)};
+const arborMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uRes:arborRes,uSomaTex:{value:somaTex},uSearch:forestU.uSearch,uVis:forestU.uVis,uFocusDim:forestU.uFocusDim,
+    uNear:forestU.uNear,uScrub:forestU.uScrub,uBrand:{value:BRAND}},
+  vertexShader:`uniform float uTime,uSearch,uFocusDim,uVis,uNear,uEdge,uScrub;uniform vec2 uRes;uniform sampler2D uSomaTex;
+    attribute vec3 aNx;attribute float aSide,aT,aW,aG,aK,aBorn;attribute vec2 aAB;varying float vA,vH,vS,vRun;
     void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
       vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
-      float hl=max(max(a0.b,b0.b),max(a1.b,b1.b)); float wake=max(a0.r,b0.r);
-      float p=pow(.5+.5*sin(aT*9.-uTime*(.8+aW*2.5)+aPh),10.)*aG;
-      vA=(.075+aW*.05+p*(.12+aW*.3)+wake*.3)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.45,uFocusDim*(1.-hl))*uVis*uEdge;vH=hl;
-      vec4 mv=modelViewMatrix*vec4(position,1.);gl_PointSize=min((1.25+p*.8)*uPix*(70./-mv.z),5.*uPix);gl_Position=projectionMatrix*mv;}`,
-  fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-    gl_FragColor=vec4(mix(mix(uBrand,vec3(.6,.8,.95),.45),vec3(1.),vH*.5),smoothstep(.5,0.,d)*vA);}`,
-  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const axons=new THREE.Points(axGeo,axMat);axons.frustumCulled=false;cortex.add(axons);KIND_OBJ.claim.push(axons);
-const lnGeo=new THREE.BufferGeometry();
-lnGeo.setAttribute('position',new THREE.Float32BufferAttribute(lnP,3));lnGeo.setAttribute('aT',new THREE.Float32BufferAttribute(lnT,1));
-lnGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(lnPh,1));lnGeo.setAttribute('aW',new THREE.Float32BufferAttribute(lnW,1));
-lnGeo.setAttribute('aAB',new THREE.Float32BufferAttribute(lnAB,2));lnGeo.setAttribute('aG',new THREE.Float32BufferAttribute(lnG,1));
-const lnMat=new THREE.ShaderMaterial({uniforms:axMat.uniforms,
-  vertexShader:`uniform float uTime,uSearch,uFocusDim,uVis,uNear,uEdge;uniform sampler2D uSomaTex;attribute float aT,aPh,aW,aG;attribute vec2 aAB;varying float vA;varying float vH;
-    void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
-      vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
-      float hl=max(max(a0.b,b0.b),max(a1.b,b1.b));float wake=max(a0.r,b0.r);
-      float p=pow(.5+.5*sin(aT*12.-uTime*(.8+aW*2.5)+aPh),10.)*aG;
-      vA=(.035+aW*.05+p*(.14+aW*.3)+wake*.3)*mix(.6,.75,uNear)*(1.+hl*2.)*mix(1.,.25,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis*uEdge;vH=hl;
-      gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
-  fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){gl_FragColor=vec4(mix(mix(uBrand,vec3(.7,.88,1.),.35),vec3(1.),vH*.5),vA);}`,
-  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const links=new THREE.LineSegments(lnGeo,lnMat);links.frustumCulled=false;cortex.add(links);KIND_OBJ.claim.push(links);
+      float hl=max(max(a0.b,b0.b),max(a1.b,b1.b)),wake=max(a0.r,b0.r);
+      vec4 mv=modelViewMatrix*vec4(position,1.);vec4 c0=projectionMatrix*mv,c1=projectionMatrix*modelViewMatrix*vec4(position+aNx,1.);
+      vec2 p0=c0.xy/max(c0.w,1e-4)*uRes*.5,p1=c1.xy/max(c1.w,1e-4)*uRes*.5,d=p1-p0;float sl=length(d);d=sl>1e-4?d/sl:vec2(1.,0.);
+      c0.xy+=vec2(-d.y,d.x)*aW*(1.+hl*.2)*mix(.8,1.1,uNear)*aSide/(uRes*.5)*c0.w;
+      float grown=aK>.5?1.:step(aT,a0.a+.001);                                     // a claim still learning has a shorter arbor
+      float run=pow(fract(aT*1.4-uTime*.45+aAB.x*.37),14.)*(wake+aG*.7);            // light running out along it
+      vRun=run;vH=hl;vS=aSide;
+      vA=(.065+.04*aW)*grown*step(aBorn,uScrub)*(1.+hl*.9)*(1.+run*2.5)*mix(1.,.2,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis*uEdge*mix(.75,1.,uNear)*smoothstep(1.5,5.,-mv.z);   // a branch right at your eye dissolves instead of crossing the view
+      gl_Position=c0;}`,
+  fragmentShader:`uniform vec3 uBrand;varying float vA,vH,vS,vRun;void main(){
+    gl_FragColor=vec4(mix(mix(uBrand,vec3(.72,.88,1.),.55),vec3(1.),clamp(vH*.5+vRun*.6,0.,1.)),vA*(1.-vS*vS));}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+const arbors=new THREE.Mesh(arGeo,arborMat);arbors.frustumCulled=false;cortex.add(arbors);KIND_OBJ.claim.push(arbors);
 
 // fragments: the 84k semantic pieces are a faint mist; the uncounted landmarks are dust
 const mistN=7000,mP=new Float32Array(mistN*3),mR=new Float32Array(mistN);
@@ -2627,7 +2603,7 @@ function goSearch(){const h=searchHits;$('search').classList.remove('on');$('q')
   else if(h.s.length)enterTunnel(h.s[0]);
   else if(h.a.length){const a=h.a[0];setLens('artifacts');setTimeout(()=>{setTissueLevel([FORMAT_OF[a.kind]||'other',a.folder||'unsorted'],null);
     tissue.focus=tissue.cells.findIndex(c=>c.a===a)},1800)}}
-addEventListener('resize',()=>{pinH.value=innerHeight*.5;renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;
+addEventListener('resize',()=>{pinH.value=innerHeight*.5;arborRes.value.set(innerWidth,innerHeight);renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;
   camera.updateProjectionMatrix();if(state.lens==='artifacts')layoutTissue(false)});
 
 // ═══════════════════════════════════════════════════════════════════════════
