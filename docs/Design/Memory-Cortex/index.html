@@ -1549,9 +1549,9 @@ function buildTunnel(s){
     // the coil is wide, so a plain rung is only a short stub off each strand toward the other (never a line across the corridor)
     const rc=new THREE.Color('#9fb6c8');
     for(let k=0;k<p.n;k+=step){const a=p.A[k],b=p.B[k],u=p.us[k];ribbon([a,a.clone().lerp(b,.16)],[u,u],9,rc,.7,[.24,0]);ribbon([b,b.clone().lerp(a,.16)],[u,u],9,rc,.7,[.24,0])}});
-  // a moment's rung to its turn: bright at both strands, faint in the middle - a bond, not a bar
+  // a moment's rung to its turn: a stub off each strand toward the other - a bond, never a bar across the corridor
   items.forEach(it=>{if(it.type!=='event'||!it.links[0])return;const a=at(P0,0,it.u),b=at(P0,1,it.u),m=[];for(let i=0;i<=8;i++)m.push(a.clone().lerp(b,i/8));
-    ribbon(m,m.map(()=>it.u),1,it.col,1.1,m.map((_,i)=>.08+.45*Math.pow(Math.abs(i/8-.5)*2,2)))});
+    ribbon(m,m.map(()=>it.u),1,it.col,1.1,m.map((_,i)=>.5*Math.max(0,1-Math.min(i,8-i)/2.6)))});   // two stubs reaching for each other, open between
   // claims: the SAME glyph as in the cortex, just off the memory strand where the moment touched it, on a short stem
   const stars=[];
   items.forEach(it=>{if(it.type!=='event'||it.e.landmark==null||it.e.landmark>=NL||stars.length>=60)return;
@@ -1607,6 +1607,69 @@ function buildTunnel(s){
     g.add(Object.assign(new THREE.Points(sg,new THREE.ShaderMaterial({uniforms:{...U,uHL:hlU},vertexShader:SHARD_VS,fragmentShader:SHARD_FS,transparent:true,depthWrite:false,
       blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:3}))}
 
+  // ── the wall in depth (owner, 2026-10-19: "more detail on the walls so it does not look as empty"). Three layers, each
+  // carrying something real: behind the fragments the wall's own fine LATTICE (the cortex's triangle geometry, slowly
+  // warped, thinner where the session was quiet); DATA STREAMS - short dashes of light that run down the wall toward the
+  // doorway, densest where the session was busy and tinted by the kind of moment that happened there; and INSCRIPTIONS -
+  // the name of a moment written faintly where it happened, typing itself in as you approach.
+  const famBin=new Array(120).fill(null);{const cnt=Array.from({length:120},()=>new Map());
+    ev.forEach(e=>{const b=Math.min(119,Math.floor(uOf(e.ts)*120)),f=FAMI[e.family]??0;cnt[b].set(f,(cnt[b].get(f)||0)+1)});
+    cnt.forEach((m,b)=>{let best=null,n=0;m.forEach((v,k)=>{if(v>n){n=v;best=k}});famBin[b]=best})}
+  const pale=new THREE.Color('#9fc4d8');
+  {const SP2=Math.max(.9,Math.sqrt((CL*2*Math.PI*4.4)/9000)),rings=Math.max(20,Math.round(CL/(SP2*.87))),per=Math.max(16,Math.round(2*Math.PI*3.6*1.18/SP2));
+    const rowsP=[];for(let r=0;r<=rings;r++){const u=r/rings,row=[],{N,B}=frameAt(u),Cc=curve.getPointAt(u),rr=radius(u)*1.18;
+      for(let q=0;q<per;q++){const th=(q+(r%2)*.5)/per*6.2832+.12*Math.sin(u*CL*.05+q*.7),k=1+.035*Math.sin(u*CL*.13+th*3);
+        row.push(Cc.clone().addScaledVector(N,Math.cos(th)*rr*k).addScaledVector(B,Math.sin(th)*rr*k))}rowsP.push({u,row})}
+    const LP=[],LU=[],LR=[];const seg=(a,b,u)=>{LP.push(a.x,a.y,a.z,b.x,b.y,b.z);LU.push(u,u);const r_=rng();LR.push(r_,r_)};
+    for(let r=0;r<rings;r++){const A_=rowsP[r],B_=rowsP[r+1],act=actAt(A_.u);
+      for(let q=0;q<per;q++){if(rng()>.3+.7*act)continue;const q2=r%2?(q+1)%per:q;
+        seg(A_.row[q],A_.row[(q+1)%per],A_.u);seg(A_.row[q],B_.row[q2],A_.u);seg(A_.row[q],B_.row[(q2-1+per)%per],A_.u)}}
+    const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(LP,3));lg.setAttribute('aU',new THREE.Float32BufferAttribute(LU,1));lg.setAttribute('aR',new THREE.Float32BufferAttribute(LR,1));
+    g.add(Object.assign(new THREE.LineSegments(lg,new THREE.ShaderMaterial({uniforms:{...U,uLen:{value:L},uC:{value:pale}},
+      vertexShader:`uniform float uTime,uLen;attribute float aU,aR;varying float vA;
+        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=-mv.z;float w=pow(.5+.5*sin(aU*uLen*.22-uTime*.9),24.);
+          vA=smoothstep(70.,8.,z)*smoothstep(3.,9.,z)*(.045+.03*sin(uTime*(.6+aR*.4)+aR*30.)+w*.1);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`uniform vec3 uC;varying float vA;void main(){gl_FragColor=vec4(uC,vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
+  {const NSt=Math.round(clamp(CL*10,1200,4500)),SA=[],SB=[],SPh=[],SSp=[],SL=[],SC=[],Z=[];
+    for(let i=0;i<NSt;i++){let u=rng();if(rng()>.25+.75*actAt(u))u=rng();
+      const th=rng()*6.2832,len=rand(3,9)/CL,a=onWall(u,th,1.1),b=onWall(Math.min(1,u+len),th+rand(-.04,.04),1.1);
+      const fb=famBin[Math.min(119,Math.floor(u*120))],c=fb!=null&&rng()<.55?new THREE.Color(FAM[fb].color).lerp(pale,.5):pale.clone();
+      const ph=rng(),sp=rand(.1,.3)*(.6+meanU);
+      for(const lag of [0,1]){Z.push(0,0,0);SA.push(a.x,a.y,a.z);SB.push(b.x,b.y,b.z);SPh.push(ph);SSp.push(sp);SL.push(lag);SC.push(c.r,c.g,c.b)}}
+    const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.Float32BufferAttribute(Z,3));sg.setAttribute('aA',new THREE.Float32BufferAttribute(SA,3));
+    sg.setAttribute('aB',new THREE.Float32BufferAttribute(SB,3));sg.setAttribute('aPh',new THREE.Float32BufferAttribute(SPh,1));sg.setAttribute('aSp',new THREE.Float32BufferAttribute(SSp,1));
+    sg.setAttribute('aLag',new THREE.Float32BufferAttribute(SL,1));sg.setAttribute('aC',new THREE.Float32BufferAttribute(SC,3));
+    g.add(Object.assign(new THREE.LineSegments(sg,new THREE.ShaderMaterial({uniforms:{...U},
+      vertexShader:`uniform float uTime;attribute vec3 aA,aB,aC;attribute float aPh,aSp,aLag;varying vec3 vC;varying float vA;
+        void main(){float f=fract(aPh+uTime*aSp),t=clamp(f-aLag*.14,0.,1.);vec4 mv=modelViewMatrix*vec4(mix(aA,aB,t),1.);float z=-mv.z;
+          vC=aC;vA=sin(3.1416*f)*(1.-aLag)*smoothstep(60.,6.,z)*smoothstep(1.,4.,z)*.42;gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
+  {const wordOf=e=>String(e.label||'').toLowerCase().replace(/_/g,' ');const list=ev.filter(e=>e.label);
+    const nPick=Math.min(140,list.length),chosen=[];for(let i=0;i<nPick;i++)chosen.push(list[Math.floor(i*list.length/nPick)]);
+    const words=[],wi=new Map();chosen.forEach(e=>{const w=wordOf(e);if(!wi.has(w)&&words.length<48){wi.set(w,words.length);words.push(w)}});
+    if(words.length){const RH=40,cvs=document.createElement('canvas');cvs.width=1024;cvs.height=RH*48;const cx=cvs.getContext('2d');
+      cx.font="500 26px 'JetBrains Mono',ui-monospace,monospace";cx.fillStyle='#fff';cx.textBaseline='middle';
+      const wid=words.map((w,i)=>{cx.fillText(w,6,i*RH+RH/2);return Math.min(1,(cx.measureText(w).width+12)/1024)});
+      const tex=new THREE.CanvasTexture(cvs);tex.anisotropy=4;
+      const QP=[],QUV=[],QC=[],QX=[],QI=[];
+      chosen.forEach(e=>{const k=wi.get(wordOf(e));if(k==null)return;const u=uOf(e.ts),P=onWall(u,rng()*6.2832,.9+.08*rng()),T=frameAt(u).T;
+        const up=new V3(0,1,0).addScaledVector(T,-T.y);if(up.lengthSq()<1e-4)up.set(1,0,0);up.normalize();const rt=new V3().crossVectors(T,up).normalize();
+        const h=.15,wd=h*wid[k]*1024/RH,c=new THREE.Color(FAM[FAMI[e.family]??0].color).lerp(pale,.55).multiplyScalar(.6+.5*(EVID[e.evidence]??.2)),base=QP.length/3;
+        for(const [x,y] of [[0,-1],[1,-1],[1,1],[0,1]]){const p=P.clone().addScaledVector(rt,(x-.5)*wd).addScaledVector(up,y*h*.5);QP.push(p.x,p.y,p.z);
+          QUV.push(x*wid[k],1-(k+(y<0?1:0))/48);QC.push(c.r,c.g,c.b);QX.push(x)}
+        QI.push(base,base+1,base+2,base,base+2,base+3)});
+      const qg=new THREE.BufferGeometry();qg.setAttribute('position',new THREE.Float32BufferAttribute(QP,3));qg.setAttribute('uv',new THREE.Float32BufferAttribute(QUV,2));
+      qg.setAttribute('aC',new THREE.Float32BufferAttribute(QC,3));qg.setAttribute('aX',new THREE.Float32BufferAttribute(QX,1));qg.setIndex(QI);
+      g.add(Object.assign(new THREE.Mesh(qg,new THREE.ShaderMaterial({uniforms:{...U,uMap:{value:tex}},
+        vertexShader:`attribute vec3 aC;attribute float aX;varying vec2 vUv;varying vec3 vC;varying float vA,vX,vRev;
+          void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=-mv.z;vUv=uv;vC=aC;vX=aX;
+            vA=smoothstep(34.,12.,z)*smoothstep(1.,3.,z);vRev=smoothstep(30.,14.,z);gl_Position=projectionMatrix*mv;}`,
+        fragmentShader:`uniform sampler2D uMap;varying vec2 vUv;varying vec3 vC;varying float vA,vX,vRev;
+          void main(){if(vX>vRev+.02)discard;float a=texture2D(uMap,vUv).a,cur=(1.-smoothstep(0.,.03,abs(vX-vRev)))*step(vRev,.98);  // it types itself in
+            gl_FragColor=vec4(vC*(1.+cur*2.),(a*.5+cur*.25)*vA);}`,
+        transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide})),{frustumCulled:false}))}}
   // ── particles: data that travels the strands (hopping, the digital step), motes drifting toward the doorway (they
   // streak while you move), and a few very faint specks by the eye. Fixed budgets, low light.
   const partU={...U,uVel:{value:0}};
@@ -1852,7 +1915,7 @@ function tissueUp(){if(tissue.focus>=0){tissue.focus=-1;clearAnno('focus');retur
 // ═══════════════════════════════════════════════════════════════════════════
 const clock=new THREE.Clock();
 const cam={mode:'orbit',target:new V3(),targetT:new V3(),az:.7,el:.16,dist:58,azT:.7,elT:.16,distT:58,fov:38,fovT:38,
-  yaw:0,pitch:0,pos:new V3(),vel:new V3(),tp:0,tpT:0,tween:null,look:new V3(),idle:0};
+  yaw:0,pitch:0,yawT:0,pitchT:0,lean:new THREE.Vector2(),roll:0,pos:new V3(),vel:new V3(),tp:0,tpT:0,tween:null,look:new V3(),idle:0};
 const mouse={x:innerWidth/2,y:innerHeight/2,nx:0,ny:0,down:false,dragged:0,lx:0,ly:0};
 function tweenTo(pos,look,fov,dur,done){cam.tween={p0:camera.position.clone(),l0:cam.look.clone(),f0:camera.fov,p1:pos.clone(),l1:look.clone(),f1:fov,
   t:0,dur:REDUCED?.01:dur,done}}
@@ -1867,10 +1930,13 @@ function arcTo(from,toDir,r1,n){const d0=from.clone().normalize(),r0=from.length
   for(let k=1;k<=n;k++){const qk=new THREE.Quaternion().slerp(q,k/n);out.push(d0.clone().applyQuaternion(qk).multiplyScalar(lerp(r0,r1,k/n)))}return out}
 function orbitFrom(pos,target){const d=pos.clone().sub(target);cam.dist=cam.distT=d.length();cam.az=cam.azT=Math.atan2(d.x,d.z);
   cam.el=cam.elT=Math.asin(clamp(d.y/cam.dist,-1,1));cam.target.copy(target);cam.targetT.copy(target);cam.par=0}
-function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).normalize();cam.yaw=Math.atan2(d.x,d.z);cam.pitch=Math.asin(clamp(d.y,-1,1))}
+function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).normalize();cam.yaw=cam.yawT=Math.atan2(d.x,d.z);cam.pitch=cam.pitchT=Math.asin(clamp(d.y,-1,1));
+  cam.vel.set(0,0,0);cam.lean.set(0,0);cam.roll=0;cam.pyaw=cam.yaw;cam.idle=0}
+const dirOf=(yaw,pitch)=>new V3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch));
 const keys={};
 window.__cortex={cortex,camera,project:v=>project(v),cam,mouse,keys,get state(){return state},M,IMM,get tunnel(){return tunnel},setLens:l=>setLens(l),enter:i=>enterTunnel(sess[i]),
   dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length}; // inspection handle for the mockup
+const angWrap=a=>{a=(a+Math.PI)%(Math.PI*2);if(a<0)a+=Math.PI*2;return a-Math.PI};
 function updateCamera(dt){
   if(cam.tween){const tw=cam.tween;tw.t+=dt/tw.dur;const e=easeIO(Math.min(1,tw.t));
     if(tw.path){camera.position.copy(tw.path.getPoint(e));cam.look.copy(tw.lpath.getPoint(e))}
@@ -1886,13 +1952,31 @@ function updateCamera(dt){
     camera.position.set(cam.target.x+Math.sin(az)*Math.cos(el)*cam.dist,cam.target.y+Math.sin(el)*cam.dist,cam.target.z+Math.cos(az)*Math.cos(el)*cam.dist);
     cam.look.copy(cam.target);camera.lookAt(cam.look)}
   else if(cam.mode==='fly'){
-    const fwd=new V3(Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch));
-    const right=new V3().crossVectors(fwd,new V3(0,1,0)).normalize();
-    const acc=R*.9*dt;if(keys.w||keys.arrowup)cam.vel.addScaledVector(fwd,acc);if(keys.s||keys.arrowdown)cam.vel.addScaledVector(fwd,-acc);
-    if(keys.a||keys.arrowleft)cam.vel.addScaledVector(right,-acc);if(keys.d||keys.arrowright)cam.vel.addScaledVector(right,acc);
-    cam.pos.add(cam.vel);cam.vel.multiplyScalar(Math.pow(.02,dt));
-    const l=cam.pos.length();if(l>R*.94)cam.pos.multiplyScalar(R*.94/l);
-    camera.position.copy(cam.pos);cam.look.copy(cam.pos).add(fwd);camera.lookAt(cam.look)}
+    // Inside the mind you SWIM, you are not on a tripod: the gaze eases after the drag and leans toward the pointer,
+    // movement keeps its momentum, the view banks into a turn and breathes a little; left alone, a slow current carries
+    // you round the core (or round the thought you opened) until you take over again.
+    cam.idle+=dt;const t=clock.elapsedTime,ek=1-Math.pow(.003,dt);
+    cam.yaw=lerp(cam.yaw,cam.yawT,ek);cam.pitch=lerp(cam.pitch,cam.pitchT,ek);
+    const lk=1-Math.pow(.08,dt),free=mouse.down?0:1;cam.lean.x=lerp(cam.lean.x,-mouse.nx*.22*free,lk);cam.lean.y=lerp(cam.lean.y,mouse.ny*.15*free,lk);
+    const fwd=dirOf(cam.yaw+cam.lean.x,clamp(cam.pitch+cam.lean.y,-1.45,1.45));
+    const right=new V3().crossVectors(fwd,new V3(0,1,0)).normalize(),up=new V3().crossVectors(right,fwd);
+    const A=R*2.4*dt;if(keys.w||keys.arrowup)cam.vel.addScaledVector(fwd,A);if(keys.s||keys.arrowdown)cam.vel.addScaledVector(fwd,-A);
+    if(keys.a||keys.arrowleft)cam.vel.addScaledVector(right,-A);if(keys.d||keys.arrowright)cam.vel.addScaledVector(right,A);
+    if(keys.e||keys[' '])cam.vel.y+=A;if(keys.q||keys.shift)cam.vel.y-=A;
+    if(!REDUCED&&cam.idle>3){const w=smooth01((cam.idle-3)/4),piv=state.focusSoma>=0?somaWorld(state.focusSoma):new V3();
+      const rel=cam.pos.clone().sub(piv),tan=new V3(0,1,0).cross(rel);
+      if(tan.lengthSq()>1e-6){tan.normalize();cam.pos.addScaledVector(tan,R*(state.focusSoma>=0?.05:.04)*w*dt);cam.pos.y+=Math.sin(t*.35)*R*.006*w*dt}
+      if(state.focusSoma>=0){const d=piv.clone().sub(cam.pos).normalize();cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*Math.min(1,dt*1.5*w);
+        cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),Math.min(1,dt*1.5*w))}
+      else cam.yawT+=.05*w*dt}
+    cam.pos.addScaledVector(cam.vel,dt);cam.vel.multiplyScalar(Math.pow(.12,dt));
+    // the wall of the mind is soft: you slow as you near it instead of hitting a stop
+    {const l=cam.pos.length(),n=cam.pos.clone().divideScalar(Math.max(l,1e-6)),out=cam.vel.dot(n);
+      if(l>R*.82&&out>0)cam.vel.addScaledVector(n,-out*Math.min(1,(l-R*.82)/(R*.1)));if(l>R*.94)cam.pos.multiplyScalar(R*.94/l)}
+    const sw=.006*(1-.6*(state.focusSoma>=0)),sx=(Math.sin(t*.37)+.5*Math.sin(t*.91))*sw,sy=(Math.sin(t*.29+1)+.5*Math.sin(t*.77))*sw;
+    camera.position.copy(cam.pos);cam.look.copy(cam.pos).add(fwd).addScaledVector(right,sx).addScaledVector(up,sy);camera.lookAt(cam.look);
+    const yv=angWrap(cam.yaw-(cam.pyaw??cam.yaw))/Math.max(dt,1e-3);cam.pyaw=cam.yaw;
+    cam.roll=lerp(cam.roll,clamp(yv*.07-cam.vel.dot(right)*.012,-.14,.14),1-Math.pow(.04,dt));camera.rotateZ(cam.roll)}
   else if(cam.mode==='tunnel'&&tunnel){
     if(!REDUCED&&cam.idle>2.5&&!tunnel.stops)cam.tpT+=dt*.0035;cam.idle+=dt; // no drift while following a thread
     if(keys.w||keys.arrowup)cam.tpT+=dt*.05;if(keys.s||keys.arrowdown)cam.tpT-=dt*.05;
@@ -2057,7 +2141,7 @@ function dive(i){
   tweenPath(pts,looks,64,REDUCED?.01:2.8,{kick:9,
     onT:e=>{if(e>.42)state.openT=1;if(e>.6)state.focusDimT=1},
     done:()=>{cam.mode='fly';flyFrom(camera.position,lookIn);cam.fovT=64;state.inside=true;state.diving=false;
-      hint('drag · look &nbsp; w a s d / scroll · move<br>click a thought · go to it &nbsp; esc · back out');
+      hint('drag · look &nbsp; scroll / w a s d · swim &nbsp; q e · down up<br>click a thought · go to it &nbsp; click space · glide there &nbsp; esc · back out');
       const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments</small>`;T.style.opacity=1}});
 }
 function exitInterior(done){
@@ -2308,7 +2392,7 @@ canvas.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;mo
   if(mouse.down&&e.buttons===0)mouse.down=false; // a lost pointerup must not turn hovering into dragging
   if(mouse.down){const dx=e.clientX-mouse.lx,dy=e.clientY-mouse.ly;mouse.dragged+=Math.abs(dx)+Math.abs(dy);mouse.lx=e.clientX;mouse.ly=e.clientY;cam.idle=0;
     if(cam.mode==='orbit'){cam.azT-=dx*.005;cam.elT=clamp(cam.elT+dy*.004,-1.2,1.2)}
-    else if(cam.mode==='fly'){cam.yaw-=dx*.003;cam.pitch=clamp(cam.pitch+dy*.003,-1.4,1.4)}}
+    else if(cam.mode==='fly'){cam.yawT-=dx*.004;cam.pitchT=clamp(cam.pitchT+dy*.004,-1.4,1.4)}}
   else hover(e.clientX,e.clientY)});
 tcv.addEventListener('pointermove',e=>{mouse.x=e.clientX;mouse.y=e.clientY;hover(e.clientX,e.clientY)});
 canvas.addEventListener('pointerdown',e=>{mouse.down=true;mouse.dragged=0;mouse.lx=e.clientX;mouse.ly=e.clientY});
@@ -2347,13 +2431,16 @@ function click(x,y){
   hover(x,y);
   if(cam.mode==='tunnel'&&tunnel){if(state.hoverStar>=0)selectThread(tunnel.stars[state.hoverStar].li);
     else if(state.hoverDoor==='door')throughDoor();else if(state.hoverDoor==='back'){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
-  if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1)}return}
+  if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1);
+      // click into open space: glide that way and turn toward it
+      const d=new V3(x/innerWidth*2-1,-(y/innerHeight*2-1),.5).unproject(camera).sub(camera.position).normalize();
+      cam.vel.addScaledVector(d,R*.9);cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*.6;cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),.6);cam.idle=0}return}
   if(state.lens==='cortex'&&state.hoverReg>=0)dive(state.hoverReg);
   if(state.lens==='timeline'&&state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);
 }
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
   if(cam.mode==='orbit'){if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
-  else if(cam.mode==='fly'){const fwd=new V3(Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),Math.cos(cam.yaw)*Math.cos(cam.pitch));cam.vel.addScaledVector(fwd,-e.deltaY*.0009)}
+  else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03)}
   else if(cam.mode==='tunnel'){if(tunnel?.stops){const n=performance.now();if(n-(state.lastStep||0)>380){state.lastStep=n;threadStep(Math.sign(e.deltaY))}}
     else{cam.tpT+=e.deltaY*.00012;if(cam.tp>.975&&e.deltaY>0)throughDoor()}}},{passive:false});
 addEventListener('keydown',e=>{
@@ -2414,7 +2501,7 @@ renderer.setAnimationLoop(()=>{
   const mk=1-Math.pow(.25,dt);for(const k of ['h','i','c']){const d=state.morphT[k]-state.morph[k];state.morph[k]+=clamp(d,-dt*.62,dt*.62)}
   skinMat.uniforms.uMH.value=state.morph.h;skinMat.uniforms.uMI.value=state.morph.i;skinMat.uniforms.uMC.value=state.morph.c;
   for(const k in state.vis)state.vis[k]=lerp(state.vis[k],state.visT[k],1-Math.pow(.08,dt));
-  forestU.uVis.value=state.vis.forest;forestU.uNear.value=state.insideK||0;mistMat.uniforms.uMist.value=1-(state.insideK||0)*.75;wireMat.uniforms.uVis.value=state.vis.wire*(1-state.morph.h)*(1-state.morph.i);
+  forestU.uVis.value=state.vis.forest;forestU.uNear.value=state.insideK||0;mistMat.uniforms.uMist.value=1-(state.insideK||0)*.75;wireMat.uniforms.uVis.value=state.vis.wire*(1-state.morph.h)*(1-state.morph.i)*(1-(state.insideK||0)*.7);   // from inside, the shell's long lines would cross the whole view
   xurMat.uniforms.uVis.value=state.vis.xur;beadMat.uniforms.uVis.value=state.vis.beads;rings.forEach(r=>r.material.uniforms.uVis.value=state.vis.rings*(1-(state.insideK||0)));
   forestU.uFocusDim.value=lerp(forestU.uFocusDim.value,state.focusDimT,1-Math.pow(.1,dt));
   // aperture

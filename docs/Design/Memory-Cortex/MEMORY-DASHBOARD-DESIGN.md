@@ -987,3 +987,13 @@ threat is a desync glitch, a reorganization is a pulse that resettles the lattic
 - **Cortex.** Back on the hex lattice (wire + cells). Each cell is a fragment that stands apart from its neighbours and
   breathes; how tightly a territory holds together is its sync (share of its claims that are proven). The folded
   membrane, the roots and the vines are removed.
+- **Walls in depth (owner: "more detail on the walls").** Behind the fragments, a fine triangle lattice (the cortex's
+  geometry, slowly warped, thinner where the session was quiet); data streams - short dashes running down the wall
+  toward the doorway, densest where the session was busy, tinted by the family of moments there; and inscriptions -
+  a moment's name written faintly where it happened, typing itself in as you approach. Moment rungs are now two
+  stubs reaching for each other, open in the middle.
+- **Inside the cortex (owner: "the camera feels still").** You swim, not stand: the gaze eases after a drag and leans
+  toward the pointer, movement keeps momentum (scroll / w a s d, q e for down and up), the view banks into turns and
+  breathes slightly, clicking open space glides you there, the inner wall slows you softly, and after a few idle
+  seconds a slow current carries you round the core (or round the thought you opened). The shell's long wire lines
+  dim from inside so they do not cross the view.
