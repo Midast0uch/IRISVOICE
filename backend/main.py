@@ -366,6 +366,21 @@ async def lifespan(app: FastAPI):
                     if get_tts_manager().readiness().get("status") not in ("loading", "not_started"):
                         break
                     _time.sleep(2.0)
+                # The same rule the retired Whisper warm-up learned the hard
+                # way (2026-10-01: a 351 s turn - the warm-up's HDD import held
+                # the turn's first pytest for 220 s): no disk work while a turn
+                # runs. Bounded: after the deadline it spawns anyway - a boot
+                # warm must not be starved forever by a long session.
+                _idle_deadline = _time.monotonic() + 300.0
+                while _time.monotonic() < _idle_deadline:
+                    try:
+                        from backend.core.idle_tracker import get_idle_tracker
+
+                        if get_idle_tracker().is_idle():
+                            break
+                    except Exception:  # noqa: BLE001 - a probe never blocks the warm
+                        break
+                    _time.sleep(2.0)
             except Exception:  # noqa: BLE001 - a probe never blocks the warm
                 pass
             try:

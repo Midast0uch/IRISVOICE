@@ -23,7 +23,10 @@ class TestYamlParsedIntoEngineConfig:
         cfg = load_engine_config()
         assert isinstance(cfg, EngineConfig)
         # The block's values actually landed (a non-default round-trip).
-        assert cfg.candidate_cap == 6, (
+        # STALE-BY-SPEC update (2026-10-18): the cap is 32 (CANDIDATE_CAP_
+        # DEFAULT; up to 30 real tools plus DELEGATE and NONE - oracle.md
+        # 3.8). The 6 here was the pre-32 era's calibrated width.
+        assert cfg.candidate_cap == 32, (
             f"candidate_cap did not round-trip: {cfg.candidate_cap}"
         )
         assert cfg.acquire_timeout_s == 2.0
@@ -67,27 +70,45 @@ class TestYamlParsedIntoEngineConfig:
 
     def test_shipped_cap_equals_calibrated_width(self):
         """AC25.7 (Decision C): the SHIPPED candidate_cap equals the menu
-        width the current threshold curve was derived at (6)."""
+        width the current threshold curve was derived at. STALE-BY-SPEC
+        update (2026-10-18): that width is 32 (CANDIDATE_CAP_DEFAULT,
+        oracle.md 3.8); the 6 here was the pre-32 era."""
         cfg = load_engine_config()
-        assert cfg.candidate_cap == 6, (
+        assert cfg.candidate_cap == 32, (
             "the shipped cap must equal the calibrated width (Decision C)"
         )
 
     def test_threshold_keyed_by_active_backend_fail_closed(self):
-        """AC25.8: thresholds are keyed by BACKEND IDENTITY and enforcement
-        is REFUSED when the active backend has no entry (fail-closed)."""
+        """AC25.8: thresholds are keyed by the FULL BACKEND IDENTITY
+        (model|readout|criteria_hash, since Wave 3) and enforcement is
+        REFUSED when the active identity has no entry (fail-closed).
+        STALE-BY-SPEC update (2026-10-18): the yaml's BARE model-id entries
+        are historical (retired backends) and never resolve - the live
+        thresholds come from the fitted calibration file (oracle.md 3.6)."""
+        import backend.agent.decision_engine as de
+
         cfg = load_engine_config()
-        # The deployed backend has an entry.
+        # The deployed block has entries.
         assert cfg.backend_thresholds, "no backend_thresholds entries"
-        # An unknown active backend → None → fail-closed (shadow).
+        # An unknown active backend -> None -> fail-closed (shadow).
         unknown = EngineConfig(
             backend_id="no-such-backend",
             backend_thresholds=cfg.backend_thresholds,
         )
         assert unknown.threshold_for("tool_choice") is None
-        # The known backend resolves.
-        known = EngineConfig(
+        # The yaml's BARE model-id keys are historical and do NOT resolve
+        # (a bare model id is no longer a key - fail-closed by design).
+        bare = EngineConfig(
             backend_id="gliner25-decide-onnx-int8",
             backend_thresholds=cfg.backend_thresholds,
         )
+        assert bare.threshold_for("tool_choice") is None
+        # An entry keyed by the COMPOSED identity resolves.
+        gliner = de.decision_identity(
+            "gliner25-decide-onnx-int8", de.CURRENT_READOUT_MODE, "tool_choice")
+        known = EngineConfig(
+            backend_id="gliner25-decide-onnx-int8",
+            backend_thresholds={gliner: 0.40},
+        )
         assert known.threshold_for("tool_choice") == 0.40
+

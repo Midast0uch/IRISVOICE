@@ -24,13 +24,20 @@ class TestDefaultThreshold040:
         )
 
     def test_backend_keyed_resolution(self):
-        """AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY."""
+        """AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY - the
+        FULL decision identity (model|readout|criteria_hash) since Wave 3
+        (2026-10-09); a bare model id is no longer a key (fail-closed, pinned
+        by test_decision_identity_contract). STALE-BY-SPEC update 2026-10-18:
+        the keys are composed identities, not bare model ids."""
+        import backend.agent.decision_engine as de
+
+        gliner = de.decision_identity(
+            "gliner25-decide-onnx-int8", de.CURRENT_READOUT_MODE, "tool_choice")
+        lfm = de.decision_identity(
+            "lfm2-350m-extract", de.CURRENT_READOUT_MODE, "tool_choice")
         cfg = EngineConfig(
             backend_id="gliner25-decide-onnx-int8",
-            backend_thresholds={
-                "lfm2-350m-extract": 0.85,
-                "gliner25-decide-onnx-int8": 0.40,
-            },
+            backend_thresholds={lfm: 0.85, gliner: 0.40},
         )
         assert cfg.threshold_for("tool_choice") == 0.40
         # The retiring backend's entry is historical only.
@@ -40,9 +47,13 @@ class TestDefaultThreshold040:
     def test_per_consumer_override_sits_on_top(self):
         """REQ-13: explicit per-consumer overrides sit ON TOP of the backend
         threshold."""
+        import backend.agent.decision_engine as de
+
+        gliner = de.decision_identity(
+            "gliner25-decide-onnx-int8", de.CURRENT_READOUT_MODE, "tool_choice")
         cfg = EngineConfig(
             backend_id="gliner25-decide-onnx-int8",
-            backend_thresholds={"gliner25-decide-onnx-int8": 0.40},
+            backend_thresholds={gliner: 0.40},
             thresholds={"presentation": 0.90},
         )
         assert cfg.threshold_for("presentation") == 0.90

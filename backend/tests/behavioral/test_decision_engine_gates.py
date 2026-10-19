@@ -152,10 +152,15 @@ class TestCtDe7Registry:
         # REQ-29's four surface consumers (T46–T49). The enumeration is the
         # contract, so it grows WITH the spec; `tier0_classify` stays OUT (a
         # recorded non-fit, AC29.5) and the other assertions are unchanged.
+        # STALE-BY-SPEC (2026-10-18): `mode` was REMOVED by the owner
+        # (2026-10-10: a free keyword rule could never pay; AUROC 0.591 at 77
+        # rows) and `tool_approval` JOINED (its pre-call guard became its live
+        # decision; earned on the v6 cohort). Both changes are pinned by
+        # test_consumer_declarations_contract.
         assert CONSUMERS == (
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
-            "mode", "web_intent",
+            "web_intent",
             "escalate_incomplete", "needs_action",
             # Session 364 (owner request): the DEPTH consumer.
             "depth_met",
@@ -164,6 +169,8 @@ class TestCtDe7Registry:
             # `depth_route` (five live call sites, never counted) and
             # `call_closing` (REQ-10, permanently measurement-only).
             "depth_route", "call_closing",
+            # 2026-10-18 (owner): the pre-call guard consumer.
+            "tool_approval",
         )
         # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
         # (no production caller since 2026-10-02) and `has_gaps` (no live site)

@@ -81,13 +81,18 @@ def test_every_turn_entry_is_busy():
 
 def test_boot_prewarm_waits_for_idle():
     # RETARGETED 2026-10-05 (owner decision: Whisper is the fallback only and
-    # gets no warm-up). The boot job that replaced it - the Parakeet file
-    # pre-read - must keep the same rule: no disk work while a turn runs.
+    # gets no warm-up). RETARGETED 2026-10-07: the Parakeet pre-read was
+    # retired in turn - Phonon-2 is the STT engine (specs/phonon2-d1-model-
+    # swap). RETARGETED 2026-10-18: the boot job is `_phonon2_boot_warm`, and
+    # it must keep the SAME rule: no disk work while a turn runs (bounded -
+    # after its deadline it spawns anyway, so a boot warm cannot be starved
+    # forever by a long session).
     src = (_BACKEND / "main.py").read_text(encoding="utf-8", errors="replace")
     assert "_delayed_whisper_warm_up" not in src
+    assert "_delayed_parakeet_prewarm" not in src, "the Parakeet pre-read is retired"
     fn = next(
         n for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == "_delayed_parakeet_prewarm"
+        if isinstance(n, ast.FunctionDef) and n.name == "_phonon2_boot_warm"
     )
     body = ast.unparse(fn)
     assert "is_idle(" in body, "the warm-up must wait for no turn in flight"
