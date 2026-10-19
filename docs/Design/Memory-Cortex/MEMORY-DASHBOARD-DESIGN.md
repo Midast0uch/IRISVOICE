@@ -647,6 +647,23 @@ the entrance. **The doorway is a tall arch with a soft edge — no rim line, not
 (owner: kept).** The vines climb to its outline; inside it the swirl turns slowly. A checkpoint pin of
 the thread (§17.1) sits at the crown of the arch.
 
+**Plant and brain, one organism (owner, 2026-10-19).** The concept is a combination of an organic plant and a
+brain; the threads are a digital reference running through it. So there are no leaves: messages grow **synaptic
+bulbs** on short stalks (IRIS's hold vesicle glints), the stems carry **dendritic spines** at their nodes and a
+**sheath parted at nodes** (plant node and node of Ranvier at once), and the sap **hops node to node** (saltatory —
+the digital step). In the timeline a neuron is not a floating glyph: **its family's vine swells into a soma** the stem
+runs through, with short dendrites and a soft nucleus of light (hover and selection read the nucleus). No straight
+lines cut into the tunnel (the old pin tethers, moment-to-turn links, neuron stems and the umbilical line are gone; the
+links still draw on hover). The walls are lined with **tissue**: a layer of cells, each a small breathing ring of
+membrane particles round a faint nucleus.
+
+**The cortex shell is a folded membrane, not a lattice.** Gyri and sulci (ridged, warped noise) fold the surface the
+way a brain's cortex folds; the territories colour the folds; the dive aperture, event ripples and the immune flicker
+act on the folds. From the seed at the core, **roots** branch out to every territory and **surface into its folds**
+— the same node-banded stems as the timeline's vines — so the structure is grown by what is inside rather than drawn
+around it. The particle skin stays (it morphs into the caduceus, the iris and the spores) but thins on the sphere so
+the folds carry the surface. `?shell=hex` shows the previous geodesic lattice for comparison.
+
 **The neuron glyph** (cortex and tunnel alike): a small nucleus with radial spokes, one per
 share of evidence, coloured by kind (white you · green tests/finished · cyan held up again ·
 grey IRIS's word); spoke length = use; short faded spokes = still learning; red broken spokes
