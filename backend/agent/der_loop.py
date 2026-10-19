@@ -1164,7 +1164,20 @@ class Reviewer:
         Never raises. Falls back to (PASS, None) on any error.
         """
         try:
-            if not is_mature or not hasattr(context_package, "gradient_warnings"):
+            # The Brain review judges a step AGAINST the memory's warnings and
+            # contracts; with neither it has nothing to judge against and is pure
+            # cost (owner 2026-10-19: "why do we need it"). Live: once the context
+            # package reached the loop (is_mature=True) this branch ran with BOTH
+            # fields empty - no producer exists - 22 calls, 149 s in one coding
+            # run (+173 s reply vs the package off), no pass gained.
+            if (
+                not is_mature
+                or not hasattr(context_package, "gradient_warnings")
+                or not (
+                    (context_package.gradient_warnings or "")
+                    or (getattr(context_package, "active_contracts", "") or "")
+                )
+            ):
                 verdict, out = self._heuristic_review(item, completed_steps)
                 self._shadow_review_verdict(item, completed_steps, verdict)
                 return verdict, out

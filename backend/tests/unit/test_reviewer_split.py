@@ -55,7 +55,11 @@ class _Adapter:
 
 
 class _Ctx:
-    gradient_warnings = ""
+    # 2026-10-19 (owner decision): the Brain review runs only when the memory
+    # gives it something to judge against. These tests check the Brain path's
+    # own invariants, so their context carries one warning (input change only;
+    # no assertion changed). The empty case is pinned in test_reviewer_gate.py.
+    gradient_warnings = "step 2 failed like this before"
     active_contracts = ""
 
 
