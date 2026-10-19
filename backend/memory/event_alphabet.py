@@ -174,6 +174,12 @@ _SEED = [
     ("LANDMARK_DEMOTED", "memory", "sets_back", "world", "a landmark was contradicted"),
     ("CHAIN_CREATED", "memory", "advances", "agent", "a node chain crystallized"),
     ("CHAIN_VARIANT", "memory", "advances", "agent", "a proven pivot became a variant"),
+    # sectors (MEMORY-FOUNDATION-ANALYSIS 5.1, SHADOW): computed and logged, read by nothing
+    ("SECTOR_BORN", "memory", "neutral", "agent", "a candidate sector was born from a recurring term"),
+    ("SECTOR_PROVEN", "memory", "advances", "world", "outside evidence closed a candidate sector"),
+    ("SECTOR_SPLIT", "memory", "neutral", "agent", "a sector whose outcomes disagree grew a child"),
+    ("SECTOR_MERGED", "memory", "neutral", "agent", "two sectors merged; the absorbed key is an alias"),
+    ("SECTOR_DISSOLVED", "memory", "sets_back", "agent", "a candidate sector expired and folded into its parent"),
     # safety
     ("UNSAFE_REFUSED", "safety", "neutral", "agent", "an unsafe action was refused"),
     ("ESCALATED_UNSURE", "safety", "neutral", "agent", "an unsure action was put to the user"),

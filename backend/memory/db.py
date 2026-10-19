@@ -835,6 +835,20 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _lp_exc:
         logger.warning("[db] landmark policy / memory_cases migration skipped: %s", _lp_exc)
 
+    # Sectors, SHADOW (MEMORY-FOUNDATION-ANALYSIS 5.1 / W9): the registry tables, the
+    # 13 topic-domain roots, and a sector for every live landmark that has none.
+    # Idempotent; nothing reads the tables.
+    try:
+        from backend.memory.mycelium.sectors import (
+            backfill_landmark_sectors,
+            ensure_sector_tables,
+        )
+
+        ensure_sector_tables(conn)
+        backfill_landmark_sectors(conn)
+    except Exception as _sc_exc:
+        logger.warning("[db] sectors tables / backfill skipped: %s", _sc_exc)
+
     # -------------------------------------------------------------------------
     # Block 6 — Batch execution records (vision-goal-directed-search REQ-19, T5)
     # -------------------------------------------------------------------------
