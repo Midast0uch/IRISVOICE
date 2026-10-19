@@ -779,6 +779,15 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _oc_exc:
         logger.warning("[db] mycelium_edges observation_count ALTER skipped: %s", _oc_exc)
 
+    # The growth/decay law's bookkeeping (mycelium/decay.py): last_decayed_at on
+    # edges, landmark edges and nodes; the Kyudo source_channel on nodes.
+    try:
+        from backend.memory.mycelium.decay import ensure_decay_columns
+
+        ensure_decay_columns(conn)
+    except Exception as _dc_exc:
+        logger.warning("[db] decay / channel column ALTER skipped: %s", _dc_exc)
+
     # Landmark policy columns + typed-event cases (spec research-memory-chain-
     # browser D9 / Wave E). Idempotent; never blocks store init.
     try:

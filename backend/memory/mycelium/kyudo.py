@@ -375,11 +375,24 @@ class QuorumReorganization:
             ),
         )
 
-        # 1. Accelerated decay
+        # 1. Accelerated decay - the SAME growth/decay law the maintenance pass
+        #    runs (decay.py), at m * QUORUM_DECAY_MULTIPLIER, on what the current
+        #    and previous day touched (edges AND node confidence: poisoned
+        #    coordinates live in nodes). The evidence weight a(n) strips new,
+        #    unproven growth while well-proven memory barely moves. (It decayed
+        #    EVERY edge by its own multiplicative rule and never touched nodes.)
         try:
-            conn = getattr(mycelium_interface, "_conn", None)
-            if conn is not None:
-                _apply_accelerated_decay(conn, QUORUM_DECAY_MULTIPLIER)
+            scorer = getattr(mycelium_interface, "_scorer", None)
+            if scorer is not None:
+                from .decay import quorum_window_start  # noqa: PLC0415
+
+                since = quorum_window_start()
+                pruned = scorer.apply_decay(session_id=None, quorum_since=since)
+                lowered = scorer.apply_node_decay(session_id=None, quorum_since=since)
+                logger.warning(
+                    "[QuorumReorganization] step1 decay session=%s pruned=%d "
+                    "nodes_lowered=%d", session_id, pruned, lowered,
+                )
         except Exception as _e:
             logger.error("[QuorumReorganization] step1 decay failed: %s", _e)
 
@@ -408,7 +421,9 @@ class QuorumReorganization:
 
         # 5. Re-render profile
         try:
-            renderer = getattr(mycelium_interface, "_profile_renderer", None)
+            # The interface holds it as _renderer; "_profile_renderer" never
+            # existed, so this step was silently skipped.
+            renderer = getattr(mycelium_interface, "_renderer", None)
             if renderer is not None:
                 renderer.render_dirty_sections()
         except Exception as _e:
@@ -418,19 +433,22 @@ class QuorumReorganization:
         try:
             conn = getattr(mycelium_interface, "_conn", None)
             if conn is not None:
-                import datetime as _dt
                 app_write(
                     conn,
+                    # The columns of the real table (db.py): the insert named
+                    # resolution / resolved_at, which do not exist, so every
+                    # reorganization failed to log (0 rows ever).
                     """INSERT OR IGNORE INTO mycelium_conflicts
                        (conflict_id, space_id, axis, value_a, source_a,
-                        value_b, source_b, resolution, resolution_basis, resolved_at)
+                        value_b, source_b, resolved_value, resolution_basis,
+                        created_at)
                        VALUES (?, 'all', 'all', ?, ?, 0.0, 'quorum', 0.0,
                                'quorum_reorganization', ?)""",
                     (
                         f"quorum_{session_id}_{int(time.time())}",
                         1.0,
                         session_id,
-                        _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                        time.time(),
                     ),
                 )
         except Exception as _e:
@@ -477,42 +495,6 @@ class QuorumReorganization:
         logger.info(
             "[QuorumReorganization] Reorganisation complete session=%s", session_id
         )
-
-
-def _apply_accelerated_decay(conn: Any, multiplier: float) -> None:
-    """
-    Apply an accelerated decay pass: for each edge, apply
-    ``new_score = score * (1 - multiplier * decay_rate)``
-    where ``decay_rate`` is the value stored on the edge row itself.
-
-    Edges that fall below PRUNE_THRESHOLD are deleted.
-    """
-    try:
-        from backend.memory.mycelium.spaces import PRUNE_THRESHOLD
-    except ImportError:
-        PRUNE_THRESHOLD = 0.08
-
-    # One writer: queued edge writes must be on disk before this read.
-    app_flush()
-    # decay_rate is stored per-edge in the mycelium_edges table
-    rows = conn.execute(
-        "SELECT edge_id, score, decay_rate FROM mycelium_edges"
-    ).fetchall()
-
-    for edge_id, score, decay_rate in rows:
-        effective_rate = (decay_rate or 0.01) * multiplier
-        new_score = score * (1.0 - effective_rate)
-        if new_score < PRUNE_THRESHOLD:
-            app_write(
-                conn, "DELETE FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
-            )
-        else:
-            # Relative decay in SQL: a queued score write ahead of this one is kept.
-            app_write(
-                conn,
-                "UPDATE mycelium_edges SET score = ROUND(score * (1.0 - ?), 6) WHERE edge_id = ?",
-                (effective_rate, edge_id),
-            )
 
 
 # ---------------------------------------------------------------------------

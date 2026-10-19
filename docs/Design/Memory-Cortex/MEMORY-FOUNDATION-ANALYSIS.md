@@ -323,10 +323,150 @@ fails on the old state for every measured fix; values checked on the live store 
 | W1 | **State address v2** (`event_alphabet.hash_signature`, scheme 2): x, y enter as the charge Q (5 bins) and the work volume (log2, 6 bins), not raw counts; ξ and u bins kept; the sector ROOT and the mode; NaN or inf → no address (logged, counted); a `hex_bin_id` minted from the same quantized state (Wormhole REQ-2 AC1; Tier-1b querying stays deferred) | new events carry scheme 2 + a hex bin; addresses no longer grow with step count (guard); NaN cannot raise | no bulk re-hash of old rows (REQ-10 AC4); no Tier-1b lookup; no hyperedges |
 | W2 | **Σ transitions on events**: every writer passes the position before AND after the step | `sigma_from ≠ sigma_to` where the step moved Σ (guard) | no new Σ source; reuse the DER lane's before/after |
 | W3 | **Merge keeps the score** (`profile.py`): plain mean when both activations are 0 | a merge of two unactivated landmarks keeps a non-zero score (guard) | no backfill of the 2,480 historical merges in this item |
-| W4 | **Decay**: incremental from a `last_decayed_at`; maintenance receives the latest settled u | two passes on an idle edge subtract once per elapsed span, not twice (guard); the u multiplier varies in production | no change to decay rates or prune threshold |
+| W4 | **Decay = the counterpart of growth (§11)**: incremental from a `last_decayed_at`; the evidence weight a(n) on decay as on growth; Kyudo channel and Caducean phase multipliers; node confidence decays to the stated floor; landmark edges on the same law; the reorganization is the law at m_quorum | two passes subtract once (guard); young and old beliefs cross at the same use frequency (guard); the phase multiplier varies on live data (measured 0.68-1.37 per day) | no change to the base rates or the prune threshold |
 | W5 | **Why 0 routing edges** (Wormhole spec U3 / S54): find where the region-mediator write goes and fix it | a DER node step writes a `mycelium_edges` row on the live app (measured) | no new edge model (Beta posteriors are Stage A) |
 | W6 | **The graph walks**: confidence grows with repeated observation; entry matching reaches the nodes that exist; spaces that are never fed get their feed | live traversals return nodes; access counts vary; maturity measured honestly | no lowered thresholds as the fix; no fake nodes |
 | W7 | **Episode index records nodes** (follows W6) | new index rows carry node ids | — |
 | W8 | **Caducean `domain` constant**: the trajectory row takes the node's real sector | trajectories show more than one sector on new rows | — |
 | W9 | **Sectors, shadow mode**: `mycelium_sectors` + `mycelium_landmark_sectors`; landmark sector at creation (rule, then cluster, then `general`); idempotent backfill; lifecycle (birth / closure / split / merge / dissolve) computed and LOGGED, consumed by nothing | every live landmark has ≥ 1 sector; lifecycle decisions measured over real sessions | no consumer reads sectors yet (shadow); no auto-created space |
-| W10 | **Spaces registry** as the source of truth; Kyudo fails closed | an 8th test space works end to end in a test store | no new real space |
+| W10 | **Spaces registry** as the source of truth. Each row declares its Kyudo terms (§12.3): write lock (the lowest channel that may write), render zone, subagent write owners, task classes, decay rate, confidence floor. An unknown space or channel fails closed | an 8th test space works end to end in a test store, including its Kyudo terms | no new real space |
+| W11 | **Kyudo repairs (§12)**, built with W4: node channel + confidence caps + trust cap on the cluster; reorganization (scope, nodes, re-render, conflict log); threat fades per clean session; the suspension ends with the session | each has a guard that fails on the old code | the §12.2 items stay proposals until measured |
+
+### 10.1 Status (2026-10-19)
+
+W1, W2, W3, W8 committed (`04b8f858`). W5/W6/W7 committed (`7cd434e9`): the session region,
+confidence that grows on recurrence, the chrono feed. W4 + W11 built (§11, §12). Open: the
+clock decision (§11.4), W9, W10, the live gate.
+
+
+---
+
+## 11. Growth and decay as one law (owner, 2026-10-19)
+
+> "make sure there's an algo that is in alignment with the speed growth of the memory and decay
+> together" — and "don't forget about the reorganization as well with the decay".
+
+### 11.1 What was wrong (code-read; live values read-only)
+
+- **Growth was weighted by evidence, decay was not.** An edge observation moves the score by
+  `delta / (1 + n)` (REQ-26), so belief converges. Decay took `rate × days` whatever n was. A
+  route with 100 proofs that was used once a day gained 0.05/101 and lost 0.02: it shrank while
+  in use. The two halves ran at different speeds.
+- **Decay compounded.** Each pass subtracted the whole time since the last traversal again.
+- **Node confidence had growth and no decay** (after W6): repetition could only ratchet it up.
+- **The physics coupling never ran.** The scorer asked the *store* for `get_latest_u`; only the
+  interface has it, so the u multiplier was 1.0 on every pass, even when a session was passed.
+- **Landmark edges are inert**: 6,628 rows, all score 0.4, traversal count 0, never traversed —
+  nothing makes them grow. (A writer is still needed; the law is ready for it.)
+
+### 11.2 The law (`backend/memory/mycelium/decay.py`)
+
+For every learned strength s with evidence n (edge score; landmark-edge score with n = traversal
+count):
+
+```
+growth  (an observation):  s += delta · a(n)            a(n) = 1 / (1 + n)
+decay   (an idle span):    s -= rate · m · days · a(n)
+m = m_channel (weaker endpoint, Kyudo Part 3) · m_phase (Caducean, over the span) · m_quorum
+```
+
+The net drift per day is `a(n) · (delta · f − rate · m)`, where f is the use frequency. **Its
+sign does not depend on n**: a young and an old belief cross at the same frequency
+`f* = rate · m / delta`; a belief with more evidence only moves more slowly — in both
+directions. That is the alignment: one speed, set by the evidence, for growth and for decay.
+Examples: toolpath (0.02/day, hit +0.05) needs a hit every 2.5 days; a default edge (0.01) one
+every 5 days; a weak (EXTERNAL) source needs 3x the reconfirmation.
+
+**Node confidence** is the same pair in multiplicative form (a node has no count): growth
+shrinks doubt, `c → 1 − (1 − c)(1 − 0.25·w)` (W6); decay shrinks only what repetition earned,
+`c → floor + (c − floor)·exp(−rate · m · days)`, floor = the stated value 0.4 (Req 4.4).
+Each moves in proportion to its distance from its bound, so they meet at an equilibrium set by
+f. What was stated stays; what was earned must keep being earned.
+
+**The phase** is the time-mean of the per-step multipliers over the span (expand 0.5,
+compress 1.8, neutral 1.0). The multiplier of the *mean u* was 0.5 on every span of the live
+store (72% of steps expand) — a constant, so a failure by §3's rule. The step mean varies with
+the work: 0.68–1.37 per day (measured 2026-10-19). Compression phases prune; expansion phases
+preserve.
+
+**Incremental**: each span counts once, from `max(last touch, last_decayed_at)`.
+
+### 11.3 The reorganization is the same law, faster
+
+The quorum reorganization runs this law with `m_quorum = 3.0` for one day-span, on what the
+**current and previous day touched** (edges by `last_traversed`, nodes by `updated_at`). It no
+longer decays every edge by a separate rule, and it now reaches node confidence, where poisoned
+coordinates live. Because a(n) is in the law, it strips **new, unproven growth** (the shape of
+an injection) while well-proven memory barely moves — the immune response targets what is new,
+by construction. Measured in the guard: a fresh edge loses 0.03, a 50-proof edge less than a
+tenth of that, an edge outside the window nothing.
+
+### 11.4 Open decision: which clock
+
+Today the law counts **calendar days**. An **activity clock** — count only days with at least
+one episode (52 of the 90 calendar days on the live store) — would align decay with the speed at
+which the memory grows: an away month forgets nothing; a busy week fades unreinforced routes
+faster per day, but not per use. It is one query on the covering index `idx_ep_timestamp`. It
+changes Req 7.2 ("score −= rate × days idle"), which an existing test pins with calendar days,
+so it needs the owner's decision.
+
+---
+
+## 12. Kyudo — the self-cleaning security of the memory (analysis, 2026-10-19)
+
+Source: `Mycellium Kyudo Layer Guide.md` (v1.0, March 2026; partly stale, the concepts hold).
+Kyudo is **one mechanism with two names**: the channel a source arrives on sets how much it may
+write, how fast its signal fades, which context zone it reaches, and whether it can become
+permanent. Precision and security are the same property; the decay system *is* the security
+system; the reorganization is the decay system with an emergency multiplier.
+
+### 12.1 Guide against code (measured / code-read)
+
+| Guide | Code (before 2026-10-19) | Now |
+|---|---|---|
+| Channel per content item, permanent | channel only on episode-index rows — **0 of 2,850 rows carry one**; nodes carry none | nodes record `source_channel` (the highest channel that ever observed them: reconfirmation earns trust) |
+| Initial confidence by channel (EXTERNAL 0.30) | the document bridge wrote EXTERNAL content at **0.8**, above every stated value | capped per channel at the store |
+| Decay multiplier by channel (EXTERNAL 3x) | absent | in the law (§11.2) |
+| Rule 2: landmark trust cap, 30% of constituent nodes | checked a *session* channel argument that **no caller passes** — never ran | measured on the cluster's own nodes on every condense |
+| Rule 1: conduct is behavioural only | CellWall `can_write_space` blocks it on the RAG/document paths | unchanged (holds) |
+| Quorum signals (4 kinds) | **1 of 4 emitted**, and it is a physics TOPO_VIOLATION filed as `update_velocity_anomaly` | unchanged — §12.2 |
+| Threat fades per clean session | `decay_clean_session` had **no caller**: anomalies piled up for the life of the process | fades at session end when the session raised no signal |
+| Reorganization: decay what the suspect sessions touched | decayed **every** edge, never nodes | §11.3 |
+| … re-render the profile | read `_profile_renderer`; the attribute is `_renderer` — **skipped** | fixed |
+| … log to `mycelium_conflicts` | wrote columns `resolution`, `resolved_at` that do not exist — **0 rows ever** | fixed |
+| … suspend crystallisation until `clear_session` | never lifted — one reorganization blocked landmarks until restart | lifted at session end |
+| MCP pin mismatch → UNTRUSTED | registry loaded, **never compared** | open — §12.2 |
+| RAG ingestion bridge at the boundary | `ingest_rag_content` has **no production caller**: web retrieval enters memory with no channel | open — §12.2 |
+| Subagent write profiles | read slicing exists; **writes are not checked** | open — §12.2 |
+| Precision half (whiteboard slicer, micro-abstract, delta encoder) | **no production caller** | open — measure, then wire or remove |
+
+### 12.2 Proposals (not built; each needs its measurement first)
+
+1. **The immune signals, from places that already know.** Velocity: count node upserts per
+   session and fire above the live p99 (`QUORUM_VELOCITY_THRESHOLD` is "TBD post-deployment" —
+   measure it from the store). Landmark activation anomaly: an activation above mean + 3σ for
+   its task class. Channel mismatch: a VERIFIED source whose coordinates move where EXTERNAL
+   content predicted. Give the physics violation its own label instead of borrowing "velocity".
+   Run in shadow first and measure the false-alarm rate, as the Oracle does.
+2. **A durable immune memory**: persist the threat level and the signals (the docstring's
+   `quorum_log` table does not exist). In memory only, a restart erases the evidence, and an
+   attacker who spreads across restarts never reaches quorum.
+3. **Every external write through the bridge**: research memory and web results enter with a
+   channel (EXTERNAL), or none of §12.1 applies to them.
+4. **MCP pin check at call time**: compare the server's identity with its pin; downgrade to
+   UNTRUSTED and raise `channel_trust_violation` on drift.
+5. **Enforce subagent write profiles on writes** (silent drop, as the guide says — no threat
+   signal for a normal boundary).
+6. **Separate the write lock from the render zone** (W10). The code reuses the guide's
+   *context-window* zones as *write* permissions per space, so `toolpath` sits in REFERENCE and
+   any channel may write it — the document bridge files untrusted documents into toolpath, a
+   behavioural space. Each space declares both in the registry; unknown fails closed.
+7. **A landmark-edge writer** (co-activation), so landmark edges grow under the law.
+
+### 12.3 What a space declares (for W10)
+
+`space_id`, axes and ranges, base decay rate, confidence floor, **write lock** (the lowest
+channel that may write it), **render zone** (where its profile section enters the context),
+subagent **write owners**, the **task classes** that navigate it, resonance participation,
+extractor, schema version. A new space is added deliberately (a reviewed row), and inherits the
+law and the immune response with no new code.

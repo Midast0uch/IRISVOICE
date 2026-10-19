@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,6 +33,10 @@ from .store import CoordinateStore, MemoryPath
 from .spaces import RENDER_ORDER, SPACES
 
 logger = logging.getLogger(__name__)
+
+# Kyudo HyphaChannel.USER - statements, session history and project context
+# are the user's own signal (Kyudo Layer Guide, Part 1).
+_USER_CHANNEL = 3
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +167,11 @@ class MyceliumInterface:
         self._maintenance_needed: bool = False
         self._last_task_class: Optional[str] = None
         self._crystallisation_suspended: bool = (
-            False  # set True during QuorumReorganization
+            False  # set True during QuorumReorganization, lifted at clear_session
         )
+        # Sessions that recorded a threat signal (bounded): a session NOT in it
+        # is clean, and the threat level fades at its end (Kyudo Part 4).
+        self._signalled_sessions: "OrderedDict[str, None]" = OrderedDict()
 
         # Topology layer (Task 11.3) — eagerly instantiated
         from .topology import TopologyLayer  # noqa: PLC0415
@@ -525,7 +533,7 @@ class MyceliumInterface:
         """Extract coordinates from a user statement and upsert resulting nodes."""
         results = self._extractor.extract_from_statement(text)
         for space_id, coords, confidence, label in results:
-            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
+            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True, channel=_USER_CHANNEL)
         if results:
             self._is_mature_cached = None
 
@@ -542,7 +550,7 @@ class MyceliumInterface:
                 continue
             results = self._extractor.extract_from_statement(text)
             for space_id, coords, confidence, label in results:
-                self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
+                self._store.upsert_node(space_id, coords, label, confidence, accumulate=True, channel=_USER_CHANNEL)
             if results:
                 any_results = True
         if any_results:
@@ -553,7 +561,7 @@ class MyceliumInterface:
         result = self._extractor.extract_from_sessions(session_timestamps)
         if result:
             space_id, coords, confidence, label = result
-            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
+            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True, channel=_USER_CHANNEL)
             self._is_mature_cached = None
 
     def ingest_conduct_outcomes(self, episodes: List[Any]) -> None:
@@ -604,7 +612,7 @@ class MyceliumInterface:
         result = self._extractor._extract_context_signals(text, session_data)
         if result:
             space_id, coords, confidence, label = result
-            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
+            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True, channel=_USER_CHANNEL)
             self._is_mature_cached = None
 
     # ------------------------------------------------------------------
@@ -662,7 +670,9 @@ class MyceliumInterface:
                         space_id,
                     )
                     continue
-                self._store.upsert_node(space_id, coords, label, confidence)
+                self._store.upsert_node(
+                    space_id, coords, label, confidence, channel=int(ingested.channel)
+                )
             if results:
                 self._is_mature_cached = None
         except Exception as exc:  # noqa: BLE001
@@ -750,7 +760,9 @@ class MyceliumInterface:
             if not norm_coords:
                 return
 
-            self._store.upsert_node(space_id, norm_coords, label or "document_data", 0.8)
+            self._store.upsert_node(
+                space_id, norm_coords, label or "document_data", 0.8, channel=int(channel)
+            )
 
             # Record source_channel so crystallization can honor the trust-cap.
             try:
@@ -795,6 +807,9 @@ class MyceliumInterface:
         """
         try:
             self._quorum_sensor.record_signal(signal_type=signal_type)
+            self._signalled_sessions[session_id] = None
+            while len(self._signalled_sessions) > 256:
+                self._signalled_sessions.popitem(last=False)
             self._check_quorum_and_reorganize(session_id)
             return True
         except Exception as exc:  # noqa: BLE001
@@ -945,9 +960,17 @@ class MyceliumInterface:
           2. Clear extractor observation windows.
           3. Pre-warm predictive loader (only when mature — never during active session).
           4. Flag maintenance if overdue.
+          5. Kyudo: a clean session fades the threat level by
+             QUORUM_SIGNAL_DECAY (it never faded: isolated anomalies piled up
+             for the life of the process); a reorganization's crystallisation
+             suspension ends with the session (Kyudo Layer Guide, Part 4).
         """
         self._navigator.clear_session(session_id)
         self._extractor.clear_session(session_id)
+
+        if self._signalled_sessions.pop(session_id, False) is False:
+            self._quorum_sensor.decay_clean_session()
+        self._crystallisation_suspended = False
 
         # Step 3: predictive pre-warm at session boundary (mature only)
         if self.is_mature():
@@ -1008,6 +1031,12 @@ class MyceliumInterface:
             logger.debug("[interface] maintenance: pruned %d edges", pruned)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[interface] maintenance: apply_decay failed: %s", exc)
+
+        try:
+            lowered = self._scorer.apply_node_decay(session_id=session_id)
+            logger.debug("[interface] maintenance: node confidence decayed on %d", lowered)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interface] maintenance: apply_node_decay failed: %s", exc)
 
         try:
             merged = self._map_manager.run_condense()

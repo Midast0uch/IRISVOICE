@@ -198,98 +198,212 @@ class EdgeScorer:
         self.record_outcome([edge_id], outcome)
         return edge_id
 
-    def apply_decay(self, session_id: Optional[str] = None) -> int:
+    def apply_decay(
+        self,
+        session_id: Optional[str] = None,
+        quorum_since: Optional[float] = None,
+    ) -> int:
         """
-        Apply time-based score decay to all edges and delete those below
-        PRUNE_THRESHOLD (0.08) (Req 7.3–7.5).
+        Apply score decay to edges and delete those below PRUNE_THRESHOLD
+        (0.08) (Req 7.3-7.5) - the decay half of the ONE growth/decay law
+        (decay.py; MEMORY-FOUNDATION-ANALYSIS §11).
 
-        Decay formula:  score -= effective_decay_rate * caducean_multiplier * days_idle
-        where days_idle = (now - last_traversed) / 86400.
+          score -= rate * m * days * a(n)
+          rate = TOOLPATH_DECAY_RATE (0.02) for toolpath edges, else the
+                 stored per-edge decay_rate
+          a(n) = 1 / (1 + observation_count) - the SAME weight record_outcome
+                 gives an observation, so growth and decay run at one speed
+          m    = m_channel (the weaker endpoint's Kyudo channel)
+                 * m_phase (mean Caducean u over the span: expand 0.5,
+                   compress 1.8; that session's rows when session_id is given)
+          days = span since max(last_traversed, last_decayed_at) - each span
+                 is counted once (the pass used to subtract the whole idle
+                 time again on every run, so decay compounded)
 
-        Toolpath edges use TOOLPATH_DECAY_RATE (0.02); all others use their
-        stored per-edge decay_rate.  Edges with last_traversed=None (never
-        traversed) are skipped — no idle time can be computed.
+        Edges with last_traversed=None are skipped (no idle time). The UPDATE
+        sets score and last_decayed_at only: decay is FORGETTING, never an
+        observation (REQ-26 AC7) - observation_count is never touched.
 
-        Decay writes use a direct UPDATE to avoid bumping traversal_count
-        (decay is not a traversal).
-
-        REQ-26 AC7 (T40e): decay is FORGETTING, not an observation — the
-        direct UPDATE below sets score only and never touches
-        ``observation_count``, and decay never routes through
-        ``record_outcome``, so it can never be counted as a miss nor inflate
-        the evidence count behind a score.
-
-        v2: When session_id is provided, the Caducean attentional velocity (u)
-        modulates the effective decay rate:
-          u > 0  (explore)  -> decay_multiplier = 0.5  (preserve learning)
-          u < 0  (compress) -> decay_multiplier = 1.8  (prune unreinforced faster)
-          u ≈ 0  (neutral)  -> decay_multiplier = 1.0  (default)
-        Read once at start of pass — no per-edge DB hit.
+        quorum_since: the reorganization form (kyudo.QuorumReorganization):
+        only edges traversed at or after it, days = QUORUM_SPAN_DAYS, m also
+        * QUORUM_DECAY_MULTIPLIER. a(n) makes it strip new, unproven growth
+        while well-proven routes barely move. last_decayed_at is left alone.
 
         Returns:
             Number of edges deleted (pruned) during this pass.
         """
+        from . import decay as _decay  # noqa: PLC0415
+
         now = time.time()
         pruned = 0
-
-        # v2: read Caducean state once at pass start (no per-edge SQL)
-        caducean_multiplier = 1.0
-        if session_id is not None:
-            try:
-                latest = self._store.get_latest_u(session_id)
-                if latest is not None:
-                    u = latest.get("u", 0.0)
-                    if u > 0.0:
-                        caducean_multiplier = 0.5  # explore — preserve
-                    elif u < 0.0:
-                        caducean_multiplier = 1.8  # compress — prune
-                    # else: u ≈ 0 → multiplier = 1.0 (no modulation)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[scorer] caducean modulation unavailable: %s", exc)
-                caducean_multiplier = 1.0  # safe default
+        conn = self._store._conn
 
         # One writer: the edge scores and rows queued so far are on disk before
         # the pass reads them and decides what to prune.
         app_flush()
-        # Fetch all edges joined to their from_node space_id in one round-trip
-        cursor = self._store._conn.execute(
-            """
-            SELECT e.edge_id, e.score, e.decay_rate, e.last_traversed, n.space_id
-            FROM mycelium_edges e
-            JOIN mycelium_nodes n ON e.from_node_id = n.node_id
-            """
-        )
-        rows = cursor.fetchall()
+        incremental = _decay.has_decay_columns(conn)
+        if incremental:
+            rows = conn.execute(
+                """
+                SELECT e.edge_id, e.score, e.decay_rate, e.last_traversed,
+                       e.last_decayed_at, e.observation_count, n.space_id,
+                       MIN(COALESCE(n.source_channel, ?), COALESCE(t.source_channel, ?))
+                FROM mycelium_edges e
+                JOIN mycelium_nodes n ON e.from_node_id = n.node_id
+                LEFT JOIN mycelium_nodes t ON e.to_node_id = t.node_id
+                """,
+                (_decay.LEGACY_CHANNEL, _decay.LEGACY_CHANNEL),
+            ).fetchall()
+        else:
+            # A store without the bookkeeping columns (has_decay_columns).
+            rows = conn.execute(
+                """
+                SELECT e.edge_id, e.score, e.decay_rate, e.last_traversed,
+                       NULL, e.observation_count, n.space_id, NULL
+                FROM mycelium_edges e
+                JOIN mycelium_nodes n ON e.from_node_id = n.node_id
+                """
+            ).fetchall()
 
-        for edge_id, score, decay_rate, last_traversed, space_id in rows:
+        refs = [
+            max(r[3], r[4] or 0.0) for r in rows
+            if r[3] is not None and (quorum_since is None or r[3] >= quorum_since)
+        ]
+        if not refs:
+            return 0
+        phase = _decay.phase_multiplier(conn, min(refs), session_id)
+        quorum = 1.0
+        if quorum_since is not None:
+            from .kyudo import QUORUM_DECAY_MULTIPLIER  # noqa: PLC0415
+            quorum = QUORUM_DECAY_MULTIPLIER
+
+        for (edge_id, score, decay_rate, last_traversed, last_decayed_at,
+             observation_count, space_id, channel) in rows:
             if last_traversed is None:
-                continue  # Never traversed — skip
-
-            days_idle = (now - last_traversed) / 86400.0
-            if days_idle <= 0.0:
+                continue  # Never traversed - skip
+            if quorum_since is not None:
+                if last_traversed < quorum_since:
+                    continue
+                days = _decay.QUORUM_SPAN_DAYS
+            else:
+                days = (now - max(last_traversed, last_decayed_at or 0.0)) / 86400.0
+            if days <= 0.0:
                 continue
 
-            effective_rate = (
-                TOOLPATH_DECAY_RATE if space_id == "toolpath" else decay_rate
+            rate = TOOLPATH_DECAY_RATE if space_id == "toolpath" else decay_rate
+            amount = _decay.edge_decay_amount(
+                rate, _decay.channel_multiplier(channel) * phase * quorum,
+                days, observation_count,
             )
-            # v2: modulate by Caducean velocity (read once at pass start, applied per-edge)
-            new_score = score - effective_rate * caducean_multiplier * days_idle
 
-            if new_score < PRUNE_THRESHOLD:
+            if score - amount < PRUNE_THRESHOLD:
                 self._store.delete_edge(edge_id)
                 pruned += 1
+            elif quorum_since is not None or not incremental:
+                app_write(
+                    conn,
+                    "UPDATE mycelium_edges SET score = MAX(0.0, score - ?) WHERE edge_id = ?",
+                    (amount, edge_id),
+                )
             else:
                 # Direct UPDATE: bypass traversal_count bump (Req 7.3).
                 # One writer: the decay is subtracted on the writer thread, so an
                 # observation queued between the read and this write is kept.
                 app_write(
-                    self._store._conn,
-                    "UPDATE mycelium_edges SET score = MAX(0.0, score - ?) WHERE edge_id = ?",
-                    (effective_rate * caducean_multiplier * days_idle, edge_id),
+                    conn,
+                    "UPDATE mycelium_edges SET score = MAX(0.0, score - ?), "
+                    "last_decayed_at = ? WHERE edge_id = ?",
+                    (amount, now, edge_id),
                 )
 
-        logger.debug("[scorer] apply_decay: pruned %d edges", pruned)
+        logger.debug("[scorer] apply_decay: pruned %d edges (phase=%.2f quorum=%.1f)",
+                     pruned, phase, quorum)
         return pruned
+
+    def apply_node_decay(
+        self,
+        session_id: Optional[str] = None,
+        quorum_since: Optional[float] = None,
+    ) -> int:
+        """
+        Decay node confidence EARNED by repetition back toward the stated
+        floor (decay.node_confidence_after) - the counterpart of
+        store._accumulate_confidence: a node that stops recurring loses what
+        recurrence gave it and keeps what was stated. Same multipliers and
+        incremental span as apply_decay; the space's own rate (conduct 0.008,
+        toolpath 0.02, context 0.025, else 0.005).
+
+        quorum_since: the reorganization form - nodes updated at or after it,
+        one QUORUM_SPAN_DAYS at m * QUORUM_DECAY_MULTIPLIER.
+
+        Returns:
+            Number of nodes whose confidence was lowered.
+        """
+        from . import decay as _decay  # noqa: PLC0415
+        from .spaces import CONDUCT_DECAY_RATE, CONTEXT_DECAY_RATE  # noqa: PLC0415
+
+        rates = {
+            "conduct": CONDUCT_DECAY_RATE,
+            "toolpath": TOOLPATH_DECAY_RATE,
+            "context": CONTEXT_DECAY_RATE,
+        }
+        now = time.time()
+        conn = self._store._conn
+        if not _decay.has_decay_columns(conn, "mycelium_nodes"):
+            # Without last_decayed_at the span would be counted again on every
+            # pass; a store that predates the column keeps its old behaviour.
+            logger.debug("[scorer] apply_node_decay: store has no decay columns")
+            return 0
+        app_flush()
+        rows = conn.execute(
+            "SELECT node_id, space_id, confidence, updated_at, last_decayed_at, "
+            "source_channel FROM mycelium_nodes WHERE confidence > ?",
+            (_decay.NODE_CONFIDENCE_FLOOR,),
+        ).fetchall()
+        refs = [
+            max(r[3] or 0.0, r[4] or 0.0) for r in rows
+            if quorum_since is None or (r[3] or 0.0) >= quorum_since
+        ]
+        if not refs:
+            return 0
+        phase = _decay.phase_multiplier(conn, min(refs), session_id)
+        quorum = 1.0
+        if quorum_since is not None:
+            from .kyudo import QUORUM_DECAY_MULTIPLIER  # noqa: PLC0415
+            quorum = QUORUM_DECAY_MULTIPLIER
+
+        changed = 0
+        for node_id, space_id, confidence, updated_at, last_decayed_at, channel in rows:
+            if quorum_since is not None:
+                if (updated_at or 0.0) < quorum_since:
+                    continue
+                days = _decay.QUORUM_SPAN_DAYS
+            else:
+                days = (now - max(updated_at or 0.0, last_decayed_at or 0.0)) / 86400.0
+            if days <= 0.0:
+                continue
+            new_conf = _decay.node_confidence_after(
+                confidence,
+                rates.get(space_id, _decay.NODE_DECAY_RATE_DEFAULT),
+                _decay.channel_multiplier(channel) * phase * quorum,
+                days,
+            )
+            # updated_at is NOT bumped: decay is not an observation.
+            if quorum_since is not None:
+                app_write(conn, "UPDATE mycelium_nodes SET confidence = ? WHERE node_id = ?",
+                          (new_conf, node_id))
+            else:
+                app_write(
+                    conn,
+                    "UPDATE mycelium_nodes SET confidence = ?, last_decayed_at = ? "
+                    "WHERE node_id = ?",
+                    (new_conf, now, node_id),
+                )
+            changed += 1
+
+        logger.debug("[scorer] apply_node_decay: %d nodes (phase=%.2f quorum=%.1f)",
+                     changed, phase, quorum)
+        return changed
 
 
 # ---------------------------------------------------------------------------

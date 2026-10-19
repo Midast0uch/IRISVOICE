@@ -404,18 +404,24 @@ class LandmarkCondenser:
             candidate_nodes, key=lambda n: n.access_count, reverse=True
         )[:CLUSTER_MAX_NODES]
 
-        # Trust cap: Req 15.12 — if > 30% of cluster nodes are from EXTERNAL/UNTRUSTED channels
+        # Trust cap: Req 15.12 — if > 30% of cluster nodes are from EXTERNAL/UNTRUSTED channels.
+        # Each node now records its channel (store.upsert_node), so the cap is
+        # measured on the cluster itself on every condense; the session channel
+        # still counts when a caller passes one. (It ran only when a caller
+        # passed source_channel, and none did - the cap never ran.)
+        untrusted_fraction = self._cluster_untrusted_fraction(cluster_nodes)
         if source_channel is not None:
-            untrusted_fraction = self._compute_untrusted_fraction(
-                cluster_nodes, source_channel
+            untrusted_fraction = max(
+                untrusted_fraction,
+                self._compute_untrusted_fraction(cluster_nodes, source_channel),
             )
-            if untrusted_fraction > _TRUST_CAP_FRACTION:
-                logger.debug(
-                    "[landmark] condense: rejected (%.1f%% untrusted > %.0f%% cap)",
-                    untrusted_fraction * 100,
-                    _TRUST_CAP_FRACTION * 100,
-                )
-                return None
+        if untrusted_fraction > _TRUST_CAP_FRACTION:
+            logger.debug(
+                "[landmark] condense: rejected (%.1f%% untrusted > %.0f%% cap)",
+                untrusted_fraction * 100,
+                _TRUST_CAP_FRACTION * 100,
+            )
+            return None
 
         # Build coordinate_cluster dicts
         coordinate_cluster = [
@@ -492,6 +498,21 @@ class LandmarkCondenser:
             return f"{dominant}_task{label_slug}"
 
         return "unknown_task"
+
+    def _cluster_untrusted_fraction(self, cluster_nodes: list) -> float:
+        """Fraction of the cluster's nodes whose recorded channel is EXTERNAL
+        or UNTRUSTED (HyphaChannel <= 1). A node with no recorded channel is a
+        legacy internal node (decay.LEGACY_CHANNEL). One query."""
+        ids = [n.node_id for n in cluster_nodes]
+        if not ids or not getattr(self._store, "_records_channel", False):
+            return 0.0
+        rows = self._store._conn.execute(
+            f"SELECT source_channel FROM mycelium_nodes "
+            f"WHERE node_id IN ({','.join('?' * len(ids))})",
+            ids,
+        ).fetchall()
+        low = sum(1 for (ch,) in rows if ch is not None and ch <= 1)
+        return low / len(ids)
 
     @staticmethod
     def _compute_untrusted_fraction(cluster_nodes: list, source_channel: str) -> float:
@@ -807,34 +828,45 @@ class LandmarkIndex:
         Decay rates: 0.002/day for permanent landmark edges,
                      0.005/day for non-permanent.
 
+        The ONE growth/decay law (decay.py): amount = rate * days * a(n), with
+        n = traversal_count and days counted once from max(last_traversed,
+        last_decayed_at) - the pass subtracted the whole idle time again on
+        every run, so decay compounded.
+
         Returns:
             Number of landmark edges pruned.
         """
+        from .decay import edge_decay_amount, has_decay_columns  # noqa: PLC0415
+
         now = time.time()
         pruned = 0
+        incremental = has_decay_columns(self._conn, "mycelium_landmark_edges")
 
         # One writer: queued edge writes must be on disk before this read.
         app_flush()
         # Fetch all landmark edges with their from_landmark is_permanent flag
         cursor = self._conn.execute(
-            """
-            SELECT le.edge_id, le.score, le.last_traversed, lm.is_permanent
+            f"""
+            SELECT le.edge_id, le.score, le.last_traversed,
+                   {"le.last_decayed_at" if incremental else "NULL"},
+                   le.traversal_count, lm.is_permanent
             FROM mycelium_landmark_edges le
             JOIN mycelium_landmarks lm ON le.from_landmark_id = lm.landmark_id
             """
         )
         rows = cursor.fetchall()
 
-        for edge_id, score, last_traversed, is_permanent in rows:
+        for edge_id, score, last_traversed, last_decayed_at, traversals, is_permanent in rows:
             if last_traversed is None:
                 continue
 
-            days_idle = (now - last_traversed) / 86400.0
+            days_idle = (now - max(last_traversed, last_decayed_at or 0.0)) / 86400.0
             if days_idle <= 0.0:
                 continue
 
             rate = _DECAY_PERMANENT if is_permanent else _DECAY_NON_PERMANENT
-            new_score = score - rate * days_idle
+            amount = edge_decay_amount(rate, 1.0, days_idle, traversals)
+            new_score = score - amount
 
             if new_score < LANDMARK_PRUNE_THRESHOLD:
                 app_write(
@@ -842,12 +874,20 @@ class LandmarkIndex:
                     "DELETE FROM mycelium_landmark_edges WHERE edge_id = ?", (edge_id,)
                 )
                 pruned += 1
-            else:
+            elif incremental:
                 # Relative decay in SQL: a queued score write ahead of this one is kept.
                 app_write(
                     self._conn,
-                    "UPDATE mycelium_landmark_edges SET score = MAX(0.0, score - ?) WHERE edge_id = ?",
-                    (rate * days_idle, edge_id),
+                    "UPDATE mycelium_landmark_edges SET score = MAX(0.0, score - ?), "
+                    "last_decayed_at = ? WHERE edge_id = ?",
+                    (amount, now, edge_id),
+                )
+            else:
+                app_write(
+                    self._conn,
+                    "UPDATE mycelium_landmark_edges SET score = MAX(0.0, score - ?) "
+                    "WHERE edge_id = ?",
+                    (amount, edge_id),
                 )
 
         logger.debug("[landmark] apply_landmark_decay: pruned %d edges", pruned)

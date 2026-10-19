@@ -154,6 +154,11 @@ class CoordinateStore:
                   MUST be the shared connection — never pass a db_path here.
         """
         self._conn = conn
+        from .decay import has_decay_columns  # noqa: PLC0415
+
+        # The node's Kyudo channel is recorded where the column exists (the
+        # application store always: db.py; an older schema copy does not).
+        self._records_channel = has_decay_columns(conn, "mycelium_nodes")
 
     # ------------------------------------------------------------------
     # Node operations
@@ -166,6 +171,7 @@ class CoordinateStore:
         label: Optional[str],
         confidence: float,
         accumulate: bool = False,
+        channel: int = 4,
     ) -> CoordNode:
         """
         Insert or update a coordinate node.
@@ -175,6 +181,13 @@ class CoordinateStore:
         then raises the confidence (``_accumulate_confidence``); with the
         default, the higher of the two is kept (the caller's confidence
         already counts its observations, e.g. a toolpath window).
+
+        channel: the Kyudo HyphaChannel value of the source (default SYSTEM:
+        IRIS's own observation). The RAG and document bridges pass theirs. A
+        lower-trust observation is capped (decay.CHANNEL_CONFIDENCE_CAP), and
+        the node keeps the HIGHEST channel that ever observed it - a node
+        reconfirmed by a trusted source has earned that trust; its decay
+        multiplier follows (decay.CHANNEL_DECAY_MULTIPLIER).
 
         For all spaces: if an existing node in the same space is within
         Euclidean distance 0.05, update its coordinates, label, and confidence
@@ -190,6 +203,9 @@ class CoordinateStore:
         Returns:
             The upserted CoordNode (either updated existing or newly created).
         """
+        from .decay import LEGACY_CHANNEL, cap_for_channel  # noqa: PLC0415
+
+        confidence = cap_for_channel(confidence, channel)
         now = time.time()
         # One writer: a node queued by an earlier upsert must be on disk before
         # the dedup scan, or the same coordinates would insert a second node.
@@ -207,15 +223,29 @@ class CoordinateStore:
             )
             new_label = label if label is not None else existing.label
 
-            app_write(
-                self._conn,
-                """
-                UPDATE mycelium_nodes
-                SET coordinates = ?, label = ?, confidence = ?, updated_at = ?
-                WHERE node_id = ?
-                """,
-                (_pack_coords(new_coords), new_label, new_confidence, now, existing.node_id),
-            )
+            if self._records_channel:
+                app_write(
+                    self._conn,
+                    """
+                    UPDATE mycelium_nodes
+                    SET coordinates = ?, label = ?, confidence = ?, updated_at = ?,
+                        source_channel = MAX(COALESCE(source_channel, ?), ?)
+                    WHERE node_id = ?
+                    """,
+                    (_pack_coords(new_coords), new_label, new_confidence, now,
+                     LEGACY_CHANNEL, channel, existing.node_id),
+                )
+            else:
+                app_write(
+                    self._conn,
+                    """
+                    UPDATE mycelium_nodes
+                    SET coordinates = ?, label = ?, confidence = ?, updated_at = ?
+                    WHERE node_id = ?
+                    """,
+                    (_pack_coords(new_coords), new_label, new_confidence, now,
+                     existing.node_id),
+                )
 
             return CoordNode(
                 node_id=existing.node_id,
@@ -231,16 +261,29 @@ class CoordinateStore:
 
         # No nearby node — insert new (Req 3.2: 12-char UUID prefix)
         node_id = _short_uuid()
-        app_write(
-            self._conn,
-            """
-            INSERT INTO mycelium_nodes
-                (node_id, space_id, coordinates, label, confidence,
-                 created_at, updated_at, access_count, last_accessed)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
-            """,
-            (node_id, space_id, _pack_coords(coordinates), label, confidence, now, now),
-        )
+        if self._records_channel:
+            app_write(
+                self._conn,
+                """
+                INSERT INTO mycelium_nodes
+                    (node_id, space_id, coordinates, label, confidence,
+                     created_at, updated_at, access_count, last_accessed, source_channel)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                """,
+                (node_id, space_id, _pack_coords(coordinates), label, confidence, now, now,
+                 channel),
+            )
+        else:
+            app_write(
+                self._conn,
+                """
+                INSERT INTO mycelium_nodes
+                    (node_id, space_id, coordinates, label, confidence,
+                     created_at, updated_at, access_count, last_accessed)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                """,
+                (node_id, space_id, _pack_coords(coordinates), label, confidence, now, now),
+            )
 
         return CoordNode(
             node_id=node_id,
