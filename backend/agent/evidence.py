@@ -65,7 +65,7 @@ def _predicted_next(
     try:
         from backend.memory.mycelium.interpreter import BehavioralPredictor
 
-        current_node_ids = list(myc._registry.get_active(session_id))
+        current_node_ids = list(getattr(myc._registry, "get_region", myc._registry.get_active)(session_id))
         predictor = BehavioralPredictor(myc)
         preds = predictor.predict(
             session_id,

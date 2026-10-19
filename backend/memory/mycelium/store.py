@@ -124,6 +124,19 @@ class MemoryPath:
 # CoordinateStore
 # ---------------------------------------------------------------------------
 
+# A repeat observation closes this share of the remaining doubt, scaled by its
+# own confidence: 0.4 -> 0.46 -> 0.51 -> 0.56 -> 0.61 after four repeats. The cap
+# keeps an inferred node below a measured one (hardware probes write 0.95).
+_ACCUMULATE_RATE = 0.25
+_ACCUMULATE_CAP = 0.9
+
+
+def _accumulate_confidence(old: float, observed: float) -> float:
+    """Confidence after one more independent observation of the same node."""
+    grown = 1.0 - (1.0 - old) * (1.0 - _ACCUMULATE_RATE * observed)
+    return max(old, observed, min(grown, _ACCUMULATE_CAP))
+
+
 class CoordinateStore:
     """
     All read/write access to the mycelium node, edge, and traversal tables.
@@ -152,9 +165,16 @@ class CoordinateStore:
         coordinates: List[float],
         label: Optional[str],
         confidence: float,
+        accumulate: bool = False,
     ) -> CoordNode:
         """
         Insert or update a coordinate node.
+
+        accumulate=True: the caller passes ONE independent observation (a
+        statement, a session batch) at a fixed weight. A repeat observation
+        then raises the confidence (``_accumulate_confidence``); with the
+        default, the higher of the two is kept (the caller's confidence
+        already counts its observations, e.g. a toolpath window).
 
         For all spaces: if an existing node in the same space is within
         Euclidean distance 0.05, update its coordinates, label, and confidence
@@ -181,7 +201,10 @@ class CoordinateStore:
             new_coords = [
                 (a + b) / 2.0 for a, b in zip(existing.coordinates, coordinates)
             ]
-            new_confidence = max(existing.confidence, confidence)
+            new_confidence = (
+                _accumulate_confidence(existing.confidence, confidence)
+                if accumulate else max(existing.confidence, confidence)
+            )
             new_label = label if label is not None else existing.label
 
             app_write(

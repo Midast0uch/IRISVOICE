@@ -14,12 +14,30 @@ import asyncio
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional, Any, List, Dict
 from dataclasses import dataclass
 
 from backend.memory.interface import MemoryInterface
 
 logger = logging.getLogger(__name__)
+
+
+def _epoch(value: Any) -> Optional[float]:
+    """An episode timestamp (UNIX seconds, or SQLite 'YYYY-MM-DD HH:MM:SS' UTC
+    text) as UNIX seconds; None when absent or unparsable."""
+    if isinstance(value, (int, float)):
+        return float(value) if value > 0 else None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        logger.debug("[DistillationProcess] unparsable episode timestamp: %r", value)
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 @dataclass
@@ -404,9 +422,11 @@ class DistillationProcess:
 
             # Step 2 — ingest session timestamps for chrono space
             try:
+                # Episodes carry "timestamp" (SQLite UTC text); "created_at"
+                # never existed on them, so the chrono space stayed empty.
                 timestamps = [
-                    ep.get("created_at", 0.0) for ep in episodes
-                    if ep.get("created_at")
+                    t for t in (_epoch(ep.get("timestamp")) for ep in episodes)
+                    if t is not None
                 ]
                 if timestamps:
                     mycelium.ingest_sessions(timestamps)

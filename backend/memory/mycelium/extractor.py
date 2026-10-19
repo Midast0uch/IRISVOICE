@@ -21,7 +21,7 @@ import sys
 import time
 from typing import Dict, List, Optional, Tuple
 
-from .store import CoordinateStore
+from .store import CoordNode, CoordinateStore
 from .spaces import (
     CONDUCT_COLD_START_DEFAULT,
     CONSTRAINT_WEIGHT_DEADLINE,
@@ -418,10 +418,11 @@ class CoordinateExtractor:
         sequence_position: int,
         total_steps: int,
         session_id: str,
-    ) -> None:
+    ) -> Optional[CoordNode]:
         """
         Record a single tool call observation and upsert a toolpath node when
         the per-session-tool observation window reaches ≥ 3 entries (Req 4.28–4.29).
+        Returns the upserted node, or None while the window is too short.
 
         Maintains per-session, per-tool observation windows in memory only.
         Windows are cleared by `clear_session()`.
@@ -446,7 +447,7 @@ class CoordinateExtractor:
 
         window = self._observation_windows[key]
         if len(window) < 3:
-            return  # Not enough observations yet
+            return None  # Not enough observations yet
 
         # Compute toolpath coordinates from the window
         tid = _tool_id_hash(tool_name)
@@ -469,7 +470,7 @@ class CoordinateExtractor:
         label = f"tool_{tool_name}"
         confidence = min(0.3 + 0.05 * n, 0.9)
 
-        self._store.upsert_node("toolpath", coords, label, confidence)
+        return self._store.upsert_node("toolpath", coords, label, confidence)
 
     # ------------------------------------------------------------------
     # Session cleanup

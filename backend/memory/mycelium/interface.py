@@ -383,10 +383,11 @@ class MyceliumInterface:
     _MAX_INDEXED_NODES = 32
 
     def _active_node_state(self, session_id: str) -> Tuple[List[str], List[str]]:
-        """The session's active node ids (the nodes its context paths walked)
-        and their spaces, for the episode index. Never raises."""
+        """The session's region node ids (the nodes its context paths walked
+        and the nodes it wrote) and their spaces, for the episode index.
+        Never raises."""
         try:
-            ids = sorted(self._registry.get_active(session_id))[: self._MAX_INDEXED_NODES]
+            ids = sorted(self._registry.get_region(session_id))[: self._MAX_INDEXED_NODES]
             spaces = sorted({
                 n.space_id for n in (self._store.get_node_by_id(i) for i in ids) if n
             })
@@ -524,7 +525,7 @@ class MyceliumInterface:
         """Extract coordinates from a user statement and upsert resulting nodes."""
         results = self._extractor.extract_from_statement(text)
         for space_id, coords, confidence, label in results:
-            self._store.upsert_node(space_id, coords, label, confidence)
+            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
         if results:
             self._is_mature_cached = None
 
@@ -541,7 +542,7 @@ class MyceliumInterface:
                 continue
             results = self._extractor.extract_from_statement(text)
             for space_id, coords, confidence, label in results:
-                self._store.upsert_node(space_id, coords, label, confidence)
+                self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
             if results:
                 any_results = True
         if any_results:
@@ -552,7 +553,7 @@ class MyceliumInterface:
         result = self._extractor.extract_from_sessions(session_timestamps)
         if result:
             space_id, coords, confidence, label = result
-            self._store.upsert_node(space_id, coords, label, confidence)
+            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
             self._is_mature_cached = None
 
     def ingest_conduct_outcomes(self, episodes: List[Any]) -> None:
@@ -585,21 +586,25 @@ class MyceliumInterface:
         total_steps: int,
         session_id: str,
     ) -> None:
-        """Record a tool call observation; upsert toolpath node once window ≥ 3."""
-        self._extractor.ingest_tool_call(
+        """Record a tool call observation; upsert toolpath node once window ≥ 3.
+        The node the session wrote becomes part of its region (edge scoring and
+        the episode index read it)."""
+        node = self._extractor.ingest_tool_call(
             tool_name=tool_name,
             success=success,
             sequence_position=sequence_position,
             total_steps=total_steps,
             session_id=session_id,
         )
+        if node is not None:
+            self._registry.touch(session_id, node.node_id)
 
     def ingest_context(self, text: str, session_data: dict) -> None:
         """Extract a context-space node from project/stack signals in text + session data."""
         result = self._extractor._extract_context_signals(text, session_data)
         if result:
             space_id, coords, confidence, label = result
-            self._store.upsert_node(space_id, coords, label, confidence)
+            self._store.upsert_node(space_id, coords, label, confidence, accumulate=True)
             self._is_mature_cached = None
 
     # ------------------------------------------------------------------

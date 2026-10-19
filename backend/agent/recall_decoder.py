@@ -465,8 +465,8 @@ class RecallDecoder:
             # the store connection — the no-arg form left _resolve_conn with
             # no interface, so predictions were always [] here.
             predictor = BehavioralPredictor(myc)
-            # Active node IDs from current session
-            active_nodes = list(myc._registry.get_active(self._session_id))
+            # Region node IDs (walked + written) from the current session
+            active_nodes = list(getattr(myc._registry, "get_region", myc._registry.get_active)(self._session_id))
             if not active_nodes:
                 return _sparse_span(op, confidence=0.1, hint="no_active_nodes")
 

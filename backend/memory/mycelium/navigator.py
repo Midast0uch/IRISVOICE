@@ -15,6 +15,7 @@ CoordinateNavigator handles:
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from typing import Dict, List, Optional, Set, Tuple
 
 from backend.memory.db import app_flush, app_write
@@ -35,8 +36,16 @@ class SessionRegistry:
     In-memory only — cleared on session end or app restart.
     """
 
+    # Bounds on the TOUCHED sets (sessions kept, nodes per session, newest kept).
+    _MAX_TOUCHED_SESSIONS = 256
+    _MAX_TOUCHED_PER_SESSION = 64
+
     def __init__(self) -> None:
         self._active: Dict[str, Set[str]] = {}
+        # Nodes the session WROTE (e.g. its toolpath node). Kept apart from
+        # _active: navigation excludes active nodes from entry/fallback, so a
+        # node the session made must not be hidden from its own navigation.
+        self._touched: "OrderedDict[str, OrderedDict[str, None]]" = OrderedDict()
 
     def register(self, session_id: str, node_ids: List[str]) -> None:
         """Add node_ids to the active set for a session."""
@@ -48,13 +57,32 @@ class SessionRegistry:
         """Return the set of active node IDs for a session (empty set if unknown)."""
         return self._active.get(session_id, set())
 
+    def touch(self, session_id: str, node_id: str) -> None:
+        """Record that the session wrote node_id (bounded, newest kept)."""
+        nodes = self._touched.pop(session_id, None) or OrderedDict()
+        nodes.pop(node_id, None)
+        nodes[node_id] = None
+        while len(nodes) > self._MAX_TOUCHED_PER_SESSION:
+            nodes.popitem(last=False)
+        self._touched[session_id] = nodes
+        while len(self._touched) > self._MAX_TOUCHED_SESSIONS:
+            self._touched.popitem(last=False)
+
+    def get_region(self, session_id: str) -> Set[str]:
+        """The session's position in the graph: the nodes it walked (active)
+        plus the nodes it wrote (touched). Edge scoring and the episode index
+        read this; navigation de-duplication reads get_active only."""
+        return set(self._active.get(session_id, ())) | set(self._touched.get(session_id, ()))
+
     def clear(self, session_id: str) -> None:
         """Remove all tracking for a single session."""
         self._active.pop(session_id, None)
+        self._touched.pop(session_id, None)
 
     def clear_all(self) -> None:
         """Remove all session tracking (used on shutdown or full reset)."""
         self._active.clear()
+        self._touched.clear()
 
 
 # ---------------------------------------------------------------------------

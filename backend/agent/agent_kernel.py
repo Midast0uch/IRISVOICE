@@ -18542,7 +18542,7 @@ Respond with a JSON object:
                     # decision/synthesis nodes are not learning events.
                     return
                 _mediator_tool = _mediator.split(":", 1)[0]
-                node_ids = list(myc._registry.get_active(session_id))
+                node_ids = list(getattr(myc._registry, "get_region", myc._registry.get_active)(session_id))
                 # REQ-26 AC1: the step's REGION is the ONE active node whose
                 # coordinates are nearest its live Î£ position â€” not every
                 # active node (that would be a fan-out in region clothing).
