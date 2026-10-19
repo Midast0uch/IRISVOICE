@@ -665,6 +665,12 @@ def initialise_mycelium_schema(conn) -> None:
             ON mycelium_landmarks(task_class);
         CREATE INDEX IF NOT EXISTS idx_landmarks_score
             ON mycelium_landmarks(cumulative_score DESC);
+        -- ChartRegistry.get_chart_origins (topology.py) runs on the answer path
+        -- inside the memory context package. Without this it SCANs every landmark
+        -- row: 73 s on the first turn after start (cold pages on a hard disk,
+        -- live 2026-10-19). Partial + covering: only index pages are read.
+        CREATE INDEX IF NOT EXISTS idx_landmarks_chart_origin
+            ON mycelium_landmarks(activation_count, landmark_id) WHERE absorbed IS NULL;
         CREATE INDEX IF NOT EXISTS idx_landmark_edges_from
             ON mycelium_landmark_edges(from_landmark_id);
         CREATE INDEX IF NOT EXISTS idx_conflicts_space
