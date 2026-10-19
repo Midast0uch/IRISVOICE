@@ -574,3 +574,55 @@ count; then the cortex reads `mycelium_pins` + `mycelium_pin_links`.
 
 The largest open item is not in §12: **§13.1, the memory never reaches the agent's step
 prompts.**
+
+
+---
+
+## 15. The next three, and the live gate (2026-10-19)
+
+| Item | Commit | State |
+|---|---|---|
+| The memory reaches the step prompts (§13.1) | `a0b0924c` | ContextPackage built from existing producers (path, topology, predictions, failures, task class); capped 1,600 chars, 150 ms budget; off switch `IRIS_MEMORY_CONTEXT_PACKAGE=0`. ON by default. |
+| Landmark duplicates + sectors in shadow (W9) | `c8852bb5` | merge-all at Jaccard ≥ 0.5, region clusters, uuid merge ids, specificity tie-break; sectors table, roots, sector at save + backfill (91: rule 19, cluster 51, general 21), lifecycle logged only. A session with no region crystallizes no landmark. `collapse_duplicates()` is NOT in maintenance (decision below). |
+| Cortex visual | `c198f97a` | timeline = fibre tissue; the doorway is a tall soft arch with no rim; pins, trust membranes, fading, landmark tracts, immune response, sectors, spaces; MEMORY-DASHBOARD-DESIGN §17. |
+| First-turn stall found by the gate | `d706941c` | 73 s in the chart-origin query (cold SCAN) → 196 ms with an index. Standard S113. |
+
+**Live gate (coding group, 15 tasks, real backend).**
+
+| Run | Pass | Sum of reply_s | Note |
+|---|---|---|---|
+| ON #1 | 14/15 | 685 s | includes the 12.8 s cold first turn (the S113 stall) |
+| OFF | 13/15 | 643 s | `IRIS_MEMORY_CONTEXT_PACKAGE=0`, same build |
+| ON #2 (after S113) | 13/15 | 816 s | 8 packages built; 22 extra model calls (below) |
+
+Run-to-run noise is large (the two ON runs differ by 19%; failures move between tasks:
+ON#1 c14, OFF c04+c06, ON#2 c05+c11). Pass does not regress. The reply time is higher in
+ON#2, and the measured cause is **the step reviewer's model branch** (`der_loop.py` ~1167):
+it runs when the graph is mature and a package exists — which never happened before today —
+and in ON#2 it made 22 extra calls (role EXECUTION). It judges a step against the package's
+gradient warnings and active contracts, and **no producer fills either field**, so it reviews
+with no memory signal. Gating it on non-empty warnings/contracts conflicts with five existing
+tests (`tests/unit/test_reviewer_split.py`, `tests/contract/test_verdict_consumer_shape.py`)
+that pin "mature + package → model review" — reported, not changed (owner decision below).
+
+**Live values after the gate (read-only):** 48 `mycelium_edges` (was 0; scores 0.5–1.0,
+evidence up to 12); 23 landmarks activated by use (max 14 — one is now a chart origin); 55
+landmark edges grown (0.42–0.45, up to 8 traversals); 5 landmarks permanent through use
+(tier `landmark` + 8 activations — the rule that was always there, now reachable); new nodes
+carry their channel (21 SYSTEM, 1 USER); 13 proven sector roots; quorum log empty (no signal).
+**Not exercised:** the episode index — every eval task is a repeat, the episode store dedups
+it (UPDATE, early return) before the index step, so no new index row formed; check with a new
+task.
+
+**Decisions for the owner.**
+1. The reviewer's model branch: keep it live (the tests' contract; +~22 calls/run, no memory
+   signal to judge), or require a warning/contract first (change the five tests' contract).
+2. `collapse_duplicates()` on the live store: it would absorb 88 of 91 landmarks into 3, but
+   they look alike only because of the old global-top-6 cluster bug — their claims differ.
+3. Permanence through use: a `landmark`-tier claim becomes permanent at 8 activations; the
+   activations are now real (one landmark reached 14 in ~46 turns — hub concentration).
+
+**Visual check (in-app browser):** demo + `?real` load with no console errors; `?real` reads 7
+spaces, 120 nodes, 0 pins. The orb renders as a bright white core in the in-app browser — the
+same for the version before this work (software rendering, ~17 fps); check brightness in your
+own browser.
