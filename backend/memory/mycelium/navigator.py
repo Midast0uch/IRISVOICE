@@ -46,6 +46,10 @@ class SessionRegistry:
         # _active: navigation excludes active nodes from entry/fallback, so a
         # node the session made must not be hidden from its own navigation.
         self._touched: "OrderedDict[str, OrderedDict[str, None]]" = OrderedDict()
+        # The region each session had when it was cleared. The turn ends the
+        # session on the answer path; the turn-end job (episode, landmarks)
+        # runs after on a lane, when the live sets are already empty.
+        self._cleared: "OrderedDict[str, frozenset]" = OrderedDict()
 
     def register(self, session_id: str, node_ids: List[str]) -> None:
         """Add node_ids to the active set for a session."""
@@ -74,8 +78,17 @@ class SessionRegistry:
         read this; navigation de-duplication reads get_active only."""
         return set(self._active.get(session_id, ())) | set(self._touched.get(session_id, ()))
 
+    def get_last_region(self, session_id: str) -> Set[str]:
+        """The region the session had when clear() last ran (empty if unknown).
+        For work that runs after the session ended; bounded like _touched."""
+        return set(self._cleared.get(session_id, ()))
+
     def clear(self, session_id: str) -> None:
         """Remove all tracking for a single session."""
+        self._cleared.pop(session_id, None)
+        self._cleared[session_id] = frozenset(self.get_region(session_id))
+        while len(self._cleared) > self._MAX_TOUCHED_SESSIONS:
+            self._cleared.popitem(last=False)
         self._active.pop(session_id, None)
         self._touched.pop(session_id, None)
 
@@ -83,6 +96,7 @@ class SessionRegistry:
         """Remove all session tracking (used on shutdown or full reset)."""
         self._active.clear()
         self._touched.clear()
+        self._cleared.clear()
 
 
 # ---------------------------------------------------------------------------

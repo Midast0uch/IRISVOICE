@@ -987,6 +987,23 @@ class MyceliumInterface:
             if elapsed > DISTILLATION_MAX_INTERVAL:
                 self._maintenance_needed = True
 
+    def observe_landmark_use(self, session_id: str, outcome: str) -> List[str]:
+        """
+        Turn end, before the session's new landmark exists: the landmarks the
+        session's region overlaps were used - activate them and let the
+        outcome grow the edges among them. The turn ended the session already
+        (clear_session), so the region is the one it had when cleared.
+        Never raises; returns the activated landmark ids.
+        """
+        try:
+            region = (self._registry.get_region(session_id)
+                      or self._registry.get_last_region(session_id))
+            return self._lm_index.observe_region(region, outcome)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interface] observe_landmark_use failed session=%s: %s",
+                           session_id, exc)
+            return []
+
     def nullify_conversation(self, session_id: str) -> None:
         """Clear conversation_ref for all landmarks referencing this session."""
         self._lm_index.nullify_conversation(session_id)

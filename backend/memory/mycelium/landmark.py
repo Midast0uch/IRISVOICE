@@ -13,6 +13,7 @@ Classes:
 """
 
 import hashlib
+import itertools
 import json
 import logging
 import struct
@@ -36,6 +37,9 @@ logger = logging.getLogger(__name__)
 # Landmark edge decay rates (Req 8.10)
 _DECAY_PERMANENT: float = 0.002     # per day — very stable
 _DECAY_NON_PERMANENT: float = 0.005  # per day — still consolidating
+
+# The most landmarks one session ends up activating (their pairs: 15 edges).
+_ACTIVATION_CAP: int = 6
 
 # Trust-cap: fraction of cluster nodes from external/untrusted channels that
 # blocks crystallisation (Req 15.12)
@@ -713,6 +717,102 @@ class LandmarkIndex:
                         )
             except (json.JSONDecodeError, TypeError):
                 pass
+
+    # ------------------------------------------------------------------
+    # Growth: landmarks that are USED together learn that they go together
+    # ------------------------------------------------------------------
+
+    def landmarks_in_region(self, region, limit: int = _ACTIVATION_CAP) -> List[str]:
+        """
+        The landmarks a session's region overlaps: non-absorbed landmarks with
+        at least one region node id in their coordinate cluster, the ``limit``
+        largest overlaps first (ties by landmark_id, so the pick is stable).
+        """
+        if not region:
+            return []
+        ranked = []
+        for landmark_id, cluster_json in self._conn.execute(
+            "SELECT landmark_id, coordinate_cluster FROM mycelium_landmarks "
+            "WHERE absorbed IS NULL"
+        ):
+            try:
+                cluster = json.loads(cluster_json)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(cluster, list):   # bootstrap landmarks hold a dict
+                continue
+            overlap = len({d.get("node_id") for d in cluster if isinstance(d, dict)} & region)
+            if overlap:
+                ranked.append((-overlap, landmark_id))
+        ranked.sort()
+        return [landmark_id for _, landmark_id in ranked[:limit]]
+
+    def record_co_activation(self, landmark_ids: List[str], outcome: str) -> int:
+        """
+        Apply ONE outcome observation to the edge of every pair among
+        ``landmark_ids`` - the growth half of the law apply_landmark_decay
+        already follows (decay.py; EdgeScorer.record_outcome):
+        score += delta * a(n), n = traversal_count BEFORE the observation,
+        clamped to [0, 1]; traversal_count + 1; hit_count (a gain) or
+        miss_count (a loss) + 1; last_traversed = now. A pair with no edge
+        gets one first (INSERT OR IGNORE at the initial score, as _auto_connect
+        does). An edge keeps the direction it was stored with; either
+        direction counts as the pair's edge. An unknown outcome is ignored.
+
+        Returns the number of edges observed.
+        """
+        from .decay import evidence_weight  # noqa: PLC0415
+        from .scorer import _OUTCOME_DELTAS  # noqa: PLC0415
+
+        base = _OUTCOME_DELTAS.get(outcome, 0.0)
+        ids = list(dict.fromkeys(landmark_ids))
+        if base == 0.0 or len(ids) < 2:
+            return 0
+        # One writer: queued edge writes must be on disk before this read.
+        app_flush()
+        now = time.time()
+        observed = 0
+        for a, b in itertools.combinations(ids, 2):
+            rows = self._conn.execute(
+                "SELECT edge_id, traversal_count FROM mycelium_landmark_edges "
+                "WHERE (from_landmark_id = ? AND to_landmark_id = ?) "
+                "   OR (from_landmark_id = ? AND to_landmark_id = ?)",
+                (a, b, b, a),
+            ).fetchall()
+            if not rows:
+                self._upsert_landmark_edge(a, b, "co_activation", 0.4)
+                rows = [(None, 0)]
+            for edge_id, traversals in rows:
+                delta = base * evidence_weight(traversals)
+                where, args = (
+                    ("edge_id = ?", (edge_id,)) if edge_id
+                    else ("from_landmark_id = ? AND to_landmark_id = ?", (a, b))
+                )
+                app_write(
+                    self._conn,
+                    "UPDATE mycelium_landmark_edges SET "
+                    "score = MAX(0.0, MIN(1.0, score + ?)), "
+                    "traversal_count = COALESCE(traversal_count, 0) + 1, "
+                    "hit_count = COALESCE(hit_count, 0) + ?, "
+                    "miss_count = COALESCE(miss_count, 0) + ?, "
+                    f"last_traversed = ? WHERE {where}",
+                    (delta, int(base > 0), int(base < 0), now) + args,
+                )
+                observed += 1
+        return observed
+
+    def observe_region(self, region, outcome: str) -> List[str]:
+        """
+        A session ended with ``outcome`` having walked/written ``region``: the
+        landmarks it overlaps were USED. Activate each (at most
+        _ACTIVATION_CAP), then observe the outcome on the edges among them.
+        Returns the activated landmark ids.
+        """
+        ids = self.landmarks_in_region(set(region))
+        for landmark_id in ids:
+            self.activate(landmark_id)
+        self.record_co_activation(ids, outcome)
+        return ids
 
     # ------------------------------------------------------------------
     # Nullification

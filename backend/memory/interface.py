@@ -375,6 +375,10 @@ class MemoryInterface:
                     _evidence.append("task_complete")
                 if getattr(episode, "user_confirmed", False):
                     _evidence.append("user_confirm")
+                # The landmarks this session used: activate them and grow the
+                # edges among them (before crystallize: the new landmark is
+                # not "used" by the session that made it).
+                self._mycelium.observe_landmark_use(episode.session_id, myc_outcome)
                 self._mycelium.crystallize_landmark(
                     session_id=episode.session_id,
                     cumulative_score=score,
