@@ -141,6 +141,7 @@ class CoordinateNavigator:
         min_score: float = _DEFAULT_MIN_SCORE,
         spaces: Optional[List[str]] = None,
         channel_profile: Optional[str] = None,
+        peek: bool = False,
     ) -> MemoryPath:
         """
         Find the best coordinate path for a task description (Req 5.1–5.5).
@@ -159,6 +160,9 @@ class CoordinateNavigator:
             spaces:          When provided, only traverse nodes in these spaces.
             channel_profile: When provided, restrict to spaces readable by this profile
                              (lazy-imports SUBAGENT_CHANNEL_PROFILES from kyudo.py).
+            peek:            Read-only walk: no access counts, no registration in the
+                             SessionRegistry (a speculative pre-warm must not count
+                             as use of a node or hide nodes from the next real walk).
 
         Returns:
             MemoryPath with all traversed nodes, cumulative score, and traversal_id.
@@ -204,7 +208,8 @@ class CoordinateNavigator:
             if node.node_id not in visited_ids and node.node_id not in active_nodes:
                 visited_ids.add(node.node_id)
                 result_nodes.append(node)
-                self._store.record_access(node.node_id)
+                if not peek:
+                    self._store.record_access(node.node_id)
 
         # Hop traversal
         hops = 0
@@ -224,7 +229,8 @@ class CoordinateNavigator:
                         continue
                     visited_ids.add(target_id)
                     result_nodes.append(target)
-                    self._store.record_access(target_id)
+                    if not peek:
+                        self._store.record_access(target_id)
                     cumulative_score += edge.score
                     edge_count += 1
                     next_frontier.append(target)
@@ -236,7 +242,8 @@ class CoordinateNavigator:
             cumulative_score /= edge_count
 
         # Register traversed nodes into SessionRegistry (Req 5.5)
-        self._registry.register(session_id, [n.node_id for n in result_nodes])
+        if not peek:
+            self._registry.register(session_id, [n.node_id for n in result_nodes])
 
         spaces_covered = list({n.space_id for n in result_nodes})
 

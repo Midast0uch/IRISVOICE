@@ -1009,31 +1009,53 @@ class PredictiveLoader:
         self._hit_count: int = 0
         self._miss_count: int = 0
 
+    # Entries kept (oldest dropped): a session that never asks again must not
+    # keep its entry for the life of the process.
+    _MAX_CACHE_ENTRIES: int = 32
+
     def pre_warm(
         self,
         session_id: str,
         navigator: Any,
         last_task_class: str,
+        last_task_text: str = "",
     ) -> None:
         """
         Pre-navigate the most probable path for the next session.
+
+        The prediction is that the next task repeats the last one: the path is
+        walked for ``last_task_text`` (kept as the hint the hit check compares
+        the incoming task with). No text, nothing to match - no entry.
 
         Only runs when ``is_mature()`` is True on the interface; the caller
         is responsible for that gate.
         """
         try:
+            if not last_task_text:
+                return
             space_subset = (
                 self._spaces.spaces_for_class(last_task_class)
                 or self._spaces.spaces_for_class("full")
             )
-            # Use an empty hint text — navigator picks the highest-confidence path
-            path = navigator.navigate_subgraph("", space_subset)
+            # peek: a read-only walk under its own session key - a speculative
+            # walk must not count as node use or fill the real session's region.
+            path = navigator.navigate_from_task(
+                task_text=last_task_text,
+                session_id=f"{session_id}:prewarm",
+                spaces=space_subset,
+                peek=True,
+            )
+            if not getattr(path, "nodes", None):
+                return
+            self._prediction_cache.pop(session_id, None)
             self._prediction_cache[session_id] = {
                 "path":       path,
                 "task_class": last_task_class,
-                "hint_text":  "",
+                "hint_text":  last_task_text,
                 "cached_at":  time.time(),
             }
+            while len(self._prediction_cache) > self._MAX_CACHE_ENTRIES:
+                del self._prediction_cache[next(iter(self._prediction_cache))]
             logger.debug(
                 "[PredictiveLoader] pre-warmed session=%s class=%s",
                 session_id[:8],

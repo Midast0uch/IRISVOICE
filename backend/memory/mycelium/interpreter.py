@@ -258,6 +258,7 @@ class BehavioralPredictor:
         task_class: str,
         completed_tools: List[str],
         conn=None,
+        settle: bool = True,
     ) -> List[str]:
         """
         Returns top-3 predicted next tool/action names.
@@ -269,6 +270,9 @@ class BehavioralPredictor:
             completed_tools:  Tools already used this session (excluded)
             conn:             SQLite connection (defaults to the stored
                               interface's store connection when None)
+            settle:           Wait for queued writes before reading (a decision
+                              on the row just written). False = a steering
+                              read of the last settled rows, no wait.
 
         Returns:
             List of up to 3 predicted tool names (empty if no data)
@@ -293,7 +297,8 @@ class BehavioralPredictor:
             placeholders = ",".join("?" for _ in current_node_ids)
             # One writer: the posterior this decision reads is the edge update
             # just queued by record_region_mediator_outcome.
-            app_flush()
+            if settle:
+                app_flush()
             cursor = conn.execute(
                 f"SELECT e.to_node_id, e.score, e.hit_count, e.traversal_count, "
                 f"       n.label, n.confidence, e.edge_type "

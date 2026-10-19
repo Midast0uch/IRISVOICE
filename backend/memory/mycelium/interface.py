@@ -15,6 +15,7 @@ Orchestrates:
 
 import json
 import logging
+import os
 import re
 import time
 from collections import OrderedDict
@@ -42,6 +43,24 @@ _USER_CHANNEL = 3
 # ---------------------------------------------------------------------------
 # ContextPackage — DER Director context (Req 14.1)
 # ---------------------------------------------------------------------------
+
+# Cap on the system-zone text a package contributes to a step prompt. 1,600
+# chars is ~400 tokens: the zone header + coordinate path + partial profile
+# measure a few hundred chars on real stores, and every DER step prompt already
+# carries a ~300-token evidence block plus the working memory (6,000-char cap) -
+# the memory stays a hint on the prompt and must not grow it.
+CONTEXT_PACKAGE_MAX_CHARS: int = 1600
+_CAP_MARKER = "\n...[context capped]"
+
+# Time budget for building a package (seconds). The walk and the encode are
+# required; topology, predictions and failures are optional and are skipped once
+# the budget is spent - the package degrades, the turn is never delayed.
+CONTEXT_PACKAGE_BUDGET_S: float = 0.15
+
+
+def context_package_enabled() -> bool:
+    """IRIS_MEMORY_CONTEXT_PACKAGE: default ON; "0" restores the string path."""
+    return os.environ.get("IRIS_MEMORY_CONTEXT_PACKAGE", "1").strip() != "0"
 
 
 @dataclass
@@ -75,7 +94,13 @@ class ContextPackage:
             self.topology_path,
             self.ambient_signals,
         ]
-        return "\n".join(p for p in parts if p)
+        content = "\n".join(p for p in parts if p)
+        if len(content) <= CONTEXT_PACKAGE_MAX_CHARS:
+            return content
+        # Over the cap: drop whole trailing lines (never half a line) and say so.
+        room = CONTEXT_PACKAGE_MAX_CHARS - len(_CAP_MARKER)
+        cut = content.rfind("\n", 0, room)
+        return content[: cut if cut > 0 else room] + _CAP_MARKER
 
     def get_tier2_predictions(self) -> str:
         return self.tier2_predictions or ""
@@ -91,8 +116,24 @@ class ContextPackage:
     def topology_primitive(self) -> str:
         if not self.topology_path:
             return "unknown"
-        m = re.search(r"primitives:\[([a-z_]+)\]", self.topology_path)
-        return m.group(1) if m else "unknown"
+        # "primitives:[x]" is the documented form; the one producer,
+        # TopologyLayer.encode_topology_context, writes "TOPOLOGY: prim:x z:+0.10".
+        m = re.search(r"primitives:\[([a-z_]+)\]|\bprim:([a-z_]+)", self.topology_path)
+        return (m.group(1) or m.group(2)) if m else "unknown"
+
+
+@dataclass
+class _ContextParts:
+    """The pieces one context-path walk produces. get_context_path joins them
+    into the string; build_context_package maps them onto ContextPackage."""
+
+    task_class: str
+    zone_header: str
+    encoding: str
+    partial_profile: str
+    topology_suffix: str
+    trajectory_label: str
+    topology_skipped: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +213,9 @@ class MyceliumInterface:
         self._is_mature_logged: bool = False
         self._maintenance_needed: bool = False
         self._last_task_class: Optional[str] = None
+        # session -> (task text, task class) of its last context walk: what the
+        # predictive pre-warm re-walks at the session boundary. Bounded.
+        self._last_task: "OrderedDict[str, Tuple[str, str]]" = OrderedDict()
         self._crystallisation_suspended: bool = (
             False  # set True during QuorumReorganization, lifted at clear_session
         )
@@ -596,43 +640,183 @@ class MyceliumInterface:
         Return a compact coordinate path string for context injection (Req 12.5).
 
         Returns "" when the graph is immature — caller falls back to prose header.
+        The walk itself is _context_parts (shared with build_context_package).
+        """
+        parts = self._context_parts(task_text, session_id, minimal)
+        if parts is None:
+            return ""
+        coordinate_path = (
+            f"{parts.encoding} | {parts.topology_suffix}"
+            if parts.topology_suffix
+            else parts.encoding
+        )
+        if parts.partial_profile:
+            return f"{parts.zone_header}\n{coordinate_path}\n{parts.partial_profile}"
+        return f"{parts.zone_header}\n{coordinate_path}"
+
+    def build_context_package(
+        self,
+        task_text: str,
+        session_id: str,
+        task_class: Optional[str] = None,
+        budget_s: float = CONTEXT_PACKAGE_BUDGET_S,
+    ) -> Optional[ContextPackage]:
+        """
+        Assemble the ContextPackage the DER loop reads, from existing producers.
+
+        Returns None when the graph is immature, the walk found no nodes or the
+        build failed - the caller falls back to the string path. Never raises.
+
+        Field -> producer (a field with no producer stays ""):
+          mycelium_path       zone header + PathEncoder path + partial profile
+                              (the same walk get_context_path does)
+          topology_path       TopologyLayer.encode_topology_context
+          topology_position   TopologyContext.trajectory_label
+          tier2_predictions   BehavioralPredictor.predict on the walked region
+          tier3_failures      evidence._avoid_list (episodes outcome 'miss')
+          task_class          the caller's TaskClassifier label (no 2nd classify)
+          tier1_directives, active_contracts, gradient_warnings, causal_context,
+          ambient_signals     no producer exists yet -> "" (LiveContextPackage
+                              refreshes predictions, warnings and contracts)
+        Optional parts are skipped once ``budget_s`` is spent.
+        """
+        t0 = time.monotonic()
+        deadline = t0 + budget_s
+        skipped: List[str] = []
+        try:
+            parts = self._context_parts(
+                task_text, session_id, task_class=task_class, deadline=deadline
+            )
+            if parts is None:
+                return None
+            if parts.topology_skipped:
+                skipped.append("topology")
+
+            tier2 = ""
+            if time.monotonic() < deadline:
+                try:
+                    from .interpreter import BehavioralPredictor  # noqa: PLC0415
+
+                    # A steering read: last settled edges, no wait on the writer.
+                    preds = BehavioralPredictor(self).predict(
+                        session_id,
+                        sorted(self._registry.get_region(session_id)),
+                        parts.task_class,
+                        [],
+                        settle=False,
+                    )
+                    tier2 = ", ".join(preds)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[interface] package predictions failed: %s", exc)
+            else:
+                skipped.append("tier2")
+
+            tier3 = ""
+            if time.monotonic() < deadline:
+                try:
+                    from backend.agent.evidence import _avoid_list  # noqa: PLC0415
+
+                    tier3 = "\n".join(_avoid_list(self))
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[interface] package failures failed: %s", exc)
+            else:
+                skipped.append("tier3")
+
+            path_text = "\n".join(
+                p for p in (parts.zone_header, parts.encoding, parts.partial_profile) if p
+            )
+            pkg = ContextPackage(
+                mycelium_path=path_text,
+                topology_path=parts.topology_suffix,
+                manifest={},
+                tier1_directives="",
+                tier2_predictions=tier2,
+                tier3_failures=tier3,
+                active_contracts="",
+                gradient_warnings="",
+                causal_context="",
+                ambient_signals="",
+                topology_position=parts.trajectory_label,
+                task_class=parts.task_class,
+            )
+            logger.info(
+                "[interface] context_package session=%s build_ms=%.1f zone_chars=%d "
+                "skipped=%s",
+                session_id[:8], (time.monotonic() - t0) * 1000.0,
+                len(pkg.get_system_zone_content()), ",".join(skipped) or "-",
+            )
+            return pkg
+        except Exception as exc:  # noqa: BLE001 - the string path answers instead
+            logger.warning(
+                "[interface] context_package build failed session=%s: %s",
+                session_id[:8], exc,
+            )
+            return None
+
+    def _context_parts(
+        self,
+        task_text: str,
+        session_id: str,
+        minimal: bool = False,
+        task_class: Optional[str] = None,
+        deadline: Optional[float] = None,
+    ) -> Optional[_ContextParts]:
+        """
+        Walk the graph for a task and return the pieces of its context path, or
+        None when the graph is immature or the walk found no nodes.
 
         Pipeline:
           1. Maturity gate.
-          2. TaskClassifier.classify() to get space_subset (lazy import from kyudo).
-          3. PredictiveLoader.get_cached() — return cached path if hit (lazy import).
+          2. Space subset: the caller's ``task_class`` (no second classify), else
+             TaskClassifier.classify() (lazy import from kyudo).
+          3. PredictiveLoader.get_cached() - a cached path replaces the walk.
           4. Navigate from task text.
           5. Encode with PathEncoder.
-          6. Append topology context if TopologyLayer is available (lazy import).
+          6. Topology context if TopologyLayer is available - skipped when
+             ``deadline`` (a time.monotonic() value) has passed.
         """
         if not self.is_mature():
-            return ""
+            return None
 
-        # Step 2 — classify task to get space subset
+        # Step 2 — space subset for the task class
         space_subset: Optional[List[str]] = None
         try:
-            task_class, space_subset = self._task_classifier.classify(task_text)
+            if task_class:
+                space_subset = self._spaces.spaces_for_class(task_class)
+            else:
+                task_class, space_subset = self._task_classifier.classify(task_text)
             self._last_task_class = task_class
         except Exception as exc:  # noqa: BLE001
             logger.debug("[interface] TaskClassifier failed: %s", exc)
+        self._last_task[session_id] = (task_text, task_class or "full")
+        self._last_task.move_to_end(session_id)
+        while len(self._last_task) > 64:
+            self._last_task.popitem(last=False)
 
-        # Step 3 — check predictive cache
+        # Step 3 — check predictive cache (the hit is a MemoryPath, not a string)
+        path: Optional[MemoryPath] = None
         try:
             cached = self._predictive_loader.get_cached(session_id, task_text)
-            if cached:
-                return cached
+            if cached is not None and getattr(cached, "nodes", None):
+                path = cached
+                # what navigate_from_task would have done for these nodes
+                ids = [n.node_id for n in path.nodes]
+                self._registry.register(session_id, ids)
+                for node_id in ids:
+                    self._store.record_access(node_id)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[interface] PredictiveLoader failed: %s", exc)
 
         # Step 4 — navigate
-        path: MemoryPath = self._navigator.navigate_from_task(
-            task_text=task_text,
-            session_id=session_id,
-            spaces=space_subset,
-        )
+        if path is None:
+            path = self._navigator.navigate_from_task(
+                task_text=task_text,
+                session_id=session_id,
+                spaces=space_subset,
+            )
 
         if not path.nodes:
-            return ""
+            return None
 
         # Step 5 — encode
         if minimal:
@@ -680,27 +864,32 @@ class MyceliumInterface:
                 self._context_task_count,
             )
 
-        # Step 6 — append topology context
+        # Step 6 — topology context (optional: skipped past the deadline)
         topology_suffix = ""
-        try:
-            active_nodes = []
-            for space_id in space_subset or []:
-                active_nodes.extend(self._store.get_nodes_by_space(space_id))
-            topo_ctx = self._topology_layer.get_topology_context(
-                session_id, active_nodes
-            )
-            topology_suffix = self._topology_layer.encode_topology_context(topo_ctx)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[interface] TopologyLayer failed: %s", exc)
+        trajectory_label = ""
+        topology_skipped = deadline is not None and time.monotonic() >= deadline
+        if not topology_skipped:
+            try:
+                active_nodes = []
+                for space_id in space_subset or []:
+                    active_nodes.extend(self._store.get_nodes_by_space(space_id))
+                topo_ctx = self._topology_layer.get_topology_context(
+                    session_id, active_nodes
+                )
+                topology_suffix = self._topology_layer.encode_topology_context(topo_ctx)
+                trajectory_label = (topo_ctx.trajectory_label or "") if topo_ctx else ""
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[interface] TopologyLayer failed: %s", exc)
 
-        # Assemble final context: zone header + coordinate path + partial profile
-        zone_header = self._cell_wall.render_zone_headers()
-        coordinate_path = (
-            f"{encoding} | {topology_suffix}" if topology_suffix else encoding
+        return _ContextParts(
+            task_class=task_class or "full",
+            zone_header=self._cell_wall.render_zone_headers(),
+            encoding=encoding,
+            partial_profile=partial_profile,
+            topology_suffix=topology_suffix,
+            trajectory_label=trajectory_label,
+            topology_skipped=topology_skipped,
         )
-        if partial_profile:
-            return f"{zone_header}\n{coordinate_path}\n{partial_profile}"
-        return f"{zone_header}\n{coordinate_path}"
 
     # ------------------------------------------------------------------
     # Ingestion methods
@@ -1177,11 +1366,13 @@ class MyceliumInterface:
                 )
         self._crystallisation_suspended = False
 
-        # Step 3: predictive pre-warm at session boundary (mature only)
-        if self.is_mature():
+        # Step 3: predictive pre-warm at session boundary (mature only; it
+        # serves the context package, so it follows the package switch)
+        last_text, last_class = self._last_task.pop(session_id, ("", "full"))
+        if context_package_enabled() and self.is_mature():
             try:
                 self._predictive_loader.pre_warm(
-                    session_id, self._navigator, self._last_task_class or "full"
+                    session_id, self._navigator, last_class, last_text
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[interface] pre_warm failed: %s", exc)

@@ -216,6 +216,12 @@ class MemoryInterface:
             except Exception as _cp_err:
                 logger.debug("[MemoryInterface] get_context_path failed: %s", _cp_err)
 
+        return self._assemble_task_context(task, session_id, coordinate_path)
+
+    def _assemble_task_context(
+        self, task: str, session_id: str, coordinate_path: str
+    ) -> str:
+        """get_task_context after the coordinate path is known ("" = prose header)."""
         if coordinate_path:
             # Inject compact coordinate path in place of prose header
             header = coordinate_path
@@ -703,29 +709,37 @@ class MemoryInterface:
         """
         Assemble a ContextPackage for the DER Director.
         Returns (ContextPackage, True) when Mycelium is mature.
-        Returns (context_string, False) when Mycelium is unavailable or immature.
+        Returns (context_string, False) when Mycelium is unavailable or immature,
+        when the walk finds no nodes, or when IRIS_MEMORY_CONTEXT_PACKAGE=0.
+        ``space_subset`` is unused (the task class picks the spaces).
         Never raises.
         """
         try:
-            if self._mycelium is None or not self._mycelium.is_mature():
-                try:
-                    return self.get_task_context(task, session_id), False
-                except Exception:
-                    return "", False
-            pkg = self._mycelium.get_context_path(
-                task_text=task, session_id=session_id, space_subset=space_subset
+            from backend.memory.mycelium.interface import (  # noqa: PLC0415
+                context_package_enabled,
             )
-            if not pkg or isinstance(pkg, str):
-                try:
-                    return self.get_task_context(task, session_id), False
-                except Exception:
-                    return "", False
-            return pkg, True
+
+            if (
+                context_package_enabled()
+                and self._mycelium is not None
+                and self._mycelium.is_mature()
+            ):
+                pkg = self._mycelium.build_context_package(
+                    task_text=task, session_id=session_id, task_class=task_class
+                )
+                if pkg is not None:
+                    return pkg, True
+                # The package walk found nothing: the string path's prose header
+                # answers - without a second walk.
+                return self._assemble_task_context(task, session_id, ""), False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[MemoryInterface] get_task_context_package failed: %s", exc
+            )
+        try:
+            return self.get_task_context(task, session_id), False
         except Exception:
-            try:
-                return self.get_task_context(task, session_id), False
-            except Exception:
-                return "", False
+            return "", False
 
     @property
     def working(self):
