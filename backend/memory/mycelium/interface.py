@@ -215,6 +215,8 @@ class MyceliumInterface:
 
         # MCP trust registry
         self._mcp_trust_registry: Dict[str, dict] = {}
+        # Servers whose identity drifted from their pin: UNTRUSTED until re-pinned.
+        self._mcp_untrusted: set = set()
         self._load_mcp_trust_registry()
 
         # Plan stats table (DER Gate 1 Step 1.8)
@@ -460,6 +462,62 @@ class MyceliumInterface:
             (server_id, url, content_hash, now),
         )
         self._mcp_trust_registry[server_id] = {"url": url, "content_hash": content_hash}
+        # A fresh pin is the owner's decision to trust the current identity.
+        self._mcp_untrusted.discard(server_id)
+
+    def check_mcp_identity(
+        self, server_id: str, identity_hash: str, session_id: str = "mcp"
+    ) -> "HyphaChannel":
+        """
+        Compare a connected MCP server's runtime identity with its pin (Kyudo Part 1).
+
+          pin matches  -> VERIFIED
+          no pin       -> EXTERNAL   (never auto-pinned; see register_mcp)
+          pin differs  -> UNTRUSTED  for the rest of the session: WARNING log, one
+                          mycelium_conflicts row, and a channel_trust_violation
+                          signal. A later match does not restore it (only a new
+                          register_mcp does), and the signal fires once per drift.
+        Never raises: on error the answer is the conservative UNTRUSTED/EXTERNAL.
+        """
+        from .kyudo import HyphaChannel  # noqa: PLC0415
+
+        pin = self._mcp_trust_registry.get(server_id)
+        if pin is None:
+            logger.debug("[interface] mcp=%s has no pin -> EXTERNAL", server_id)
+            return HyphaChannel.EXTERNAL
+        if server_id in self._mcp_untrusted:
+            return HyphaChannel.UNTRUSTED
+        if pin["content_hash"] == identity_hash:
+            return HyphaChannel.VERIFIED
+
+        self._mcp_untrusted.add(server_id)
+        logger.warning(
+            "[interface] mcp=%s identity drifted from its pin (pinned=%s seen=%s) "
+            "-> UNTRUSTED for this session session=%s",
+            server_id, pin["content_hash"], identity_hash, session_id,
+        )
+        try:
+            import uuid  # noqa: PLC0415
+
+            app_write(
+                self._conn,
+                """INSERT OR IGNORE INTO mycelium_conflicts
+                   (conflict_id, space_id, axis, value_a, source_a,
+                    value_b, source_b, resolved_value, resolution_basis,
+                    created_at)
+                   VALUES (?, 'mcp', 'identity', ?, ?, ?, ?, ?, 'mcp_pin_mismatch', ?)""",
+                (
+                    f"mcp_{uuid.uuid4().hex[:12]}",
+                    float(HyphaChannel.VERIFIED), f"pin:{server_id}:{pin['content_hash']}",
+                    float(HyphaChannel.UNTRUSTED), f"runtime:{server_id}:{identity_hash}",
+                    float(HyphaChannel.UNTRUSTED),
+                    time.time(),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[interface] mcp=%s conflict row failed: %s", server_id, exc)
+        self.record_anomaly(session_id, "channel_trust_violation")
+        return HyphaChannel.UNTRUSTED
 
     # ------------------------------------------------------------------
     # Maturity gate

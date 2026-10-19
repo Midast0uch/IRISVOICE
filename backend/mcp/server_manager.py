@@ -3,7 +3,7 @@ Server Manager - Manages MCP server connections and lifecycle
 """
 import asyncio
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import time
@@ -66,6 +66,7 @@ class ServerManager:
         self._servers: Dict[str, ServerConfig] = {}
         self._clients: Dict[str, MCPClient] = {}
         self._connected: Dict[str, bool] = {}
+        self._channels: Dict[str, Any] = {}  # server name -> HyphaChannel (Kyudo pin check)
         self._health_status: Dict[str, ServerHealth] = {}
         self._health_check_tasks: Dict[str, asyncio.Task] = {}
         self._shutdown_event = asyncio.Event()
@@ -141,6 +142,7 @@ class ServerManager:
         
         if success:
             logger.info(f"[ServerManager] Connected to {name}")
+            self._verify_identity(name)
             # Start health monitoring
             await self._start_health_monitoring(name)
         else:
@@ -181,6 +183,60 @@ class ServerManager:
         """Get MCP client for a server"""
         return self._clients.get(name)
     
+    def server_identity(self, name: str) -> Optional[Tuple[str, str]]:
+        """(endpoint, identity hash) of a connected server, or None if not connected.
+
+        This is also what an owner registers as the pin (see register_mcp on
+        MyceliumInterface): ``register_mcp(name, endpoint, hash)``.
+        """
+        config = self._servers.get(name)
+        client = self._clients.get(name)
+        if not config or not client or not self._connected.get(name, False):
+            return None
+        from backend.memory.mycelium.kyudo import mcp_identity_hash
+
+        if config.type == "stdio":
+            endpoint = "stdio:" + " ".join([config.command or ""] + list(config.args or []))
+        else:
+            endpoint = f"{config.type}:{config.url}"
+        tools = [t.to_dict() for t in client.get_tools()]
+        return endpoint, mcp_identity_hash(endpoint, client.server_info, tools)
+
+    def _verify_identity(self, name: str) -> Any:
+        """Compare the server's identity with its pin; store and return its channel.
+
+        Runs at connect and on every reuse of the cached connection (call_tool).
+        A server with no pin is EXTERNAL, a matching pin VERIFIED, a drifted
+        pin UNTRUSTED (the Mycelium side logs, records the conflict, signals).
+        Any failure here leaves the server EXTERNAL; it never blocks a call.
+        """
+        from backend.memory.mycelium.kyudo import HyphaChannel
+
+        channel = HyphaChannel.EXTERNAL
+        try:
+            from backend.memory import get_memory_interface
+
+            memory = get_memory_interface()
+            identity = self.server_identity(name)
+            if memory is not None and identity is not None:
+                channel = memory.mycelium_check_mcp_identity(
+                    name, identity[1], f"mcp:{name}"
+                )
+        except Exception as e:
+            logger.warning(f"[ServerManager] identity check failed for {name}: {e}")
+        self._channels[name] = channel
+        return channel
+
+    def get_channel(self, name: str) -> Any:
+        """HyphaChannel for results of a server (EXTERNAL until its identity is checked).
+
+        A caller that writes a result to memory passes it as
+        ``metadata={"channel": int(manager.get_channel(name))}``.
+        """
+        from backend.memory.mycelium.kyudo import HyphaChannel
+
+        return self._channels.get(name, HyphaChannel.EXTERNAL)
+
     def get_all_tools(self) -> List[Dict]:
         """Get all tools from all connected servers"""
         all_tools = []
@@ -199,7 +255,8 @@ class ServerManager:
         if not client or not self._connected.get(server_name, False):
             logger.error(f"[ServerManager] Server {server_name} not connected")
             return None
-        
+
+        self._verify_identity(server_name)  # cached connection reused: re-check the pin
         return await client.call_tool(tool_name, arguments)
 
     def stop_all_servers(self) -> None:

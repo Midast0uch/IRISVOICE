@@ -157,6 +157,23 @@ class MemoryInterface:
             logger.warning("[MemoryInterface] mycelium_record_anomaly failed: %s", exc)
             return False
 
+    def mycelium_register_mcp(self, server_id: str, url: str, content_hash: str) -> None:
+        """Pin an MCP server's identity (the owner's decision; never called on first use)."""
+        self._mycelium.register_mcp(server_id, url, content_hash)
+
+    def mycelium_check_mcp_identity(
+        self, server_id: str, identity_hash: str, session_id: str = "mcp"
+    ):
+        """Trust channel of a connected MCP server: VERIFIED / EXTERNAL / UNTRUSTED.
+
+        EXTERNAL when Mycelium is not initialised (no pin can be read).
+        """
+        from backend.memory.mycelium.kyudo import HyphaChannel
+
+        if getattr(self, "_mycelium", None) is None:
+            return HyphaChannel.EXTERNAL
+        return self._mycelium.check_mcp_identity(server_id, identity_hash, session_id)
+
     def get_caducean_state(self, session_id: str) -> Optional[Dict[str, float]]:
         """Read the latest Caducean (x, y, xi, u, recommendation) for a session.
 

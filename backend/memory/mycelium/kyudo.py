@@ -367,6 +367,46 @@ def mcp_security_to_channel(security_level: str) -> HyphaChannel:
     return mapping.get(security_level.lower(), HyphaChannel.EXTERNAL)
 
 
+def mcp_identity_hash(
+    endpoint: str,
+    server_info: Optional[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+) -> str:
+    """
+    Stable runtime identity of a connected MCP server (Kyudo Part 1 pin).
+
+    The hash covers what the server really presents at connect time:
+      * ``endpoint``    -- how IRIS reached it (stdio command + args, or url)
+      * ``server_info`` -- its ``initialize`` serverInfo (name, version)
+      * ``tools``       -- every tool's name, description and input schema,
+                           sorted by name (a changed description is how a
+                           server poisons the model, so it counts as drift)
+
+    Same server and same version give the same hash on every connect; a new
+    version, a different binary/url or a changed tool list gives a new one.
+    """
+    import json  # noqa: PLC0415
+
+    info = server_info or {}
+    canon = {
+        "endpoint": endpoint,
+        "server": [str(info.get("name", "")), str(info.get("version", ""))],
+        "tools": sorted(
+            (
+                [
+                    str(t.get("name", "")),
+                    str(t.get("description", "")),
+                    t.get("inputSchema", {}),
+                ]
+                for t in tools
+            ),
+            key=lambda row: row[0],
+        ),
+    }
+    blob = json.dumps(canon, sort_keys=True, separators=(",", ":"), default=str)
+    return "sha256:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # QuorumSensor — anomaly detection
 # ---------------------------------------------------------------------------

@@ -33,6 +33,7 @@ class MCPClient:
         
         # MCP state
         self._initialized = False
+        self.server_info: Dict[str, Any] = {}  # serverInfo from initialize (name, version)
         self._tools: List[MCPTool] = []
         self._resources: List[MCPResource] = []
         self._prompts: List[MCPPrompt] = []
@@ -99,6 +100,7 @@ class MCPClient:
         
         if response and response.result:
             self._initialized = True
+            self.server_info = response.result.get("serverInfo") or {}
             logger.info(f"[MCPClient] Initialized {self.server_name}")
             
             # Fetch tools
