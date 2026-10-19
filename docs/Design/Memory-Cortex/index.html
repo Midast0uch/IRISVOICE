@@ -40,6 +40,8 @@ svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
   transition:opacity .35s,color .25s;opacity:0}
 .rlabel b{font-weight:600;color:var(--ink);margin-right:.6em}
 .rlabel i{display:block;font-style:normal;font-size:10px;color:var(--faint);line-height:1.5}
+.syncr{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.06em;white-space:nowrap}
+.sync{display:inline-block;width:42px;height:3px;margin:0 .5em;vertical-align:middle;background:rgba(212,236,246,.14)}.sync i{display:block;height:100%;background:currentColor}
 .rlabel.hot b{color:var(--white)} .rlabel.hot i{color:var(--dim)}
 .anno{position:absolute;max-width:360px;pointer-events:none;opacity:0;transition:opacity .3s}
 .anno.on{opacity:1}
@@ -517,6 +519,22 @@ const M=normalizeMemory(USE_REAL?window.IRIS_MEMORY:synthMemory());
 rng=mulberry32(77);
 const T0=Math.min(...M.landmarks.map(l=>l.born),...M.sessions.map(s=>s.started),nowS()-86400);
 const bestEvidence=l=>{let b='none',bv=0;for(const e of l.evidence){const v=EVID[e.kind]||0;if(v>bv){bv=v;b=e.kind}}return b};
+// SYNC (design §18): one 0..1 value for how well a piece of memory holds together, read from outside evidence only.
+//  claim     = its strongest outside evidence, held back while it is still a candidate, pulled down by contradictions
+//  session   = how its tasks ended (success 1, partial .5, failure 0; a correction by you counts .7), blended with the
+//              evidence strength of its moments; a session that drifted off loses a little
+//  territory = the share of its claims that are proven (regSync, smoothed)
+const syncClaim=l=>clamp((EVID[bestEvidence(l)]||0)*(l.tier==='candidate'?.6:1)*(1-.2*Math.min(3,l.contradictions||0))+(l.permanent?.05:0),0,1);
+const syncSession=s=>{const eps=s.episodes.map(id=>M.epById.get(id)).filter(e=>e&&e.outcome!=='running');
+  const ev=s.events.length?s.events.reduce((a,e)=>a+(EVID[e.evidence]??.2),0)/s.events.length:.3;
+  const ep=eps.length?eps.reduce((a,e)=>a+(e.corrected?.7:e.outcome==='success'?1:e.outcome==='partial'?.5:0),0)/eps.length:null;
+  return clamp((ep==null?ev:.65*ep+.35*ev)*(s.exit==='drift'?.85:1),0,1)};
+// DESYNC is not low sync: missing evidence is "not proven yet", a failure or a setback is the memory not holding together
+const desyncSession=s=>{const eps=s.episodes.map(id=>M.epById.get(id)).filter(e=>e&&e.outcome!=='running');
+  const f=eps.length?eps.filter(e=>e.outcome==='failure').length/eps.length:0,b=s.events.length?s.events.filter(e=>e.valence==='sets_back').length/s.events.length:0;
+  return clamp(f+b*2,0,1)};
+const syncHTML=v=>{const p=Math.round(v*100),c=v>=.75?'#bfe9f6':v>=.5?'#d8cf9a':'#ff8a6a';
+  return `<span class="syncr" style="color:${c}">sync <span class="sync"><i style="width:${p}%"></i></span>${p}%</span>`};
 // territories: the domains that hold anything, largest first (max 12 = the shader's region slots)
 const REG=Object.entries(M.domCounts).filter(([,n])=>n>0).sort((a,b)=>b[1]-a[1]).slice(0,12).map(([d])=>d);
 if(!REG.length)REG.push('general');
@@ -775,6 +793,7 @@ const cellGeo=new THREE.IcosahedronGeometry(R*1.012,4);
 // Each cell is a FRAGMENT (design §18): it stands a little apart from its neighbours and breathes. How tightly a
 // territory's fragments hold together is its SYNC - the share of its claims that outside evidence has proven - so a
 // well-proven territory reads as one assembled surface and a territory that is still learning drifts loose.
+const regN=REG.map(d=>M.landmarks.filter(l=>l.domain===d).length);
 const regSync=REG.map(d=>{let n=0,p=0;for(const l of M.landmarks)if(l.domain===d){n++;if(l.tier!=='candidate')p++}return (p+.5)/(n+1)});
 {const p=cellGeo.attributes.position,n=p.count,fc=new Float32Array(n*3),fe=new Float32Array(n*3),fr=new Float32Array(n),fs=new Float32Array(n),a=new V3(),b=new V3(),c=new V3();
   for(let f=0;f<n;f+=3){a.fromBufferAttribute(p,f);b.fromBufferAttribute(p,f+1);c.fromBufferAttribute(p,f+2);const ce=a.clone().add(b).add(c).multiplyScalar(1/3),m=ce.clone().normalize(),r=rng();
@@ -1139,11 +1158,14 @@ const beadGeo=new THREE.BufferGeometry();const bP=new Float32Array(sess.length*3
 sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=2.5+Math.sqrt(s.events.length)*.7;
   const c=new THREE.Color(s.exit==='live'?THEMES[0][1]:s.exit==='drift'?'#ffb547':'#dfeaf2');bC.set([c.r,c.g,c.b],i*3)});
 beadGeo.setAttribute('position',new THREE.BufferAttribute(bP,3));beadGeo.setAttribute('aA',new THREE.BufferAttribute(bA,1));
+beadGeo.setAttribute('aDs',new THREE.BufferAttribute(Float32Array.from(sess,desyncSession),1));   // a session that failed or was set back desyncs
 beadGeo.setAttribute('aS',new THREE.BufferAttribute(bS,1));beadGeo.setAttribute('aC',new THREE.BufferAttribute(bC,3));
 const beadMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0},uHover:{value:-1}},
-  vertexShader:`uniform float uPix,uVis,uTime;uniform float uHover;attribute float aA,aS;attribute vec3 aC;varying vec3 vC;varying float vA;
-    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(float(gl_VertexID)-uHover),.1);
-      vC=aC;vA=uVis*(.8+aA*.6+h*.8);gl_PointSize=min((aS+h*4.+aA*3.*(.5+.5*sin(uTime*3.)))*uPix*(60./-mv.z),40.*uPix);gl_Position=projectionMatrix*mv;}`,
+  vertexShader:`uniform float uPix,uVis,uTime;uniform float uHover;attribute float aA,aS,aDs;attribute vec3 aC;varying vec3 vC;varying float vA;
+    float h1(float x){return fract(sin(x*127.1)*43758.5453);}
+    void main(){float id=float(gl_VertexID),dz=step(.9,h1(floor(uTime*5.)+id*7.3))*aDs;   // failures and setbacks: a brief glitch now and then
+      vec4 mv=modelViewMatrix*vec4(position+vec3(h1(id+floor(uTime*20.))-.5,0.,h1(id*3.+floor(uTime*20.))-.5)*dz*.6,1.);float h=step(abs(id-uHover),.1);
+      vC=mix(aC,vec3(1.,.3,.3),dz*.8);vA=uVis*(.8+aA*.6+h*.8);gl_PointSize=min((aS+h*4.+aA*3.*(.5+.5*sin(uTime*3.)))*uPix*(60./-mv.z),40.*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     float core=smoothstep(.22,.0,d),halo=smoothstep(.5,.0,d)*.4;gl_FragColor=vec4(vC,(core+halo)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
@@ -2038,7 +2060,7 @@ function placeAnnos(){
       s.el.classList.remove('left');s.el.classList.add('right')}}}
 // family region labels around the skin
 const regLabelEls=REG.map((d,i)=>{const el=document.createElement('div');el.className='rlabel';
-  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
+  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)} ${regN[i]?syncHTML(regSync[i]):'<span class="syncr">no claims yet</span>'}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
 // the coordinate spaces as layers: press s and each shell names itself, with who may write there
 const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el.className='rlabel';
@@ -2165,7 +2187,7 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
   const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
   const s=M.sById.get(l.session);
   const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':String(l.cls).replace(/_/g,' '));
-  return `<div class="k">${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)}</div>
+  return `<div class="k">${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)} · ${syncHTML(syncClaim(l))}</div>
     <div class="t">${esc(l.claim)}</div>
     <div class="m">${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
@@ -2199,7 +2221,7 @@ function enterTunnel(s){
       showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);state.voidT=REDUCED?0:1;tunnel.tileU.uAsm.value=REDUCED?1:0;cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
       cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
       const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
-      T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks</small>`;T.style.opacity=1;
+      T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
       $('scrub').classList.remove('on');
       document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
       hint('scroll / w s · travel through the session &nbsp; ← → · neuron to neuron<br>hover · read a message or moment &nbsp; click a neuron · follow its thread &nbsp; esc · back');
@@ -2372,7 +2394,7 @@ function hover(x,y){
     if(k>=0){const s=sess[k];canvas.style.cursor='pointer';
       const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
       setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}</div><span class="go">click · step inside</span>`)}
+        <div class="m">${syncHTML(syncSession(s))}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}</div><span class="go">click · step inside</span>`)}
     else clearAnno('hover');return}
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();

@@ -997,3 +997,19 @@ threat is a desync glitch, a reorganization is a pulse that resettles the lattic
   breathes slightly, clicking open space glides you there, the inner wall slows you softly, and after a few idle
   seconds a slow current carries you round the core (or round the thought you opened). The shell's long wire lines
   dim from inside so they do not cross the view.
+
+### 18.8 Step 2 as built — sync and desync (2026-10-19)
+
+One 0-100% **sync** value, read from outside evidence only, shown as a thin bar wherever the thing is named:
+- **claim** = its strongest outside evidence (EVID weight), x0.6 while still a candidate, -20% per contradiction (up to
+  three), +5% if permanent — in the claim's card;
+- **session** = how its tasks ended (success 1, partial .5, failure 0, your correction .7) blended 65/35 with the
+  evidence strength of its moments, x0.85 if it drifted off — on the timeline hover and the corridor title;
+- **territory** = the smoothed share of its claims that are proven — on the cortex labels ("no claims yet" when it
+  has none), and as the looseness of its lattice fragments.
+
+**Desync is not low sync.** Missing evidence means "not proven yet" and only lowers sync. A desync glitch is reserved
+for the memory not holding together: a session's failed tasks plus twice its share of setback moments make its
+timeline bead jolt red now and then; failures and setbacks desync their stretch of the corridor wall. Measured on the
+real store: 38 of 127 claims proven, territory sync 3-59%, four territories with no claims, no episodes in the
+snapshot (session sync then rests on moment evidence alone).
