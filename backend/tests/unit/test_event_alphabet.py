@@ -63,9 +63,44 @@ def test_hash_signature_is_deterministic_and_never_a_stand_in():
     a = ea.hash_signature("2.00,1.00,1.05,0.35", "der", "general")
     assert a == ea.hash_signature("2.00,1.00,1.10,0.40", "der", "general")  # same bins
     assert a != ea.hash_signature("2.00,1.00,1.05,0.35", "voice", "general")
-    assert a != ea.hash_signature("3.00,1.00,1.05,0.35", "der", "general")
+    # A different STATE gets a different address. Scheme 2 (owner, 2026-10-18): x and y
+    # enter as the charge Q and the work volume, not raw counts, so the different state
+    # here is the opposite balance (expansion-led vs compression-led), not "one more step".
+    assert a != ea.hash_signature("1.00,2.00,1.05,0.35", "der", "general")
     assert ea.hash_signature(None, "der", "general") is None
     assert ea.hash_signature("rest:input:1", "der", "general") is None
+
+
+def test_the_address_is_a_state_not_a_step_counter():
+    """Scheme 1 hashed raw step counts: every step of every session minted a new
+    address, so an exact-match recall (Wormhole Tier-1a) could only hit 'step n of
+    some session'. The address space must stay bounded however long sessions run."""
+    seen = {ea.hash_signature(f"{x}.00,{y}.00,1.05,0.35", "der", "general")
+            for x in range(0, 200, 3) for y in range(0, 200, 3)}
+    assert len(seen) <= 5 * 6   # charge bins x volume bins
+
+
+def test_a_poisoned_coordinate_is_written_unhashed_never_raised():
+    """Wormhole REQ-1 edge case: NaN / inf -> no address, logged. Scheme 1 raised
+    inside emit, whose broad except then dropped the WHOLE event."""
+    for bad in ("nan,1.00,1.05,0.35", "1.00,1.00,inf,0.35", "1.00,1.00,1.05,nan"):
+        assert ea.hash_signature(bad, "der", "general") is None
+        assert ea.hex_bin_id(bad, "der", "general") is None
+
+
+def test_refining_a_sector_never_moves_an_address():
+    s = "4.00,3.00,2.10,-0.30"
+    assert ea.hash_signature(s, "der", "systems/memory/recall") == ea.hash_signature(s, "der", "systems")
+    assert ea.hex_bin_id(s, "der", "systems/memory") == ea.hex_bin_id(s, "der", "systems")
+    assert ea.hash_signature(s, "der", "systems") != ea.hash_signature(s, "der", "web")
+
+
+def test_the_hex_bin_is_minted_from_the_same_state():
+    s = "4.00,3.00,2.10,-0.30"
+    h = ea.hex_bin_id(s, "der", "general")
+    assert h and h == ea.hex_bin_id(s, "der", "general")          # deterministic
+    assert h != ea.hex_bin_id("4.00,3.00,5.10,0.80", "der", "general")  # another cell
+    assert ea.hex_bin_id(None, "der", "general") is None
 
 
 def test_only_facts_count_as_outside_evidence():

@@ -243,6 +243,36 @@ def test_try_merge_returns_survivor_above_overlap(mem_conn):
     assert result is None or hasattr(result, "landmark_id")
 
 
+def test_merging_two_unactivated_landmarks_keeps_their_score(mem_conn):
+    """Guard (2026-10-18): a merge weighted the scores by activation_count over
+    max(1, total). With both activations 0 that is 0 / 1 = 0.0, so every merge of new
+    landmarks erased two real scores (2,581 of 2,701 live landmarks sat at 0.0)."""
+    _seed_spaces(mem_conn)
+    import json
+    from backend.memory.mycelium.landmark import Landmark
+
+    node_id = str(uuid.uuid4())
+    lm_old, lm_new = str(uuid.uuid4()), str(uuid.uuid4())
+    now = time.time()
+    cluster = [{"space_id": "domain", "node_id": node_id, "coordinates": [0.5, 0.5, 0.5],
+                "confidence": 0.8, "access_count": 0}]
+    mem_conn.execute(
+        """INSERT INTO mycelium_landmarks
+           (landmark_id, label, task_class, coordinate_cluster, traversal_sequence,
+            cumulative_score, activation_count, is_permanent, created_at, last_activated)
+           VALUES (?,?,?,?,?,0.8,0,0,?,?)""",
+        (lm_old, "old", "code_task", json.dumps(cluster), "[]", now, now),
+    )
+    mem_conn.commit()
+    merged = LandmarkMerger(LandmarkIndex(mem_conn)).try_merge(Landmark(
+        landmark_id=lm_new, label="new", task_class="code_task", coordinate_cluster=cluster,
+        traversal_sequence=[], cumulative_score=0.6, micro_abstract=None, micro_abstract_text=None,
+        activation_count=0, is_permanent=False, conversation_ref=None, created_at=now, last_activated=now,
+    ))
+    assert merged is not None
+    assert merged.cumulative_score == pytest.approx(0.7)
+
+
 def test_absorbed_landmark_marked_not_deleted(mem_conn):
     """After merge, absorbed landmark has absorbed=1 in DB, row NOT deleted."""
     _seed_spaces(mem_conn)

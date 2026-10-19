@@ -18740,7 +18740,11 @@ Respond with a JSON object:
             "parent_step_id": getattr(getattr(item, "node_record", None), "parent_step_id", "") or "",
             "execution_domain": getattr(item, "execution_domain", None)
             or ("voice" if from_voice else "der"),
-            "topic_domain": getattr(item, "topic_domain", None) or "general",
+            # The sector lives on the NodeRecord (stamped in _der_finalize_step before the
+            # physics submit); QueueItem has no topic_domain, so reading the item alone
+            # wrote "general" on every caducean_trajectories row (7,089 of 7,089, 2026-10-18).
+            "topic_domain": getattr(node_record, "topic_domain", None)
+            or getattr(item, "topic_domain", None) or "general",
             "insight": (item.description or "")[:120],
             "file_path": item.params.get("path", "") if item.params else "",
             "mediator": mediator,
@@ -18872,8 +18876,11 @@ Respond with a JSON object:
             get_trajectory_recorder(self._memory_interface).record(
                 session_id=_session,
                 step_num=vals["step_number"],
-                x=_ex,
-                y=_ey,
+                # One coherent position AFTER the step (same as the chain's coords_to):
+                # x, y from the EML read were taken BEFORE the update while xi, u come
+                # from after it, so a row mixed two moments.
+                x=_state_snapshot.get("x", _ex),
+                y=_state_snapshot.get("y", _ey),
                 xi=_xi,
                 u=_u,
                 action=_action,

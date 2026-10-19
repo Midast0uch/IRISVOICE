@@ -43,7 +43,10 @@ def test_emit_writes_the_typed_row_and_a_chain_reference(store):
     assert (row["family"], row["label"], row["valence"], row["actor"], row["evidence"]) == (
         "feedback", "CORRECTION", "sets_back", "user", "user")
     assert row["schema_version"] == 1 and row["label_source"] == "rule"
-    assert row["hash_signature"] and row["hash_scheme"] == 1
+    # Scheme 2 (owner-approved 2026-10-18): the address hashes the quantized state, not raw
+    # step counts; every addressed row also carries its hex cell (Wormhole REQ-2 AC1).
+    assert row["hash_signature"] and row["hash_scheme"] == 2
+    assert row["hex_bin"] and row["hex_bin"].startswith("h1|")
     chain = store.execute(
         "SELECT nbl_outcome, result FROM memory_chain WHERE thread_id='t1'").fetchall()
     assert chain[0][0] == "event:CORRECTION"

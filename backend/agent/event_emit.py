@@ -49,19 +49,25 @@ def submit(owner, fn_name: str, **kwargs) -> None:
             # This lane's own connection: its scans never hold the shared one
             # the answer path reads on.
             conn_l = lane_connection(conn)
+            # The step's transition: where it started (before) and where it landed
+            # (coords). Read inside the job, so the step's physics may land first.
             try:
-                from backend.agent.caducean_trajectory import latest_coords_str
+                from backend.agent.caducean_trajectory import latest_transition_str
 
-                coords = latest_coords_str(mi, kwargs.get("thread_id") or "")
+                before, coords = latest_transition_str(mi, kwargs.get("thread_id") or "")
             except Exception:  # noqa: BLE001
-                coords = None
-            if fn_name == "emit_event":
-                _me.ensure_schema(conn_l)
-                kwargs.setdefault("sigma_from", coords)
-                kwargs.setdefault("sigma_to", coords)
-                _me.emit_event(conn_l, **kwargs)
-            else:
-                getattr(_me, fn_name)(conn_l, coords=coords, **kwargs)
+                before, coords = None, None
+            token = _me.SIGMA_BEFORE.set(before)
+            try:
+                if fn_name == "emit_event":
+                    _me.ensure_schema(conn_l)
+                    kwargs.setdefault("sigma_from", before)
+                    kwargs.setdefault("sigma_to", coords)
+                    _me.emit_event(conn_l, **kwargs)
+                else:
+                    getattr(_me, fn_name)(conn_l, coords=coords, **kwargs)
+            finally:
+                _me.SIGMA_BEFORE.reset(token)
 
         lane("memory_events").submit(f"memory_events:{fn_name}", _job)
     except Exception as exc:  # noqa: BLE001

@@ -431,6 +431,20 @@ class CaduceanTrajectoryRecorder:
             logger.warning("[CaduceanTrajectory] get_latest_coordinate failed: %s", exc)
             return None
 
+    def get_last_coordinates(self, session_id: str, n: int = 2) -> list:
+        """The newest ``n`` coordinates of a session, newest first (bounded by ``n``)."""
+        try:
+            rows = self._conn.execute(
+                "SELECT x, y, xi, u FROM caducean_trajectories "
+                "WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
+                (session_id, int(n)),
+            ).fetchall()
+            return [{"x": float(r[0]), "y": float(r[1]), "xi": float(r[2]), "u": float(r[3])}
+                    for r in rows]
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] get_last_coordinates failed: %s", exc)
+            return []
+
     def compute_domain_aggregates(
         self, session_id: str, axis: str = "execution_domain"
     ) -> Dict[str, "PhysicsAggregate"]:
@@ -895,6 +909,30 @@ def parse_coords(s: str) -> Tuple[float, float, float, float]:
         raise ValueError(f"Non-numeric value in coordinate string: {s!r}")
 
 
+def latest_transition_str(memory_interface: Any, *session_ids: str) -> tuple:
+    """The last step's TRANSITION as ``format_coords`` text: (before, after).
+
+    after = the newest recorded position of the session; before = the one recorded
+    just before it (the position the step started from). (None, after) when the
+    session has one row; (None, None) when it has none. Never raises."""
+    if memory_interface is None:
+        return (None, None)
+    try:
+        recorder = get_trajectory_recorder(memory_interface)
+        for sid in session_ids:
+            if not sid:
+                continue
+            rows = recorder.get_last_coordinates(sid, 2)
+            if rows:
+                after = format_coords(*(rows[0][k] for k in ("x", "y", "xi", "u")))
+                before = (format_coords(*(rows[1][k] for k in ("x", "y", "xi", "u")))
+                          if len(rows) > 1 else None)
+                return (before, after)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[trajectory] latest_transition_str skipped: %s", exc)
+    return (None, None)
+
+
 def latest_coords_str(memory_interface: Any, *session_ids: str) -> Optional[str]:
     """REQ-4 AC4.1: the newest recorded coordinate as ``format_coords`` text.
 
@@ -929,6 +967,9 @@ class _NoopTrajectoryRecorder:
 
     def get_latest_coordinate(self, session_id: str) -> Optional[str]:
         return None
+
+    def get_last_coordinates(self, session_id: str, n: int = 2) -> list:
+        return []
 
     def record(self, **kwargs) -> None:
         return None

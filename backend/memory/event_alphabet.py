@@ -14,13 +14,19 @@ Layer 3 - UNCLASSIFIED: unknown labels are kept, counted, and promotable.
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import threading
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
-HASH_SCHEME = 1
+# 2 (2026-10-18, owner-approved): x and y enter as the charge Q and the work volume, not
+# raw step counts; the sector ROOT and the mode. Rows written under 1 keep their scheme
+# (no bulk re-hash - Wormhole REQ-10 AC4).
+HASH_SCHEME = 2
 
 # ── Layer 1: the new closed lattices ────────────────────────────────────────
 FAMILIES = frozenset({
@@ -184,21 +190,85 @@ for _row in _SEED:
 
 # ── Wormhole REQ-1: the exact state address, computed at write time ─────────
 
-def hash_signature(sigma: Optional[str], exec_domain: Optional[str],
-                   topic_domain: Optional[str]) -> Optional[str]:
-    """Deterministic address of quantized Sigma + domains (scheme HASH_SCHEME).
+_Q_EDGES = (-0.6, -0.2, 0.2, 0.6)   # 5 charge bins: lone antikink .. balanced .. lone kink
+_V_MAX = 5                         # work volume bins: floor(log2(1 + x + y)), capped
+_UNHASHABLE = {"count": 0}         # NaN / inf coordinates seen (a poisoned address is worse than none)
 
-    sigma is the ``format_coords`` text "x,y,xi,u". x and y are counts (kept);
-    xi is binned to eighths of a turn, u to quarters on [-1, 1]. None when the
-    coordinate is unknown - an unknown state has no address (never a stand-in).
-    """
+
+def quantize_state(sigma: Optional[str]) -> Optional[Tuple[int, int, int, int]]:
+    """Quantize a ``format_coords`` text "x,y,xi,u" into (q_bin, v_bin, xi_bin, u_bin).
+
+    x and y are step COUNTS, so they never enter raw (a raw count makes every step a new
+    address). They enter as the STATE they imply: the topological charge
+    Q = (x - y) / (x + y + 1) (docs/CADUCEAN_TECHNICAL_OVERVIEW.md section 5), binned
+    in 5, and the work volume x + y on a log2 scale, capped. xi is binned to eighths of a
+    turn, u to quarters on [-1, 1]. None when the coordinate is unknown or not finite
+    (Wormhole REQ-1 edge case: written unhashed, logged, counted)."""
     if not sigma:
         return None
     try:
         x, y, xi, u = (float(v) for v in str(sigma).split(","))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - not a coordinate (e.g. "rest:input:1")
         return None
+    if not all(math.isfinite(v) for v in (x, y, xi, u)):
+        _UNHASHABLE["count"] += 1
+        logger.warning("[event_alphabet] non-finite sigma %r: written unhashed (seen %d)",
+                       sigma, _UNHASHABLE["count"])
+        return None
+    x, y = max(x, 0.0), max(y, 0.0)
+    q = (x - y) / (x + y + 1.0)
+    q_bin = sum(q >= e for e in _Q_EDGES)
+    v_bin = min(_V_MAX, int(math.log2(1.0 + x + y)))
     xi_bin = int((xi % (2 * math.pi)) // (math.pi / 4))
     u_bin = int(min(max(u, -1.0), 0.999) // 0.25)
-    key = f"s{HASH_SCHEME}|{int(x)}|{int(y)}|{xi_bin}|{u_bin}|{exec_domain or '-'}|{topic_domain or '-'}"
+    return q_bin, v_bin, xi_bin, u_bin
+
+
+def sector_root(topic_domain: Optional[str]) -> str:
+    """The top-level sector of a (possibly layered) sector key: "systems/memory" ->
+    "systems". Addresses use the root so refining a sector never moves an address."""
+    return (topic_domain or "-").split("/", 1)[0] or "-"
+
+
+def hash_signature(sigma: Optional[str], exec_domain: Optional[str],
+                   topic_domain: Optional[str]) -> Optional[str]:
+    """Deterministic exact-match address of the quantized state + mode + sector root
+    (scheme HASH_SCHEME; Wormhole REQ-1). None when the state is unknown or not finite -
+    an unknown state has no address (never a stand-in)."""
+    qs = quantize_state(sigma)
+    if qs is None:
+        return None
+    key = f"s{HASH_SCHEME}|q{qs[0]}|v{qs[1]}|x{qs[2]}|u{qs[3]}|{exec_domain or '-'}|{sector_root(topic_domain)}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
+
+HEX_SCHEME = 1
+
+
+def hex_bin_id(sigma: Optional[str], exec_domain: Optional[str],
+               topic_domain: Optional[str]) -> Optional[str]:
+    """The hex cell of the same quantized state (Wormhole REQ-2 AC1), minted at write
+    time; Tier-1b neighbour lookups stay deferred (REQ-2 AC6). The (xi, u) plane is laid
+    on a pointy-top hex grid of 8 columns x 8 rows; the charge, volume, mode and sector
+    root are the layer the grid sits in. Readable, not hashed, so a later Tier-1b query
+    can compute the six neighbours from the id."""
+    qs = quantize_state(sigma)
+    if qs is None:
+        return None
+    xi, u = (float(v) for v in str(sigma).split(",")[2:4])   # finite: quantize_state checked
+    px =(xi % (2 * math.pi)) / (2 * math.pi) * 8 * math.sqrt(3)
+    py = (min(max(u, -1.0), 1.0) + 1.0) / 2.0 * 8 * 1.5
+    aq = (math.sqrt(3) / 3 * px - py / 3)
+    ar = 2.0 / 3.0 * py
+    # cube rounding: deterministic tie-break (Wormhole REQ-2 boundary rule)
+    cx, cz = aq, ar
+    cy = -cx - cz
+    rx, ry, rz = round(cx), round(cy), round(cz)
+    dx, dy, dz = abs(rx - cx), abs(ry - cy), abs(rz - cz)
+    if dx > dy and dx > dz:
+        rx = -ry - rz
+    elif dy > dz:
+        ry = -rx - rz
+    else:
+        rz = -rx - ry
+    return f"h{HEX_SCHEME}|q{qs[0]}|v{qs[1]}|{int(rx)},{int(rz)}|{exec_domain or '-'}|{sector_root(topic_domain)}"

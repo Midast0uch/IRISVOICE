@@ -101,14 +101,18 @@ class LandmarkMerger:
             survivor.coordinate_cluster, absorbed.coordinate_cluster
         )
 
-        # Compute merged cumulative_score (weighted average by activation_count)
-        total_activations = max(
-            1, survivor.activation_count + absorbed.activation_count
-        )
-        merged_score = (
-            survivor.cumulative_score * survivor.activation_count
-            + absorbed.cumulative_score * absorbed.activation_count
-        ) / total_activations
+        # Compute merged cumulative_score: weighted by activation_count. When neither
+        # has been activated yet there is no weight to give, so the plain mean holds -
+        # the old max(1, 0) divisor turned two real scores into 0.0 on every such
+        # merge (measured 2026-10-18: 2,581 of 2,701 live landmarks at 0.0).
+        total_activations = survivor.activation_count + absorbed.activation_count
+        if total_activations > 0:
+            merged_score = (
+                survivor.cumulative_score * survivor.activation_count
+                + absorbed.cumulative_score * absorbed.activation_count
+            ) / total_activations
+        else:
+            merged_score = (survivor.cumulative_score + absorbed.cumulative_score) / 2.0
 
         # Persist: update survivor, absorb victim, re-point edges, log merge
         self._persist_merge(

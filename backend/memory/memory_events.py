@@ -97,6 +97,7 @@ CREATE TABLE IF NOT EXISTS memory_events (
     sigma_to         TEXT,
     hash_signature   TEXT,
     hash_scheme      INTEGER,
+    hex_bin          TEXT,
     action_signature TEXT,
     cost             TEXT,
     links            TEXT,
@@ -110,6 +111,20 @@ CREATE INDEX IF NOT EXISTS idx_memory_events_ts ON memory_events(ts);
 
 
 _SCHEMA_LOCK = threading.Lock()
+_COLUMNS_OK: set = set()   # id(conn) whose memory_events columns were verified
+
+# The position BEFORE the step that produced the events being written. The writers below
+# receive one ``coords`` (the position after); the lane job (agent/event_emit.py) sets the
+# position before for the duration of its call, so every event records the TRANSITION
+# (sigma_from -> sigma_to) instead of one value twice (11,887 of 11,887 live rows had
+# sigma_from = sigma_to, 2026-10-18). Unset: no earlier position is known -> NULL.
+from contextvars import ContextVar
+
+SIGMA_BEFORE: ContextVar[Optional[str]] = ContextVar("memory_events_sigma_before", default=None)
+
+
+def _sigma_from() -> Optional[str]:
+    return SIGMA_BEFORE.get()
 
 
 def ensure_schema(conn) -> None:
@@ -124,12 +139,23 @@ def ensure_schema(conn) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table' "
             "AND name IN ('memory_cases', 'memory_events')"
         )}
-        if have == {"memory_cases", "memory_events"}:
+        if have != {"memory_cases", "memory_events"}:
+            for stmt in _SCHEMA.split(";"):
+                if stmt.strip():
+                    conn.execute(stmt)
+            conn.commit()
+        # Live stores predate later columns: add them once (idempotent), checked once
+        # per connection (this guard runs per event batch on the lane).
+        if id(conn) in _COLUMNS_OK:
             return
-        for stmt in _SCHEMA.split(";"):
-            if stmt.strip():
-                conn.execute(stmt)
-        conn.commit()
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(memory_events)")}
+        if "hex_bin" not in cols:
+            conn.execute("ALTER TABLE memory_events ADD COLUMN hex_bin TEXT")
+            conn.commit()
+            logger.info("[memory_events] ALTER added column hex_bin")
+        if len(_COLUMNS_OK) > 64:   # bounded: connections are few and long-lived
+            _COLUMNS_OK.clear()
+        _COLUMNS_OK.add(id(conn))
 
 
 # ── signatures and dependencies ─────────────────────────────────────────────
@@ -201,7 +227,7 @@ def _append_event(thread_id: str, etype: str, case_id: str, payload: dict,
         ffi_immortus_chain_append(
             thread_id=thread_id,
             result=json.dumps({"type": etype, "case": case_id, **payload}, ensure_ascii=False),
-            coords_from=coords,
+            coords_from=_sigma_from(),
             coords_to=coords,
             # Evidence rows keep their own prefix ("evidence:test_pass").
             nbl_outcome=etype if etype.startswith("evidence:") else f"event:{etype}",
@@ -311,12 +337,13 @@ def emit_event(
             "INSERT INTO memory_events (event_id, ts, schema_version, episode_id, step_index, "
             "thread_id, family, label, valence, actor, evidence, cause_key, outcome_key, trigger, "
             "exec_domain, topic_domain, label_source, label_confidence, sigma_from, sigma_to, "
-            "hash_signature, hash_scheme, action_signature, cost, links, payload) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "hash_signature, hash_scheme, hex_bin, action_signature, cost, links, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (event_id, time.time(), ea.SCHEMA_VERSION, episode_id, step_index, thread_id, family,
              label, valence, actor, evidence, cause_key, outcome_key, trigger, exec_domain,
              topic_domain, label_source, label_confidence, sigma_from, sigma_to,
              ea.hash_signature(sigma_to or sigma_from, exec_domain, topic_domain), ea.HASH_SCHEME,
+             ea.hex_bin_id(sigma_to or sigma_from, exec_domain, topic_domain),
              action_signature, _bounded_json(cost), _bounded_json(links), _bounded_json(payload)),
         )
         if chain and thread_id:
@@ -338,7 +365,7 @@ def _flush(conn, thread_id: str, pending: List[dict], coords: Optional[str]) -> 
         emit_event(
             conn, label=ev["label"], evidence=ev.get("evidence", "none"), thread_id=thread_id,
             episode_id=ev.get("task"), step_index=ev.get("step"), cause_key=ev.get("cause_key"),
-            sigma_from=coords, sigma_to=coords, action_signature=ev.get("action"),
+            sigma_from=_sigma_from(), sigma_to=coords, action_signature=ev.get("action"),
             links={**(ev.get("links") or {}), **({"case": ev["case"]} if ev.get("case") else {})} or None,
             payload=ev.get("payload"), insight=ev.get("insight", ""),
             chain_outcome=ev.get("chain_outcome"), chain=ev.get("chain", True),
@@ -803,7 +830,7 @@ def record_recall_delivered(conn, *, thread_id: str, task_id: str, step_id: str,
         ensure_schema(conn)
         eid = emit_event(
             conn, label="RECALL_DELIVERED", evidence="none", thread_id=thread_id,
-            episode_id=task_id, step_index=step_id, sigma_from=coords, sigma_to=coords,
+            episode_id=task_id, step_index=step_id, sigma_from=_sigma_from(), sigma_to=coords,
             links={"recall_trace_id": recall_trace_id},
             payload={"source": source, "refs": [str(r)[:64] for r in (refs or [])[:5] if r]},
             chain=False,
@@ -845,7 +872,7 @@ def record_cross_check(conn, *, thread_id: Optional[str], checks: List[dict],
             else:
                 continue  # "new", or a recent claim nobody re-checked: no knowledge event
             eid = emit_event(
-                conn, label=event, evidence=evidence, thread_id=thread_id, sigma_from=coords,
+                conn, label=event, evidence=evidence, thread_id=thread_id, sigma_from=_sigma_from(),
                 sigma_to=coords, links={"claim": c.get("claim_id")},
                 payload={"prior_id": c.get("prior_id"), "prior_date": c.get("prior_date"),
                          "check": label}, chain=False,
@@ -873,7 +900,7 @@ def record_research_observed(conn, *, thread_id: Optional[str], document_id: str
         ensure_schema(conn)
         eid = emit_event(
             conn, label="OBSERVED", evidence="corroboration" if corroborated else "none",
-            thread_id=thread_id, sigma_from=coords, sigma_to=coords,
+            thread_id=thread_id, sigma_from=_sigma_from(), sigma_to=coords,
             payload={"document_id": document_id, "claim_ids": list(claim_ids)[:12],
                      "sources": int(sources)}, chain=False,
         )
@@ -892,7 +919,7 @@ def record_source_unreliable(conn, *, domain: str, reason: str = "wall",
         ensure_schema(conn)
         eid = emit_event(
             conn, label="SOURCE_UNRELIABLE", evidence="verifier", thread_id=thread_id,
-            sigma_from=coords, sigma_to=coords,
+            sigma_from=_sigma_from(), sigma_to=coords,
             cause_key=cause_key_of_label("walled"),
             payload={"domain": str(domain)[:120], "reason": reason}, chain=False,
         )
