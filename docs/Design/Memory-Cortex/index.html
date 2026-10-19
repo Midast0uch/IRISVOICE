@@ -2292,7 +2292,11 @@ function exitTunnel(done){
   flash(true,REDUCED?1:200);
   setTimeout(()=>{disposeTunnel();cortex.visible=true;clearAnno('hover');cam.mode='orbit';camera.fov=38;cam.fovT=38;camera.updateProjectionMatrix();
     const back=state.from||'cortex';state.lens='';flash(false,REDUCED?1:600);
-    cam.tween=null;orbitFrom(new V3(0,R*.4,R*5.8),new V3());setLens(back==='cortex'||!back?'cortex':back);done&&done()},REDUCED?0:220);
+    cam.tween=null;orbitFrom(new V3(0,R*.4,R*5.8),new V3());
+    // put the camera at the orbit NOW (under the flash): orbitFrom only sets targets, and a flight started right after
+    // (open in the mind -> dive) began from the tunnel, ~2,800 units away - half a second of black while it flew back
+    camera.position.set(0,R*.4,R*5.8);cam.look.set(0,0,0);camera.lookAt(cam.look);
+    setLens(back==='cortex'||!back?'cortex':back);done&&done()},REDUCED?0:220);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
