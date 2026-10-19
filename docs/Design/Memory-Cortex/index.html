@@ -1318,7 +1318,7 @@ const sparkLines=new THREE.LineSegments(spkGeo,new THREE.LineBasicMaterial({vert
 sparkLines.frustumCulled=false;scene.add(sparkLines);
 const headPos=new Float32Array(SPK*3),headCol=new Float32Array(SPK*3);
 const headGeo=new THREE.BufferGeometry();headGeo.setAttribute('position',new THREE.BufferAttribute(headPos,3));headGeo.setAttribute('color',new THREE.BufferAttribute(headCol,3));
-const heads=new THREE.Points(headGeo,new THREE.PointsMaterial({size:R*.09,map:GLOW,vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+const heads=new THREE.Points(headGeo,new THREE.PointsMaterial({size:R*.045,map:GLOW,vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
 heads.frustumCulled=false;scene.add(heads);KIND_OBJ.moment.push(sparkLines,heads);
 const sparks=Array.from({length:SPK},()=>({on:false,a:new V3(),b:new V3(),c:new V3(),t:0,sp:1,col:new THREE.Color(),gain:1,done:null,jit:.05}));
 function spark(a,b,col,{speed=.8,gain=1,done=null,bend=.5,jit=.05,ctrl=null}={}){
@@ -2366,14 +2366,18 @@ function emit(e){
     const n=tunnel.nodes;const a=tunnel.curve.getPointAt(Math.max(0,cam.tp)).add(TUN_OFF),b=tunnel.curve.getPointAt(.99).add(TUN_OFF);
     spark(a,b,FAM[fi].color,{speed:.5,gain:1.2,bend:1,jit:.3});return}
   if(!cortex.visible)return;
-  // the moment lands on its region's cells, then runs down a tract into a neuron wired to that region
+  // A MOMENT is a spark (the key draws it the same way): it leaves IRIS's mind at the core, runs out to its territory,
+  // flashes on the skin where it lands (the ripple) and fades. When it touches a claim, a second, fainter spark runs
+  // down that claim's arbor arm and wakes it.
   const wired=e.landmark!=null&&e.landmark<NL?e.landmark:pickSomaIn(di);const k=wired;
   const col=e.valence==='sets_back'?'#ff4a3d':e.evidence==='user'?'#ffffff':FAM[fi].color;
-  if(!cortexShown()||k<0)return;
-  const viaTract=LM[k].dom===di;const from=viaTract?somaAnchor[k]:regionPoint(di);
-  impact(from.clone().normalize(),col);
-  spark(from,somaWorld(k),col,{speed:.6,gain:.6+(EVID[e.evidence]??.2)*1.2,ctrl:viaTract?somaCtrl[k]:null,
-    done:()=>{somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}});
+  if(!cortexShown())return;
+  const land=k>=0&&LM[k].dom===di?somaAnchor[k].clone():regionPoint(di),core=land.clone().normalize().multiplyScalar(R*.1);
+  const ctrl=core.clone().lerp(land,.55).add(new V3(gauss(),gauss(),gauss()).multiplyScalar(R*.14));
+  const wake=()=>{if(k<0)return;somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true};
+  spark(core,land,col,{speed:.85,gain:.45+(EVID[e.evidence]??.2)*.9,ctrl,jit:.008,
+    done:()=>{impact(land.clone().normalize(),col);
+      if(k>=0&&LM[k].dom===di)spark(somaAnchor[k],somaWorld(k),col,{speed:.9,gain:.3,ctrl:somaCtrl[k],jit:.006,done:wake});else wake()}});
 }
 function cortexShown(){return cortex.visible&&(state.lens==='cortex'||state.inside)}
 function recallChain(){
