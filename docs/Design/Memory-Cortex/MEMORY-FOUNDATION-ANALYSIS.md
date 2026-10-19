@@ -626,3 +626,49 @@ task.
 spaces, 120 nodes, 0 pins. The orb renders as a bright white core in the in-app browser — the
 same for the version before this work (software rendering, ~17 fps); check brightness in your
 own browser.
+
+---
+
+## 16. The Kyudo integrity pass - the memory cleans itself (owner, 2026-10-19)
+
+> "This memory.db for the application is still test and development ... Kyudo should NATURALLY
+> clean up old landmarks or anything that would interfere with the structural integrity and
+> credibility of the memory."
+
+`mycelium/integrity.py`, run by `MyceliumInterface.run_maintenance` (never the answer path), bounded
+per pass, every action counted (`kyudo.integrity.*`), logged, typed (`LANDMARK_DISSOLVED`,
+`LANDMARK_MERGED`, `MEMORY_PRUNED` - new words in the memory family, no new letters) and written
+through `app_write`. Landmark rows are never deleted: a landmark is ABSORBED (`absorbed = 1`, the
+reason appended to `falsify_if`). It answers decision 2 of section 15: `collapse_duplicates()` is now
+wired in, AFTER the hub landmarks are dissolved.
+
+| Rule | What | Threshold and why |
+|---|---|---|
+| 1b `hub_cluster` | a cluster shared (Jaccard >= 0.5) by landmarks making >= 3 DIFFERENT claims (task_class) | a place that "supports" three claims proves none; found by what it is, not by when it was made. Protected: permanent landmarks and PROVEN claims (tier landmark with outside evidence other than recurrence - recurrence between hub landmarks is circular). |
+| 1a `dangling_cluster` | fewer than half the cluster's nodes still exist | the same 0.5 bar as "the same landmark". |
+| 2 `no_credibility` | score - 0.005 * active_days_idle * a(n) < 0.08 | the section 11 law (edge law, non-permanent landmark rate), n = activations + independent outside evidence, idle since the last touch, computed not written back (idempotent). No evidence, no use: 74 active days at the 0.45 floor; proven (n >= 2) three times that. Permanent exempt. |
+| 3 dangling references | landmark edges, episode-index `landmark_id`, sector rows -> absorbed or missing landmark; node edges -> missing node | re-pointed along the merge log to the live survivor, else removed (edges, sector rows) or cleared (episode-index id; the episode row stays). |
+| 4 orphan nodes | no edge, in no live cluster, never accessed, earned confidence <= 0.05 above the space floor, idle >= 30 active days; never a `stated_*` node | nodes are re-created by observing again; the user's own statement is the observation itself (Req 4.4). The live idle values cluster at 0-19 and 34-52 active days (one node at 25): 30 sits in the gap. |
+| 5 | `collapse_duplicates` | the crystallisation merge rule, applied to the backlog; only while <= 500 live landmarks. |
+
+Bounds per pass: 100 landmarks dissolved, 500 dead landmark ids swept, 100 nodes, 500 node edges.
+A cut pass defers the merge step (a hub left live must not be merged into a crowned claim).
+The quorum reorganization is the same cleaning in an emergency: while crystallisation is suspended
+the pass steps aside (`kyudo.integrity.skipped_quorum`) and runs after `clear_session`.
+
+**Replay (copy of the live store, backup API from a `mode=ro` connection; second pass changes nothing):**
+
+| | before | after |
+|---|---|---|
+| live landmarks | 97 (19 distinct clusters, 75 claims) | 14 (14 distinct clusters, 14 claims) |
+| `hub_cluster` / `dangling_cluster` / `no_credibility` | - | 83 / 0 / 0 |
+| landmark edges (dangling) | 6,289 (2,704) | 33 (0) |
+| episode-index rows pointing at absorbed landmarks | 517 | 0 (525 cleared) |
+| sector rows (dangling) | 291 (45) | 47 (0) |
+| nodes | 121 | 110 (11 orphans) |
+| live per sector | hardware 52, finance 47, data 46, general 31, ... | general 10 (+3 sub-sectors, same 10), hardware 2, web 2, data/design/finance 1 |
+
+Two rules acted on nothing live today (`dangling_cluster`, `no_credibility`: the 14 survivors were
+touched in the last days) and are pinned by guards on constructed cases. Open: the 14 survivors all
+carry `cumulative_score` 0.6 (a constant - the crystallisation score is not a measure);
+the reorganization does not touch landmarks created inside its suspect window.

@@ -193,6 +193,28 @@ def backfill_landmark_sectors(conn) -> Dict[str, int]:
     return counts
 
 
+def remove_dead_landmark_rows(conn, limit: int) -> int:
+    """Remove the memberships of landmarks that are no longer live (absorbed or missing):
+    the lifecycle ignores them, so they are dead weight. A merged landmark's survivor has
+    its own memberships (assigned at save). At most ``limit`` landmarks per call; returns
+    the rows removed. Run by the Kyudo integrity pass (integrity.py): the tables are
+    written only in this module."""
+    ensure_sector_tables(conn)
+    app_flush()
+    dead = [r[0] for r in conn.execute(
+        "SELECT DISTINCT landmark_id FROM mycelium_landmark_sectors WHERE landmark_id NOT IN"
+        " (SELECT landmark_id FROM mycelium_landmarks WHERE absorbed IS NULL) LIMIT ?", (limit,))]
+    removed = 0
+    for i in range(0, len(dead), 400):
+        chunk = dead[i:i + 400]
+        marks = ",".join("?" * len(chunk))
+        removed += conn.execute(
+            f"SELECT COUNT(*) FROM mycelium_landmark_sectors WHERE landmark_id IN ({marks})",
+            chunk).fetchone()[0]
+        app_write(conn, f"DELETE FROM mycelium_landmark_sectors WHERE landmark_id IN ({marks})", chunk)
+    return removed
+
+
 def resolve_sector_key(conn, key: str, _hops: int = 4) -> str:
     """Follow an alias (merged or dissolved sector) to the key that now holds its
     address, so an old address still resolves."""

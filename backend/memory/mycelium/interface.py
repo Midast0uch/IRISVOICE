@@ -1454,6 +1454,7 @@ class MyceliumInterface:
           2. Condense nodes (MapManager.run_condense)
           3. Expand nodes (MapManager.run_expand)
           4. Landmark edge decay (LandmarkIndex.apply_landmark_decay)
+          4b. Kyudo integrity pass (integrity.run_integrity_pass)
           5. Profile render (ProfileRenderer.render_dirty_sections)
           6. Topology maintenance
 
@@ -1500,6 +1501,25 @@ class MyceliumInterface:
                 "[interface] maintenance: apply_landmark_decay failed: %s", exc
             )
 
+        # Step 4b - Kyudo integrity pass: the memory cleans itself (integrity.py).
+        # Before the render, which reads the nodes it may remove. While a quorum
+        # reorganization holds the graph (crystallisation suspended) this slow pass
+        # steps aside: the emergency owns the cleaning until the session ends.
+        try:
+            from backend.agent import write_counters  # noqa: PLC0415
+
+            if self._crystallisation_suspended:
+                write_counters.bump("kyudo.integrity.skipped_quorum")
+                logger.info("[interface] maintenance: integrity pass skipped - quorum reorganization active")
+            else:
+                from .integrity import run_integrity_pass  # noqa: PLC0415
+
+                report = run_integrity_pass(self._conn, self._store, self._merger)
+                if report["nodes_removed"]:
+                    self._is_mature_cached = None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interface] maintenance: integrity pass failed: %s", exc)
+
         try:
             rendered = self._renderer.render_dirty_sections()
             logger.debug(
@@ -1517,11 +1537,10 @@ class MyceliumInterface:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[interface] maintenance: topology pass failed: %s", exc)
 
-        # (collapse_duplicates is NOT run here. On the live store it would absorb 88
-        # of 91 landmarks into 3, but those 88 look alike only because every
-        # cluster was the graph's global top-6 nodes (the bug fixed in condense) -
-        # their claims differ. Owner decision pending, MEMORY-FOUNDATION-ANALYSIS
-        # §15. The function stays for an explicit, reviewed run.)
+        # (collapse_duplicates runs inside the integrity pass above, AFTER the hub
+        # landmarks are dissolved: the 88 live look-alikes of 2026-10-19 shared one
+        # cluster only because of the global-top-6 bug, their claims differ - owner
+        # decision 2026-10-19, MEMORY-FOUNDATION-ANALYSIS §16.)
 
         # Step 7 - sectors, SHADOW: computed and logged (SECTOR_* events), read by nothing.
         try:

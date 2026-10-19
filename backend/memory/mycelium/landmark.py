@@ -99,8 +99,10 @@ _EVENT_IDS_MAX = 20     # landmark ids typed per call (a sweep is bounded; the c
 
 def _emit_landmark_event(conn, label: str, landmark_ids: List[str], *, evidence: str = "none",
                          evidence_kind: str = "", thread_id: Optional[str] = None,
-                         payload: Optional[dict] = None) -> None:
+                         payload: Optional[dict] = None, id_key: str = "landmark") -> None:
     """Type a tier change as LANDMARK_PROMOTED / _STALE / _DEMOTED (memory family).
+    The Kyudo integrity pass (integrity.py) reuses it for LANDMARK_DISSOLVED /
+    LANDMARK_MERGED / MEMORY_PRUNED; ``id_key`` names what the ids are.
 
     Written on the SAME connection inside the caller's open transaction (the caller
     commits): no second writer, no lock wait. No chain reference row - the landmark
@@ -122,7 +124,7 @@ def _emit_landmark_event(conn, label: str, landmark_ids: List[str], *, evidence:
             me.ensure_schema(conn)
             for lid in ids:
                 me.emit_event(conn, label=label, evidence=evidence, thread_id=thread_id,
-                              payload={"landmark": lid, "total": total, **(payload or {})},
+                              payload={id_key: lid, "total": total, **(payload or {})},
                               commit=commit, chain=False)
 
         # ONE writer per resource (CLAUDE.md lanes): on the memory_events lane the
