@@ -19,6 +19,16 @@ from backend.memory.db import open_encrypted_memory, Connection, app_flush, app_
 
 logger = logging.getLogger(__name__)
 
+# Semantic categories that are statements about the user (the distillation
+# categories, distillation.py, and UI preferences, interface.update_preference).
+# Only these flow into the coordinate graph as user statements.
+_USER_STATEMENT_CATEGORIES = frozenset({
+    "user_preferences",
+    "cognitive_model",
+    "tool_proficiency",
+    "domain_knowledge",
+})
+
 
 @dataclass
 class SemanticEntry:
@@ -159,7 +169,12 @@ class SemanticStore:
 
         # Fire-and-forget: flow the updated fact into the coordinate graph (Task 8.4).
         # NEVER let Mycelium errors block a semantic write.
-        if self._mycelium is not None:
+        # Only statements ABOUT THE USER enter as user statements (Kyudo:
+        # the channel is assigned at source). Card footprints and skills are
+        # IRIS's own bookkeeping JSON - 2,775 card rows were keyword-matched as
+        # the user's words, and each task was then counted twice (its card and
+        # its episode summary).
+        if self._mycelium is not None and category in _USER_STATEMENT_CATEGORIES:
             try:
                 fact_text = f"{category} {key}: {value}"
                 self._mycelium.ingest_statement(fact_text)

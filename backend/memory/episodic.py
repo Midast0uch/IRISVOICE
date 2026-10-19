@@ -75,6 +75,28 @@ class Episode:
     origin: str = "local"   # TORUS: 'local' | 'torus_task'
 
 
+def _shadow_trust_rank(scored: list, zone_of: dict, limit: int) -> None:
+    """SHADOW (Kyudo Part 3, channel-weighted retrieval): would weighting each
+    chunk's score by its zone's channel weight (user 1.2, tool 1.0, web 0.7)
+    change the top-k? Counted only - the returned ranking is unchanged until
+    the counts justify a switch (MEMORY-FOUNDATION-ANALYSIS §12)."""
+    if len(scored) <= 1:
+        return
+    try:
+        from backend.agent import write_counters
+        from backend.memory.mycelium.kyudo import CHANNEL_WEIGHTS, channel_for_zone
+
+        weighted = sorted(
+            scored,
+            key=lambda x: x[0] * CHANNEL_WEIGHTS[channel_for_zone(zone_of.get(x[2]))],
+            reverse=True,
+        )
+        same = [x[2] for x in weighted[:limit]] == [x[2] for x in scored[:limit]]
+        write_counters.bump("kyudo.trust_rank.same" if same else "kyudo.trust_rank.reordered")
+    except Exception as exc:  # noqa: BLE001 - a shadow count never blocks retrieval
+        logger.debug("[EpisodicStore] shadow trust rank skipped: %s", exc)
+
+
 class EpisodicStore:
     """
     Persistent vector-searchable store of every completed task.
@@ -511,10 +533,13 @@ class EpisodicStore:
         # Mycelium: index this episode against the current coordinate state (Req 13.6)
         if self._mycelium is not None:
             try:
+                # Kyudo: an episode is the user's own task (HyphaChannel.USER).
+                # It was None on 2,850 of 2,850 live rows, so the resonance
+                # channel weight never applied.
                 self._mycelium.episode_indexer.index_episode(
                     episode_id=episode_id,
                     session_id=episode.session_id,
-                    source_channel=None,  # HyphaChannel wired in Phase 9
+                    source_channel=3,
                 )
             except Exception:
                 pass  # MUST NOT block episode storage
@@ -998,7 +1023,7 @@ class EpisodicStore:
 
         try:
             rows = self.db.execute(
-                f"SELECT id, content, embedding, timestamp, embedding_backend "
+                f"SELECT id, content, embedding, timestamp, embedding_backend, zone "
                 f"FROM context_chunks "
                 f"{where_sql} ORDER BY timestamp DESC LIMIT 200",
                 params_list,
@@ -1012,6 +1037,7 @@ class EpisodicStore:
         now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
 
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
+        zone_of: Dict[str, Optional[str]] = {}
         for row in rows:
             try:
                 stored_emb = _unpack_embedding(row[2])
@@ -1041,11 +1067,13 @@ class EpisodicStore:
                     + recency * self._RECENCY_WEIGHT
                 )
                 scored.append((combined, row[1], row[0]))
+                zone_of[row[0]] = row[5]
             except Exception:
                 continue
 
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[:limit]
+        _shadow_trust_rank(scored, zone_of, limit)
 
         # Token-aware cap: if a model context window is provided, keep only as
         # many top chunks as fit, reserving headroom for the prompt + response.
@@ -1091,12 +1119,14 @@ class EpisodicStore:
                             f"WHERE id IN ({placeholders})",
                             retrieved_ids,
                         ).fetchall())
+                        from backend.memory.mycelium.kyudo import channel_for_zone
+
                         for _, content, chunk_id in top:
                             if (_counts.get(chunk_id) or 0) + 1 >= self._CRYSTALLIZE_THRESHOLD:
                                 self._mycelium.episode_indexer.index_episode(
                                     episode_id=chunk_id,
                                     session_id=session_id or "",
-                                    source_channel=None,
+                                    source_channel=int(channel_for_zone(zone_of.get(chunk_id))),
                                 )
                     except Exception:
                         pass  # never block retrieval on crystallization signal failure

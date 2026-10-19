@@ -65,6 +65,58 @@ CHANNEL_WEIGHTS: Dict[HyphaChannel, float] = {
 # Maximum fraction of untrusted sources allowed in a landmark cluster
 LANDMARK_TRUST_CAP: float = 0.30
 
+# One trust vocabulary (MEMORY-FOUNDATION-ANALYSIS §12, proposal 3). The
+# episodic store's PACMAN zones (episodic.py) and the document store's trust
+# labels name what a HyphaChannel names; every memory write maps to a channel
+# through these. An unknown word fails closed (UNTRUSTED).
+ZONE_CHANNEL: Dict[str, HyphaChannel] = {
+    "system":    HyphaChannel.SYSTEM,     # IRIS internals
+    "trusted":   HyphaChannel.USER,       # the user's own conversation
+    "tool":      HyphaChannel.VERIFIED,   # IRIS's own tool / DER outputs
+    "reference": HyphaChannel.EXTERNAL,   # web and other external content
+}
+TRUST_LABEL_CHANNEL: Dict[str, HyphaChannel] = {
+    "trusted":   HyphaChannel.VERIFIED,
+    "untrusted": HyphaChannel.EXTERNAL,
+}
+
+
+def channel_for_zone(zone: Optional[str]) -> HyphaChannel:
+    """The HyphaChannel of an episodic zone; unknown -> UNTRUSTED."""
+    return ZONE_CHANNEL.get(zone or "", HyphaChannel.UNTRUSTED)
+
+
+def channel_for_trust_label(label: Optional[str]) -> HyphaChannel:
+    """The HyphaChannel of a document trust label; unknown -> UNTRUSTED."""
+    return TRUST_LABEL_CHANNEL.get(label or "", HyphaChannel.UNTRUSTED)
+
+
+def backfill_episode_index_channels(conn: Any) -> int:
+    """Give legacy episode-index rows the channel of what they index (db.py
+    Block 5; idempotent: only NULL rows). An episode is the user's task (USER);
+    a crystallised chunk takes its zone's channel. Live 2026-10-19: 2,857 rows,
+    all NULL - 387 episodes, 2,349 chunks. Returns the rows changed."""
+    cases = " ".join(f"WHEN '{z}' THEN {int(ch)}" for z, ch in ZONE_CHANNEL.items())
+    of_episodes = ("WHERE source_channel IS NULL "
+                   "AND episode_id IN (SELECT id FROM episodes)")
+    of_chunks = ("WHERE source_channel IS NULL "
+                 "AND episode_id IN (SELECT id FROM context_chunks)")
+    changed = sum(
+        conn.execute(f"SELECT COUNT(*) FROM mycelium_episode_index {w}").fetchone()[0]
+        for w in (of_episodes, of_chunks)
+    )
+    if not changed:
+        return 0
+    app_write(conn, f"UPDATE mycelium_episode_index SET source_channel = ? {of_episodes}",
+              (int(HyphaChannel.USER),))
+    app_write(
+        conn,
+        "UPDATE mycelium_episode_index SET source_channel = "
+        f"(SELECT CASE c.zone {cases} ELSE {int(HyphaChannel.UNTRUSTED)} END "
+        f" FROM context_chunks c WHERE c.id = mycelium_episode_index.episode_id) {of_chunks}",
+    )
+    return changed
+
 # QuorumSensor constants
 QUORUM_THRESHOLD:         float = 0.60
 QUORUM_DECAY_MULTIPLIER:  float = 3.0

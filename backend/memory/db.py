@@ -788,6 +788,16 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _dc_exc:
         logger.warning("[db] decay / channel column ALTER skipped: %s", _dc_exc)
 
+    # Kyudo: legacy episode-index rows get the channel of what they index.
+    try:
+        from backend.memory.mycelium.kyudo import backfill_episode_index_channels
+
+        _n = backfill_episode_index_channels(conn)
+        if _n:
+            logger.info("[db] episode index: %d rows given their Kyudo channel", _n)
+    except Exception as _ec_exc:
+        logger.warning("[db] episode index channel backfill skipped: %s", _ec_exc)
+
     # Landmark policy columns + typed-event cases (spec research-memory-chain-
     # browser D9 / Wave E). Idempotent; never blocks store init.
     try:
