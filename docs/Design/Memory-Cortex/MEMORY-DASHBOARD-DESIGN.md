@@ -1038,3 +1038,10 @@ step it was given to; fragments keep flying up each strand. Strands draw themsel
 ~100% by construction; and every recalled chain row has `result = success` (the relevance gate passes only successes).
 Whether failed steps ever carry their `recall_trace_ids` to `record_step` is not visible from the events - to check
 before the sync value is trusted.
+
+**Revised (owner, same day): synchronization is part of the timeline, not a tab.** Hover a session on the helix: its
+recalls arch out of the sessions they came from (at their true place on the helix), over the helix, and land on it
+from above - a small fan for recalls from just before, long sweeps for old ones; they stay until another session is
+hovered, so you can move onto a strand and read it, and click it to enter that session. The session's hover card
+says how much the memory gave it ("11 earlier steps from 4 sessions · 5 of 5 helped"). The per-turn time lens and the
+turn-by-turn replay are gone with the tab.

@@ -1801,14 +1801,13 @@ function tunnelHighlight(it){
 function disposeTunnel(){if(!tunnel)return;scene.remove(tunnel.g);tunnel.g.traverse(o=>{o.geometry?.dispose();o.material?.dispose?.()});tunnel=null;rail.build(null)}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7b. SYNCHRONIZATION (design §18.4): what the memory gave the agent on one turn.
-//     The helix of time stays where it is. Pick a turn: every earlier step the memory handed to one of this turn's
-//     steps rises out of the session it came from, along a strand that bows out round the helix, and assembles into
-//     the step it was given to (RECALL_DELIVERED -> the DER chain row it names). Colour = where the recall came from;
-//     solidity = whether it helped (RECALL_HELPED solid, no verdict an edge, RECALL_MISLED a desync). The sync of the
-//     turn is the share of its recalls that helped.
+// 7b. SYNCHRONIZATION, inside the timeline (design §18.4; owner, 2026-10-19: "it does not need its own tab, it can
+//     be part of the timeline"). Hover a session on the helix: every earlier step the memory handed to its steps
+//     (RECALL_DELIVERED -> the DER chain row it names) arcs out of the session it came from and flows into this one,
+//     and the strands stay until you hover another session, so you can move onto one and read it. Colour = where
+//     the recall came from; solidity = whether it helped (RECALL_HELPED solid, no verdict an edge, RECALL_MISLED a
+//     red desync). Click a strand to step into the session it came from.
 // ═══════════════════════════════════════════════════════════════════════════
-const REC=(M.recalls||[]).filter(t=>t.steps&&t.steps.length);
 const REC_SRC={neighbors:{col:'#7fe8ff',word:'a similar earlier step'},prior_research:{col:'#ffcf6b',word:'earlier research'},
   chain_timeline:{col:'#f08ad6',word:'the timeline of this work'},known_case:{col:'#5dffb0',word:'a known case'}};
 const prettyThread=t=>{const m=/^eval-(.+?)(-[0-9a-f]{6})?$/.exec(t||'');return m?'[eval] '+m[1].replace(/_/g,' '):String(t||'an earlier session').slice(0,48)};
@@ -1816,66 +1815,60 @@ const sessOf=id=>id&&M.sById?M.sById.get(id):null;
 const titleOf=id=>sessOf(id)?.objective||prettyThread(id);
 // a point in time on the helix; what is older than the first session sinks below it (compressed)
 const timeY=ts=>ts==null?-HELIX_H*1.1:ts<sT0?-HELIX_H-Math.min(.22*HELIX_H,Math.log1p((sT0-ts)/3600)*.5):helixY(clamp((ts-sT0)/Math.max(1,sT1-sT0),0,1));
-const sessY=(id,ts)=>{const s=sessOf(id);return s?helixY(sessS(s)):timeY(ts)};
+const beadY=(id,ts)=>{const s=sessOf(id);return s?helixY(sessS(s)):timeY(ts)};
+// every step of every turn that took memory, per session
+const REC_BY=new Map();for(const t of (M.recalls||[]))for(const st of (t.steps||[])){if(!st.refs||!st.refs.length)continue;
+  if(!REC_BY.has(t.session))REC_BY.set(t.session,{turns:new Set(),steps:[]});const e=REC_BY.get(t.session);e.turns.add(t.turn);e.steps.push(st)}
+const recSummary=sid=>{const e=REC_BY.get(sid);if(!e)return null;const refs=e.steps.flatMap(st=>st.refs),helped=e.steps.filter(st=>st.outcome==='helped').length,
+  misled=e.steps.filter(st=>st.outcome==='misled').length;return {steps:e.steps.length,refs:refs.length,from:new Set(refs.map(r=>r.session)).size,helped,misled}};
 const syncG=new THREE.Group();syncG.visible=false;cortex.add(syncG);
 const syncU={...U,uRes:{value:new THREE.Vector2(innerWidth,innerHeight)},uAsm:{value:0},uSel:{value:-1}};
-const sync={i:-1,turn:null,steps:[],refs:[],target:new V3(),hover:-1,hoverStep:-1,lastStep:0};
+const sync={sid:null,refs:[],hover:-1};
 const SYNC_VS=`uniform float uTime,uAsm,uSel;uniform vec2 uRes;attribute vec3 aNx,aCol;attribute float aSide,aU,aW,aOut,aPh,aId;
   varying vec3 vC;varying float vA,vS;float h1(float x){return fract(sin(x*127.1)*43758.5453);}
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vec4 c0=projectionMatrix*mv,c1=projectionMatrix*modelViewMatrix*vec4(position+aNx,1.);
     vec2 p0=c0.xy/max(c0.w,1e-4)*uRes*.5,p1=c1.xy/max(c1.w,1e-4)*uRes*.5,d=p1-p0;float sl=length(d);d=sl>1e-4?d/sl:vec2(1.,0.);
-    c0.xy+=vec2(-d.y,d.x)*aW*aSide/(uRes*.5)*c0.w;
+    float on=uSel<0.?1.:mix(.18,1.,step(abs(aId-uSel),.1)),sel=uSel<0.?0.:step(abs(aId-uSel),.1);
+    c0.xy+=vec2(-d.y,d.x)*aW*(1.+sel*.6)*aSide/(uRes*.5)*c0.w;
     float drawn=step(aU,clamp(uAsm*1.5-aPh*.5,0.,1.));                         // each strand draws itself from its source
-    float flow=pow(fract(aU*1.4-uTime*.3+aPh),12.);                          // memory travelling up the strand
+    float flow=pow(fract(aU*1.4-uTime*.3+aPh),12.);                          // memory travelling along the strand
     float mis=step(aOut,-.5),gz=mis*step(.82,h1(floor(uTime*5.)+aPh*31.));
-    float on=uSel<0.?1.:mix(.22,1.,step(abs(aId-uSel),.1));
-    vC=mix(aCol,vec3(1.,.3,.32),mis*.6)*(1.+flow*1.5+gz*.8);
-    vA=drawn*on*(aOut>.5?.3:aOut<-.5?.34:.16)*(1.+flow*.9)*smoothstep(0.,.05,aU);vS=aSide;gl_Position=c0;}`;
+    vC=mix(aCol,vec3(1.,.3,.32),mis*.6)*(1.+flow*1.5+gz*.8+sel*.6);
+    vA=drawn*on*(aOut>.5?.34:aOut<-.5?.36:.18)*(1.+flow*.9)*smoothstep(0.,.05,aU)*smoothstep(1.,.97,aU);vS=aSide;gl_Position=c0;}`;
 const SYNC_FS=`varying vec3 vC;varying float vA,vS;void main(){gl_FragColor=vec4(vC,vA*(1.-vS*vS));}`;
-// fragments flying up each strand: the cubic is evaluated in the shader, so nothing moves on the CPU
+// fragments flying along each strand: the cubic is evaluated in the shader, so nothing moves on the CPU
 const SYNCF_VS=`uniform float uTime,uPix,uAsm,uSel;attribute vec3 aP0,aC1,aC2,aP1,aCol;attribute float aPh,aSp,aOut,aId,aSize;
   varying vec3 vC;varying float vA,vSolid,vRot;
   void main(){float t=fract(uTime*aSp+aPh),s=1.-t;vec3 p=s*s*s*aP0+3.*s*s*t*aC1+3.*s*t*t*aC2+t*t*t*aP1;
     vec4 mv=modelViewMatrix*vec4(p,1.);float z=-mv.z;float on=uSel<0.?1.:mix(.2,1.,step(abs(aId-uSel),.1));
     vC=aCol;vSolid=aOut>.5?1.:aOut<-.5?.35:.12;vRot=aPh*6.2832+uTime*.4;
-    vA=smoothstep(.95,1.,uAsm)*on*sin(3.1416*t)*.9;gl_PointSize=min(aSize*uPix*(26./max(z,.1)),24.*uPix);gl_Position=projectionMatrix*mv;}`;
-const SYNCS_VS=`uniform float uPix,uTime,uAsm;attribute vec3 aCol;attribute float aSize,aSolid,aR;varying vec3 vC;varying float vA,vSolid,vRot;
-  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=-mv.z;vC=aCol*(1.+.15*sin(uTime*1.1+aR*20.));vSolid=aSolid;vRot=aR*6.2832+uTime*.1;
-    vA=smoothstep(.5,1.,uAsm);gl_PointSize=min(aSize*uPix*(26./max(z,.1)),40.*uPix);gl_Position=projectionMatrix*mv;}`;
-function disposeSync(){syncG.traverse(o=>{if(o!==syncG){o.geometry?.dispose();o.material?.dispose?.()}});syncG.clear();sync.steps=[];sync.refs=[]}
-function buildSync(i){
-  disposeSync();if(!REC.length)return;i=((i%REC.length)+REC.length)%REC.length;sync.i=i;const T=REC[i];sync.turn=T;
-  const yT=sessY(T.session,T.ts),N=T.steps.length;sync.target.set(0,yT,0);
-  const rr=mulberry32(T.turn.split('').reduce((a,c)=>a*31+c.charCodeAt(0)|0,11));
-  // the turn's steps sit on a small rising coil round the axis (the turn's own path)
-  const stepP=T.steps.map((s,k)=>{const a=k*2.4+.6;return new V3(Math.cos(a)*R*.16,yT+(k-(N-1)/2)*R*.07,Math.sin(a)*R*.16)});
+    vA=smoothstep(.95,1.,uAsm)*on*sin(3.1416*t)*.9;gl_PointSize=min(aSize*uPix*(40./max(z,.1)),20.*uPix);gl_Position=projectionMatrix*mv;}`;
+function disposeSync(){syncG.traverse(o=>{if(o!==syncG){o.geometry?.dispose();o.material?.dispose?.()}});syncG.clear();sync.refs=[];sync.sid=null;sync.hover=-1}
+function buildSyncFor(sid){
+  if(sync.sid===sid)return;disposeSync();const e=REC_BY.get(sid);if(!e)return;sync.sid=sid;
+  const s0=sessOf(sid),yT=s0?helixY(sessS(s0)):beadY(sid,e.steps[0]?.ts),P=new V3(0,yT,0);
+  const rr=mulberry32(sid.split('').reduce((a,c)=>a*31+c.charCodeAt(0)|0,11));
   const RB={pos:[],nx:[],side:[],u:[],w:[],col:[],out:[],ph:[],id:[],idx:[]};
   const strand=(Ps,col,w,out,ph,id)=>{const n=Ps.length,base=RB.pos.length/3;
     for(let k=0;k<n;k++){const a=Ps[Math.max(0,k-1)],c=Ps[Math.min(n-1,k+1)];
       for(const sd of [-1,1]){RB.pos.push(Ps[k].x,Ps[k].y,Ps[k].z);RB.nx.push(c.x-a.x,c.y-a.y,c.z-a.z);RB.side.push(sd);RB.u.push(k/(n-1));RB.w.push(w);
         RB.col.push(col.r,col.g,col.b);RB.out.push(out);RB.ph.push(ph);RB.id.push(id)}}
     for(let k=0;k<n-1;k++){const j=base+2*k;RB.idx.push(j,j+1,j+2,j+1,j+3,j+2)}};
-  const bez=(P0,C1,C2,P1,t)=>{const s=1-t;return P0.clone().multiplyScalar(s*s*s).addScaledVector(C1,3*s*s*t).addScaledVector(C2,3*s*t*t).addScaledVector(P1,t*t*t)};
+  const bez=(P0,C1,C2,P1,t)=>{const q=1-t;return P0.clone().multiplyScalar(q*q*q).addScaledVector(C1,3*q*q*t).addScaledVector(C2,3*q*t*t).addScaledVector(P1,t*t*t)};
+  const angOf=id=>{let h=7;for(const c of String(id))h=h*31+c.charCodeAt(0)|0;return ((h>>>0)%3600)/3600*6.2832};
   const F={p0:[],c1:[],c2:[],p1:[],col:[],ph:[],sp:[],out:[],id:[],size:[]};
-  // time is re-scaled round the turn (a lens, like a loupe): an earlier step sits lower the older it is, on a log scale
-  // over this turn's own sources, so minutes-old and weeks-old recalls both read. The age is in the hover.
-  const ageOf=r=>Math.max(1,T.ts-(r.ts??sessOf(r.session)?.started??T.ts-3600));
-  const maxAge=Math.max(600,...T.steps.flatMap(st=>st.refs.map(ageOf)));
-  const srcY=r=>yT-R*(.55+2.3*Math.log1p(ageOf(r)/60)/Math.log1p(maxAge/60));
-  const srcSeen=new Map();const angOf=id=>{let h=7;for(const c of String(id))h=h*31+c.charCodeAt(0)|0;return ((h>>>0)%3600)/3600*6.2832};
-  T.steps.forEach((st,k)=>{const out=st.outcome==='helped'?1:st.outcome==='misled'?-1:0,col=new THREE.Color((REC_SRC[st.source]||REC_SRC.neighbors).col);
-    st.refs.forEach((r,j)=>{const id=sync.refs.length,th=angOf(r.session||st.source)+(rr()-.5)*.35,dir=new V3(Math.cos(th),0,Math.sin(th));
-      const ys=srcY(r),S=new V3(0,ys,0),P=stepP[k],out_=R*(.7+.35*rr());
-      const C1=S.clone().addScaledVector(dir,out_).add(new V3(0,(yT-ys)*.25,0)),C2=P.clone().addScaledVector(dir,out_*.7).add(new V3(0,-(yT-ys)*.12,0));
-      const Ps=[];for(let q=0;q<=48;q++)Ps.push(bez(S,C1,C2,P,q/48));
-      const ph=rr();strand(Ps,col,out===1?1.5:1.1,out,ph,id);
-      for(let f=0;f<2;f++){F.p0.push(S.x,S.y,S.z);F.c1.push(C1.x,C1.y,C1.z);F.c2.push(C2.x,C2.y,C2.z);F.p1.push(P.x,P.y,P.z);F.col.push(col.r,col.g,col.b);
-        F.ph.push((ph+f*.5)%1);F.sp.push(.12+.06*rr());F.out.push(out);F.id.push(id);F.size.push(1.6)}
-      if(!srcSeen.has(r.session||'?'))srcSeen.set(r.session||'?',S);
-      sync.refs.push({r,st,k,mid:bez(S,C1,C2,P,.5),S,pts:[.12,.25,.38,.5,.62,.75].map(t=>bez(S,C1,C2,P,t))})})});
-  // the turn's own path through its steps
-  if(N>1){const Ps=[];for(let k=0;k<N-1;k++)for(let q=0;q<8;q++)Ps.push(stepP[k].clone().lerp(stepP[k+1],q/8));Ps.push(stepP[N-1]);
-    strand(Ps,new THREE.Color('#e9f6fb'),1.2,1,0,-9)}
+  e.steps.slice(-40).forEach(st=>{const out=st.outcome==='helped'?1:st.outcome==='misled'?-1:0,col=new THREE.Color((REC_SRC[st.source]||REC_SRC.neighbors).col);
+    st.refs.forEach(r=>{const id=sync.refs.length,th=angOf(r.session||st.source)+(rr()-.5)*.5,dir=new V3(Math.cos(th),0,Math.sin(th));
+      const S=new V3(0,beadY(r.session,r.ts),0),dy=yT-S.y;
+      // an arc out of the helix and back in: a petal for a session just before, a long sweep for an old one
+      // it arches over the helix and lands on this session from above, so it reads from the side as well as from above
+      const out_=R*(.45+.45*Math.min(1,Math.abs(dy)/(R*1.4)))*(.85+.3*rr()),top=Math.max(S.y,P.y)+R*(.28+.12*rr())+Math.abs(dy)*.12;
+      const C1=new V3(dir.x*out_,top,dir.z*out_),C2=new V3(dir.x*out_*.55,top,dir.z*out_*.55);
+      const Ps=[];for(let q=0;q<=40;q++)Ps.push(bez(S,C1,C2,P,q/40));
+      const ph=rr();strand(Ps,col,out===1?1.3:1,out,ph,id);
+      F.p0.push(S.x,S.y,S.z);F.c1.push(C1.x,C1.y,C1.z);F.c2.push(C2.x,C2.y,C2.z);F.p1.push(P.x,P.y,P.z);F.col.push(col.r,col.g,col.b);
+      F.ph.push(ph);F.sp.push(.14+.06*rr());F.out.push(out);F.id.push(id);F.size.push(1.4);
+      sync.refs.push({r,st,pts:[.15,.3,.45,.6,.75].map(t=>bez(S,C1,C2,P,t))})})});
   const rg=new THREE.BufferGeometry();
   [['position',RB.pos,3],['aNx',RB.nx,3],['aSide',RB.side,1],['aU',RB.u,1],['aW',RB.w,1],['aCol',RB.col,3],['aOut',RB.out,1],['aPh',RB.ph,1],['aId',RB.id,1]]
     .forEach(([n,a,k])=>rg.setAttribute(n,new THREE.Float32BufferAttribute(a,k)));rg.setIndex(RB.idx);
@@ -1886,40 +1879,21 @@ function buildSync(i){
       .forEach(([n,a,k])=>fg.setAttribute(n,new THREE.Float32BufferAttribute(a,k)));
     syncG.add(Object.assign(new THREE.Points(fg,new THREE.ShaderMaterial({uniforms:syncU,vertexShader:SYNCF_VS,fragmentShader:SHARD_FS,transparent:true,
       depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // the steps (solid when what they were given helped) and the sessions the memory came from (small, pale)
-  {const P=[],C=[],S=[],SO=[],RR=[];
-    T.steps.forEach((st,k)=>{const p=stepP[k],c=new THREE.Color(st.outcome==='misled'?'#ff5a4d':'#e9f6fb');P.push(p.x,p.y,p.z);C.push(c.r,c.g,c.b);S.push(2.6);
-      SO.push(st.outcome==='helped'?1:st.outcome==='misled'?.35:.12);RR.push(rr())});
-    srcSeen.forEach(Sv=>{const c=new THREE.Color('#9fb6c8');P.push(Sv.x,Sv.y,Sv.z);C.push(c.r,c.g,c.b);S.push(1.5);SO.push(.4);RR.push(rr())});
-    const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.Float32BufferAttribute(P,3));sg.setAttribute('aCol',new THREE.Float32BufferAttribute(C,3));
-    sg.setAttribute('aSize',new THREE.Float32BufferAttribute(S,1));sg.setAttribute('aSolid',new THREE.Float32BufferAttribute(SO,1));sg.setAttribute('aR',new THREE.Float32BufferAttribute(RR,1));
-    syncG.add(Object.assign(new THREE.Points(sg,new THREE.ShaderMaterial({uniforms:syncU,vertexShader:SYNCS_VS,fragmentShader:SHARD_FS,transparent:true,
-      depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:3}))}
-  sync.steps=T.steps.map((st,k)=>({st,p:stepP[k]}));
-  syncU.uAsm.value=REDUCED?1:0;syncU.uSel.value=-1;sync.hover=-1;
-  // frame the whole recall: from the oldest source up to the turn
-  const ys=sync.refs.map(x=>x.S.y),lo=Math.min(yT,...ys),hi=Math.max(yT,...ys);
-  cam.targetT.set(0,(lo+hi)/2,0);cam.distT=clamp((hi-lo)*1.25+R*2.4,R*3.2,R*8);cam.elT=.1;cam.idle=0;
-  const nRefs=sync.refs.length,helped=T.steps.filter(s=>s.outcome==='helped').length,misled=T.steps.filter(s=>s.outcome==='misled').length,unk=N-helped-misled;
-  const nSess=new Set(sync.refs.map(x=>x.r.session)).size;
-  setAnno('focus','sync'+i,()=>project(sync.target),`<div class="k">turn ${i+1} of ${REC.length} · ${ago(T.ts)}</div><div class="t">${esc(titleOf(T.session))}</div>
-    <div class="m">${N} step${N>1?'s':''} took memory · ${nRefs} earlier step${nRefs===1?'':'s'} from ${nSess} session${nSess===1?'':'s'}<br>
-    ${helped} helped${misled?` · <span class="w">${misled} misled</span>`:''}${unk?` · ${unk} without a verdict`:''}<br>${syncHTML(N?helped/N:0)}</div>`,{hot:true});
+  syncU.uAsm.value=REDUCED?1:0;syncU.uSel.value=-1;
 }
-function syncStep(d){if(!REC.length)return;buildSync(sync.i+d)}
-function syncHover(x,y){
-  const flat=sync.refs.flatMap(r=>r.pts),j=nearestScreen(flat,x,y,16),k=j<0?-1:Math.floor(j/6),at=j<0?null:flat[j];syncU.uSel.value=k;sync.hover=k;
-  if(k>=0){const {r,st}=sync.refs[k],src=REC_SRC[st.source]||REC_SRC.neighbors,go=sessOf(r.session);canvas.style.cursor=go?'pointer':'';
-    setAnno('hover','sref'+k,()=>project(at),`<div class="k" style="color:${src.col}">${src.word} · given to step ${esc(st.step||'')}</div>
-      <div class="t">${esc(r.did||'an earlier step')}</div><div class="m">from <em>${esc(titleOf(r.session))}</em>${r.ts?' · '+ago(r.ts):''}<br>
-      ${r.tool&&r.tool!=='none'?esc(r.tool.replace(/_/g,' '))+' · ':''}${r.result==='success'?'it worked there':r.result?esc(r.result):'outcome unknown'}<br>
-      ${st.outcome==='helped'?'the step it was given to was verified':st.outcome==='misled'?'<span class="w">the step it was given to failed</span>':'no verdict yet'}</div>
-      ${go?'<span class="go">click · step into that session</span>':''}`)}
-  else clearAnno('hover')}
+// over a strand of the session's recall: what that earlier step was, where it came from, what became of it
+function syncHoverStrand(x,y){
+  if(!sync.refs.length){syncU.uSel.value=-1;return false}
+  const flat=sync.refs.flatMap(r=>r.pts),j=nearestScreen(flat,x,y,14),k=j<0?-1:Math.floor(j/5);syncU.uSel.value=k;sync.hover=k;if(k<0)return false;
+  const {r,st}=sync.refs[k],src=REC_SRC[st.source]||REC_SRC.neighbors,at=flat[j],go=sessOf(r.session);if(go)canvas.style.cursor='pointer';
+  setAnno('hover','sref'+sync.sid+k,()=>project(at),`<div class="k" style="color:${src.col}">${src.word} · given to step ${esc(st.step||'')}</div>
+    <div class="t">${esc(r.did||'an earlier step')}</div><div class="m">from <em>${esc(titleOf(r.session))}</em>${r.ts?' · '+ago(r.ts):''}<br>
+    ${r.tool&&r.tool!=='none'?esc(r.tool.replace(/_/g,' '))+' · ':''}${r.result==='success'?'it worked there':r.result?esc(r.result):'outcome unknown'}<br>
+    ${st.outcome==='helped'?'the step it was given to was verified':st.outcome==='misled'?'<span class="w">the step it was given to failed</span>':'no verdict yet'}</div>
+    ${go?'<span class="go">click · step into that session</span>':''}`);return true}
 function syncClick(){if(sync.hover<0)return false;const s=sessOf(sync.refs[sync.hover].r.session);if(s){enterTunnel(s);return true}return false}
-function syncFrame(dt){const on=state.lens==='sync'&&cam.mode==='orbit';syncG.visible=on;if(!on)return;
-  syncU.uRes.value.set(innerWidth,innerHeight);syncU.uAsm.value=Math.min(1,syncU.uAsm.value+dt/2.2);
-  if(!REDUCED&&cam.idle>16&&REC.length>1){cam.idle=0;syncStep(1)}}   // left alone, it replays turn after turn
+function syncFrame(dt){const on=state.lens==='timeline'&&cam.mode==='orbit'&&!cam.tween&&sync.sid!=null;syncG.visible=on;if(!on)return;
+  syncU.uRes.value.set(innerWidth,innerHeight);syncU.uAsm.value=Math.min(1,syncU.uAsm.value+dt/1.6)}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 8. the tissue: artifacts exhaled as an organic Voronoi mosaic (video 2)
@@ -2091,7 +2065,7 @@ function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).norma
 const dirOf=(yaw,pitch)=>new V3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch));
 const keys={};
 window.__cortex={cortex,camera,project:v=>project(v),cam,mouse,keys,get state(){return state},M,IMM,get tunnel(){return tunnel},setLens:l=>setLens(l),enter:i=>enterTunnel(sess[i]),
-  dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length,sync:()=>sync}; // inspection handle for the mockup
+  dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length,sync:()=>sync,syncFor:id=>buildSyncFor(id)}; // inspection handle for the mockup
 const angWrap=a=>{a=(a+Math.PI)%(Math.PI*2);if(a<0)a+=Math.PI*2;return a-Math.PI};
 function updateCamera(dt){
   if(cam.tween){const tw=cam.tween;tw.t+=dt/tw.dur;const e=easeIO(Math.min(1,tw.t));
@@ -2216,7 +2190,7 @@ function placeRegionLabels(show){
     const w=L.el.offsetWidth;const left=clamp(side>0?lx+6:lx-6-w,8,innerWidth-w-8);
     L.el.style.left=left+'px';L.el.style.top=(ly-8)+'px';L.el.style.textAlign=side>0?'left':'right';
     L.p.setAttribute('d',`M${a.x},${a.y}L${side>0?Math.min(lx,left-6):Math.max(lx,left+w+6)},${ly}`);L.p.classList.toggle('hot',state.hoverReg===i)})}
-const LENSES=[['cortex','cortex'],['timeline','timeline'],['sync','synchronization'],['artifacts','artifacts'],['oracle','how iris decides']];
+const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','how iris decides']];
 LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
   a.onmouseenter=()=>scramble(a,w,14);$('lenses').appendChild(a)});
 function hint(t){$('hint').innerHTML=t}
@@ -2270,21 +2244,19 @@ function setLens(l){
   state.lens=l;clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
   document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
   const m=state.morphT,v=state.visT;
-  const hx=l==='timeline'||l==='sync';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
-  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:l==='sync'?.05:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx?0:1,
-    beads:l==='timeline'?1:l==='sync'?.4:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:hx?.12:1});
+  const hx=l==='timeline';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
+  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx?0:1,
+    beads:l==='timeline'?1:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:hx?.12:1});
   tissue.on=l==='artifacts';tcv.classList.toggle('on',tissue.on);if(tissue.on){layoutTissue(true);tissue.t=Math.min(tissue.t,.05)}
   $('scrub').classList.toggle('on',l==='cortex');
   const T=$('title');T.style.opacity=0;
   cam.mode='orbit';
   if(l==='cortex'){cam.targetT.set(0,0,0);cam.distT=58;cam.elT=.16}
   if(l==='timeline'){cam.targetT.set(0,0,0);cam.distT=66;cam.elT=.05}
-  if(l==='sync')buildSync(sync.i<0?0:sync.i);
   if(l==='oracle'){cam.targetT.set(0,0,0);cam.distT=44;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0}
   if(l==='artifacts'){cam.targetT.set(-1.0*R,0,0);cam.distT=62;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0;setTimeout(()=>layoutTissue(false),900)}
   hint({cortex:'drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme',
-    timeline:'scroll · move through time &nbsp; click a session · step inside it',
-    sync:REC.length?'← → / scroll · another turn &nbsp; hover a strand · what the memory gave<br>click a strand · step into the session it came from':'no recalls in this memory yet',
+    timeline:'scroll · move through time &nbsp; hover a session · what the memory gave it<br>hover its strands · read a recall &nbsp; click · step inside',
     artifacts:'hover · a cell swells &nbsp; click · open it',
     oracle:'hover a sector · what IRIS is learning to decide'}[l]);
 }
@@ -2471,7 +2443,6 @@ function hover(x,y){
   state.hoverReg=-1;skinMat.uniforms.uHoverReg.value=-1;state.hoverSec=-1;skinMat.uniforms.uHoverSec.value=-1;beadMat.uniforms.uHover.value=-1;
   canvas.style.cursor='default';
   if(cam.tween||state.diving)return;
-  if(state.lens==='sync'&&cam.mode==='orbit'){syncHover(x,y);return}
   if(cam.mode==='tunnel'&&tunnel){
     const near=(w,d)=>w.distanceTo(camera.position)<d?w:null;
     const k=nearestScreen(tunnel.items.map(n=>near(n.world,70)),x,y,14);
@@ -2528,11 +2499,11 @@ function hover(x,y){
     if(hoverThing(x,y))return;
     const r=regionAt(x,y);state.hoverReg=r;skinMat.uniforms.uHoverReg.value=r;if(r>=0)canvas.style.cursor='pointer';return}
   if(state.lens==='timeline'){const k=nearestScreen(sess.map(s=>new V3(0,helixY(sessS(s)),0)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
-    if(k>=0){const s=sess[k];canvas.style.cursor='pointer';
+    if(k>=0){const s=sess[k];canvas.style.cursor='pointer';buildSyncFor(s.id);syncU.uSel.value=-1;const rs=recSummary(s.id);
       const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
       setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${syncHTML(syncSession(s))}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}</div><span class="go">click · step inside</span>`)}
-    else clearAnno('hover');return}
+        <div class="m">${syncHTML(syncSession(s))}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> session${rs.from===1?'':'s'} · ${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
+    else if(!syncHoverStrand(x,y))clearAnno('hover');return}
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
     if(ray.ray.intersectPlane(new THREE.Plane(new V3(0,0,1),0),p)){const r=p.length();
@@ -2595,11 +2566,9 @@ function click(x,y){
       const d=new V3(x/innerWidth*2-1,-(y/innerHeight*2-1),.5).unproject(camera).sub(camera.position).normalize();
       cam.vel.addScaledVector(d,R*.9);cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*.6;cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),.6);cam.idle=0}return}
   if(state.lens==='cortex'&&state.hoverReg>=0)dive(state.hoverReg);
-  if(state.lens==='timeline'&&state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);
-  if(state.lens==='sync')syncClick();
+  if(state.lens==='timeline'){if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else syncClick()}
 }
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
-  if(cam.mode==='orbit'&&state.lens==='sync'){const n=performance.now();if(n-sync.lastStep>450){sync.lastStep=n;syncStep(Math.sign(e.deltaY))}return}
   if(cam.mode==='orbit'){if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
   else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03)}
   else if(cam.mode==='tunnel'){if(tunnel?.stops){const n=performance.now();if(n-(state.lastStep||0)>380){state.lastStep=n;threadStep(Math.sign(e.deltaY))}}
@@ -2609,9 +2578,8 @@ addEventListener('keydown',e=>{
   const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
   if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
   if(cam.mode==='tunnel'&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
-  if(state.lens==='sync'&&cam.mode==='orbit'&&(k==='arrowright'||k==='arrowleft')){syncStep(k==='arrowright'?1:-1);return}
   if(k==='escape'){if(cam.mode==='tunnel'&&tunnel?.sel>=0)selectThread(-1);else if(cam.mode==='tunnel')exitTunnel();else if(state.inside)exitInterior();else if(state.lens==='artifacts')tissueUp()}
-  if(['1','2','3','4','5'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
+  if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
   if(k==='/'){e.preventDefault();openSearch()}
   if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
   if(k==='g'&&state.lens==='cortex'&&!state.inside){state.scrub=0;state.scrubT=0;state.replay=true}
