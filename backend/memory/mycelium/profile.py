@@ -21,7 +21,6 @@ from .spaces import (
     CLUSTER_MAX_NODES,
     DOMAIN_IDS,
     MERGE_OVERLAP_THRESHOLD,
-    RENDER_ORDER,
 )
 
 logger = logging.getLogger(__name__)
@@ -347,15 +346,15 @@ class ProfileRenderer:
         dirty_spaces = {row[0] for row in dirty_cursor.fetchall()}
 
         # Add spaces with nodes but no profile row
-        for space_id in RENDER_ORDER:  # toolpath is not in RENDER_ORDER
-            if space_id == "toolpath":
-                continue
+        # A space with no render order (toolpath) is never rendered.
+        rendered_spaces = self._store.spaces.render_order
+        for space_id in rendered_spaces:
             nodes = self._store.get_nodes_by_space(space_id)
             if nodes:
                 dirty_spaces.add(space_id)
 
         for space_id in dirty_spaces:
-            if space_id == "toolpath":
+            if space_id not in rendered_spaces:
                 continue
             nodes = self._store.get_nodes_by_space(space_id)
             prose = self._render_space(space_id, nodes)
@@ -409,8 +408,19 @@ class ProfileRenderer:
             "context":    self._render_context,
         }.get(space_id)
         if render_fn is None:
-            return ""
+            # A registered space with no bespoke prose still gets its section.
+            return self._render_generic(nodes, space_id)
         return render_fn(nodes)
+
+    def _render_generic(self, nodes: List[CoordNode], space_id: str) -> str:
+        """A registered space with no bespoke renderer: its description and the
+        labels of its most confident nodes."""
+        space = self._store.spaces.get(space_id)
+        head = (space.description if space and space.description else space_id).rstrip(".")
+        labels = [
+            n.label for n in sorted(nodes, key=lambda n: n.confidence, reverse=True) if n.label
+        ][:5]
+        return f"{head}: {', '.join(labels)}." if labels else f"{head}."
 
     def _render_domain(self, nodes: List[CoordNode]) -> str:
         """Describe primary and familiar knowledge domains."""
@@ -627,7 +637,7 @@ class ProfileRenderer:
         self, space_id: str, prose: str, nodes: List[CoordNode]
     ) -> None:
         """Write or update a mycelium_profile row for the given space."""
-        render_order = RENDER_ORDER.get(space_id, 99)
+        render_order = self._store.spaces.render_order.get(space_id, 99)
         source_node_ids = json.dumps([n.node_id for n in nodes])
         word_count = len(prose.split())
         now = time.time()

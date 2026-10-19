@@ -344,7 +344,7 @@ class ResonanceScorer:
         result: Dict[str, List[List[float]]] = {}
         for node_id in node_ids:
             node = self._store.get_node_by_id(node_id)
-            if node and node.space_id in RESONANCE_SPACES:
+            if node and node.space_id in self._store.spaces.resonance_spaces:
                 result.setdefault(node.space_id, []).append(node.coordinates)
 
         return result
@@ -384,12 +384,12 @@ class ResonanceScorer:
             ep_nodes_by_space: Dict[str, List[List[float]]] = {}
             for nid in ep_node_ids:
                 node = self._store.get_node_by_id(nid)
-                if node and node.space_id in RESONANCE_SPACES:
+                if node and node.space_id in self._store.spaces.resonance_spaces:
                     ep_nodes_by_space.setdefault(node.space_id, []).append(
                         node.coordinates
                     )
 
-            for space_id in RESONANCE_SPACES:
+            for space_id in self._store.spaces.resonance_spaces:
                 ep_coords = ep_nodes_by_space.get(space_id, [])
                 sess_coords = session_nodes_by_space.get(space_id, [])
                 if ep_coords and sess_coords:

@@ -36,6 +36,8 @@ import math
 import time
 from typing import Any, Dict, Optional
 
+from .spaces import DEFAULT_CONFIDENCE_FLOOR, DEFAULT_DECAY_RATE
+
 logger = logging.getLogger(__name__)
 
 # Kyudo Layer Guide, Part 3 — decay multiplier by the channel that wrote the
@@ -71,9 +73,9 @@ PHASE_COMPRESS_MULTIPLIER = 1.8
 
 # Node confidence never decays below the stated value (Req 4.4): decay removes
 # what repetition EARNED, never the observation itself.
-NODE_CONFIDENCE_FLOOR = 0.4
+NODE_CONFIDENCE_FLOOR = DEFAULT_CONFIDENCE_FLOOR
 # Spaces without their own rate decay at the edge-table default (db.py).
-NODE_DECAY_RATE_DEFAULT = 0.005
+NODE_DECAY_RATE_DEFAULT = DEFAULT_DECAY_RATE
 
 # The reorganization strips one day of growth at m_quorum from what the
 # current and previous day touched.
@@ -208,12 +210,16 @@ def edge_decay_amount(rate: float, multiplier: float, days: float, n: Optional[i
     return rate * multiplier * days * evidence_weight(n)
 
 
-def node_confidence_after(confidence: float, rate: float, multiplier: float, days: float) -> float:
-    """Node confidence after an idle span (only the earned part above the floor)."""
-    if confidence <= NODE_CONFIDENCE_FLOOR:
+def node_confidence_after(
+    confidence: float, rate: float, multiplier: float, days: float,
+    floor: float = NODE_CONFIDENCE_FLOOR,
+) -> float:
+    """Node confidence after an idle span (only the earned part above the floor;
+    the floor is the space's own, registry.confidence_floor)."""
+    if confidence <= floor:
         return confidence
-    earned = confidence - NODE_CONFIDENCE_FLOOR
-    return NODE_CONFIDENCE_FLOOR + earned * math.exp(-rate * multiplier * days)
+    earned = confidence - floor
+    return floor + earned * math.exp(-rate * multiplier * days)
 
 
 def quorum_window_start(now: Optional[float] = None) -> float:

@@ -32,8 +32,14 @@ from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from backend.memory.db import app_flush, app_write
+from .registry import SpaceRegistry
 
 logger = logging.getLogger(__name__)
+
+# The code definitions of the spaces: what a CellWall / TaskClassifier built
+# without a registry uses (MyceliumInterface passes the one loaded from the
+# mycelium_spaces table). Immutable, so one shared instance is safe.
+_SEED_SPACES = SpaceRegistry.from_seed()
 
 # ---------------------------------------------------------------------------
 # HyphaChannel — trust level enumeration
@@ -90,29 +96,26 @@ class ChannelViolation(Exception):
 
 class CellWall:
     """
-    Enforces zone-based permeability for coordinate graph writes.
+    Enforces zone-based permeability for context-window entry and the WRITE
+    LOCK of each coordinate space.
 
-    Zones (from most restrictive to least):
+    Zones (from most restrictive to least) are CONTEXT-WINDOW zones — where
+    content may enter the prompt:
       SYSTEM_ZONE    — only SYSTEM channel may enter
       TRUSTED_ZONE   — SYSTEM and USER channels
       TOOL_ZONE      — SYSTEM, USER, VERIFIED
       REFERENCE_ZONE — any channel (including UNTRUSTED)
 
-    The ``conduct`` space is mapped to TRUSTED_ZONE because it encodes
-    autonomy and confirmation thresholds — only the user or the kernel may
-    modify how assertive IRIS is.
+    Writing a coordinate space is a separate permission: each space declares
+    its write lock (the lowest channel that may write it) in the spaces
+    registry. The zones were reused for that once, which filed the behavioural
+    ``toolpath`` space in REFERENCE_ZONE (any channel could write it) and any
+    unknown space too. ``can_write_space`` now FAILS CLOSED: an unknown space
+    needs SYSTEM, an unknown or None channel counts as UNTRUSTED.
     """
 
-    # Which spaces belong to which zone
-    _SPACE_ZONES: Dict[str, str] = {
-        "conduct":    "TRUSTED_ZONE",
-        "style":      "TOOL_ZONE",
-        "domain":     "TOOL_ZONE",
-        "chrono":     "TOOL_ZONE",
-        "capability": "SYSTEM_ZONE",   # hardware — only kernel may write
-        "context":    "TOOL_ZONE",
-        "toolpath":   "REFERENCE_ZONE",
-    }
+    def __init__(self, spaces: Optional[SpaceRegistry] = None) -> None:
+        self._spaces = spaces if spaces is not None else _SEED_SPACES
 
     # Which channels may enter each zone
     ZONE_PERMEABILITY: Dict[str, Set[HyphaChannel]] = {
@@ -135,9 +138,8 @@ class CellWall:
         return channel in permitted
 
     def can_write_space(self, channel: HyphaChannel, space_id: str) -> bool:
-        """Return True if *channel* may write to *space_id*."""
-        zone = self._SPACE_ZONES.get(space_id, "REFERENCE_ZONE")
-        return self.can_enter(channel, zone)
+        """Return True if *channel* may write to *space_id* (the space's write lock)."""
+        return self._spaces.can_write(channel, space_id)
 
     def render_zone_headers(self) -> str:
         """
@@ -503,14 +505,14 @@ class QuorumReorganization:
 #                             DeltaEncoder)
 # ---------------------------------------------------------------------------
 
-# Task class → coordinate spaces to navigate (subset optimisation)
+# The task classes the classifier can return. Which spaces each navigates is
+# DECLARED BY THE SPACES (mycelium_spaces.task_classes): a running interface
+# asks its registry; this map is the same derivation over the code definitions.
+TASK_CLASSES: Tuple[str, ...] = (
+    "quick_edit", "code_task", "research_task", "planning_task", "full",
+)
 TASK_CLASS_SPACE_MAP: Dict[str, List[str]] = {
-    "quick_edit":    ["conduct", "context"],
-    "code_task":     ["conduct", "domain", "toolpath", "context"],
-    "research_task": ["domain", "style", "context", "chrono"],
-    "planning_task": ["domain", "conduct", "style", "context", "capability"],
-    "full":          ["conduct", "domain", "style", "chrono",
-                      "context", "capability"],
+    c: _SEED_SPACES.spaces_for_class(c) for c in TASK_CLASSES
 }
 
 # PredictiveLoader constants
@@ -567,6 +569,11 @@ class TaskClassifier:
     # initially; the floor value will be tuned against OQ-2 rollout data.
     CONFIDENCE_FLOOR: float = 0.40
 
+    def __init__(self, spaces: Optional[SpaceRegistry] = None) -> None:
+        # The spaces a class navigates are the registry's (each space declares
+        # its task classes), so a registered space joins its classes' subsets.
+        self._spaces = spaces if spaces is not None else _SEED_SPACES
+
     # ── Encoder lazy-loader ────────────────────────────────────────────────
 
     @classmethod
@@ -601,7 +608,7 @@ class TaskClassifier:
             return cls._CLASS_CENTROIDS
         encoder = cls._get_encoder()
         if encoder is None:
-            cls._CLASS_CENTROIDS = {k: None for k in TASK_CLASS_SPACE_MAP}
+            cls._CLASS_CENTROIDS = {k: None for k in TASK_CLASSES}
             return cls._CLASS_CENTROIDS
 
         # Seed texts — representative task descriptions per class.
@@ -737,7 +744,7 @@ class TaskClassifier:
         else:
             chosen = keyword_class
 
-        return chosen, list(TASK_CLASS_SPACE_MAP[chosen])
+        return chosen, self._spaces.spaces_for_class(chosen)
 
     # -- internal -----------------------------------------------------------
 
@@ -846,9 +853,10 @@ class PredictiveLoader:
     On miss: log DEBUG and fall through to standard traversal.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, spaces: Optional[SpaceRegistry] = None) -> None:
+        self._spaces = spaces if spaces is not None else _SEED_SPACES
         self._prediction_cache: Dict[str, dict] = {}  # session_id → cache entry
-        self._classifier = TaskClassifier()
+        self._classifier = TaskClassifier(self._spaces)
         self._hit_count: int = 0
         self._miss_count: int = 0
 
@@ -865,7 +873,10 @@ class PredictiveLoader:
         is responsible for that gate.
         """
         try:
-            space_subset = TASK_CLASS_SPACE_MAP.get(last_task_class, TASK_CLASS_SPACE_MAP["full"])
+            space_subset = (
+                self._spaces.spaces_for_class(last_task_class)
+                or self._spaces.spaces_for_class("full")
+            )
             # Use an empty hint text — navigator picks the highest-confidence path
             path = navigator.navigate_subgraph("", space_subset)
             self._prediction_cache[session_id] = {
