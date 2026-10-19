@@ -122,6 +122,31 @@ QUORUM_THRESHOLD:         float = 0.60
 QUORUM_DECAY_MULTIPLIER:  float = 3.0
 QUORUM_SIGNAL_DECAY:      float = 0.05
 
+# Durable immune memory: mycelium_quorum_log keeps the newest QUORUM_LOG_RETAIN
+# rows. The write path trims every QUORUM_LOG_PRUNE_EVERY writes, so the table
+# stays under RETAIN + PRUNE_EVERY rows (one OFFSET probe on the primary key).
+QUORUM_LOG_RETAIN:        int = 2000
+QUORUM_LOG_PRUNE_EVERY:   int = 100
+
+# SHADOW signal: coordinate updates (node upserts) in one session. Method
+# (2026-10-19, data/memory.db read-only): upserts per session were rebuilt from
+# der_fan_traces, the only per-step record of tool calls, because the
+# extractor upserts a toolpath node on every call after the 2nd of the same
+# tool in a session: sum over tools of max(0, calls - 2). 2,365 sessions,
+# 497 with any upsert; p99 over those 497 = 11.04 -> 11 (p99 over all 2,365 is
+# 4, which the 20-step eval sessions exceed by design). Fires above 11, once.
+# MEASURED LIMIT: replayed over that record it fires on 5 of 2,365 sessions
+# (session_iris, 3 evals, session_ws-driver) - all long honest sessions. It
+# does NOT separate an attack from a long honest session. Stays shadow.
+QUORUM_VELOCITY_THRESHOLD: int = 11
+
+# SHADOW signal: a landmark activated above mean + 3 sigma of its task class
+# (Kyudo Guide, Part 4). Sigma has a floor of 1.0 (one activation is the
+# smallest step, so a class of identical counts is not a zero-width band) and
+# a class needs LANDMARK_ACTIVATION_MIN_CLASS landmarks to have a "normal".
+LANDMARK_ACTIVATION_SIGMA:     float = 3.0
+LANDMARK_ACTIVATION_MIN_CLASS: int = 5
+
 # Subagent write-space restrictions
 # Each profile specifies which spaces the worker may WRITE to.
 # Read access is always unrestricted ("all").
@@ -353,13 +378,18 @@ class QuorumSensor:
 
     Signal weights:
       channel_trust_violation:    0.25
-      update_velocity_anomaly:    0.20
-      landmark_activation_anomaly: 0.30
-      channel_mismatch:           0.25
+      topological_violation:      0.20  (Caducean TOPO_VIOLATION, live)
+      update_velocity_anomaly:    0.20  (SHADOW: logged, not added)
+      landmark_activation_anomaly: 0.30  (SHADOW: logged, not added)
+      channel_mismatch:           0.25  (not emitted yet)
+
+    The threat level and every signal are persisted by MyceliumInterface in
+    ``mycelium_quorum_log`` (a restart no longer erases the evidence).
     """
 
     _SIGNAL_WEIGHTS: Dict[str, float] = {
         "channel_trust_violation":    0.25,
+        "topological_violation":      0.20,
         "update_velocity_anomaly":    0.20,
         "landmark_activation_anomaly": 0.30,
         "channel_mismatch":           0.25,
@@ -379,6 +409,19 @@ class QuorumSensor:
             signal_type, weight, self.threat_level,
         )
 
+    def record_shadow(self, signal_type: str) -> float:
+        """Shadow signal: return the weight it WOULD add; threat_level is untouched.
+
+        The caller logs it with shadow=1 so its false-alarm rate is measured
+        before it may count (as the Oracle earns its jobs).
+        """
+        weight = self._SIGNAL_WEIGHTS.get(signal_type, 0.0)
+        logger.debug(
+            "[QuorumSensor] SHADOW signal=%s weight=%.2f threat=%.3f (unchanged)",
+            signal_type, weight, self.threat_level,
+        )
+        return weight
+
     def check_threshold(self) -> bool:
         """Return True if threat_level has reached QUORUM_THRESHOLD."""
         return self.threat_level >= QUORUM_THRESHOLD
@@ -386,6 +429,20 @@ class QuorumSensor:
     def decay_clean_session(self) -> None:
         """Subtract QUORUM_SIGNAL_DECAY after a session with no signals."""
         self.threat_level = max(0.0, self.threat_level - QUORUM_SIGNAL_DECAY)
+
+
+def activation_is_anomalous(sibling_counts: List[int], count: int) -> bool:
+    """True when *count* is above mean + 3 sigma of its task class (shadow signal).
+
+    *sibling_counts* are the activation counts of the OTHER landmarks of the
+    class (zeros included). A class too small to have a normal never fires.
+    """
+    n = len(sibling_counts)
+    if n < LANDMARK_ACTIVATION_MIN_CLASS:
+        return False
+    mean = sum(sibling_counts) / n
+    sigma = max(math.sqrt(sum((c - mean) ** 2 for c in sibling_counts) / n), 1.0)
+    return count > mean + LANDMARK_ACTIVATION_SIGMA * sigma
 
 
 # ---------------------------------------------------------------------------

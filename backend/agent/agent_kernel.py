@@ -18938,7 +18938,7 @@ Respond with a JSON object:
                     )
                 try:
                     self._memory_interface.mycelium_record_anomaly(
-                        _session, "update_velocity_anomaly"
+                        _session, "topological_violation"
                     )
                 except Exception as _anom_exc:  # never block on this
                     logger.warning(

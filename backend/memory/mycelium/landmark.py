@@ -20,7 +20,7 @@ import struct
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from backend.memory.db import app_flush, app_write
 
@@ -556,6 +556,7 @@ class LandmarkIndex:
 
     def __init__(self, conn: "sqlcipher3.Connection") -> None:
         self._conn = conn
+        self.activation_observer: Optional[Callable[[str, int], None]] = None
 
     # ------------------------------------------------------------------
     # Persistence
@@ -702,6 +703,10 @@ class LandmarkIndex:
             """,
             (now, PERMANENCE_THRESHOLD, landmark_id),
         )
+
+        # Kyudo SHADOW signal (logged, never counted): set by MyceliumInterface.
+        if self.activation_observer is not None:
+            self.activation_observer(landmark_id, new_count)
 
         # Promote constituent nodes to confidence=1.0 on permanence
         if is_permanent and new_count == PERMANENCE_THRESHOLD:

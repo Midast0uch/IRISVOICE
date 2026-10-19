@@ -555,6 +555,22 @@ def initialise_mycelium_schema(conn) -> None:
             content_hash  TEXT NOT NULL,
             registered_at REAL NOT NULL
         );
+
+        -- Kyudo durable immune memory: every quorum signal, clean-session
+        -- fade and reorganization reset. shadow=1 rows are measured, never
+        -- counted. Trimmed to the newest QUORUM_LOG_RETAIN rows (kyudo.py).
+        CREATE TABLE IF NOT EXISTS mycelium_quorum_log (
+            id            INTEGER PRIMARY KEY,
+            ts            REAL NOT NULL,
+            session_id    TEXT,
+            signal_type   TEXT NOT NULL,
+            weight        REAL,
+            threat_after  REAL,
+            shadow        INTEGER DEFAULT 0,
+            detail        TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_quorum_log_ts
+            ON mycelium_quorum_log(ts);
     """)
 
     # -------------------------------------------------------------------------

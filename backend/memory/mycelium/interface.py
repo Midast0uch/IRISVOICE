@@ -172,6 +172,13 @@ class MyceliumInterface:
         # Sessions that recorded a threat signal (bounded): a session NOT in it
         # is clean, and the threat level fades at its end (Kyudo Part 4).
         self._signalled_sessions: "OrderedDict[str, None]" = OrderedDict()
+        # Durable immune memory (mycelium_quorum_log): write counter drives the
+        # retention trim; errors are counted (a store without the table must
+        # keep working, but never silently).
+        self._quorum_log_writes: int = 0
+        self._quorum_log_errors: int = 0
+        # SHADOW velocity signal: node upserts per session (bounded, in memory).
+        self._session_upserts: "OrderedDict[str, int]" = OrderedDict()
 
         # Topology layer (Task 11.3) — eagerly instantiated
         from .topology import TopologyLayer  # noqa: PLC0415
@@ -193,6 +200,7 @@ class MyceliumInterface:
         )
 
         self._quorum_sensor: QuorumSensor = QuorumSensor()
+        self._lm_index.activation_observer = self._observe_activation
         self._rag_bridge: RagIngestionBridge = RagIngestionBridge()
         self._cell_wall: CellWall = CellWall()
         self._task_classifier: TaskClassifier = TaskClassifier()
@@ -208,6 +216,118 @@ class MyceliumInterface:
 
         # Plan stats table (DER Gate 1 Step 1.8)
         self._ensure_tables()
+
+        # A restart no longer erases the evidence: resume the threat level.
+        self._restore_threat_level()
+
+    # ------------------------------------------------------------------
+    # Durable immune memory (mycelium_quorum_log)
+    # ------------------------------------------------------------------
+
+    def _restore_threat_level(self) -> None:
+        """Set the sensor's threat level from the newest live (shadow=0) log row.
+
+        One bounded read (ts index). A store without the table keeps a fresh
+        sensor: counted and logged at debug, never raised.
+        """
+        try:
+            row = self._conn.execute(
+                "SELECT threat_after FROM mycelium_quorum_log "
+                "WHERE shadow = 0 AND threat_after IS NOT NULL "
+                "ORDER BY ts DESC, id DESC LIMIT 1"
+            ).fetchone()
+            if row is not None:
+                self._quorum_sensor.threat_level = max(0.0, min(1.0, float(row[0])))
+        except Exception as exc:  # noqa: BLE001
+            self._quorum_log_errors += 1
+            logger.debug("[interface] quorum_log restore failed (n=%d): %s",
+                         self._quorum_log_errors, exc)
+
+    def _log_quorum(
+        self,
+        session_id: str,
+        signal_type: str,
+        weight: float,
+        shadow: bool = False,
+        detail: Optional[str] = None,
+    ) -> None:
+        """Append one row to mycelium_quorum_log and trim to the newest
+        QUORUM_LOG_RETAIN rows every QUORUM_LOG_PRUNE_EVERY writes.
+
+        threat_after is the sensor's level AFTER the event (shadow rows leave
+        it unchanged). Never raises; a failure is counted.
+        """
+        from .kyudo import QUORUM_LOG_PRUNE_EVERY, QUORUM_LOG_RETAIN  # noqa: PLC0415
+
+        try:
+            app_write(
+                self._conn,
+                "INSERT INTO mycelium_quorum_log "
+                "(ts, session_id, signal_type, weight, threat_after, shadow, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (time.time(), session_id, signal_type, weight,
+                 self._quorum_sensor.threat_level, 1 if shadow else 0, detail),
+            )
+            self._quorum_log_writes += 1
+            if self._quorum_log_writes % QUORUM_LOG_PRUNE_EVERY == 0:
+                app_write(
+                    self._conn,
+                    "DELETE FROM mycelium_quorum_log WHERE id <= "
+                    "(SELECT id FROM mycelium_quorum_log ORDER BY id DESC "
+                    "LIMIT 1 OFFSET ?)",
+                    (QUORUM_LOG_RETAIN,),
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._quorum_log_errors += 1
+            logger.debug("[interface] quorum_log write failed session=%s n=%d: %s",
+                         session_id, self._quorum_log_errors, exc)
+
+    def _note_upserts(self, session_id: str, n: int = 1) -> None:
+        """SHADOW velocity signal: count node upserts for *session_id*; when
+        the count first passes QUORUM_VELOCITY_THRESHOLD, log it once
+        (shadow=1). threat_level is never touched. Never raises."""
+        from .kyudo import QUORUM_VELOCITY_THRESHOLD  # noqa: PLC0415
+
+        try:
+            before = self._session_upserts.get(session_id, 0)
+            after = before + n
+            self._session_upserts[session_id] = after
+            self._session_upserts.move_to_end(session_id)
+            while len(self._session_upserts) > 256:
+                self._session_upserts.popitem(last=False)
+            if before <= QUORUM_VELOCITY_THRESHOLD < after:
+                weight = self._quorum_sensor.record_shadow("update_velocity_anomaly")
+                self._log_quorum(session_id, "update_velocity_anomaly", weight,
+                                 shadow=True, detail=f"upserts={after}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[interface] velocity shadow failed session=%s: %s",
+                         session_id, exc)
+
+    def _observe_activation(self, landmark_id: str, count: int) -> None:
+        """SHADOW landmark_activation_anomaly: called by LandmarkIndex.activate
+        with the new count. Logged shadow=1, never added to threat_level."""
+        from .kyudo import activation_is_anomalous  # noqa: PLC0415
+
+        try:
+            _row = self._conn.execute(
+                "SELECT task_class FROM mycelium_landmarks WHERE landmark_id = ?",
+                (landmark_id,),
+            ).fetchone()
+            if _row is None:
+                return
+            task_class = _row[0]
+            sibs = [r[0] for r in self._conn.execute(
+                "SELECT activation_count FROM mycelium_landmarks "
+                "WHERE task_class = ? AND absorbed IS NULL AND landmark_id != ? "
+                "LIMIT 500",
+                (task_class, landmark_id),
+            ).fetchall()]
+            if activation_is_anomalous(sibs, count):
+                weight = self._quorum_sensor.record_shadow("landmark_activation_anomaly")
+                self._log_quorum("", "landmark_activation_anomaly", weight, shadow=True,
+                                 detail=f"landmark={landmark_id} class={task_class} count={count}")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[interface] activation shadow failed lm=%s: %s", landmark_id, exc)
 
     # ------------------------------------------------------------------
     # Plan stats table (Gate 1 Step 1.8)
@@ -612,6 +732,7 @@ class MyceliumInterface:
         )
         if node is not None:
             self._registry.touch(session_id, node.node_id)
+            self._note_upserts(session_id)
 
     def ingest_context(self, text: str, session_data: dict) -> None:
         """Extract a context-space node from project/stack signals in text + session data."""
@@ -679,6 +800,7 @@ class MyceliumInterface:
                 self._store.upsert_node(
                     space_id, coords, label, confidence, channel=int(ingested.channel)
                 )
+                self._note_upserts(session_id)
             if results:
                 self._is_mature_cached = None
         except Exception as exc:  # noqa: BLE001
@@ -769,6 +891,7 @@ class MyceliumInterface:
             self._store.upsert_node(
                 space_id, norm_coords, label or "document_data", 0.8, channel=int(channel)
             )
+            self._note_upserts(session_id)
 
             # Record source_channel so crystallization can honor the trust-cap.
             try:
@@ -793,6 +916,9 @@ class MyceliumInterface:
                 from .kyudo import QuorumReorganization  # noqa: PLC0415
 
                 QuorumReorganization().fire(self, session_id)
+                # fire() reset the level to 0: log it, or a restart would
+                # restore the pre-reorganization level from the last signal row.
+                self._log_quorum(session_id, "quorum_reorganization_reset", 0.0)
         except Exception as exc:  # noqa: BLE001
             logger.error("[interface] quorum reorganization failed: %s", exc)
 
@@ -813,6 +939,10 @@ class MyceliumInterface:
         """
         try:
             self._quorum_sensor.record_signal(signal_type=signal_type)
+            self._log_quorum(
+                session_id, signal_type,
+                self._quorum_sensor._SIGNAL_WEIGHTS.get(signal_type, 0.0),
+            )
             self._signalled_sessions[session_id] = None
             while len(self._signalled_sessions) > 256:
                 self._signalled_sessions.popitem(last=False)
@@ -974,8 +1104,15 @@ class MyceliumInterface:
         self._navigator.clear_session(session_id)
         self._extractor.clear_session(session_id)
 
+        self._session_upserts.pop(session_id, None)
         if self._signalled_sessions.pop(session_id, False) is False:
+            _before = self._quorum_sensor.threat_level
             self._quorum_sensor.decay_clean_session()
+            if self._quorum_sensor.threat_level != _before:  # a fade at 0 is no event
+                self._log_quorum(
+                    session_id, "clean_session_fade",
+                    self._quorum_sensor.threat_level - _before,
+                )
         self._crystallisation_suspended = False
 
         # Step 3: predictive pre-warm at session boundary (mature only)
