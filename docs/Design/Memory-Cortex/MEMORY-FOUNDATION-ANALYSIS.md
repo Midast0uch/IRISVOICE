@@ -335,8 +335,8 @@ fails on the old state for every measured fix; values checked on the live store 
 ### 10.1 Status (2026-10-19)
 
 W1, W2, W3, W8 committed (`04b8f858`). W5/W6/W7 committed (`7cd434e9`): the session region,
-confidence that grows on recurrence, the chrono feed. W4 + W11 built (§11, §12). Open: the
-clock decision (§11.4), W9, W10, the live gate.
+confidence that grows on recurrence, the chrono feed. W4 + W11 committed (`14e3452b`); the
+active-day clock (§11.4) follows. Open: W9, W10, the live gate.
 
 
 ---
@@ -401,14 +401,21 @@ an injection) while well-proven memory barely moves — the immune response targ
 by construction. Measured in the guard: a fresh edge loses 0.03, a 50-proof edge less than a
 tenth of that, an edge outside the window nothing.
 
-### 11.4 Open decision: which clock
+### 11.4 The clock: active days (owner decision, 2026-10-19)
 
-Today the law counts **calendar days**. An **activity clock** — count only days with at least
-one episode (52 of the 90 calendar days on the live store) — would align decay with the speed at
-which the memory grows: an away month forgets nothing; a busy week fades unreinforced routes
-faster per day, but not per use. It is one query on the covering index `idx_ep_timestamp`. It
-changes Req 7.2 ("score −= rate × days idle"), which an existing test pins with calendar days,
-so it needs the owner's decision.
+The law counts **active days** — UTC dates with at least one episode (`decay.ActivityClock`;
+52 of the last 90 calendar days on the live store). Decay follows the speed at which the memory
+grows: an away month forgets nothing; a busy week fades unreinforced memory per use, not per
+calendar day. One query per pass on the covering index `idx_ep_timestamp`. A span counts the
+active dates strictly after the date of its last touch, up to today. An empty episode table
+means no activity, so nothing decays.
+
+Req 7.2 ("score −= rate × days idle") now reads *active* days. A store with no episode
+**table** (a Mycelium-only store: test fixtures, a partial schema) has no activity record; it
+counts calendar days, logged at WARNING — the existing Req 7.2 test runs on such a store and is
+unchanged. Replay on the live store (read-only): active idle 0–52 days against 0–99 calendar;
+node confidence after one pass 0.42–0.95; three spaces keep a node ≥ 0.6, so the maturity gate
+opens honestly.
 
 ---
 

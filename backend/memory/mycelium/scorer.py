@@ -216,9 +216,10 @@ class EdgeScorer:
           m    = m_channel (the weaker endpoint's Kyudo channel)
                  * m_phase (mean Caducean u over the span: expand 0.5,
                    compress 1.8; that session's rows when session_id is given)
-          days = span since max(last_traversed, last_decayed_at) - each span
-                 is counted once (the pass used to subtract the whole idle
-                 time again on every run, so decay compounded)
+          days = ACTIVE days (decay.ActivityClock: days with >= 1 episode)
+                 since max(last_traversed, last_decayed_at) - each span is
+                 counted once (the pass used to subtract the whole idle time
+                 again on every run, so decay compounded)
 
         Edges with last_traversed=None are skipped (no idle time). The UPDATE
         sets score and last_decayed_at only: decay is FORGETTING, never an
@@ -272,6 +273,7 @@ class EdgeScorer:
         if not refs:
             return 0
         phase = _decay.phase_multiplier(conn, min(refs), session_id)
+        clock = _decay.ActivityClock(conn, min(refs), now)
         quorum = 1.0
         if quorum_since is not None:
             from .kyudo import QUORUM_DECAY_MULTIPLIER  # noqa: PLC0415
@@ -286,7 +288,7 @@ class EdgeScorer:
                     continue
                 days = _decay.QUORUM_SPAN_DAYS
             else:
-                days = (now - max(last_traversed, last_decayed_at or 0.0)) / 86400.0
+                days = clock.days_since(max(last_traversed, last_decayed_at or 0.0))
             if days <= 0.0:
                 continue
 
@@ -367,6 +369,7 @@ class EdgeScorer:
         if not refs:
             return 0
         phase = _decay.phase_multiplier(conn, min(refs), session_id)
+        clock = _decay.ActivityClock(conn, min(refs), now)
         quorum = 1.0
         if quorum_since is not None:
             from .kyudo import QUORUM_DECAY_MULTIPLIER  # noqa: PLC0415
@@ -379,7 +382,7 @@ class EdgeScorer:
                     continue
                 days = _decay.QUORUM_SPAN_DAYS
             else:
-                days = (now - max(updated_at or 0.0, last_decayed_at or 0.0)) / 86400.0
+                days = clock.days_since(max(updated_at or 0.0, last_decayed_at or 0.0))
             if days <= 0.0:
                 continue
             new_conf = _decay.node_confidence_after(

@@ -829,14 +829,14 @@ class LandmarkIndex:
                      0.005/day for non-permanent.
 
         The ONE growth/decay law (decay.py): amount = rate * days * a(n), with
-        n = traversal_count and days counted once from max(last_traversed,
-        last_decayed_at) - the pass subtracted the whole idle time again on
-        every run, so decay compounded.
+        n = traversal_count and ACTIVE days (decay.ActivityClock) counted once
+        from max(last_traversed, last_decayed_at) - the pass subtracted the
+        whole idle time again on every run, so decay compounded.
 
         Returns:
             Number of landmark edges pruned.
         """
-        from .decay import edge_decay_amount, has_decay_columns  # noqa: PLC0415
+        from .decay import ActivityClock, edge_decay_amount, has_decay_columns  # noqa: PLC0415
 
         now = time.time()
         pruned = 0
@@ -855,12 +855,16 @@ class LandmarkIndex:
             """
         )
         rows = cursor.fetchall()
+        refs = [max(r[2], r[3] or 0.0) for r in rows if r[2] is not None]
+        if not refs:
+            return 0
+        clock = ActivityClock(self._conn, min(refs), now)
 
         for edge_id, score, last_traversed, last_decayed_at, traversals, is_permanent in rows:
             if last_traversed is None:
                 continue
 
-            days_idle = (now - max(last_traversed, last_decayed_at or 0.0)) / 86400.0
+            days_idle = clock.days_since(max(last_traversed, last_decayed_at or 0.0))
             if days_idle <= 0.0:
                 continue
 

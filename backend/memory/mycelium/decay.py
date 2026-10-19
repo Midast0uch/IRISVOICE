@@ -23,13 +23,14 @@ c -> floor + (c - floor) * exp(-rate * m * days). Each is proportional to its
 distance from its bound, so the two meet at an equilibrium set by f.
 
 Decay is incremental: a span is counted once, from max(last touch,
-last_decayed_at). The quorum reorganization is this law with m_quorum, applied to
+last_decayed_at), in ACTIVE days (ActivityClock). The quorum reorganization is this law with m_quorum, applied to
 what the suspect window touched (kyudo.QuorumReorganization) — "the same way it
 always does, just faster" (Kyudo Layer Guide, Part 4).
 """
 
 from __future__ import annotations
 
+import bisect
 import logging
 import math
 import time
@@ -111,6 +112,52 @@ def has_decay_columns(conn: Any, table: Optional[str] = None) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[decay] column probe failed: %s", exc)
         return False
+
+
+def _utc_date(ts: float) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
+class ActivityClock:
+    """
+    The clock decay counts: ACTIVE days - UTC dates with at least one episode
+    (owner decision, 2026-10-19; MEMORY-FOUNDATION-ANALYSIS §11.4). Decay then
+    follows the speed at which the memory grows: an away month forgets nothing,
+    a busy week fades unreinforced memory per use, not per calendar day.
+    Live store: 52 active days in the last 90.
+
+    A span counts the active dates strictly after the date of its reference
+    (the day of the last touch is the touch itself) up to today. Whole days.
+    One query per pass on the covering index idx_ep_timestamp.
+
+    A store with no episode history TABLE (a Mycelium-only store: test
+    fixtures, a partial schema) has no activity record at all; it counts
+    calendar days, logged at WARNING. The application store always has the
+    table; an EMPTY table means no activity, so nothing decays.
+    """
+
+    def __init__(self, conn: Any, since: float, now: Optional[float] = None) -> None:
+        self.now = time.time() if now is None else now
+        today = _utc_date(self.now)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT substr(timestamp, 1, 10) FROM episodes WHERE timestamp >= ?",
+                (_utc_date(since),),
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001 - no episodes table in this store
+            logger.warning("[decay] no episode history (%s): counting calendar days", exc)
+            self._dates: Optional[list] = None
+        else:
+            self._dates = sorted(d for (d,) in rows if d and d <= today)
+
+    @property
+    def counts_activity(self) -> bool:
+        return self._dates is not None
+
+    def days_since(self, ref: float) -> float:
+        if self._dates is None:
+            return max(0.0, (self.now - ref) / 86400.0)
+        return float(len(self._dates) - bisect.bisect_right(self._dates, _utc_date(ref)))
 
 
 def evidence_weight(n: Optional[int]) -> float:

@@ -225,3 +225,52 @@ def test_the_span_phase_changes_how_fast_memory_fades(conn, us, factor):
     e = _edge(conn, _node(conn), _node(conn))
     EdgeScorer(CoordinateStore(conn)).apply_decay()
     assert 0.5 - _score(conn, e) == pytest.approx(0.10 * factor, abs=1e-3)
+
+
+# ── the activity clock (owner decision 2026-10-19, §11.4) ────────────────────
+
+def _episodes(conn, days_ago):
+    """An episodes table (the application store has one) with an episode on
+    each of the given days (UTC noon)."""
+    conn.execute("CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, timestamp TEXT)")
+    today = time.time() // DAY * DAY
+    conn.executemany(
+        "INSERT INTO episodes (timestamp) VALUES (?)",
+        [(time.strftime("%Y-%m-%d 12:00:00", time.gmtime(today - d * DAY)),) for d in days_ago],
+    )
+    conn.commit()
+
+
+def test_an_away_month_forgets_nothing(conn):
+    _episodes(conn, [30, 30, 31])                 # activity only up to the last use
+    e = _edge(conn, _node(conn), _node(conn), idle_days=30.0)
+    EdgeScorer(CoordinateStore(conn)).apply_decay()
+    assert _score(conn, e) == pytest.approx(0.5)
+
+
+def test_decay_counts_the_days_the_memory_was_in_use(conn):
+    _episodes(conn, [9, 9, 9, 5, 1])              # three active days after the last use
+    e = _edge(conn, _node(conn), _node(conn), idle_days=10.0)
+    EdgeScorer(CoordinateStore(conn)).apply_decay()
+    assert 0.5 - _score(conn, e) == pytest.approx(0.03, abs=1e-6)
+
+
+def test_no_activity_at_all_means_nothing_decays(conn):
+    _episodes(conn, [])
+    e = _edge(conn, _node(conn), _node(conn), idle_days=10.0)
+    nid = _node(conn, confidence=0.7, age_days=10.0)
+    scorer = EdgeScorer(CoordinateStore(conn))
+    scorer.apply_decay()
+    scorer.apply_node_decay()
+    assert _score(conn, e) == pytest.approx(0.5)
+    assert _conf(conn, nid) == pytest.approx(0.7)
+
+
+def test_node_confidence_runs_on_the_same_clock(conn):
+    from backend.memory.mycelium.decay import NODE_DECAY_RATE_DEFAULT, node_confidence_after
+
+    _episodes(conn, [20, 2])                      # one active day after the last touch
+    nid = _node(conn, confidence=0.7, age_days=20.0)
+    EdgeScorer(CoordinateStore(conn)).apply_node_decay()
+    assert _conf(conn, nid) == pytest.approx(
+        node_confidence_after(0.7, NODE_DECAY_RATE_DEFAULT, 1.0, 1.0), abs=1e-9)
