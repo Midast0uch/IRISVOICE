@@ -893,3 +893,97 @@ Open `index.html` (demo) and `index.html?real` (after `export_snapshot.py`). Cor
 territories; crystals set in the wall (fly inside); `s` for the layers; the ticker shows the guard's rows.
 Timeline lens, click a session (in the demo, `__cortex.enter(12)` and `__cortex.enter(14)` open one with a pin bead and one with a checkpoint): the vines (leaves, buds, tendrils, branches), the pins as knots, the arch at the
 end. Artifacts lens: pin tethers reach the tissue.
+
+
+---
+
+## 18. The design language — a memory you synchronize with (owner direction, 2026-10-19)
+
+> "Only the artifacts view I'm happy about; everything else needs more work to have a uniform look… the interface was
+> looking similar to Assassin's Creed's Animus, which I liked… a biological plant-like organism but not so explicit…
+> the first timeline view with the spiral hex going down is really good, but we have not encapsulated entirely what the
+> memory of the application is and can do… a UI/UX experience never seen before."
+
+### 18.1 Why the last iterations missed
+
+Each pass answered one remark with a new literal metaphor — fibres, vines, leaves, synaptic bulbs, somas, roots, gyri.
+Each was locally reasonable and together they made a costume box: no single language, and the biology became explicit
+exactly where the owner wanted it implied. The fix is not another metaphor; it is ONE vocabulary, applied everywhere,
+with the biology moved out of the shapes and into the motion.
+
+### 18.2 The concept: the Cortex is IRIS's Animus
+
+In the Animus you do not look AT a memory; you enter it, it assembles around you out of light and fragments, you
+synchronize with it, and where it does not hold together it glitches (desync). That is exactly what IRIS's memory is:
+a store you can enter, replay, prove and repair. The Memory Cortex is the machine for doing that with the agent's
+memory — the owner's memory of what the agent knows.
+
+**Organic, but only in how it behaves.** Nothing is drawn as a leaf, a vine, a root or a brain fold. The organism shows
+in motion: it **breathes** (slow scale and density), **grows** (fragments accrete like crystal where memory is earned),
+**sheds** (fragments drift loose and dim where it decays), **heals** (Kyudo knits gaps closed), and **reacts** (a
+threat is a desync glitch, a reorganization is a pulse that resettles the lattice).
+
+### 18.3 One vocabulary — six words, used in every view
+
+| Word | What it is in the memory | How it looks |
+|---|---|---|
+| **Fragment** | the atom: an event, a context chunk, a coordinate node | a small low-poly shard (a hex or triangular facet of the lattice) of pale light; its solidity is its trust (verified = solid face, external = edge-only, untrusted = flickering outline) |
+| **Strand** | continuity: a thread, a session, a route between ideas | a thin continuous line of light; a session is a DOUBLE strand — the conversation (`conversations.db`) and the memory (`memory.db`) — twisted together, with a rung wherever a moment belongs to a turn |
+| **Glyph** | meaning: a landmark, a proven claim | the neuron glyph (one design in every view), its spokes are its evidence |
+| **Sync** | proof and confidence | a sync value (0-100%) on every claim, session and sector; high sync = sharp, stable, assembled; low sync = soft, drifting |
+| **Desync** | contradiction, failure, threat | a short glitch: chromatic offset, fragments jolt out of place, a scan line; Kyudo's quorum signals and failed steps |
+| **Assembly / dissolution** | recall / forgetting | recalled memory flies together into shape; decaying memory loosens and fades |
+
+### 18.4 What IRIS's memory is and can do → where the owner sees it
+
+| The memory IS / DOES | View | Expression |
+|---|---|---|
+| everything it knows, by topic (sectors) | **Cortex** | the hex-lattice orb (the Animus geometry, kept), territories as tinted regions of fragments; it breathes; decaying regions loosen, growing ones densify |
+| proven claims (landmarks), how they link | Cortex, inside | glyphs joined by strands; a claim's sync ring; merges = two glyphs fusing; dissolved claims dissolve |
+| its history (sessions) | **Timeline** (owner: "really good") | the hex spiral going down — the DNA of the memory; each session a base pair; keep it, add sync per session |
+| one conversation, relived | **Memory corridor** (the tunnel) | entering assembles the corridor from fragments around you; the session's double strand runs through it; moments are fragments on the strand, claims are glyphs; failures desync the corridor where they happened; the doorway (owner: liked) stays |
+| what memory gives the agent on each step (recall, the context package) | **Synchronization** — NEW, the missing piece | pick a turn: the fragments the memory supplied fly out of the cortex and assemble into the agent's step — the path, predictions, failure warnings — with a sync %; this is the "what it can do" the dashboard never showed |
+| learning and forgetting (§11 law) | everywhere, over time | assembly where earned, dissolution where idle; "watch it grow" replays it |
+| self-cleaning and defence (Kyudo) | everywhere | trust = fragment solidity; integrity pass = a slow scan that knits or retires fragments; a quorum reorganization = a desync wave then a resettle |
+| decisions (Oracle) | How IRIS decides | the iris view, in the same line-and-glyph language |
+| things it made (artifacts) | Artifacts (owner: happy) | unchanged |
+| held memory (pins) | everywhere | a fragment locked in brackets — it does not drift, does not decay |
+
+### 18.5 Visual rules (on top of §16's standing rules)
+
+- Palette: the dark field stays; line work is pale white-cyan, territory tints are desaturated; brightness never builds.
+- Shape grammar: facets, lines, glyphs, points. No organic silhouettes (no leaves, tubes, bulbs, folds).
+- Motion grammar: breathe (4-7 s), accrete, drift, glitch (≤ 300 ms), resettle. Every motion is driven by a real value.
+- HUD: thin frame lines, monospace, a breadcrumb (MEMORY › SECTOR › SESSION › MOMENT), sync values; text resolves with
+  the existing scramble effect.
+- Transitions are synchronization: into a memory = assemble; out = dissolve; never a cut to black.
+
+### 18.6 Order of work
+
+1. **Unify the language** — corridor rebuilt in fragments + double strand (vines, bulbs, somas, tissue lining removed);
+   cortex shell back on the hex lattice with organic motion (breathing, loosening, densifying) instead of folds and
+   roots; one glyph everywhere.
+2. **Sync and desync** — sync values on claims, sessions, sectors; desync glitches from failures and quorum signals.
+3. **Synchronization view** — the recall of one turn, from the context package (§15 of the foundation analysis).
+4. **HUD pass** — breadcrumb, frame lines, sync readouts.
+
+### 18.7 Step 1 as built (2026-10-19)
+
+- **Corridor.** The walls are ~22k small hex fragments laid by a slow clustering field (a growth, not a grid). They
+  assemble round you on entry (a pale void that clears in ~1.3 s), breathe (5-6 s), sit looser and dimmer where the
+  session was quiet, shed a few fragments there, and dissolve right at your eye. A slow wave of light runs down the
+  wall. A failed task desyncs its stretch of wall: a red-shifted jolt of ~200 ms, roughly once a second; a setback
+  does the same, weaker.
+- **Double strand.** Conversation (pink) and memory (cyan) coil round an axis halfway between you and the wall. The
+  coil is WIDE and slow (owner: "larger, not tighter, so the tunnel does not seem so empty"): radius about a third of
+  the corridor, one turn per ~15 units, scaled with the corridor so it never crosses your path. Plain rungs are short
+  stubs; a moment's rung to its turn is a bond that is bright at both strands and faint between. A fan-out widens the
+  coil (a replication fork). At the far end the pair climbs the doorway and each strand traces the arch one way round.
+- **Fragments and glyphs.** Messages are hex shards on the conversation strand, moments are shards on the memory
+  strand (solid = strong evidence, edge-only = weak). Claims are the cortex glyph on a short stem off the memory strand.
+  Pins stay locked crystals.
+- **No straight lines across the corridor.** The hover bridges are gone; the rungs and the strand highlight show links.
+  Ribbons fade where a segment is only a few pixels long (far or end-on), so light never piles up.
+- **Cortex.** Back on the hex lattice (wire + cells). Each cell is a fragment that stands apart from its neighbours and
+  breathes; how tightly a territory holds together is its sync (share of its claims that are proven). The folded
+  membrane, the roots and the vines are removed.

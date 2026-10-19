@@ -772,21 +772,30 @@ const wire=new THREE.Mesh(new THREE.IcosahedronGeometry(R*1.015,4),wireMat);cort
 // the cells themselves: each triangle of the lattice fills with its region's colour as one flat
 // facet (the cell, not a gradient), glints when the region is busy, and carries event ripples.
 const cellGeo=new THREE.IcosahedronGeometry(R*1.012,4);
-{const p=cellGeo.attributes.position,n=p.count,fc=new Float32Array(n*3),fr=new Float32Array(n),a=new V3(),b=new V3(),c=new V3();
-  for(let f=0;f<n;f+=3){a.fromBufferAttribute(p,f);b.fromBufferAttribute(p,f+1);c.fromBufferAttribute(p,f+2);const m=a.add(b).add(c).normalize(),r=rng();
-    for(let k=0;k<3;k++){fc.set([m.x,m.y,m.z],(f+k)*3);fr[f+k]=r}}
-  cellGeo.setAttribute('aFace',new THREE.BufferAttribute(fc,3));cellGeo.setAttribute('aR',new THREE.BufferAttribute(fr,1))}
+// Each cell is a FRAGMENT (design §18): it stands a little apart from its neighbours and breathes. How tightly a
+// territory's fragments hold together is its SYNC - the share of its claims that outside evidence has proven - so a
+// well-proven territory reads as one assembled surface and a territory that is still learning drifts loose.
+const regSync=REG.map(d=>{let n=0,p=0;for(const l of M.landmarks)if(l.domain===d){n++;if(l.tier!=='candidate')p++}return (p+.5)/(n+1)});
+{const p=cellGeo.attributes.position,n=p.count,fc=new Float32Array(n*3),fe=new Float32Array(n*3),fr=new Float32Array(n),fs=new Float32Array(n),a=new V3(),b=new V3(),c=new V3();
+  for(let f=0;f<n;f+=3){a.fromBufferAttribute(p,f);b.fromBufferAttribute(p,f+1);c.fromBufferAttribute(p,f+2);const ce=a.clone().add(b).add(c).multiplyScalar(1/3),m=ce.clone().normalize(),r=rng();
+    let best=0,sy=.5;regC.forEach((rc,i)=>{const q=Math.acos(clamp(m.dot(rc),-1,1))/regRad[i];if(q<1&&1-q>best){best=1-q;sy=regSync[i]}});
+    for(let k=0;k<3;k++){fc.set([m.x,m.y,m.z],(f+k)*3);fe.set([ce.x,ce.y,ce.z],(f+k)*3);fr[f+k]=r;fs[f+k]=sy}}
+  cellGeo.setAttribute('aFace',new THREE.BufferAttribute(fc,3));cellGeo.setAttribute('aCen',new THREE.BufferAttribute(fe,3));
+  cellGeo.setAttribute('aR',new THREE.BufferAttribute(fr,1));cellGeo.setAttribute('aSync',new THREE.BufferAttribute(fs,1))}
 const cellMat=new THREE.ShaderMaterial({
   uniforms:{...U,...LATTICE_U,uVis:wireMat.uniforms.uVis,uShock:wireMat.uniforms.uShock},
-  vertexShader:`uniform float uTime,uVis,uShock;attribute vec3 aFace;attribute float aR;varying vec3 vC;varying float vA;${REGION_GLSL}
-    void main(){vec4 mv=modelViewMatrix*vec4(immune(position),1.);vec3 n=normalize(aFace);float im=immAmp(n);
+  vertexShader:`uniform float uTime,uVis,uShock;attribute vec3 aFace,aCen;attribute float aR,aSync;varying vec3 vC;varying float vA;${REGION_GLSL}
+    void main(){vec3 n=normalize(aFace);float im=immAmp(n);
+      float br=sin(uTime*1.14+aR*6.2832)*(.035+.03*(1.-aSync));                  // breathing, about 5.5 s; looser where sync is low
+      vec3 q=aCen+(position-aCen)*(mix(.7,.9,aSync)+br)+n*length(aCen)*.012*(1.-aSync)*(.5+.5*sin(uTime*.31+aR*20.));
+      vec4 mv=modelViewMatrix*vec4(immune(q),1.);
       float rw,ra,rn,hole,rim;vec3 rc;region(n,rw,rc,ra,rn,hole,rim);vec3 ic;float rp=ripples(n,uTime,ic);
       float inR=step(.0001,rw);
       vec3 nv=normalize(normalMatrix*n);float fres=pow(1.-abs(dot(nv,normalize(-mv.xyz))),1.4);
       float glint=pow(.5+.5*sin(uTime*(.4+aR*1.2)+aR*60.),14.)*(.3+ra*.5);rp=min(rp,1.);
       float a=inR*(.028+ra*.022+glint*.05+step(.8,rn)*.025)+rp*.13+rim*.4+uShock*.06;
       vC=mix(mix(vec3(.55,.7,.8),rc,inR),ic,clamp(rp,0.,1.));
-      vA=a*mix(.35,1.,fres)*hole*uVis*(1.+max(im,0.)*.55*(.5+.5*sin(uTime*37.+aR*50.)))*(1.-max(-im,0.)*.35);gl_Position=projectionMatrix*mv;}`,
+      vA=a*mix(.55,1.,aSync)*mix(.35,1.,fres)*hole*uVis*(1.+max(im,0.)*.55*(.5+.5*sin(uTime*37.+aR*50.)))*(1.-max(-im,0.)*.35);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
 const cells=new THREE.Mesh(cellGeo,cellMat);cortex.add(cells);
@@ -1360,12 +1369,11 @@ function shockAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 0;const x=d/D;if
 function bounceAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 1;const x=d/D;return 1+Math.exp(-x*6)*Math.sin(x*Math.PI*4)*.06}
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 7. a session = its own dimension: VINES climbing the tunnel wall, like travelling through a synapse in time
-//    (owner, 2026-10-19). conversations.db gives the thick vines - the thread itself, and any strand forked from it,
-//    which branches off the thread; your messages are leaves on it, IRIS's are buds. memory.db gives the thin vines -
-//    one per event family; a moment curls a tendril. Neurons the session touched sit on the wall as glyphs, joined by
-//    a tissue thread you can follow. Pins are fixed knots on the thread. The far end is a tall soft arch the vines
-//    climb, not a light.
+// 7. a session = its own dimension: a MEMORY CORRIDOR you relive (design §18). It assembles out of hex fragments
+//    around you; the conversation (conversations.db) and the memory (memory.db) run through it as one double strand,
+//    with a rung wherever a moment belongs to a turn. Messages and moments are shard fragments on their strand (a
+//    strong source is solid, a weak one only its edge), claims are the glyph, pins are locked crystals, and where the
+//    work failed the corridor desyncs. The far end is a tall soft arch the strands climb onto.
 // ═══════════════════════════════════════════════════════════════════════════
 const TUN_OFF=new V3(0,0,-3000);
 let tunnel=null;
@@ -1379,118 +1387,61 @@ function sessionMessages(s){
     else if(e.family==='delivery'&&/ANSWER_GIVEN|ARTIFACT_PRODUCED|NARRATED/.test(e.label))out.push({ts:e.ts,role:'iris',len:80+Math.floor((e.ts*13)%420),text:null})}
   if(!out.length)out.push({ts:s.started,role:'user',len:60,text:null});
   return out}
-// A session is looked at the way you would look into the synapse of a neuron and travel along it in time: every thread
-// and strand is a VINE climbing the tunnel wall (owner, 2026-10-19: "something similar to vines"). The stem meanders,
-// thickens where the work was dense and tapers where it starts and ends; tendrils curl off it at moments, leaves open
-// at your messages and buds at IRIS's; a strand forked from the thread branches off it and rejoins. One opaque mesh
-// with a soft rim light - no additive glare, nothing that brightens with time. A faint pulse runs along the stems at the
-// pace of the session's own attention (the Caducean u).
-const VINE_VS=`uniform float uTime,uSpeed,uLen,uVis;uniform vec4 uHL[8];
-  attribute vec3 aCol;attribute vec4 aLit;attribute float aU,aB,aAr,aL,aK;
-  varying vec3 vN,vV,vC,vLit;varying float vA,vAr,vL,vP,vK;
-  void main(){
-    vec4 mv=modelViewMatrix*vec4(position,1.);float d=max(-mv.z,.05);
-    vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);
+// The design language (MEMORY-DASHBOARD-DESIGN §18): FRAGMENT, STRAND, GLYPH, SYNC, DESYNC, ASSEMBLY. A session is relived
+// the way the Animus replays a memory: the corridor ASSEMBLES out of wall fragments around you as you travel, the
+// conversation and the memory run through it as one DOUBLE STRAND (conversations.db and memory.db, a rung wherever a
+// moment belongs to a turn), moments and messages are shard fragments on their strand, claims are the glyph, and where
+// the work failed the corridor DESYNCS. Organic only in motion: the fragments breathe, loosen where the session was quiet.
+//
+// strands: screen-space ribbons of light, a fixed width in pixels
+const RIB_VS=`uniform float uTime,uSpeed,uLen;uniform vec2 uRes;uniform vec4 uHL[8];
+  attribute vec3 aNx,aCol;attribute float aSide,aU,aB,aW;varying vec3 vC;varying float vA,vS;
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vec4 c0=projectionMatrix*mv,c1=projectionMatrix*modelViewMatrix*vec4(position+aNx,1.);
+    vec2 p0=c0.xy/max(c0.w,1e-4)*uRes*.5,p1=c1.xy/max(c1.w,1e-4)*uRes*.5,d=p1-p0;float sl=length(d);d=sl>1e-4?d/sl:vec2(1.,0.);
+    float fs=sl/max(length(aNx)*projectionMatrix[1][1]*uRes.y*.5/max(-mv.z,.1),1e-4);   // seen end-on, a strand would pile up its light: fade it
+    float zf=-mv.z;c0.xy+=vec2(-d.y,d.x)*aW*mix(1.,.35,smoothstep(12.,60.,zf))*aSide/(uRes*.5)*c0.w;   // thinner far off, so far turns do not pile up
     float hl=0.;for(int j=0;j<8;j++){vec4 h=uHL[j];if(h.x>-.5&&abs(aB-h.x)<.5)hl+=h.w*smoothstep(h.y-.002,h.y+.002,aU)*(1.-smoothstep(h.z-.002,h.z+.002,aU));}
-    vP=pow(.5+.5*sin(aU*uLen*.5-uTime*uSpeed+aB*1.7),16.)*step(aK,.5);   // the attention pulse runs along stems only
-    vC=aCol*(1.+hl*.8);vLit=aLit.rgb*(aLit.a+hl*.5);vAr=aAr;vL=aL;vK=aK;
-    vA=smoothstep(170.,16.,d)*smoothstep(.35,2.6,d)*uVis;                 // fade far away and right at the camera
-    gl_Position=projectionMatrix*mv;}`;
-const VINE_FS=`varying vec3 vN,vV,vC,vLit;varying float vA,vAr,vL,vP,vK;
-  float hh(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-  float vn(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hh(i),hh(i+vec2(1.,0.)),f.x),mix(hh(i+vec2(0.,1.)),hh(i+vec2(1.,1.)),f.x),f.y);}
-  float fb(vec2 p){return .55*vn(p)+.3*vn(p*2.3+7.1)+.15*vn(p*5.3+3.7);}
-  void main(){float ndv=abs(dot(normalize(vN),normalize(vV)));float rim=pow(1.-ndv,2.2);
-    float an=vAr*6.2832;vec2 q=vec2(vL*2.4+cos(an)*.55,sin(an)*1.25+vL*.15);   // seamless round the stem, stretched along it
-    float n=fb(q),fib=fb(vec2(vL*7.,sin(an)*3.+cos(an)*1.7));
-    float knot=smoothstep(.72,.9,vn(vec2(vL*.9,sin(an)*.8)));                 // the odd knot in the bark
-    float bark=(.6+.4*smoothstep(.3,.68,n))*(.85+.15*fib)*(1.-knot*.35);
-    vec3 tone=mix(vC*.72,vC*1.08,n);                                        // the bark's own colour drift
-    float nd=fract(vL/1.3)-.5,node=exp(-nd*nd/.0012)*step(vK,.5),ring=exp(-nd*nd/.00012)*step(vK,.5);  // a node every 1.3: the sheath parts
-    bark*=1.-node*.55;
-    vec3 c=tone*(.12+.07*ndv)*bark+vC*rim*.26*(.75+.25*n)*(1.-node*.4)+vLit*(.05+.16*rim)+vC*rim*vP*.3+vC*ring*.22;
-    gl_FragColor=vec4(c,vA);}`;
-// ── The cortex as PLANT and BRAIN (owner, 2026-10-19: "not entirely sold on the hex cortex orb, on how what is happening
-// inside is incorporated with the structure"). The shell is a FOLDED MEMBRANE - gyri and sulci, the way a brain's cortex
-// folds - and the inside ROOTS INTO IT: from the seed at the core, roots branch out to every territory and surface in its
-// folds, so the structure is grown by what is inside rather than drawn around it. The territories colour the folds; the
-// dive aperture, ripples and the immune flicker work on the folds exactly as they did on the lattice.
-// ?shell=hex shows the old geodesic lattice for comparison.
-const SHELL=new URLSearchParams(location.search).get('shell')==='hex'?'hex':'gyri';
-if(SHELL!=='hex'){wire.visible=false;cells.visible=false;skinMat.uniforms.uSkin.value=.28}   // the folds carry the surface; the skin's points thin out
-const SNOISE=`vec3 m289(vec3 x){return x-floor(x*(1./289.))*289.;}vec4 m289(vec4 x){return x-floor(x*(1./289.))*289.;}
-  vec4 perm(vec4 x){return m289(((x*34.)+1.)*x);}vec4 tis(vec4 r){return 1.79284291400159-.85373472095314*r;}
-  float snoise(vec3 v){const vec2 C=vec2(1./6.,1./3.);const vec4 D=vec4(0.,.5,1.,2.);vec3 i=floor(v+dot(v,C.yyy));vec3 x0=v-i+dot(i,C.xxx);
-    vec3 g=step(x0.yzx,x0.xyz);vec3 l=1.-g;vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);vec3 x1=x0-i1+C.xxx;vec3 x2=x0-i2+C.yyy;vec3 x3=x0-D.yyy;
-    i=m289(i);vec4 p=perm(perm(perm(i.z+vec4(0.,i1.z,i2.z,1.))+i.y+vec4(0.,i1.y,i2.y,1.))+i.x+vec4(0.,i1.x,i2.x,1.));
-    float n_=.142857142857;vec3 ns=n_*D.wyz-D.xzx;vec4 j=p-49.*floor(p*ns.z*ns.z);vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.*x_);
-    vec4 x=x_*ns.x+ns.yyyy;vec4 y=y_*ns.x+ns.yyyy;vec4 h=1.-abs(x)-abs(y);vec4 b0=vec4(x.xy,y.xy);vec4 b1=vec4(x.zw,y.zw);
-    vec4 s0=floor(b0)*2.+1.;vec4 s1=floor(b1)*2.+1.;vec4 sh=-step(h,vec4(0.));vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
-    vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);
-    vec4 nr=tis(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));p0*=nr.x;p1*=nr.y;p2*=nr.z;p3*=nr.w;
-    vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);m=m*m;
-    return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));}
-  // the folds: ridged noise on a warped sphere - long winding ridges (gyri) between narrow grooves (sulci)
-  float gyrus(vec3 n){vec3 q=n*3.4+.75*vec3(snoise(n*1.3+1.7),snoise(n*1.3+9.2),snoise(n*1.3+4.4));float r=1.-abs(snoise(q));return r*r;}`;
-const gyriMat=new THREE.ShaderMaterial({
-  uniforms:{...U,...LATTICE_U,uVis:wireMat.uniforms.uVis,uShock:wireMat.uniforms.uShock,uWarn:wireMat.uniforms.uWarn,uR:{value:R}},
-  vertexShader:`uniform float uTime,uR;${SNOISE}${REGION_GLSL}
-    varying vec3 vN,vV,vRC,vIC;varying float vFold,vRW,vRA,vHole,vRim,vImm,vRp;
-    void main(){vec3 n=normalize(position);float f=gyrus(n);vFold=f;
-      vec3 p=immune(n*uR*(1.006+.034*(f-.45)));                       // crests stand out, sulci sink in
-      vec4 mv=modelViewMatrix*vec4(p,1.);vN=normalize(normalMatrix*n);vV=normalize(-mv.xyz);
-      float rw,ra,rn,hole,rim;vec3 rc;region(n,rw,rc,ra,rn,hole,rim);vRW=step(.0001,rw);vRC=rc;vRA=ra;vHole=hole;vRim=rim;vImm=immAmp(n);
-      vec3 ic;vRp=min(ripples(n,uTime,ic),1.);vIC=ic;gl_Position=projectionMatrix*mv;}`,
-  fragmentShader:`uniform float uTime,uVis,uShock,uWarn;
-    varying vec3 vN,vV,vRC,vIC;varying float vFold,vRW,vRA,vHole,vRim,vImm,vRp;
-    void main(){float facing=abs(dot(normalize(vN),normalize(vV)));float fres=pow(1.-facing,2.);
-      float body=smoothstep(.35,.8,vFold),ridge=smoothstep(.74,.97,vFold),sulc=1.-smoothstep(.12,.42,vFold);   // gyrus body, its crest line, the sulcus
-      vec3 base=mix(vec3(.34,.44,.55),vRC,vRW*.85);
-      vec3 c=base*(.04+.18*body+.42*ridge)+base*fres*.22;c=mix(c,vIC,vRp*.7);c=mix(c,vec3(1.,.25,.2),uWarn*.4);
-      float fl=(1.+max(vImm,0.)*.55*(.5+.5*sin(uTime*38.+vFold*20.)))*(1.-max(-vImm,0.)*.35);
-      float a=(.014+.08*body+.24*ridge*(.6+.4*vRW)+fres*.08+vRA*.03*vRW*body-sulc*.012+vRp*.22+vRim*.8+uShock*.25)*uVis*vHole*fl;
-      gl_FragColor=vec4(c*fl*(1.+uShock*2.),max(a,0.));}`,
-  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
-const gyri=new THREE.Mesh(new THREE.SphereGeometry(R,192,144),gyriMat);gyri.visible=SHELL!=='hex';cortex.add(gyri);
-// roots: from the seed at the core out to every territory, branching, surfacing into its folds; the same node-banded
-// stems as the timeline's vines (one organism, one material). Shell and roots fade together with the lattice's uVis.
-const rootU={...U,uVis:wireMat.uniforms.uVis,uSpeed:{value:1.4},uLen:{value:60},uHL:{value:Array.from({length:8},()=>new THREE.Vector4(-1,0,0,0))}};
-if(SHELL!=='hex'){
-  const RB={pos:[],nrm:[],u:[],b:[],col:[],lit:[],ar:[],l:[],k:[],idx:[]};
-  const rtube=(Ps,rs,col,sides=6)=>{const n=Ps.length;if(n<2)return;const base=RB.pos.length/3;let Nr=null;const T=new V3(),Bn=new V3(),off=new V3();let along=0;
-    for(let k=0;k<n;k++){T.copy(Ps[Math.min(k+1,n-1)]).sub(Ps[Math.max(k-1,0)]).normalize();
-      if(!Nr){Nr=Math.abs(T.y)<.9?new V3(0,1,0):new V3(1,0,0);Nr.addScaledVector(T,-Nr.dot(T)).normalize()}else{Nr.addScaledVector(T,-Nr.dot(T));if(Nr.lengthSq()<1e-8)Nr.set(T.y,-T.x,0);Nr.normalize()}
-      Bn.crossVectors(T,Nr);if(k>0)along+=Ps[k].distanceTo(Ps[k-1]);
-      for(let j=0;j<=sides;j++){const a=j/sides*6.2832;off.copy(Nr).multiplyScalar(Math.cos(a)).addScaledVector(Bn,Math.sin(a));const P=Ps[k];
-        RB.pos.push(P.x+off.x*rs[k],P.y+off.y*rs[k],P.z+off.z*rs[k]);RB.nrm.push(off.x,off.y,off.z);RB.u.push(k/(n-1));RB.b.push(0);RB.col.push(col.r,col.g,col.b);RB.lit.push(0,0,0,0);RB.ar.push(j/sides);RB.l.push(along);RB.k.push(0)}}
-    for(let k=0;k<n-1;k++){const a=base+k*(sides+1),c=a+sides+1;for(let j=0;j<sides;j++)RB.idx.push(a+j,c+j,a+j+1,a+j+1,c+j,c+j+1)}};
-  const curve3=(A,C,B,n)=>{const out=[];for(let k=0;k<n;k++){const t=k/(n-1),u=1-t;out.push(new V3(u*u*A.x+2*u*t*C.x+t*t*B.x,u*u*A.y+2*u*t*C.y+t*t*B.y,u*u*A.z+2*u*t*C.z+t*t*B.z))}return out};
-  // a slow, smooth meander along the root (zero at both ends) - never a per-sample jitter
-  const wobble=(Ps,amp)=>{const p1=rng()*6.28,p2=rng()*6.28,p3=rng()*6.28,n=Ps.length;return Ps.map((P,k)=>{const t=k/(n-1),e=Math.sin(Math.PI*t);
-    return P.clone().add(new V3(Math.sin(t*8.2+p1),Math.sin(t*7.1+p2),Math.sin(t*6.3+p3)).multiplyScalar(amp*e))})};
-  // a branch reaches the shell, then creeps along the inside of a fold for a little way: it SURFACES into the cortex
-  const surface=(Ps,dir,len)=>{const E=Ps[Ps.length-1].clone().normalize(),tan=new V3().crossVectors(E,dir).normalize();
-    for(let k=1;k<=6;k++){const a=k/6*len;Ps.push(E.clone().applyAxisAngle(tan,a).multiplyScalar(R*.985))}return Ps};
-  REG.forEach((d,i)=>{const c=regC[i],col=new THREE.Color(domCol(d)).multiplyScalar(.42),t1=new V3().crossVectors(c,new V3(0,1,.2)).normalize(),t2=new V3().crossVectors(c,t1);
-    const S=c.clone().multiplyScalar(R*.16),M=c.clone().multiplyScalar(R*.55).addScaledVector(t1,gauss()*R*.05).addScaledVector(t2,gauss()*R*.05);
-    const trunk=wobble(curve3(S,c.clone().multiplyScalar(R*.3).addScaledVector(t2,R*.06),M,40),R*.02);
-    rtube(trunk,trunk.map((_,k)=>R*(.0065-.003*k/39)),col,7);
-    const nb=3+Math.floor(rng()*2);
-    for(let j=0;j<nb;j++){const a=j/nb*6.283+rng()*.7,rr=regRad[i]*rand(.35,.7),dir=c.clone().addScaledVector(t1,Math.cos(a)*rr).addScaledVector(t2,Math.sin(a)*rr).normalize();
-      const E=dir.clone().multiplyScalar(R*.985),Cc=M.clone().lerp(E,.5).addScaledVector(dir,R*.05);
-      const br=surface(wobble(curve3(M,Cc,E,34),R*.018),new V3(gauss(),gauss(),gauss()).normalize(),rand(.08,.16));
-      rtube(br,br.map((_,k)=>R*Math.max(.0008,.0035-.0028*k/(br.length-1))),col.clone().multiplyScalar(1.05),5);
-      // two twigs off each branch, also surfacing
-      for(let q=0;q<2;q++){const P0=br[Math.floor(br.length*rand(.45,.7))],d2=dir.clone().addScaledVector(t1,gauss()*.18).addScaledVector(t2,gauss()*.18).normalize();
-        const tw=surface(wobble(curve3(P0,P0.clone().lerp(d2.clone().multiplyScalar(R*.985),.5).addScaledVector(d2,R*.03),d2.clone().multiplyScalar(R*.985),20),R*.01),new V3(gauss(),gauss(),gauss()).normalize(),rand(.05,.1));
-        rtube(tw,tw.map((_,k)=>R*Math.max(.0006,.0018-.0013*k/(tw.length-1))),col.clone().multiplyScalar(1.1),4)}}});
-  const rg=new THREE.BufferGeometry();
-  rg.setAttribute('position',new THREE.Float32BufferAttribute(RB.pos,3));rg.setAttribute('normal',new THREE.Float32BufferAttribute(RB.nrm,3));
-  rg.setAttribute('aU',new THREE.Float32BufferAttribute(RB.u,1));rg.setAttribute('aB',new THREE.Float32BufferAttribute(RB.b,1));
-  rg.setAttribute('aCol',new THREE.Float32BufferAttribute(RB.col,3));rg.setAttribute('aLit',new THREE.Float32BufferAttribute(RB.lit,4));
-  rg.setAttribute('aAr',new THREE.Float32BufferAttribute(RB.ar,1));rg.setAttribute('aL',new THREE.Float32BufferAttribute(RB.l,1));rg.setAttribute('aK',new THREE.Float32BufferAttribute(RB.k,1));
-  rg.setIndex(RB.pos.length/3>65535?new THREE.Uint32BufferAttribute(RB.idx,1):new THREE.Uint16BufferAttribute(RB.idx,1));
-  cortex.add(Object.assign(new THREE.Mesh(rg,new THREE.ShaderMaterial({uniforms:rootU,vertexShader:VINE_VS,fragmentShader:VINE_FS,transparent:true,depthWrite:false,side:THREE.FrontSide})),{frustumCulled:false}))}
+    float pulse=pow(.5+.5*sin(aU*uLen*.55-uTime*uSpeed+aB*2.1),18.)*step(aB,1.5);   // data runs along the two strands
+    float z=-mv.z;vA=smoothstep(75.,6.,z)*smoothstep(.25,1.4,z)*smoothstep(.04,.3,fs)*smoothstep(1.5,10.,sl);vC=aCol*(1.+hl*1.1+pulse*.7);vS=aSide;gl_Position=c0;}`;
+const RIB_FS=`varying vec3 vC;varying float vA,vS;void main(){float e=1.-vS*vS;gl_FragColor=vec4(vC,vA*e*.9);}`;
+// fragments ON the strands (moments, messages): a camera-facing hex shard with three facets and a bright edge; a strong
+// source is solid, a weak one only its edge (trust as solidity)
+const SHARD_VS=`uniform float uPix,uTime;uniform vec4 uHL[8];attribute vec3 aCol;attribute float aSize,aU,aB,aSolid,aR;
+  varying vec3 vC;varying float vA,vSolid,vRot;
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=-mv.z;
+    float hl=0.;for(int j=0;j<8;j++){vec4 h=uHL[j];if(h.x>-.5&&abs(aB-h.x)<.5)hl+=h.w*smoothstep(h.y-.002,h.y+.002,aU)*(1.-smoothstep(h.z-.002,h.z+.002,aU));}
+    vC=aCol*(1.+hl*.9);vSolid=aSolid;vRot=aR*6.2832+uTime*.15*(aR-.5);
+    vA=smoothstep(120.,8.,z)*smoothstep(.25,1.6,z)*(.7+.3*min(hl,1.));
+    gl_PointSize=min(aSize*(1.+hl*.35)*uPix*(42./max(z,.1)),48.*uPix);gl_Position=projectionMatrix*mv;}`;
+const SHARD_FS=`varying vec3 vC;varying float vA,vSolid,vRot;
+  void main(){vec2 p=gl_PointCoord*2.-1.;float c=cos(vRot),s=sin(vRot);p=mat2(c,-s,s,c)*p;vec2 q=abs(p);
+    float hx=max(q.x*.866+q.y*.5,q.y);if(hx>.92)discard;
+    float facet=mod(floor((atan(p.y,p.x)+3.1416)/2.0944),3.);float shade=.45+.2*facet;      // three facets catch the light differently
+    float edge=smoothstep(.72,.9,hx);
+    gl_FragColor=vec4(vC*(shade*vSolid*.7+edge*.95),(vSolid*.45+edge*.75)*vA);}`;
+// the corridor's WALL: hex fragments laid on the wall. They assemble around you (scattered and dim further off), breathe,
+// loosen where the session was quiet, tint where a task closed, and glitch (desync) where the work failed.
+const TILE_VS=`uniform float uTime,uAsm,uLen;uniform vec4 uDes[8];attribute vec3 aCen,aNrm,aCol;attribute float aEdge,aU,aR,aAct;
+  varying vec3 vC;varying float vA,vE,vG,vW;
+  float h1(float x){return fract(sin(x*127.1)*43758.5453);}
+  void main(){vec4 mc=modelViewMatrix*vec4(aCen,1.);float z=-mc.z;
+    float asb=uAsm*(1.-smoothstep(30.,80.,z));                                   // assembled near you, scattered further off
+    vec3 sc=normalize(vec3(h1(aR*13.1)-.5,h1(aR*7.7)-.5,h1(aR*3.3)-.5)+aNrm*.6)*(1.-asb)*(2.2+3.*aR);
+    float br=(.02+.035*(1.-aAct))*sin(uTime*(1.05+aR*.35)+aR*40.);               // breathing (5-6 s), looser where it was quiet
+    // shedding: where the session was quiet a few fragments come loose, drift into the corridor and fade
+    float shed=step(aR,.06*(1.-aAct)),sp=fract(uTime*.045+aR*17.);
+    vec3 p=aCen+(position-aCen)*mix(.62,.9,aAct)*mix(.4,1.,asb)*(1.-shed*sp*.5)+aNrm*(br-shed*sp*1.4)+sc;
+    float g=0.;for(int j=0;j<8;j++){vec4 d=uDes[j];if(d.w<=0.)continue;float w=exp(-pow((aU-d.x)/.01,2.));
+      float on=step(.82,h1(floor(uTime*5.)+d.x*91.));                               // the desync comes and goes (a glitch, not a state)
+      g+=w*on*d.w;}
+    p+=(vec3(h1(floor(uTime*12.)+aR*31.),h1(floor(uTime*12.)+aR*17.),h1(floor(uTime*12.)+aR*5.))-.5)*g*.3;
+    vec4 mv=modelViewMatrix*vec4(p,1.);vC=aCol*(.55+.45*h1(aR*91.));vE=aEdge;vG=min(g,1.);
+    vW=pow(.5+.5*sin(aU*uLen*.22-uTime*.9),24.)*(.4+.6*aAct);                 // a slow wave of light runs down the wall
+    vA=smoothstep(85.,12.,-mv.z)*smoothstep(1.2,4.5,-mv.z)*(.35+.65*asb)*(.4+.6*aAct)*(1.-shed*smoothstep(.5,1.,sp));gl_Position=projectionMatrix*mv;}`;
+const TILE_FS=`varying vec3 vC;varying float vA,vE,vG,vW;
+  void main(){float edge=smoothstep(.86,.98,vE);vec3 c=vC*(.1+edge*.6)*(1.+vW*1.4);
+    c=mix(c,vec3(1.,.25,.32)*(.3+edge*.7),vG*.65);c.b+=vG*edge*.3;               // desync: a red shift and a chromatic edge
+    gl_FragColor=vec4(c,(.03+edge*.2)*vA);}`;
 
 // the doorway: a tall arch with a soft edge (no rim line, nothing round); the fibres of the tunnel part round it and frame it.
 // Coordinates are in units of the tunnel radius at the door: half-width .55, sill -1.15, springing .35, crown .9
@@ -1524,284 +1475,193 @@ function buildTunnel(s){
   const frameAt=u=>{const i=Math.min(599,Math.floor(clamp(u,0,1)*600));return {N:FR.normals[i],B:FR.binormals[i],T:FR.tangents[i]}};
   const onWall=(u,th,k=1)=>{u=clamp(u,0,1);const P=curve.getPointAt(u),{N,B}=frameAt(u);const r=radius(u)*k;
     return P.addScaledVector(N,Math.cos(th)*r).addScaledVector(B,Math.sin(th)*r)};
-  const TW=6.283*2.2; // the bundles turn 2.2 times round the tunnel through the session
-  const UW=1/(CL*1.2); // u per world unit along a bundle
-
-  // ── the bundles: the thread itself and any strand forked from it (conversations.db), parallel paths of a fan-out, and
-  // one thin bundle per event family (memory.db)
+  const TW=6.283*2.4; // the double strand's axis turns 2.4 times round the corridor through the session
   const msgs=sessionMessages(s);
-  const strands=[{kind:'thread',label:'this conversation',th0:0,u0:0,u1:1,k:1,col:THREAD_COL}];
-  (s.strands||[]).forEach((cs,j)=>strands.push({kind:'strand',label:cs.title||'a strand of this conversation',th0:Math.PI*(.9+.25*j),
-    u0:uOf(cs.started),u1:cs.ended?uOf(cs.ended):1,k:.98,col:STRAND_COL,id:cs.id}));
-  for(const e of ev)if(e.label==='SPLIT'){const u0=uOf(e.ts),u1=Math.min(.96,u0+rand(.04,.07)),k=randi(2,3);
-    for(let j=0;j<k;j++)strands.push({kind:'fan',label:'parallel paths (fan-out and fold-back)',fold:(j-(k-1)/2)*.42+.3,u0,u1,k:.99,col:new THREE.Color(FAM[FAMI.control].color)})}
-  const famStr=[];
-  FAM.forEach((f,fi)=>{if(!ev.some(e=>FAMI[e.family]===fi))return;
-    const st={kind:'family',fi,label:f.word,th0:6.283*(fi+1)/10,u0:0,u1:1,k:1,col:new THREE.Color(f.color)};strands.push(st);famStr[fi]=st});
-  strands.forEach((st,i)=>{st.bi=i;st.phase=rng()*6.283});
-  const angle=(st,u)=>st.fold!=null?u*TW+st.fold*Math.sin(clamp((u-st.u0)/(st.u1-st.u0),0,1)*Math.PI):st.th0+u*TW;
-  // a forked strand branches off the thread where it starts (and grows back into it if it ends before the session)
-  const angleThread=u=>strands[0].th0+u*TW;
-  const angleV=(st,u)=>{const a=angle(st,u);if(st.kind!=='strand')return a;
-    const w=smooth01((u-st.u0)/.05)*(st.u1>=.99?1:smooth01((st.u1-u)/.05));return lerp(angleThread(u),a,w)};
-  // stem size and sampling per vine kind (radius in world units; the tunnel is ~2.4-6 across)
-  const SPEC={thread:{r:.085,step:.55,br:1},strand:{r:.06,step:.7,br:.95},fan:{r:.035,step:.7,br:.9},family:{r:.042,step:.8,br:.8}};
-  const jobs=strands.map(st=>{const sp=SPEC[st.kind];st.len=(st.u1-st.u0)*CL*1.15;const ns=Math.max(10,Math.round(st.len/sp.step));
-    return {st,sp,ns,lit:new Float32Array(ns),litC:new Float32Array(ns*3)}});
-  // light a run of a vine: a message or a moment tints the stem there (the tint, not a glare)
-  const lightRun=(st,ua,ub,c,amt)=>{const j=jobs[st.bi],du=st.u1-st.u0,n=j.ns-1;
-    const kA=Math.floor((ua-st.u0)/du*n),kB=Math.ceil((ub-st.u0)/du*n);
-    for(let k=Math.max(0,kA-1);k<=Math.min(n,kB+1);k++){const f=k>=kA&&k<=kB?1:.5;if(amt*f>=j.lit[k]){j.lit[k]=amt*f;j.litC[k*3]=c.r*f;j.litC[k*3+1]=c.g*f;j.litC[k*3+2]=c.b*f}}};
-
-  // ── pins of this thread: a fixed knot on the thread vine at the moment it was made. A checkpoint pin marks the doorway.
-  const pinsHere=M.pins.filter(p=>p.session===s.id&&p.type!=='checkpoint').slice(0,24);
-  const ckHere=M.pins.filter(p=>p.session===s.id&&p.type==='checkpoint').slice(0,3);
-  const pinU=p=>clamp(uOf(p.created),.04,.93);
-
-  // ── items: a message tints a run of the thread (and grows a leaf or a bud); a moment tints its family's vine (and curls a
-  // tendril), and is tied to the turn it belongs to
-  const items=[];
-  msgs.forEach(m=>{const st=strands[0],u=uOf(m.ts),span=1+Math.min(6,Math.round((m.len||60)/90)),ub=Math.min(.99,u+span*.5*UW);
-    lightRun(st,u,ub,new THREE.Color(m.role==='user'?'#ffe8fb':'#ff5fd6'),1);
-    items.push({type:'msg',m,u,bundle:0,ua:u,ub,world:onWall(u,angleV(st,u),st.k).add(TUN_OFF),links:[]})});
-  const msgItems=items.slice();
-  ev.forEach(e=>{const st=famStr[FAMI[e.family]??0];if(!st)return;const u=uOf(e.ts),ub=Math.min(.99,u+.9*UW);
-    const c=(e.valence==='sets_back'?new THREE.Color('#ff4a3d'):new THREE.Color(FAM[FAMI[e.family]].color)).multiplyScalar(.5+(EVID[e.evidence]??.2)*.8+(e.actor==='user'?.3:0));
-    lightRun(st,u,ub,c,1);
-    let mi=null;for(const it of msgItems){if(it.m.ts<=e.ts+1)mi=it;else break}
-    const item={type:'event',e,u,bundle:st.bi,ua:u,ub,col:c,world:onWall(u,angleV(st,u),st.k).add(TUN_OFF),links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
-
-  // ── the door frame (the tunnel's end): up = world up made square to the tunnel, the arch stands in that plane
+  // ── the door frame (the corridor's end): up = world up made square to the tunnel, the arch stands in that plane
   const P1=curve.getPointAt(1),T1=frameAt(1).T.clone(),rad1=radius(1);
   const Ud=new V3(0,1,0).addScaledVector(T1,-T1.y);if(Ud.lengthSq()<1e-4)Ud.set(1,0,0);Ud.normalize();
   const Rd=new V3().crossVectors(T1,Ud).normalize();
 
-  // ── every vine (stems, tendrils, the faint wall vines, the task rings) is a tube written into ONE mesh
-  const VB={pos:[],nrm:[],u:[],b:[],col:[],lit:[],ar:[],l:[],k:[],idx:[]};
-  const RS=7;   // sides of a stem (a tendril uses 4)
-  // a tube along points Ps with radii rs; per sample: u, lit amount + colour; kind 0 = stem (pulse), 1 = tendril / ring
-  const tube=(Ps,rs,us,bi,col,litA,litC,kind,sides=RS,closed=false)=>{
-    const n=Ps.length;if(n<2)return;const base=VB.pos.length/3;
-    let Nr=null;const T=new V3(),Bn=new V3(),off=new V3();let along=0;
-    for(let k=0;k<n;k++){
-      T.copy(Ps[Math.min(k+1,n-1)]).sub(Ps[Math.max(k-1,0)]).normalize();
+  // ── the DOUBLE STRAND: a centre line spiralling just inside the wall; strand A (the conversation) and strand B (the
+  // memory) twist round it. A fan-out opens the pair into a replication fork that closes again; a forked conversation
+  // leaves as its own thinner double strand.
+  const splits=ev.filter(e=>e.label==='SPLIT').map(e=>{const u0=uOf(e.ts);return {u0,u1:Math.min(.96,u0+rand(.04,.07))}});
+  const fork=u=>{let a=0;for(const f of splits)a=Math.max(a,smooth01((u-f.u0)/.012)*(1-smooth01((u-f.u1+.012)/.012)));return a};
+  const pairs=[{kind:'thread',th0:0,u0:0,u1:1,k:.48,rho:1.2,w:[1.7,1.5],col:[new THREE.Color('#f2c9ec'),new THREE.Color('#9fdcf0')]}];
+  (s.strands||[]).forEach((cs,j)=>pairs.push({kind:'strand',id:cs.id,label:cs.title||'a strand of this conversation',th0:Math.PI*(.9+.25*j),
+    u0:uOf(cs.started),u1:cs.ended?uOf(cs.ended):1,k:.72,rho:.55,w:[1.1,1],col:[new THREE.Color('#e3a8db'),new THREE.Color('#7fc6dc')]}));
+  const centre=(pr,u)=>{let th=pr.th0+u*TW;if(pr.kind==='strand'){const w=smooth01((u-pr.u0)/.05)*(pr.u1>=.99?1:smooth01((pr.u1-u)/.05));th=lerp(u*TW,th,w)}
+    return onWall(u,th,pr.k)};
+  const SAMP=.3,paths=[];   // samples every SAMP world units
+  pairs.forEach((pr,pi)=>{const len=(pr.u1-pr.u0)*CL*1.1,n=Math.max(12,Math.round(len/SAMP)),C=[],us=[];
+    for(let k=0;k<n;k++){const u=pr.u0+(pr.u1-pr.u0)*k/(n-1);us.push(u);C.push(centre(pr,u))}
+    // parallel-transported frame along the centre line, so the twist has no jumps
+    const Ns=[],Bs=[];let Nr=null;
+    for(let k=0;k<n;k++){const T=C[Math.min(k+1,n-1)].clone().sub(C[Math.max(k-1,0)]).normalize();
       if(!Nr){Nr=Math.abs(T.y)<.9?new V3(0,1,0):new V3(1,0,0);Nr.addScaledVector(T,-Nr.dot(T)).normalize()}
-      else{Nr.addScaledVector(T,-Nr.dot(T));if(Nr.lengthSq()<1e-8)Nr.set(T.y,-T.x,0);Nr.normalize()}   // parallel transport: no twist
-      Bn.crossVectors(T,Nr);if(k>0)along+=Ps[k].distanceTo(Ps[k-1]);
-      const li=litA?litA[k]:0,lr=litC?litC[k*3]:0,lg=litC?litC[k*3+1]:0,lb=litC?litC[k*3+2]:0;
-      for(let j=0;j<=sides;j++){const a=j/sides*6.2832;off.copy(Nr).multiplyScalar(Math.cos(a)).addScaledVector(Bn,Math.sin(a));
-        const P=Ps[k];VB.pos.push(P.x+off.x*rs[k],P.y+off.y*rs[k],P.z+off.z*rs[k]);VB.nrm.push(off.x,off.y,off.z);
-        VB.u.push(us[k]);VB.b.push(bi);VB.col.push(col.r,col.g,col.b);VB.lit.push(lr,lg,lb,li);VB.ar.push(j/sides);VB.l.push(along);VB.k.push(kind)}}
-    const segs=closed?n:n-1;
-    for(let k=0;k<segs;k++){const a=base+k*(sides+1),c=base+((k+1)%n)*(sides+1);
-      for(let j=0;j<sides;j++)VB.idx.push(a+j,c+j,a+j+1,a+j+1,c+j,c+j+1)}};
-  const wob=(u,ph,a)=>a*(Math.sin(u*CL*.07+ph)+.5*Math.sin(u*CL*.19+ph*2.3));   // the stem's own meander
-  const stemAt=(st,u)=>{const tw=u*CL*1.05+st.phase;   // a slow twining round its own path, like a climbing vine
-    return onWall(u,angleV(st,u)+wob(u,st.phase,.05)+.018*Math.sin(tw),st.k*(1+wob(u,st.phase+1,.012)+.012*Math.cos(tw)))};
-  const NODE=1.3;   // a node (a small swelling, where a leaf can grow) every NODE world units along a stem
-  // stems
-  const stemData=[];
-  jobs.forEach(({st,sp,ns,lit,litC})=>{
-    const u0=st.u0,du=st.u1-st.u0,Ps=[],rs=[],us=[];const arch=st.u1>=.99;let tgt=null;
-    if(arch){const e=stemAt(st,1).sub(P1);const [ax,ay]=archRay(Math.atan2(e.dot(Ud),e.dot(Rd)));
-      tgt=P1.clone().addScaledVector(Rd,ax*rad1).addScaledVector(Ud,ay*rad1)}   // where this vine climbs the arch
-    for(let k=0;k<ns;k++){const t=k/(ns-1),u=u0+du*t;us.push(u);const P=stemAt(st,u);
-      if(arch){const b=smooth01((u-.92)/.08);if(b>0)P.lerp(tgt,b*b)}
-      Ps.push(P);
-      const tap=smooth01(t/.06)*(arch?1:smooth01((1-t)/.06));
-      rs.push(sp.r*(.35+.65*tap)*(.82+.25*lit[k])*(1+.08*Math.sin(t*st.len*.9+st.phase)))}
-    tube(Ps,rs,us,st.bi,st.col.clone().multiplyScalar(sp.br),lit,litC,0);stemData.push({st,Ps,rs,us})});
-  // tendrils: a moment curls a tendril off its family's vine, a message one off the thread (capped, the newest first)
-  const tendrilAt=(st,it,len,col)=>{const u=it.u,P0=stemAt(st,u),C=curve.getPointAt(clamp(u,0,1));
-    const inw=C.clone().sub(P0).normalize(),T=stemAt(st,Math.min(1,u+.004)).sub(P0).normalize(),S=new V3().crossVectors(T,inw).normalize();
-    const n=26,Ps=[],rs=[],us=[],side=rng()<.5?-1:1,turns=rand(1.3,2.2);
-    for(let i=0;i<n;i++){const f=i/(n-1),a=(f+f*f*f*.9)*turns*6.2832*side,rr=len*.24*(1-f*.82);
-      Ps.push(P0.clone().addScaledVector(inw,len*.55*f).addScaledVector(T,len*.35*f+Math.sin(a)*rr*f).addScaledVector(S,Math.cos(a)*rr*f));
-      rs.push(.022*(1-f*.8));us.push(u)}
-    tube(Ps,rs,us,st.bi,col,null,null,1,4)};
-  items.filter(it=>it.type==='event').slice(-140).forEach(it=>{const st=strands[it.bundle];tendrilAt(st,it,rand(.5,1),it.col.clone().multiplyScalar(.7))});
-  msgItems.slice(-60).forEach((it,i)=>{if(i%3===1)tendrilAt(strands[0],it,rand(.6,1.1),THREAD_COL.clone().multiplyScalar(.6))});
-  // the faint wall vines: a few thin, dim vines that wind round the whole tunnel just outside the others
-  {const bc=new THREE.Color('#5d93b5');
-    for(let j=0;j<9;j++){const th0=rng()*6.283,tw=TW*rand(.5,1.2)*(rng()<.5?-1:1),kk=1.2+rng()*.4,ph=rng()*6.28,n=Math.max(40,Math.round(CL*1.1/1.2));
-      const Ps=[],rs=[],us=[];for(let k=0;k<n;k++){const u=.01+.98*k/(n-1);Ps.push(onWall(u,th0+u*tw+wob(u,ph,.08),kk));rs.push(.016);us.push(u)}
-      tube(Ps,rs,us,800,bc.clone().multiplyScalar(.45),null,null,1,4)}}
-  // a thin second stem twines round the thread and every forked strand, the way a climbing vine wraps itself
-  const subdiv=(arr,m)=>{const out=[];for(let k=0;k<arr.length-1;k++)for(let i=0;i<m;i++){const f=i/m,a=arr[k],b=arr[k+1];
-    out.push(a instanceof V3?a.clone().lerp(b,f):a+(b-a)*f)}out.push(arr[arr.length-1]);return out};
-  const framesOf=Ps=>{const n=Ps.length,Ns=[],Bs=[];let Nr=null;
-    for(let k=0;k<n;k++){const T=Ps[Math.min(k+1,n-1)].clone().sub(Ps[Math.max(k-1,0)]).normalize();
-      if(!Nr){Nr=Math.abs(T.y)<.9?new V3(0,1,0):new V3(1,0,0);Nr.addScaledVector(T,-Nr.dot(T)).normalize()}
-      else{Nr=Nr.clone().addScaledVector(T,-Nr.dot(T));if(Nr.lengthSq()<1e-8)Nr.set(T.y,-T.x,0);Nr.normalize()}
-      Ns.push(Nr);Bs.push(new V3().crossVectors(T,Nr))}return {Ns,Bs}};
-  stemData.forEach(sd=>{if(sd.st.kind!=='thread'&&sd.st.kind!=='strand')return;
-    const Ps=subdiv(sd.Ps,4),rs=subdiv(sd.rs,4),us=subdiv(sd.us,4),{Ns,Bs}=framesOf(Ps),T2=[],R2=[];let s=0;
-    for(let k=0;k<Ps.length;k++){if(k)s+=Ps[k].distanceTo(Ps[k-1]);const ph=s*2.3+sd.st.phase,rr=rs[k]*1.32;
-      T2.push(Ps[k].clone().addScaledVector(Ns[k],Math.cos(ph)*rr).addScaledVector(Bs[k],Math.sin(ph)*rr));R2.push(Math.max(.006,rs[k]*.26))}
-    tube(T2,R2,us,sd.st.bi,sd.st.col.clone().multiplyScalar(.7),null,null,1,4)});
-  // tasks: a thin ring vine round the whole tunnel; a correction by you is the brightest, failure red, partial amber
-  const gates=[];
-  eps.forEach((ep,qi)=>{const u=epS[qi],P=curve.getPointAt(u);
-    const c=new THREE.Color(ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff').multiplyScalar(ep.corrected?.7:.45);
-    const {N:Nn,B:Bb}=frameAt(u),Rr=radius(u)*1.1,Ps=[],rs=[],us=[];
-    for(let n=0;n<64;n++){const th=n/64*6.2832,w=1+.02*Math.sin(th*5+qi);Ps.push(P.clone().addScaledVector(Nn,Math.cos(th)*Rr*w).addScaledVector(Bb,Math.sin(th)*Rr*w));rs.push(.022);us.push(u)}
-    tube(Ps,rs,us,900,c,null,null,1,4,true);
-    gates.push({ep,u,world:P.clone().add(TUN_OFF)})});
-  // synapses, not leaves (owner, 2026-10-19: "a combination of an organic plant and a brain"). Your messages and IRIS's
-  // grow SYNAPTIC BULBS off the thread on a short stalk - a stalk swelling into a bulb, the shape a climbing plant's
-  // adhesive pad and a nerve's terminal bouton share; IRIS's bulbs hold a few vesicle glints. Small DENDRITIC SPINES (a
-  // thin neck and a little head) stud the stems at their nodes.
-  const glints=[];
-  const bulbAt=(P0,D,len,stalkR,headR,c,u,bi,sides=7)=>{const n=10,Ps=[],rs=[],us=[];
-    for(let i=0;i<n;i++){const s=i/(n-1),P=P0.clone().addScaledVector(D,s*len);Ps.push(P);us.push(u);
-      rs.push(s<.45?stalkR*(1-s*.4):Math.max(.002,headR*Math.pow(Math.sin(Math.PI*(s-.45)/.55*.98+.02),.65)))}
-    tube(Ps,rs,us,bi,c,null,null,1,sides);return P0.clone().addScaledVector(D,len*.72)};
-  const outFrom=(st,u,side,lift)=>{const P0=stemAt(st,u),C=curve.getPointAt(clamp(u,0,1)),T=stemAt(st,Math.min(1,u+.004)).sub(P0).normalize(),
-    inw=C.clone().sub(P0).normalize(),S=new V3().crossVectors(T,inw).normalize();
-    return {P0,T,inw,D:S.multiplyScalar(Math.cos(side)).addScaledVector(inw,Math.sin(side)*.9+lift).addScaledVector(T,.25).normalize()}};
-  msgItems.slice(-90).forEach(it=>{const st=strands[0],user=it.m.role==='user',{P0,inw,D}=outFrom(st,it.u,rand(-1.2,1.2)+(rng()<.5?0:Math.PI),.35);
-    const c=new THREE.Color(user?'#e9b6e2':'#d454b6'),core=bulbAt(P0,D,user?.36:.3,.014,user?.085:.07,c.clone().multiplyScalar(.85),it.u,0);
-    glints.push({P:core,inw,c,n:user?1:4})});
-  jobs.forEach(({st})=>{const every=st.kind==='family'?3:1,nN=Math.floor(st.len/NODE);
-    for(let q=1;q<nN&&q<110;q+=every){const u=st.u0+(st.u1-st.u0)*((q+.5)*NODE/st.len);if(u>.93)break;
-      const {D}=outFrom(st,u,rng()*6.283,0),P0=stemAt(st,u);
-      bulbAt(P0,D,(st.kind==='family'?.13:.18)*rand(.8,1.25),.007,st.kind==='family'?.02:.026,st.col.clone().multiplyScalar(.6),u,st.bi,4)}});
-  // ── neurons GROW ON the vines (owner, 2026-10-19: "neurons look different in the timeline and more incorporated with
-  // the vines"): where a moment touched a landmark, its family's vine swells into a SOMA - a spindle-shaped body the stem
-  // runs through - with a few short dendrites reaching out of it and a soft nucleus of light inside (drawn below).
+      else{Nr=Nr.clone().addScaledVector(T,-Nr.dot(T));if(Nr.lengthSq()<1e-8)Nr.set(T.y,-T.x,0);Nr.normalize()}Ns.push(Nr);Bs.push(new V3().crossVectors(T,Nr))}
+    const A=[],B=[];let sl=0;const arch=pr.u1>=.99;
+    let tgA=null,tgB=null,extA=[],extB=[];if(arch){const e=C[n-1].clone().sub(P1),al=Math.atan2(e.dot(Ud),e.dot(Rd));
+      const onArch=a=>{const [x,y]=archRay(a);return P1.clone().addScaledVector(Rd,x*rad1).addScaledVector(Ud,y*rad1)};
+      tgA=onArch(al-.06);tgB=onArch(al+.06);
+      // past the climb the pair parts and each strand traces the arch one way round: the doorway is framed by the session
+      for(let i=1;i<=40;i++){const f=i/40*Math.PI*.95;extA.push(onArch(al-.06-f));extB.push(onArch(al+.06+f))}}
+    for(let k=0;k<n;k++){if(k)sl+=C[k].distanceTo(C[k-1]);const ph=sl*.42+pi,r=pr.rho*radius(us[k])/3.6*(1+.45*fork(us[k]))*(pr.kind==='thread'?1:.9);   // a wide, slow coil: one turn every ~15 units
+      const o=Ns[k].clone().multiplyScalar(Math.cos(ph)*r).addScaledVector(Bs[k],Math.sin(ph)*r);
+      let a=C[k].clone().add(o),b=C[k].clone().sub(o);
+      if(arch){const t=smooth01((us[k]-.93)/.07);if(t>0){a.lerp(tgA,t*t);b.lerp(tgB,t*t)}}   // the pair climbs onto the arch
+      A.push(a);B.push(b)}
+    paths.push({pr,us,A,B,n,extA,extB})});
+  const at=(path,which,u)=>{const P=which?path.B:path.A,k=clamp(Math.round((u-path.pr.u0)/(path.pr.u1-path.pr.u0)*(path.n-1)),0,path.n-1);return P[k]};
+
+  // ── ribbons: the strands, their rungs, and the short stem from a moment to its claim
+  const RB={pos:[],nx:[],side:[],u:[],b:[],col:[],w:[],idx:[]};
+  const ribbon=(Ps,us,bi,col,wpx,mul=null)=>{const n=Ps.length;if(n<2)return;const base=RB.pos.length/3;
+    for(let k=0;k<n;k++){const a=Ps[Math.max(0,k-1)],c=Ps[Math.min(n-1,k+1)],m=mul?mul[k]:1;
+      for(const sd of [-1,1]){RB.pos.push(Ps[k].x,Ps[k].y,Ps[k].z);RB.nx.push(c.x-a.x,c.y-a.y,c.z-a.z);RB.side.push(sd);RB.u.push(us[k]);RB.b.push(bi);
+        RB.col.push(col.r*m,col.g*m,col.b*m);RB.w.push(wpx)}}
+    for(let k=0;k<n-1;k++){const i=base+2*k;RB.idx.push(i,i+1,i+2,i+1,i+3,i+2)}};
+  // light a run of a strand where a message or a moment sits (the strand brightens there, never glares)
+  const lit=paths.map(p=>[new Float32Array(p.n).fill(.42),new Float32Array(p.n).fill(.42)]);
+  const lightAt=(pi,which,u,amt)=>{const p=paths[pi],k0=(u-p.pr.u0)/(p.pr.u1-p.pr.u0)*(p.n-1);
+    for(let k=Math.max(0,Math.floor(k0-3));k<=Math.min(p.n-1,Math.ceil(k0+3));k++)lit[pi][which][k]=Math.max(lit[pi][which][k],.42+amt*Math.exp(-Math.pow((k-k0)/1.6,2)))};
+
+  // ── items: a message is a fragment on strand A, a moment a fragment on strand B, tied to its turn by a rung
+  const items=[],SH={pos:[],col:[],size:[],u:[],b:[],solid:[],r:[]};
+  const shard=(P,c,size,u,b,solid)=>{SH.pos.push(P.x,P.y,P.z);SH.col.push(c.r,c.g,c.b);SH.size.push(size);SH.u.push(u);SH.b.push(b);SH.solid.push(solid);SH.r.push(rng())};
+  const P0=paths[0];
+  msgs.forEach(m=>{const u=uOf(m.ts),span=Math.min(.03,(1+Math.min(6,Math.round((m.len||60)/90)))*.004),P=at(P0,0,u);
+    const user=m.role==='user',c=new THREE.Color(user?'#fbe9f7':'#f08ad6');
+    shard(P,c,user?2.6:2.1,u,0,user?1:.8);lightAt(0,0,u,.9);
+    items.push({type:'msg',m,u,bundle:0,ua:u,ub:Math.min(.99,u+span),world:P.clone().add(TUN_OFF),links:[]})});
+  const msgItems=items.slice();
+  ev.forEach(e=>{const u=uOf(e.ts),P=at(P0,1,u);
+    const c=(e.valence==='sets_back'?new THREE.Color('#ff5a4d'):new THREE.Color(FAM[FAMI[e.family]??0].color)).multiplyScalar(.75+(e.actor==='user'?.25:0));
+    const strong=(EVID[e.evidence]??.2)>=.5;shard(P,c,1.5+1.2*(EVID[e.evidence]??.2),u,1,strong?1:.15);lightAt(0,1,u,.7);
+    let mi=null;for(const it of msgItems){if(it.m.ts<=e.ts+1)mi=it;else break}
+    const item={type:'event',e,u,bundle:1,ua:u,ub:Math.min(.99,u+.004),col:c,world:P.clone().add(TUN_OFF),links:mi?[mi]:[]};items.push(item);if(mi)mi.links.push(item)});
+  // the strands themselves
+  paths.forEach((p,pi)=>{const pr=p.pr,fade=p.extA.map((_,i)=>.42*(1-i/p.extA.length)),u1=p.extA.map(()=>1);
+    ribbon(p.A.concat(p.extA),p.us.concat(u1),pi===0?0:2,pr.col[0],pr.w[0],[...lit[pi][0],...fade]);
+    ribbon(p.B.concat(p.extB),p.us.concat(u1),pi===0?1:3,pr.col[1],pr.w[1],[...lit[pi][1],...fade])});
+  // rungs: a faint one every so often (the structure), a coloured one wherever a moment belongs to a turn (the meaning)
+  paths.forEach((p,pi)=>{const step=Math.max(1,Math.round(1.5/SAMP));
+    // the coil is wide, so a plain rung is only a short stub off each strand toward the other (never a line across the corridor)
+    const rc=new THREE.Color('#9fb6c8');
+    for(let k=0;k<p.n;k+=step){const a=p.A[k],b=p.B[k],u=p.us[k];ribbon([a,a.clone().lerp(b,.16)],[u,u],9,rc,.7,[.24,0]);ribbon([b,b.clone().lerp(a,.16)],[u,u],9,rc,.7,[.24,0])}});
+  // a moment's rung to its turn: bright at both strands, faint in the middle - a bond, not a bar
+  items.forEach(it=>{if(it.type!=='event'||!it.links[0])return;const a=at(P0,0,it.u),b=at(P0,1,it.u),m=[];for(let i=0;i<=8;i++)m.push(a.clone().lerp(b,i/8));
+    ribbon(m,m.map(()=>it.u),1,it.col,1.1,m.map((_,i)=>.08+.45*Math.pow(Math.abs(i/8-.5)*2,2)))});
+  // claims: the SAME glyph as in the cortex, just off the memory strand where the moment touched it, on a short stem
   const stars=[];
   items.forEach(it=>{if(it.type!=='event'||it.e.landmark==null||it.e.landmark>=NL||stars.length>=60)return;
-    const st=famStr[FAMI[it.e.family]??0];if(!st)return;const p=stemAt(st,it.u);
-    stars.push({li:it.e.landmark,u:it.u,th:angleV(st,it.u),p,world:p.clone().add(TUN_OFF),item:it,st})});
-  stars.forEach(sr=>{const st=sr.st,c=new THREE.Color(CELL_COL[lmBest[sr.li]]||'#8aa3b0').multiplyScalar(.75),body=.1+.06*Math.min(2,cellSize(LM[sr.li])/6);
-    const du=Math.max(.002,.55/(CL*1.15)),Ps=[],rs=[],us=[];
-    for(let i=0;i<=22;i++){const f=i/22,u=clamp(sr.u+(f-.5)*2*du,0,1);Ps.push(stemAt(st,u));us.push(sr.u);
-      rs.push(SPEC[st.kind].r*.9+body*Math.pow(Math.sin(Math.PI*f),1.6))}
-    tube(Ps,rs,us,st.bi,c,null,null,1,16);
-    const C=curve.getPointAt(clamp(sr.u,0,1)),inw=C.clone().sub(sr.p).normalize(),T=stemAt(st,Math.min(1,sr.u+.004)).sub(sr.p).normalize(),S=new V3().crossVectors(T,inw).normalize();
-    const nd=4+Math.floor(rng()*3);
-    for(let k=0;k<nd;k++){const a=k/nd*6.283+rng()*.6,D=S.clone().multiplyScalar(Math.cos(a)).addScaledVector(inw,Math.sin(a)).addScaledVector(T,rand(-.35,.35)).normalize();
-      const len=rand(.35,.7),bend=new V3(gauss(),gauss(),gauss()).multiplyScalar(.12),Pd=[],Rd_=[],Ud_=[];
-      for(let i=0;i<9;i++){const f=i/8;Pd.push(sr.p.clone().addScaledVector(D,body*.8+len*f).addScaledVector(bend,f*f));Rd_.push(.016*(1-f*.85));Ud_.push(sr.u)}
-      tube(Pd,Rd_,Ud_,st.bi,c,null,null,1,4)}});
-  const vineGeo=new THREE.BufferGeometry();
-  vineGeo.setAttribute('position',new THREE.Float32BufferAttribute(VB.pos,3));vineGeo.setAttribute('normal',new THREE.Float32BufferAttribute(VB.nrm,3));
-  vineGeo.setAttribute('aU',new THREE.Float32BufferAttribute(VB.u,1));vineGeo.setAttribute('aB',new THREE.Float32BufferAttribute(VB.b,1));
-  vineGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(VB.col,3));vineGeo.setAttribute('aLit',new THREE.Float32BufferAttribute(VB.lit,4));
-  vineGeo.setAttribute('aAr',new THREE.Float32BufferAttribute(VB.ar,1));vineGeo.setAttribute('aL',new THREE.Float32BufferAttribute(VB.l,1));
-  vineGeo.setAttribute('aK',new THREE.Float32BufferAttribute(VB.k,1));
-  vineGeo.setIndex(VB.pos.length/3>65535?new THREE.Uint32BufferAttribute(VB.idx,1):new THREE.Uint16BufferAttribute(VB.idx,1));
+    const B_=at(P0,1,it.u),C_=curve.getPointAt(clamp(it.u,0,1)),out=B_.clone().sub(C_).normalize(),p=B_.clone().addScaledVector(out,.55);
+    ribbon([B_,p],[it.u,it.u],1,new THREE.Color(CELL_COL[lmBest[it.e.landmark]]||'#8aa3b0'),.9,[.6,.6]);
+    stars.push({li:it.e.landmark,u:it.u,th:0,p,world:p.clone().add(TUN_OFF),item:it})});
+
+  // ── the WALL: hex fragments, assembled around you. Activity = how busy the session was there (its moments).
+  const ACT=new Float32Array(120);ev.forEach(e=>{ACT[Math.min(119,Math.floor(uOf(e.ts)*120))]++});
+  {const mx=Math.max(1,...ACT);for(let i=0;i<120;i++)ACT[i]=Math.pow(ACT[i]/mx,.5)}
+  const actAt=u=>{let a=0;for(let d=-2;d<=2;d++){const i=Math.min(119,Math.max(0,Math.floor(u*120)+d));a=Math.max(a,ACT[i]*(1-Math.abs(d)*.2))}return clamp(.25+a*.75,0,1)};
+  const gates=[],gateCol=eps.map(ep=>new THREE.Color(ep.corrected?'#ffffff':ep.outcome==='failure'?'#ff4a3d':ep.outcome==='partial'?'#ffb547':ep.outcome==='running'?THEMES[themeIdx][1]:'#7fe8ff'));
+  eps.forEach((ep,qi)=>gates.push({ep,u:epS[qi],world:curve.getPointAt(epS[qi]).add(TUN_OFF)}));
+  const WT={pos:[],cen:[],nrm:[],col:[],edge:[],u:[],r:[],act:[],idx:[]};
+  // Fragments are small and many, and they cluster: a slow field over the wall (two crossing waves) sets where they sit
+  // close and full-sized and where they thin out, so the wall reads as a growth, not a grid. Budget: ~22k fragments.
+  {const SP=Math.max(.42,Math.sqrt((CL*2*Math.PI*4.2)/22000)),rings=Math.max(30,Math.round(CL/(SP*.87))),base=new THREE.Color('#b8d4e2'),tmp=new THREE.Color();
+    const f1=rng()*6.28,f2=rng()*6.28,field=(u,th)=>.5+.5*Math.sin(u*CL*.19+th*3+f1)*Math.sin(u*CL*.11-th*2+f2);
+    for(let r=0;r<rings;r++){const u0=clamp((r+.5)/rings,0,1),rr0=radius(u0)*1.05,per=Math.max(16,Math.round(2*Math.PI*rr0/SP)),act=actAt(u0);
+      for(let q=0;q<per;q++){const th=(q+(r%2)*.5+(rng()-.5)*.3)/per*6.2832,u=clamp(u0+(rng()-.5)*.3/rings,0,1),fd=field(u,th);
+        if(rng()>(.3+.7*act)*(.4+.6*fd))continue;                                 // quiet or thin stretches have gaps
+        const {N,B,T}=frameAt(u),nrm=N.clone().multiplyScalar(Math.cos(th)).addScaledVector(B,Math.sin(th)),rr=radius(u)*1.05*(1+.015*(rng()-.5));
+        let gc=null;for(let k=0;k<epS.length;k++)if(Math.abs(u-epS[k])<.0025)gc=gateCol[k];   // a task's close: a thin tinted ring
+        const cen=curve.getPointAt(u).addScaledVector(nrm,rr),tan=new V3().crossVectors(nrm,T).normalize(),hr=SP*.5*(.5+.5*fd)*rand(.85,1.05),rot=(rng()-.5)*.5,rr_=rng(),bi=WT.pos.length/3;
+        tmp.copy(base).multiplyScalar(.7+.3*act);if(gc)tmp.lerp(gc,.55);
+        const push=(P,e)=>{WT.pos.push(P.x,P.y,P.z);WT.cen.push(cen.x,cen.y,cen.z);WT.nrm.push(nrm.x,nrm.y,nrm.z);WT.col.push(tmp.r,tmp.g,tmp.b);WT.edge.push(e);WT.u.push(u);WT.r.push(rr_);WT.act.push(act)};
+        push(cen,0);for(let k=0;k<6;k++){const a=k/6*6.2832+.5236+rot;push(cen.clone().addScaledVector(tan,Math.cos(a)*hr).addScaledVector(T,Math.sin(a)*hr),1)}
+        for(let k=0;k<6;k++)WT.idx.push(bi,bi+1+k,bi+1+(k+1)%6)}}}
+  const desync=[];eps.forEach((ep,qi)=>{if(ep.outcome==='failure'&&desync.length<8)desync.push(new THREE.Vector4(epS[qi],0,0,1))});
+  ev.forEach(e=>{if(e.valence==='sets_back'&&desync.length<8)desync.push(new THREE.Vector4(uOf(e.ts),0,0,.35))});
+  while(desync.length<8)desync.push(new THREE.Vector4(0,0,0,0));
+  const tileU={...U,uAsm:{value:0},uDes:{value:desync},uLen:{value:L}};
+  {const tg=new THREE.BufferGeometry();tg.setAttribute('position',new THREE.Float32BufferAttribute(WT.pos,3));tg.setAttribute('aCen',new THREE.Float32BufferAttribute(WT.cen,3));
+    tg.setAttribute('aNrm',new THREE.Float32BufferAttribute(WT.nrm,3));tg.setAttribute('aCol',new THREE.Float32BufferAttribute(WT.col,3));tg.setAttribute('aEdge',new THREE.Float32BufferAttribute(WT.edge,1));
+    tg.setAttribute('aU',new THREE.Float32BufferAttribute(WT.u,1));tg.setAttribute('aR',new THREE.Float32BufferAttribute(WT.r,1));tg.setAttribute('aAct',new THREE.Float32BufferAttribute(WT.act,1));
+    tg.setIndex(WT.pos.length/3>65535?new THREE.Uint32BufferAttribute(WT.idx,1):new THREE.Uint16BufferAttribute(WT.idx,1));
+    g.add(Object.assign(new THREE.Mesh(tg,new THREE.ShaderMaterial({uniforms:tileU,vertexShader:TILE_VS,fragmentShader:TILE_FS,transparent:true,depthWrite:false,
+      blending:THREE.AdditiveBlending,side:THREE.DoubleSide})),{frustumCulled:false}))}
+
+  // ── strands mesh + shard fragments
   const meanU=tr.reduce((a,p)=>a+Math.abs(p.u??.5),0)/tr.length;
   const hlU={value:Array.from({length:8},()=>new THREE.Vector4(-1,0,0,0))};
-  const fibU={...U,uVis:{value:1},uSpeed:{value:1.2+2.4*meanU},uLen:{value:L},uHL:hlU};
-  g.add(Object.assign(new THREE.Mesh(vineGeo,new THREE.ShaderMaterial({uniforms:fibU,vertexShader:VINE_VS,fragmentShader:VINE_FS,transparent:true,
-    depthWrite:true,side:THREE.FrontSide})),{frustumCulled:false}));
+  const fibU={...U,uSpeed:{value:1.4+2.4*meanU},uLen:{value:L},uHL:hlU,uRes:{value:new THREE.Vector2(innerWidth,innerHeight)}};
+  {const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.Float32BufferAttribute(RB.pos,3));rg.setAttribute('aNx',new THREE.Float32BufferAttribute(RB.nx,3));
+    rg.setAttribute('aSide',new THREE.Float32BufferAttribute(RB.side,1));rg.setAttribute('aU',new THREE.Float32BufferAttribute(RB.u,1));rg.setAttribute('aB',new THREE.Float32BufferAttribute(RB.b,1));
+    rg.setAttribute('aCol',new THREE.Float32BufferAttribute(RB.col,3));rg.setAttribute('aW',new THREE.Float32BufferAttribute(RB.w,1));
+    rg.setIndex(RB.pos.length/3>65535?new THREE.Uint32BufferAttribute(RB.idx,1):new THREE.Uint16BufferAttribute(RB.idx,1));
+    g.add(Object.assign(new THREE.Mesh(rg,new THREE.ShaderMaterial({uniforms:fibU,vertexShader:RIB_VS,fragmentShader:RIB_FS,transparent:true,depthWrite:false,
+      blending:THREE.AdditiveBlending,side:THREE.DoubleSide})),{frustumCulled:false}))}
+  {const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.Float32BufferAttribute(SH.pos,3));sg.setAttribute('aCol',new THREE.Float32BufferAttribute(SH.col,3));
+    sg.setAttribute('aSize',new THREE.Float32BufferAttribute(SH.size,1));sg.setAttribute('aU',new THREE.Float32BufferAttribute(SH.u,1));sg.setAttribute('aB',new THREE.Float32BufferAttribute(SH.b,1));
+    sg.setAttribute('aSolid',new THREE.Float32BufferAttribute(SH.solid,1));sg.setAttribute('aR',new THREE.Float32BufferAttribute(SH.r,1));
+    g.add(Object.assign(new THREE.Points(sg,new THREE.ShaderMaterial({uniforms:{...U,uHL:hlU},vertexShader:SHARD_VS,fragmentShader:SHARD_FS,transparent:true,depthWrite:false,
+      blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:3}))}
 
-  // ── particles: what you pass through as you travel the memory. Every layer has a fixed budget, low light, no build-up.
-  //  • sap: beads of light that ride INSIDE the stems from start to end, at the pace of the session's attention (u)
-  //  • spores: drift along the vines and rise off the leaves
-  //  • vesicles: float through the tunnel towards the doorway; they streak while you move
-  //  • motes: a few large, very faint, out-of-focus specks right by your eye (depth)
+  // ── particles: data that travels the strands (hopping, the digital step), motes drifting toward the doorway (they
+  // streak while you move), and a few very faint specks by the eye. Fixed budgets, low light.
   const partU={...U,uVel:{value:0}};
-  {const BN=96,rowsSD=stemData.filter(sd=>sd.st.kind!=='fan'),R_=Math.max(1,rowsSD.length),tex=new Float32Array(BN*R_*4);
-    rowsSD.forEach((sd,r)=>{const P=sd.Ps,cum=[0];for(let k=1;k<P.length;k++)cum.push(cum[k-1]+P[k].distanceTo(P[k-1]));const tot=cum[cum.length-1]||1;let k=0;
-      for(let i=0;i<BN;i++){const s=i/(BN-1)*tot;while(k<P.length-2&&cum[k+1]<s)k++;const f=clamp((s-cum[k])/Math.max(1e-6,cum[k+1]-cum[k]),0,1);
-        const p=P[k].clone().lerp(P[k+1],f);tex.set([p.x,p.y,p.z,1],(r*BN+i)*4)}});
-    const pathTex=new THREE.DataTexture(tex,BN,R_,THREE.RGBAFormat,THREE.FloatType);pathTex.needsUpdate=true;
+  {const BN=96,rows=[],tex=new Float32Array(BN*paths.length*2*4);
+    paths.forEach(p=>[p.A,p.B].forEach(P=>rows.push(P)));
+    rows.forEach((P,r)=>{const cum=[0];for(let k=1;k<P.length;k++)cum.push(cum[k-1]+P[k].distanceTo(P[k-1]));const tot=cum[cum.length-1]||1;let k=0;
+      for(let i=0;i<BN;i++){const sv=i/(BN-1)*tot;while(k<P.length-2&&cum[k+1]<sv)k++;const f=clamp((sv-cum[k])/Math.max(1e-6,cum[k+1]-cum[k]),0,1);
+        const q=P[k].clone().lerp(P[k+1],f);tex.set([q.x,q.y,q.z,1],(r*BN+i)*4)}});
+    const pathTex=new THREE.DataTexture(tex,BN,rows.length,THREE.RGBAFormat,THREE.FloatType);pathTex.needsUpdate=true;
     const bp=[],brow=[],bph=[],bsp=[],bc=[],bnod=[];
-    rowsSD.forEach((sd,r)=>{const n=sd.st.kind==='family'?3:sd.st.kind==='thread'?9:5,c=sd.st.col.clone().lerp(new THREE.Color('#ffffff'),.35);
-      const nodes=Math.max(4,Math.round(sd.st.len/NODE));
-      for(let i=0;i<n;i++){bp.push(0,0,0);brow.push(r);bph.push(rng());bsp.push((.006+.016*meanU)*rand(.7,1.3)*(30/Math.max(30,sd.st.len*.1)));bc.push(c.r,c.g,c.b);bnod.push(nodes)}});
-    if(bp.length){const bg=new THREE.BufferGeometry();bg.setAttribute('position',new THREE.Float32BufferAttribute(bp,3));bg.setAttribute('aRow',new THREE.Float32BufferAttribute(brow,1));
-      bg.setAttribute('aPh',new THREE.Float32BufferAttribute(bph,1));bg.setAttribute('aSp',new THREE.Float32BufferAttribute(bsp,1));bg.setAttribute('aC',new THREE.Float32BufferAttribute(bc,3));bg.setAttribute('aNod',new THREE.Float32BufferAttribute(bnod,1));
-      g.add(Object.assign(new THREE.Points(bg,new THREE.ShaderMaterial({uniforms:{...U,uPath:{value:pathTex},uN:{value:BN}},
-        vertexShader:`uniform sampler2D uPath;uniform float uTime,uPix,uN;attribute float aRow,aPh,aSp,aNod;attribute vec3 aC;varying vec3 vC;varying float vA;
-          void main(){float s=fract(aPh+uTime*aSp)*aNod,hop=smoothstep(.72,1.,fract(s));   // rest at a node, then jump to the next
-            float t=(floor(s)+hop)/aNod*(uN-1.);int i=int(floor(t));float f=t-float(i);
-            vec3 a=texelFetch(uPath,ivec2(i,int(aRow)),0).xyz,b=texelFetch(uPath,ivec2(min(i+1,int(uN)-1),int(aRow)),0).xyz;
-            vec4 mv=modelViewMatrix*vec4(mix(a,b,f),1.);float d=-mv.z;vC=aC;
-            vA=smoothstep(110.,10.,d)*smoothstep(.3,2.,d)*.5*smoothstep(0.,.04,t/uN)*smoothstep(1.,.96,t/uN);
-            gl_PointSize=min(2.6*uPix*(16./max(d,.1)),10.*uPix);gl_Position=projectionMatrix*mv;}`,
-        fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-          float core=exp(-d*d*60.),halo=exp(-d*d*12.);gl_FragColor=vec4(vC*(core*.9+halo*.35),(core+halo*.5)*vA);}`,
-        transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}}
+    rows.forEach((P,r)=>{const n=r<2?8:4,c=r%2?new THREE.Color('#c9f1ff'):new THREE.Color('#ffe2f7');
+      for(let i=0;i<n;i++){bp.push(0,0,0);brow.push(r);bph.push(rng());bsp.push((.006+.016*meanU)*rand(.7,1.3));bc.push(c.r,c.g,c.b);bnod.push(Math.max(6,Math.round(CL/2.2)))}});
+    const bg=new THREE.BufferGeometry();bg.setAttribute('position',new THREE.Float32BufferAttribute(bp,3));bg.setAttribute('aRow',new THREE.Float32BufferAttribute(brow,1));
+    bg.setAttribute('aPh',new THREE.Float32BufferAttribute(bph,1));bg.setAttribute('aSp',new THREE.Float32BufferAttribute(bsp,1));bg.setAttribute('aC',new THREE.Float32BufferAttribute(bc,3));
+    bg.setAttribute('aNod',new THREE.Float32BufferAttribute(bnod,1));
+    g.add(Object.assign(new THREE.Points(bg,new THREE.ShaderMaterial({uniforms:{...U,uPath:{value:pathTex},uN:{value:BN}},
+      vertexShader:`uniform sampler2D uPath;uniform float uTime,uPix,uN;attribute float aRow,aPh,aSp,aNod;attribute vec3 aC;varying vec3 vC;varying float vA;
+        void main(){float s=fract(aPh+uTime*aSp)*aNod,hop=smoothstep(.72,1.,fract(s));float t=(floor(s)+hop)/aNod*(uN-1.);
+          int i=int(floor(t));float f=t-float(i);vec3 a=texelFetch(uPath,ivec2(i,int(aRow)),0).xyz,b=texelFetch(uPath,ivec2(min(i+1,int(uN)-1),int(aRow)),0).xyz;
+          vec4 mv=modelViewMatrix*vec4(mix(a,b,f),1.);float d=-mv.z;vC=aC;vA=smoothstep(110.,10.,d)*smoothstep(.3,2.,d)*.55;
+          gl_PointSize=min(2.4*uPix*(16./max(d,.1)),9.*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+        float core=exp(-d*d*60.),halo=exp(-d*d*12.);gl_FragColor=vec4(vC*(core*.9+halo*.3),(core+halo*.45)*vA);}`,
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
   {const pp=[],pt=[],pph=[],psp=[],pc=[],pk=[];
     const add=(P,Tv,ph,sp,c,k)=>{pp.push(P.x,P.y,P.z);pt.push(Tv.x,Tv.y,Tv.z);pph.push(ph);psp.push(sp);pc.push(c.r,c.g,c.b);pk.push(k)};
-    // spores along the vines
-    stemData.forEach(sd=>{const P=sd.Ps,c=sd.st.col.clone().multiplyScalar(.75),every=sd.st.kind==='family'?3:2;
-      for(let k=1;k<P.length-1&&pp.length<3*2600;k+=every){const T=P[k+1].clone().sub(P[k-1]).normalize().multiplyScalar(rand(.5,1.1));
-        const o=new V3(gauss(),gauss(),gauss()).multiplyScalar(sd.rs[k]*2.2);add(P[k].clone().add(o),T,rng(),rand(.05,.12),c,0)}});
-    // spores rising off the leaves
-    glints.forEach(gl=>{for(let i=0;i<gl.n;i++)add(gl.P.clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.03)),new V3(gauss(),gauss(),gauss()).multiplyScalar(.05),rng(),rand(.05,.12),gl.c,0);
-      add(gl.P,gl.inw.clone().multiplyScalar(rand(.6,1)),rng(),rand(.03,.07),gl.c.clone().multiplyScalar(.7),0)});
-    // vesicles in the tunnel's volume, drifting towards the doorway
-    const vc=[new THREE.Color('#9fd8ef'),new THREE.Color('#e7a6dc'),new THREE.Color('#c9b8ff')];
-    for(let i=0;i<2800;i++){const u=rng(),P=onWall(u,rng()*6.283,.12+.8*Math.sqrt(rng())),T=curve.getTangentAt(clamp(u,0,1)).multiplyScalar(rand(1.2,2.4));
-      add(P,T,rng(),rand(.03,.07),vc[i%3],1)}
-    // motes right by the camera path
+    const vc=[new THREE.Color('#9fd8ef'),new THREE.Color('#e7c6ec'),new THREE.Color('#d6e6f2')];
+    for(let i=0;i<2600;i++){const u=rng(),P=onWall(u,rng()*6.283,.12+.8*Math.sqrt(rng())),T=curve.getTangentAt(clamp(u,0,1)).multiplyScalar(rand(1.2,2.4));add(P,T,rng(),rand(.03,.07),vc[i%3],1)}
     for(let i=0;i<110;i++){const u=rng(),P=onWall(u,rng()*6.283,.05+.4*rng());add(P,new V3(gauss(),gauss(),gauss()).multiplyScalar(.4),rng(),rand(.01,.03),new THREE.Color('#bcd6f5'),2)}
     const pg=new THREE.BufferGeometry();pg.setAttribute('position',new THREE.Float32BufferAttribute(pp,3));pg.setAttribute('aT',new THREE.Float32BufferAttribute(pt,3));
     pg.setAttribute('aP',new THREE.Float32BufferAttribute(pph,1));pg.setAttribute('aS',new THREE.Float32BufferAttribute(psp,1));
     pg.setAttribute('aC',new THREE.Float32BufferAttribute(pc,3));pg.setAttribute('aK',new THREE.Float32BufferAttribute(pk,1));
     g.add(Object.assign(new THREE.Points(pg,new THREE.ShaderMaterial({uniforms:partU,
       vertexShader:`uniform float uTime,uPix,uVel;attribute vec3 aT,aC;attribute float aP,aS,aK;varying vec3 vC;varying float vA,vK;
-        void main(){float t=fract(aP+uTime*aS);vec3 p=position+aT*(t-.5);
-          float sway=aK<.5?.035:aK<1.5?.06:.12;p+=vec3(sin(uTime*.7+aP*30.),cos(uTime*.53+aP*17.),sin(uTime*.41+aP*11.))*sway;
-          vec4 mv=modelViewMatrix*vec4(p,1.);float d=-mv.z;
-          float life=smoothstep(0.,.18,t)*smoothstep(1.,.78,t),mv_=min(abs(uVel)*22.,1.);
+        void main(){float t=fract(aP+uTime*aS);vec3 p=position+aT*(t-.5);p+=vec3(sin(uTime*.7+aP*30.),cos(uTime*.53+aP*17.),sin(uTime*.41+aP*11.))*(aK<1.5?.06:.12);
+          vec4 mv=modelViewMatrix*vec4(p,1.);float d=-mv.z;float life=smoothstep(0.,.18,t)*smoothstep(1.,.78,t),mv_=min(abs(uVel)*22.,1.);
           float near=aK>1.5?smoothstep(.15,.6,d)*smoothstep(7.,1.5,d):smoothstep(.25,1.6,d)*smoothstep(95.,8.,d);
-          vA=life*near*(aK<.5?.3:aK<1.5?.12+.18*mv_:.022);vC=aC;vK=aK;
-          float sz=aK<.5?1.1:aK<1.5?1.+2.2*mv_:6.;
-          gl_PointSize=min(sz*uPix*(18./max(d,.1)),(aK>1.5?44.:aK>.5?9.:5.)*uPix);gl_Position=projectionMatrix*mv;}`,
+          vA=life*near*(aK<1.5?.11+.18*mv_:.022);vC=aC;vK=aK;float sz=aK<1.5?1.+2.2*mv_:6.;
+          gl_PointSize=min(sz*uPix*(18./max(d,.1)),(aK>1.5?44.:9.)*uPix);gl_Position=projectionMatrix*mv;}`,
       fragmentShader:`varying vec3 vC;varying float vA,vK;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
         float a=vK>1.5?exp(-d*d*9.)*(1.-smoothstep(.3,.5,d)):smoothstep(.5,.08,d);gl_FragColor=vec4(vC,a*vA);}`,
       transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // a fine cleft haze between the walls and the vines (the synaptic space)
-  {const NW=3500,wP=new Float32Array(NW*3),wR=new Float32Array(NW);
-    for(let i=0;i<NW;i++){const p=onWall(rng(),rng()*6.283,.2+rng()*1.1);wP.set([p.x,p.y,p.z],i*3);wR[i]=rng()}
-    const wg=new THREE.BufferGeometry();wg.setAttribute('position',new THREE.BufferAttribute(wP,3));wg.setAttribute('aR',new THREE.BufferAttribute(wR,1));
-    g.add(Object.assign(new THREE.Points(wg,new THREE.ShaderMaterial({uniforms:{...U},
-      vertexShader:`uniform float uTime,uPix;attribute float aR;varying float vA;
-        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;
-          vA=smoothstep(90.,10.,d)*smoothstep(.2,2.5,d)*(.08+.06*sin(uTime*(.5+aR)+aR*50.));
-          gl_PointSize=min(1.5*uPix*(24./max(d,.1)),3.5*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(.55,.75,.9,smoothstep(.5,.1,d)*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // the tissue LINING of the wall (owner, 2026-10-19: "the walls look too barren - particles almost like tissue lining"):
-  // a layer of cells, each a small ring of membrane particles round a faint nucleus; neighbouring rings touch, so the
-  // wall reads as living tissue. The cells breathe slowly; the lining dims with distance and never brightens.
-  {const SPC=Math.max(.72,Math.sqrt((CL*2*Math.PI*4)/9000)),rings=Math.max(20,Math.round(CL/SPC)),MEM=7;
-    const cP=[],cO=[],cK=[],cPh=[],cC=[];const tA=new THREE.Color('#5f9cc4'),tB=new THREE.Color('#b0679f'),tmp=new THREE.Color();
-    for(let r=0;r<rings;r++){const u=clamp((r+.5)/rings,0,1),rr=radius(u)*1.36,per=Math.max(12,Math.round(2*Math.PI*rr/SPC)),{N,B,T}=frameAt(u),C=curve.getPointAt(u);
-      for(let q=0;q<per;q++){const th=(q+(r%2)*.5+(rng()-.5)*.35)/per*6.2832,nrm=N.clone().multiplyScalar(Math.cos(th)).addScaledVector(B,Math.sin(th));
-        const cen=C.clone().addScaledVector(nrm,rr*(1+.03*gauss())).addScaledVector(T,(rng()-.5)*SPC*.35);
-        const tan=new V3().crossVectors(nrm,T).normalize(),cell=SPC*rand(.36,.46),ph=rng()*6.283;
-        tmp.copy(tA).lerp(tB,.5+.5*Math.sin(u*9+th*2+ph*.3));
-        for(let k=0;k<MEM;k++){const a=k/MEM*6.2832+ph,o=tan.clone().multiplyScalar(Math.cos(a)*cell).addScaledVector(T,Math.sin(a)*cell);
-          cP.push(cen.x,cen.y,cen.z);cO.push(o.x,o.y,o.z);cK.push(0);cPh.push(ph);cC.push(tmp.r,tmp.g,tmp.b)}
-        if(rng()<.7){cP.push(cen.x,cen.y,cen.z);cO.push(0,0,0);cK.push(1);cPh.push(ph);cC.push(tmp.r*1.2,tmp.g*1.2,tmp.b*1.2)}}}
-    const lg=new THREE.BufferGeometry();lg.setAttribute('position',new THREE.Float32BufferAttribute(cP,3));lg.setAttribute('aOff',new THREE.Float32BufferAttribute(cO,3));
-    lg.setAttribute('aK',new THREE.Float32BufferAttribute(cK,1));lg.setAttribute('aPh',new THREE.Float32BufferAttribute(cPh,1));lg.setAttribute('aC',new THREE.Float32BufferAttribute(cC,3));
-    g.add(Object.assign(new THREE.Points(lg,new THREE.ShaderMaterial({uniforms:{...U},
-      vertexShader:`uniform float uTime,uPix;attribute vec3 aOff,aC;attribute float aK,aPh;varying vec3 vC;varying float vA,vK;
-        void main(){vec3 p=position+aOff*(1.+.07*sin(uTime*.6+aPh));vec4 mv=modelViewMatrix*vec4(p,1.);float d=-mv.z;
-          vA=smoothstep(70.,6.,d)*smoothstep(.4,2.,d)*(aK>.5?.3:.22);vC=aC;vK=aK;
-          gl_PointSize=min((aK>.5?2.8:1.8)*uPix*(16./max(d,.1)),(aK>.5?8.:5.)*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`varying vec3 vC;varying float vA,vK;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-        gl_FragColor=vec4(vC,(vK>.5?exp(-d*d*14.):smoothstep(.5,.15,d))*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
 
-  // ── pins: still faceted crystals (the same ones as in the cortex), small, fixed on the thread
-  const pinBeads=pinsHere.map(p=>{const u=pinU(p),st=strands[0],P=stemAt(st,u);
-    const dir=P.clone().sub(curve.getPointAt(u)).normalize().negate();return {p,u,P,dir,world:P.clone().add(TUN_OFF)}});
+  // ── pins: still faceted crystals, LOCKED on the conversation strand (they do not drift); a checkpoint at the arch crown
+  const pinsHere=M.pins.filter(p=>p.session===s.id&&p.type!=='checkpoint').slice(0,24);
+  const ckHere=M.pins.filter(p=>p.session===s.id&&p.type==='checkpoint').slice(0,3);
+  const pinU=p=>clamp(uOf(p.created),.04,.93);
+  const pinBeads=pinsHere.map(p=>{const u=pinU(p),P=at(P0,0,u);const dir=P.clone().sub(curve.getPointAt(u)).normalize().negate();return {p,u,P,dir,world:P.clone().add(TUN_OFF)}});
   const crystals=pinBeads.map(b=>({pos:b.P,dir:b.dir,s:.16+.04*Math.sqrt(Math.max(1,b.p.links||1)),col:new THREE.Color(pinType(b.p.type).col),held:b.p.held?1:0}));
   const pinList=pinBeads.map(b=>({p:b.p,world:b.world,u:b.u}));
   ckHere.forEach((p,i)=>{const pos=P1.clone().addScaledVector(Ud,(.9+.1)*rad1+i*.7).addScaledVector(T1,-.3);
     crystals.push({pos,dir:Ud.clone(),s:.45,col:new THREE.Color(pinType('checkpoint').col),held:p.held?1:0});pinList.push({p,world:pos.clone().add(TUN_OFF),u:1})});
   if(crystals.length)g.add(Object.assign(new THREE.Mesh(crystalGeo(crystals),crystalMat({value:1})),{frustumCulled:false,renderOrder:2}));
 
-  // ── the somas' nuclei: a soft light inside each swelling (the cortex keeps the glyph; the timeline's neurons are part of
-  // the vine). Hover and selection read these points.
+  // ── claims: the glyph (one glyph in every view; hover and selection read it)
   const threadU={...U,uSel:{value:-1},uSelOn:{value:0}};
   {const sP=[],sS=[],sL=[],sE=[],sI=[],sH=[],sC=[],sCh=[];
     stars.forEach(st=>{const gl=GLYPHS[st.li],c=new THREE.Color(CELL_COL[lmBest[st.li]]||'#8aa3b0');
@@ -1815,47 +1675,23 @@ function buildTunnel(s){
       vertexShader:`uniform float uPix,uSel,uSelOn;attribute float aSize,aLm,aChan;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
         varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
         void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;float on=step(abs(aLm-uSel),.1);
-          vC=aCol;vEv=aEv;vInfo=aInfo;vHue=aHue;vChan=aChan;vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*(.55+on*.45)*mix(1.,.35,uSelOn*(1.-on));
-          gl_PointSize=min(aSize*.9*(1.+on*.3)*uPix*(10./max(d,.1)),60.*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
-        void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-          float core=exp(-d*d*90.),glow=exp(-d*d*16.)*(vChan>=0.&&vChan<1.5?.6:1.);   // a weak source's light is thinner
-          gl_FragColor=vec4(mix(vC,vHue,.35)*(core*1.1+glow*.4),(core*.9+glow*.35)*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // the tissue thread: neurons joined in time order along the wall; linked neurons share extra strands
+          vC=aCol;vEv=aEv;vInfo=aInfo;vHue=aHue;vChan=aChan;vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*(.6+on*.4)*mix(1.,.35,uSelOn*(1.-on));
+          gl_PointSize=min(aSize*1.6*(1.+on*.3)*uPix*(26./max(d,.1)),110.*uPix);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:4}))}
   const linked=new Set(M.edges.map(e=>e.a+'-'+e.b));
-  {const tP=[],tQ=[],tA=[],tB=[],tK=[];
-    const angDiff=(a,b)=>{let d=(b-a)%(Math.PI*2);if(d>Math.PI)d-=Math.PI*2;if(d<-Math.PI)d+=Math.PI*2;return d};
-    const fib=(a,b,kind)=>{const dth=angDiff(a.th,b.th)+(b.u-a.u)*TW;const n=Math.round(clamp(Math.abs(b.u-a.u)*L*7+Math.abs(dth)*20,14,300));
-      for(let i=0;i<n;i++){const f=(i+rng())/n,u=lerp(a.u,b.u,f),th=a.th+dth*f,p=onWall(u,th,1.06+.06*Math.sin(f*Math.PI)),r=(kind?.04:.06)*(.45+.55*Math.sin(f*Math.PI));
-        tP.push(p.x+gauss()*r,p.y+gauss()*r,p.z+gauss()*r);tQ.push(f);tA.push(a.li);tB.push(b.li);tK.push(kind)}};
-    const byU=stars.slice().sort((a,b)=>a.u-b.u);for(let i=1;i<byU.length;i++)fib(byU[i-1],byU[i],0);
-    let extra=0;for(let i=0;i<byU.length&&extra<90;i++)for(let j=i+2;j<byU.length&&extra<90;j++){const a=byU[i],b=byU[j];
-      if(a.li===b.li||linked.has(a.li+'-'+b.li)||linked.has(b.li+'-'+a.li)){fib(a,b,1);extra++}}
-    const tg_=new THREE.BufferGeometry();tg_.setAttribute('position',new THREE.Float32BufferAttribute(tP,3));tg_.setAttribute('aQ',new THREE.Float32BufferAttribute(tQ,1));
-    tg_.setAttribute('aA',new THREE.Float32BufferAttribute(tA,1));tg_.setAttribute('aB',new THREE.Float32BufferAttribute(tB,1));tg_.setAttribute('aK',new THREE.Float32BufferAttribute(tK,1));
-    g.add(Object.assign(new THREE.Points(tg_,new THREE.ShaderMaterial({uniforms:{...threadU,uBrand:{value:BRAND}},
-      vertexShader:`uniform float uTime,uPix,uSel,uSelOn;attribute float aQ,aA,aB,aK;varying float vA;varying float vOn;
-        void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float d=-mv.z;float on=max(step(abs(aA-uSel),.1),step(abs(aB-uSel),.1));
-          float p=pow(.5+.5*sin(aQ*12.-uTime*2.2),10.);
-          vA=smoothstep(120.,14.,d)*smoothstep(.3,2.,d)*((aK>.5?.24:.4)+p*.5)*(1.+on*1.6)*mix(1.,.3,uSelOn*(1.-on));vOn=on;
-          gl_PointSize=min((1.6+on*.6)*uPix*(16./max(d,.1)),5.*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vOn;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-        gl_FragColor=vec4(mix(mix(vec3(.95,.7,1.),uBrand,.25),vec3(1.),vOn*.4),smoothstep(.5,0.,d)*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  // home: the cortex glows behind the entrance, tied by an umbilical thread
-  const P0=curve.getPointAt(0),T0v=frameAt(0).T;const home=P0.clone().addScaledVector(T0v,-60);
+  // home: the cortex glows behind the entrance
+  const Q0=curve.getPointAt(0),T0v=frameAt(0).T;const home=Q0.clone().addScaledVector(T0v,-60);
   const hs=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:BRAND,transparent:true,opacity:.9,blending:THREE.AdditiveBlending,depthWrite:false}));
   hs.scale.setScalar(26);hs.position.copy(home);g.add(hs);
-  // the doorways: a tall arch at the far end (the fibres part round it and frame it) that opens onto the NEXT thread, and a
-  // small side arch on the wall that takes you back to this thread's beginning
+  // the doorways: a tall arch at the far end (the strands climb onto it) that opens onto the NEXT thread, and a small side
+  // arch on the wall that takes you back to this thread's beginning
   const si=sess.indexOf(s),next=si>=0&&si<sess.length-1?sess[si+1]:null;
   const door=new THREE.Mesh(archGeo,doorMat(THREAD_COL,new THREE.Color(next?'#7fe8ff':'#f4fbff'),1));
   door.scale.setScalar(rad1);door.position.copy(P1);door.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(Rd,Ud,T1.clone().negate()));g.add(door);
   const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(archGeo,doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
   backDoor.scale.setScalar(radius(.9)*.3);backDoor.position.copy(backP);backDoor.lookAt(curve.getPointAt(.9));g.add(backDoor);
   scene.add(g);rng=mulberry32(99);
-  return {g,curve,frameAt,session:s,items,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands,hlU,fibU,partU,pins:pinList,
+  return {g,curve,frameAt,session:s,items,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands:pairs,hlU,fibU,partU,tileU,pins:pinList,
     door:{mesh:door,world:P1.clone().add(TUN_OFF),next},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},onWall};
 }
 // light an item and everything it is linked to (a message and its moments, or a moment and its turn)
@@ -1863,12 +1699,8 @@ function tunnelHighlight(it){
   const T=tunnel;if(!T||T.hl===it)return;T.hl=it;
   const H=T.hlU.value;H.forEach(v=>v.set(-1,0,0,0));let j=0;
   const put=(x,gain)=>{if(j<H.length)H[j++].set(x.bundle,x.ua-.003,x.ub+.003,gain)};
-  if(it){put(it,2.4);it.links.slice(0,7).forEach(l=>put(l,2))}
-  bridges(it)}
-const bridgeLine=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xffe8fb,transparent:true,opacity:.7,blending:THREE.AdditiveBlending,depthWrite:false}));
-bridgeLine.frustumCulled=false;scene.add(bridgeLine);
-function bridges(it){const pts=[];if(it)it.links.slice(0,16).forEach(l=>{pts.push(it.world,l.world)});bridgeLine.geometry.setFromPoints(pts)}
-function disposeTunnel(){if(!tunnel)return;bridges(null);scene.remove(tunnel.g);tunnel.g.traverse(o=>{o.geometry?.dispose();o.material?.dispose?.()});tunnel=null;rail.build(null)}
+  if(it){put(it,2.4);it.links.slice(0,7).forEach(l=>put(l,2))}}   // the rungs show the link; no straight lines across the corridor
+function disposeTunnel(){if(!tunnel)return;scene.remove(tunnel.g);tunnel.g.traverse(o=>{o.geometry?.dispose();o.material?.dispose?.()});tunnel=null;rail.build(null)}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 8. the tissue: artifacts exhaled as an organic Voronoi mosaic (video 2)
@@ -2066,6 +1898,9 @@ function updateCamera(dt){
     if(keys.w||keys.arrowup)cam.tpT+=dt*.05;if(keys.s||keys.arrowdown)cam.tpT-=dt*.05;
     cam.tpT=clamp(cam.tpT,0,.985);cam.tp=lerp(cam.tp,cam.tpT,1-Math.pow(.02,dt));
     if(tunnel.partU){const v=(cam.tp-(tunnel.ptp??cam.tp))/Math.max(dt,1e-3);tunnel.ptp=cam.tp;tunnel.partU.uVel.value+=(v-tunnel.partU.uVel.value)*.12}  // travel speed: the vesicles streak
+    // entering is synchronizing (design §18): a pale void that clears while the corridor's fragments fly together
+    {const A=tunnel.tileU.uAsm;A.value=Math.min(1,A.value+dt/1.6);tunnel.fibU.uRes.value.set(innerWidth,innerHeight);
+      if(state.voidT>0){state.voidT=Math.max(0,state.voidT-dt/1.3);voidCol.copy(DARK).lerp(VOID,smooth01(state.voidT));renderer.setClearColor(voidCol,1)}}
     const P=tunnel.curve.getPointAt(cam.tp).add(TUN_OFF);
     const T=tunnel.curve.getTangentAt(Math.min(1,cam.tp+.01));const {N,B}=tunnel.frameAt(cam.tp);
     const Q=P.clone().addScaledVector(T,20).addScaledVector(N,mouse.ny*-5).addScaledVector(B,mouse.nx*5);
@@ -2269,6 +2104,7 @@ function satellites(k){satGroup.clear();satFor=k;if(k<0)return;
     s.userData={ph:i/LM[k].evidence.length*6.28,ax:new V3(gauss(),gauss(),gauss()).normalize(),r:R*(.045+.012*i)};satGroup.add(s)})}
 function updateSatellites(t){if(satFor<0)return;const c=somaWorld(satFor);satGroup.children.forEach(s=>{const u=s.userData;
   const v=new V3(Math.cos(t*.8+u.ph),Math.sin(t*.8+u.ph),0).multiplyScalar(u.r).applyAxisAngle(u.ax,1.1);s.position.copy(c).add(v)})}
+const DARK=new THREE.Color(0x020306),VOID=new THREE.Color('#dfe8ee'),voidCol=new THREE.Color();
 function flash(on,ms=260){const f=$('flash');f.style.transition=`opacity ${ms}ms`;f.style.opacity=on?.85:0}
 function enterTunnel(s){
   if(cam.mode==='tunnel'){disposeTunnel()}
@@ -2276,7 +2112,7 @@ function enterTunnel(s){
   clearAnno('focus');clearAnno('hover');satellites(-1);
   const goIn=()=>{flash(true,REDUCED?1:220);setTimeout(()=>{
       if(state.inside){state.inside=false;state.openT=0;LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;state.focusDimT=0}
-      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
+      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);state.voidT=REDUCED?0:1;tunnel.tileU.uAsm.value=REDUCED?1:0;cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
       cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
       const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
       T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks</small>`;T.style.opacity=1;
@@ -2290,7 +2126,7 @@ function enterTunnel(s){
 }
 function exitTunnel(done){
   flash(true,REDUCED?1:200);
-  setTimeout(()=>{disposeTunnel();cortex.visible=true;clearAnno('hover');cam.mode='orbit';camera.fov=38;cam.fovT=38;camera.updateProjectionMatrix();
+  setTimeout(()=>{disposeTunnel();state.voidT=0;renderer.setClearColor(DARK,1);cortex.visible=true;clearAnno('hover');cam.mode='orbit';camera.fov=38;cam.fovT=38;camera.updateProjectionMatrix();
     const back=state.from||'cortex';state.lens='';flash(false,REDUCED?1:600);
     cam.tween=null;orbitFrom(new V3(0,R*.4,R*5.8),new V3());
     // put the camera at the orbit NOW (under the flash): orbitFrom only sets targets, and a flight started right after
