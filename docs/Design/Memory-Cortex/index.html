@@ -89,6 +89,10 @@ svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
 #lenses{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:26px;pointer-events:auto}
 #lenses a{font-size:11px;letter-spacing:.22em;color:var(--faint);cursor:pointer;text-transform:lowercase;user-select:none;transition:color .25s}
 #lenses a:hover{color:var(--dim)} #lenses a.on{color:var(--white);text-shadow:0 0 12px rgba(0,212,255,.6)}
+#key{position:absolute;right:22px;bottom:64px;display:flex;flex-direction:column;gap:9px;pointer-events:auto;opacity:0;transition:opacity .5s}
+#key.on{opacity:1}#key:not(.on){pointer-events:none}
+#key a{display:flex;align-items:center;justify-content:flex-end;gap:9px;font-size:10px;letter-spacing:.08em;color:var(--faint);cursor:pointer;user-select:none;transition:color .25s,opacity .25s}
+#key a:hover{color:var(--dim)}#key a.on{color:var(--white)}#key.iso a:not(.on){opacity:.35}#key canvas{width:22px;height:22px}
 #hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
 #scrub{position:absolute;left:50%;bottom:56px;width:min(520px,60vw);height:24px;transform:translateX(-50%);
   pointer-events:auto;cursor:ew-resize;opacity:0;transition:opacity .4s}
@@ -132,6 +136,7 @@ svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
   <div id="scrub"><span class="lbl0"></span><span class="lbl"></span><div class="track"></div><div class="fill"></div></div>
   <div id="rail"><svg></svg><div class="rl"></div></div>
   <div id="search"><input id="q" placeholder="search what IRIS remembers" autocomplete="off"><div id="qres"></div></div>
+  <div id="key"></div>
   <div id="hint"></div>
 </div>
 <div id="flash"></div>
@@ -888,6 +893,8 @@ function curvePoint(t,s){return [(7*Math.cos(t)-3*s*Math.cos(9*t))/10,(7*Math.si
 // ═══════════════════════════════════════════════════════════════════════════
 const LM=M.landmarks;
 const NL=LM.length;
+// the objects of each kind of memory, so the key can single one kind out
+const KIND_OBJ={claim:[],pin:[],moment:[],node:[]};
 const CL=[...new Set(LM.map(l=>l.cls))];
 const clDir=CL.map((c,i)=>fib(CL.length,i).multiplyScalar(R*.58));
 // neurons fill the whole volume, leaning toward the skin region their knowledge belongs to
@@ -955,6 +962,7 @@ LM.forEach((l,i)=>{somaData[i*8+3]=l.tier==='candidate'?.42:1;somaData[i*8+5]=l.
 const somaTex=new THREE.DataTexture(somaData,Math.max(1,NL)*2,1,THREE.RGBAFormat,THREE.FloatType);
 somaTex.minFilter=somaTex.magFilter=THREE.NearestFilter;somaTex.needsUpdate=true;
 const forestU={...U,uSomaTex:{value:somaTex},uScrub:{value:1},uSearch:{value:0},uFocusDim:{value:0},uVis:{value:1},uNear:{value:0}};
+const tierU={value:-1};   // -1 every claim, 1 proven only, 0 still learning only (the key)
 const forestMat=new THREE.ShaderMaterial({uniforms:forestU,
   vertexShader:`
     uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis; uniform sampler2D uSomaTex;
@@ -986,44 +994,39 @@ const forestMat=new THREE.ShaderMaterial({uniforms:forestU,
   fragmentShader:`varying vec3 vCol;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     gl_FragColor=vec4(vCol,smoothstep(.5,0.,d)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const forest=new THREE.Points(forestGeo,forestMat);forest.frustumCulled=false;cortex.add(forest);
+const forest=new THREE.Points(forestGeo,forestMat);forest.frustumCulled=false;cortex.add(forest);KIND_OBJ.claim.push(forest);
 
-// Neuron bodies: a distinct cell (ring membrane + bright nucleus) on top of the tissue, so each
-// neuron stands out from the dendrites around it. The tunnel draws its neurons with the SAME
-// fragment shader (CELL_FRAG), so a neuron looks the same in the cortex and in a session.
-// The neuron GLYPH: a small cell that SHOWS what a certainty is, without glare.
-//   spokes     = its evidence, one spoke per share, coloured by kind (white = you,
-//                green = tests / finished tasks, cyan = held up again / a second source,
-//                grey = only IRIS's own word); spoke length = how much it is used
-//   short faded spokes = still learning · a thin outer ring = permanent
-//   red, broken spokes = contradicted · soft membrane = the kind of knowledge (hue)
-//   trust channel (Kyudo) = the membrane itself: a strong source keeps it sealed and warm; a weak one leaves gaps in it,
-//   a faint leaking dashed halo, and a paler, cooler hue. It only ever dims - never brighter than a sealed cell.
+// A CLAIM (landmark) is a CRYSTAL - one shape in the cortex, the corridor and every card (design §18; owner, 2026-10-19:
+// "the visual representation of events, pins, landmarks are not properly identified"). Seen face-on it is a hexagon cut
+// into six facets, still and sharp:
+//   facets     = its evidence, one facet per share, by kind (white = you, green = tests / finished tasks,
+//                cyan = held up again / a second source, grey = only IRIS's own word); each facet catches the light
+//                at its own angle, so it reads as a cut stone, not a flat badge
+//   the light inside = how much it is used · a thin outer hexagon = permanent
+//   a claim still learning = only its outline, the facets barely there
+//   contradicted = facets cracked red · the rim = the trust channel (Kyudo): a weak source leaves gaps in it
+// It only ever dims - never brighter than a sealed, proven crystal.
 const GLYPH_FRAG=`varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
-  void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-    float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
-    const float N=11.;float k=floor(ang*N);float f=(k+.5)/N;
+  void main(){vec2 p=(gl_PointCoord-.5)*2.;vec2 q=abs(p);float hx=max(q.x*.866+q.y*.5,q.y);if(hx>.96)discard;
+    float cand=vInfo.x,perm=vInfo.y,bad=vInfo.z,use=vInfo.w,r=length(p);
+    const float R0=.6;float inside=1.-smoothstep(R0-.015,R0+.005,hx);
+    float ang=fract(atan(p.y,p.x)/6.2831853+1.+1./12.);float k=floor(ang*6.);float f=(k+.5)/6.;
     float e0=vEv.x,e1=e0+vEv.y,e2=e1+vEv.z;
     vec3 ec=f<e0?vec3(1.):(f<e1?vec3(.36,1.,.69):(f<e2?vec3(.5,.91,1.):vec3(.5,.6,.68)));
-    float cand=vInfo.x;
-    float len=mix(.2+.24*vInfo.w,.15+.08*vInfo.w,cand);
-    float off=abs(fract(ang*N)-.5)/N*6.2831853*d;           // distance from the spoke's centre line
-    float wid=mix(.016,.006,smoothstep(.12,.12+len,d));      // spokes taper toward the tip
-    float spoke=smoothstep(wid,wid*.35,off)*smoothstep(.1,.13,d)*(1.-smoothstep(.12+len-.03,.12+len,d));
-    float bad=vInfo.z>.5&&k<vInfo.z?1.:0.;                   // the first n spokes broken and red
-    spoke*=mix(1.,step(.5,fract(d*22.)),bad);
-    float body=smoothstep(.12,.07,d);float mem=smoothstep(.02,0.,abs(d-.11));
-    float perm=vInfo.y*smoothstep(.012,0.,abs(d-.47))*.6;
-    float por=vChan<0.?0.:clamp((4.-vChan)/4.,0.,1.);                       // porosity: 0 sealed .. 1 untrusted
-    float seg=floor(ang*18.),hh=fract(sin(seg*12.9898+vInfo.w*78.233+vChan*3.1)*43758.5453);
-    float gap=step(1.-por*.85,hh);                                           // share of the membrane that is missing
-    float leak=por*smoothstep(.014,0.,abs(d-.165))*step(.5,fract(ang*18.+.5))*.35;
+    float cr=step(k+.5,bad);ec=mix(ec,vec3(1.,.28,.22),cr);                          // the first n facets cracked red
+    float shade=.5+.32*cos(f*6.2832-2.4);                                           // each facet catches the light differently
+    float ridge=smoothstep(.022,0.,(.5-abs(fract(ang*6.)-.5))/6.*6.2832*r)*step(.05,r)*inside;   // the cut lines
+    float crack=cr*smoothstep(.02,0.,abs(fract(r*7.+f*3.)-.5)*.12)*inside;
+    float por=vChan<0.?0.:clamp((4.-vChan)/4.,0.,1.);
+    float seg=floor(ang*18.),hh=fract(sin(seg*12.9898+vChan*3.1+use*78.233)*43758.5453),gap=step(1.-por*.85,hh);
+    float rim=smoothstep(R0-.08,R0-.02,hx)*inside*(1.-gap*.9);
+    float fill=mix(1.,.1,cand);
+    float core=smoothstep(.1+.16*use,0.,r)*(.35+.65*use);                            // the light inside: use
+    float pr=perm*smoothstep(.022,0.,abs(hx-.86))*.65;
     vec3 tint=vChan<0.?vec3(1.):mix(vec3(.66,.7,.92),vec3(1.,.96,.84),clamp(vChan/4.,0.,1.));
-    vec3 hue=mix(vHue,vec3(dot(vHue,vec3(.33))),por*.55)*tint;
-    float pale=1.-por*.35;
-    float memP=mem*(1.-gap*.9);
-    vec3 col=mix(ec,vec3(1.,.25,.2),bad)*spoke*(1.-cand*.45)+hue*(memP*.9+body*.35*(1.-por*.3)+leak)+mix(vC,vec3(1.),.2)*smoothstep(.05,.02,d)+vec3(.8,.9,1.)*perm;
-    gl_FragColor=vec4(col,(spoke*(1.-cand*.45)+memP*.7+body*.35+leak*.6+smoothstep(.05,.02,d)+perm)*vA*pale);}`;
+    vec3 rc=mix(mix(vHue,vec3(1.),.35),vC,.4)*tint;
+    vec3 col=ec*shade*inside*fill*.5+ec*ridge*.5*fill+rc*rim*.95+mix(vC,vec3(1.),.5)*core*.75+vec3(.8,.9,1.)*pr+vec3(1.,.4,.3)*crack*.6;
+    gl_FragColor=vec4(col,(inside*fill*.26*shade+ridge*.3*fill+rim*.8+core*.55+pr+crack*.4)*vA*(1.-por*.3));}`;
 const KIND_HUE=cls=>new THREE.Color().setHSL((CL.indexOf(cls)/Math.max(1,CL.length)+.52)%1,.6,.62);
 function glyphOf(i){const l=LM[i],c={};
   if(l.evidence_counts)Object.assign(c,l.evidence_counts);else l.evidence.forEach(e=>c[e.kind]=(c[e.kind]||0)+1);
@@ -1044,18 +1047,18 @@ somaCellGeo.setAttribute('aEv',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g
 somaCellGeo.setAttribute('aInfo',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>g.info),4));
 somaCellGeo.setAttribute('aHue',new THREE.Float32BufferAttribute(GLYPHS.flatMap(g=>[g.hue.r,g.hue.g,g.hue.b]),3));
 somaCellGeo.setAttribute('aChan',new THREE.Float32BufferAttribute(LM.map(l=>l.channel==null?-1:l.channel),1));
-const somaCellMat=new THREE.ShaderMaterial({uniforms:forestU,
-  vertexShader:`uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis,uNear;uniform sampler2D uSomaTex;
+const somaCellMat=new THREE.ShaderMaterial({uniforms:{...forestU,uTier:tierU},
+  vertexShader:`uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis,uNear,uTier;uniform sampler2D uSomaTex;
     attribute float aSoma,aSize,aBorn,aChan;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
     varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
     void main(){vChan=aChan;ivec2 ix=ivec2(int(aSoma+.5)*2,0);vec4 s0=texelFetch(uSomaTex,ix,0),s1=texelFetch(uSomaTex,ix+ivec2(1,0),0);
       float hl=max(s0.b,s1.b);vec4 mv=modelViewMatrix*vec4(position,1.);
-      float a=(.5+s0.r*.4+s0.g*.6+hl*.35)*mix(.35,1.,uNear)*mix(1.,.12,uSearch*(1.-s0.b))*mix(1.,.42,uFocusDim*(1.-hl))*step(aBorn,uScrub)*uVis;
+      float a=(.5+s0.r*.4+s0.g*.6+hl*.35)*mix(.35,1.,uNear)*mix(1.,.12,uSearch*(1.-s0.b))*mix(1.,.42,uFocusDim*(1.-hl))*step(aBorn,uScrub)*uVis*(uTier<0.?1.:step(abs((1.-s1.g)-uTier),.5));
       vC=mix(mix(aCol,vec3(1.),s0.g*.6),vec3(1.,.3,.24),s1.r);vA=a;vEv=aEv;vHue=aHue;
       vInfo=vec4(s1.g,aInfo.y,max(aInfo.z,s1.a*1.),aInfo.w); // live state wins: a promotion ends the dashes, a contradiction notches
       gl_PointSize=min(aSize*2.1*(1.+s0.g*.5+hl*.3)*uPix*(60./-mv.z),110.*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const somaCells=new THREE.Points(somaCellGeo,somaCellMat);somaCells.frustumCulled=false;cortex.add(somaCells);
+const somaCells=new THREE.Points(somaCellGeo,somaCellMat);somaCells.frustumCulled=false;cortex.add(somaCells);KIND_OBJ.claim.push(somaCells);
 
 // fibres: connections are TISSUE, not hair — each is a tapered strand of particles (thick in the
 // middle, thin where it meets a cell), so neurons, tracts and skin read as one connected mass.
@@ -1125,7 +1128,7 @@ const axMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uSomaTex:{value:somaT
   fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     gl_FragColor=vec4(mix(mix(uBrand,vec3(.6,.8,.95),.45),vec3(1.),vH*.5),smoothstep(.5,0.,d)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const axons=new THREE.Points(axGeo,axMat);axons.frustumCulled=false;cortex.add(axons);
+const axons=new THREE.Points(axGeo,axMat);axons.frustumCulled=false;cortex.add(axons);KIND_OBJ.claim.push(axons);
 const lnGeo=new THREE.BufferGeometry();
 lnGeo.setAttribute('position',new THREE.Float32BufferAttribute(lnP,3));lnGeo.setAttribute('aT',new THREE.Float32BufferAttribute(lnT,1));
 lnGeo.setAttribute('aPh',new THREE.Float32BufferAttribute(lnPh,1));lnGeo.setAttribute('aW',new THREE.Float32BufferAttribute(lnW,1));
@@ -1140,7 +1143,7 @@ const lnMat=new THREE.ShaderMaterial({uniforms:axMat.uniforms,
       gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
   fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vH;void main(){gl_FragColor=vec4(mix(mix(uBrand,vec3(.7,.88,1.),.35),vec3(1.),vH*.5),vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-const links=new THREE.LineSegments(lnGeo,lnMat);links.frustumCulled=false;cortex.add(links);
+const links=new THREE.LineSegments(lnGeo,lnMat);links.frustumCulled=false;cortex.add(links);KIND_OBJ.claim.push(links);
 
 // fragments: the 84k semantic pieces are a faint mist; the uncounted landmarks are dust
 const mistN=7000,mP=new Float32Array(mistN*3),mR=new Float32Array(mistN);
@@ -1160,9 +1163,9 @@ const moteGeo=new THREE.BufferGeometry();const moteP=new Float32Array(motes.leng
 moteGeo.setAttribute('position',new THREE.BufferAttribute(moteP,3));moteGeo.setAttribute('aA',new THREE.BufferAttribute(moteA,1));
 const moteMat=new THREE.ShaderMaterial({uniforms:{...U,uBrand:{value:BRAND}},
   vertexShader:`uniform float uPix;attribute float aA;varying float vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=aA;
-    gl_PointSize=min(7.*uPix*(70./-mv.z),30.*uPix);gl_Position=projectionMatrix*mv;}`,
+    gl_PointSize=min(7.*uPix*(70./-mv.z),14.*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`uniform vec3 uBrand;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-    gl_FragColor=vec4(mix(uBrand,vec3(1.),.6),pow(smoothstep(.5,0.,d),2.)*vA);}`,
+    gl_FragColor=vec4(mix(uBrand,vec3(1.),.6),(smoothstep(.16,.06,d)*.9+smoothstep(.5,0.,d)*.2)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const moteObj=new THREE.Points(moteGeo,moteMat);moteObj.frustumCulled=false;cortex.add(moteObj);
 
@@ -1200,7 +1203,7 @@ SPACES.forEach((s,i)=>{const m=new THREE.Mesh(new THREE.IcosahedronGeometry(spR[
   vertexShader:`varying vec3 vN,vV;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`uniform float uShow,uVis,uLock;uniform vec3 uTint;varying vec3 vN,vV;
     void main(){float f=pow(max(1.-abs(dot(vN,vV)),0.),1.6);gl_FragColor=vec4(uTint,(.004+.012*f+uShow*(.03+.07*f))*(.55+.1*uLock)*uVis);}`,
-  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true}));cortex.add(m)});
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true}));cortex.add(m);KIND_OBJ.node.push(m)});
 
 // NODES (mycelium_nodes): small cells on their space's shell. FADING (the 11 law, MEMORY-FOUNDATION-ANALYSIS 11.2):
 // only confidence ABOVE the 0.4 floor was earned, so opacity and saturation follow (confidence-0.4)/0.6; what is not
@@ -1236,7 +1239,7 @@ const nodeMat=new THREE.ShaderMaterial({uniforms:{...U,uScrub:forestU.uScrub,uVi
       vec3 tint=vChan<0.?vec3(1.):mix(vec3(.66,.7,.92),vec3(1.,.96,.84),clamp(vChan/4.,0.,1.));
       gl_FragColor=vec4(vC*tint*(mem*.9+body+leak),(mem*.8+body+leak*.6)*vA*(1.-por*.35));}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
-if(NDS.length){const o=new THREE.Points(nodeGeo,nodeMat);o.frustumCulled=false;cortex.add(o)}
+if(NDS.length){const o=new THREE.Points(nodeGeo,nodeMat);o.frustumCulled=false;cortex.add(o);KIND_OBJ.node.push(o)}
 // node tracts (mycelium_edges): thickness from score, firmed by evidence (observations / traversals)
 {const ntP=[],ntW=[],P=new V3();
   for(const e of M.nodeEdges){const ia=nodeSlot.get(e.a),ib=nodeSlot.get(e.b);if(ia==null||ib==null)continue;
@@ -1251,30 +1254,31 @@ if(NDS.length){const o=new THREE.Points(nodeGeo,nodeMat);o.frustumCulled=false;c
         void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=(.03+.2*aTh)*mix(.45,1.,uNear)*uVis;
           gl_PointSize=min((.9+1.1*aTh)*uPix*(70./-mv.z),4.*uPix);gl_Position=projectionMatrix*mv;}`,
       fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(.62,.78,.88,smoothstep(.5,0.,d)*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));o.frustumCulled=false;cortex.add(o)}}
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));o.frustumCulled=false;cortex.add(o);KIND_OBJ.node.push(o)}}
 
-// PINS (mycelium_pins): explicit memory, held not earned (it does not fade by the 11 law). A still, faceted crystal set
-// into the inner wall in its territory (its nested sector when it has one), pin-type colour, size by link count. Taut
-// straight tethers run to what it references; a thin ring = held in context. The page shows none when the store has none.
-function crystalGeo(list){ // list: {pos,dir (base->tip, unit),s,col,held}
-  const V=[],C=[],Hh=[],q=new THREE.Quaternion(),up=new V3(0,1,0),m=new V3();
-  const ring=(y,r)=>Array.from({length:6},(_,k)=>[Math.cos(k/6*6.2832+.3)*r,y,Math.sin(k/6*6.2832+.3)*r]);
-  const base=ring(0,.28),sh=ring(1.15,.28),tip=[0,2.0,0];   // a slim hexagonal point, like a quartz crystal
-  for(const c of list){q.setFromUnitVectors(up,c.dir);
-    const put=a=>{m.set(a[0],a[1],a[2]).multiplyScalar(c.s).applyQuaternion(q).add(c.pos);V.push(m.x,m.y,m.z);C.push(c.col.r,c.col.g,c.col.b);Hh.push(c.held)};
-    for(let k=0;k<6;k++){const k2=(k+1)%6;
-      put(base[k]);put(base[k2]);put(sh[k2]);put(base[k]);put(sh[k2]);put(sh[k]);   // the side of the prism
-      put(sh[k]);put(sh[k2]);put(tip)}}                                             // the pointed tip
-  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(V,3));
-  g.setAttribute('aCol',new THREE.Float32BufferAttribute(C,3));g.setAttribute('aHeld',new THREE.Float32BufferAttribute(Hh,1));return g}
-function crystalMat(uVis){return new THREE.ShaderMaterial({uniforms:{uVis},
-  vertexShader:`attribute vec3 aCol;attribute float aHeld;varying vec3 vP,vC;varying float vH;
-    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vP=mv.xyz;vC=aCol;vH=aHeld;gl_Position=projectionMatrix*mv;}`,
-  // flat facets from the screen-space derivatives; a fixed dim light, no glare (colour stays under the bloom threshold)
-  fragmentShader:`uniform float uVis;varying vec3 vP,vC;varying float vH;
-    void main(){vec3 n=normalize(cross(dFdx(vP),dFdy(vP)));float l=abs(dot(n,normalize(vec3(.4,.6,.7))));
-      gl_FragColor=vec4(vC*(.1+.38*l)*(.85+.15*vH),.62*uVis);}`,
-  transparent:true,depthWrite:false,side:THREE.DoubleSide})}
+// PINS (mycelium_pins): explicit memory, held not earned (it does not fade by the 11 law). A shard in brackets just inside
+// the wall of its territory (its nested sector when it has one), pin-type colour, size by link count. Taut straight
+// tethers run to what it references; held in context = it breathes in its brackets. None when the store has none.
+// A PIN is a small shard held between two BRACKETS that always face you: held, not earned - it does not drift or fade.
+// Its colour is its pin type; a pin held in context right now breathes slowly in its brackets.
+const pinH={value:innerHeight*.5};
+const PIN_VS=`uniform float uTime,uPix,uVis,uH;attribute vec3 aCol;attribute float aHeld,aSize;varying vec3 vC;varying float vA,vH;
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=max(-mv.z,.1);vC=aCol;vH=aHeld;vA=uVis*smoothstep(.2,1.,z);
+    gl_PointSize=clamp(aSize*projectionMatrix[1][1]*uH/z,5.*uPix,26.*uPix);gl_Position=projectionMatrix*mv;}`;
+const PIN_FRAG=`uniform float uTime;varying vec3 vC;varying float vA,vH;
+  void main(){vec2 p=(gl_PointCoord-.5)*2.;vec2 q=abs(p);
+    float hx=max(q.x*.866+q.y*.5,q.y),shard=1.-smoothstep(.36,.4,hx),edge=smoothstep(.28,.36,hx)*shard;
+    float facet=step(0.,p.x*p.y);                                                   // two lit facets, two in shade
+    float bar=smoothstep(.06,.0,abs(q.x-.8))*step(q.y,.66),arm=smoothstep(.06,0.,abs(q.y-.64))*step(.62,q.x)*step(q.x,.84);
+    float br=max(bar,arm),pulse=1.+vH*.4*sin(uTime*1.3);
+    vec3 col=vC*shard*(.3+.18*facet)+mix(vC,vec3(1.),.4)*edge*.7+mix(vC,vec3(1.),.55)*br*.85*pulse;
+    gl_FragColor=vec4(col*.8,(shard*.26+edge*.4+br*.5*pulse)*vA);}`;
+function pinSprites(list,uVis){ // list: {pos,col,held,s}
+  const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(list.flatMap(c=>[c.pos.x,c.pos.y,c.pos.z]),3));
+  g.setAttribute('aCol',new THREE.Float32BufferAttribute(list.flatMap(c=>[c.col.r,c.col.g,c.col.b]),3));
+  g.setAttribute('aHeld',new THREE.Float32BufferAttribute(list.map(c=>c.held),1));g.setAttribute('aSize',new THREE.Float32BufferAttribute(list.map(c=>c.s*2.8),1));
+  return Object.assign(new THREE.Points(g,new THREE.ShaderMaterial({uniforms:{...U,uVis,uH:pinH},vertexShader:PIN_VS,fragmentShader:PIN_FRAG,
+    transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:3})}
 const PINS=M.pins.slice(0,80);let pinArtTethers=null;const pinTethers=[];
 const cloudPt=id=>{let h=7;for(const ch of String(id))h=(h*31+ch.charCodeAt(0))>>>0;const r=mulberry32(h);return new V3(-2.3*R+(r()-.5)*1.6*R,(r()-.5)*1.6*R,(r()-.5)*.8*R)};
 const pinInfo=PINS.map(p=>{const ri=REGI[p.domain]??0;let c=regC[ri],rad=regRad[ri];
@@ -1283,17 +1287,7 @@ const pinInfo=PINS.map(p=>{const ri=REGI[p.domain]??0;let c=regC[ri],rad=regRad[
   const base=dir.clone().multiplyScalar(R*.985);
   return {p,dir,base,s,tip:base.clone().addScaledVector(dir,-s*2.0),col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}});
 if(PINS.length){
-  const g=crystalGeo(pinInfo.map(q=>({pos:q.base,dir:q.dir.clone().negate(),s:q.s,col:q.col,held:q.held})));
-  const mesh=new THREE.Mesh(g,crystalMat(forestU.uVis));mesh.frustumCulled=false;mesh.renderOrder=2;cortex.add(mesh);
-  // held in context: a thin ring round the base
-  const held=pinInfo.filter(q=>q.held);
-  if(held.length){const hg=new THREE.BufferGeometry();hg.setAttribute('position',new THREE.Float32BufferAttribute(held.flatMap(q=>[q.base.x,q.base.y,q.base.z]),3));
-    hg.setAttribute('aSize',new THREE.Float32BufferAttribute(held.map(q=>q.s*6),1));hg.setAttribute('aCol',new THREE.Float32BufferAttribute(held.flatMap(q=>[q.col.r,q.col.g,q.col.b]),3));
-    const ho=new THREE.Points(hg,new THREE.ShaderMaterial({uniforms:{...U,uVis:forestU.uVis},
-      vertexShader:`uniform float uPix;attribute float aSize;attribute vec3 aCol;varying vec3 vC;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aCol;
-        gl_PointSize=min(aSize*uPix*(60./-mv.z),90.*uPix);gl_Position=projectionMatrix*mv;}`,
-      fragmentShader:`uniform float uVis;varying vec3 vC;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);gl_FragColor=vec4(mix(vC,vec3(1.),.35),smoothstep(.018,0.,abs(d-.4))*.32*uVis);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));ho.frustumCulled=false;cortex.add(ho)}
+  const pinObj=pinSprites(pinInfo.map(q=>({pos:q.tip,col:q.col,held:q.held,s:q.s})),forestU.uVis);cortex.add(pinObj);KIND_OBJ.pin.push(pinObj);
   // tethers: straight from the tip to what the pin references (a certainty, a node, a thing made)
   // (a tether to a thing made reaches out of the orb to where the artifact tissue settles, so it shows in that lens only)
   const tp=[],tc=[],ap=[],ac=[];
@@ -1305,13 +1299,13 @@ if(PINS.length){
     P.push(q.tip.x,q.tip.y,q.tip.z,to.x,to.y,to.z);Cc.push(q.col.r*f,q.col.g*f,q.col.b*f,q.col.r*f*.6,q.col.g*f*.6,q.col.b*f*.6)}
   const tether=(P,Cc)=>{if(!P.length)return null;const g_=new THREE.BufferGeometry();g_.setAttribute('position',new THREE.Float32BufferAttribute(P,3));g_.setAttribute('color',new THREE.Float32BufferAttribute(Cc,3));
     const l=new THREE.LineSegments(g_,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));l.frustumCulled=false;cortex.add(l);return l};
-  const t1=tether(tp,tc);if(t1)pinTethers.push(t1);
+  const t1=tether(tp,tc);if(t1){pinTethers.push(t1);KIND_OBJ.pin.push(t1)}
   pinArtTethers=tether(ap,ac);if(pinArtTethers){pinArtTethers.visible=false;pinTethers.push(pinArtTethers)}}
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
-  return `<div class="k">${t.word} · ${p.held?'held in context right now':'resting'}${p.permanent?' · permanent':''}</div><div class="t">${esc(p.title)}</div>
+  return `<div class="k">pin · ${t.word} · ${p.held?'held in context right now':'resting'}${p.permanent?' · permanent':''}</div><div class="t">${esc(p.title)}</div>
     <div class="m">tied to <em>${p.links}</em> thing${p.links===1?'':'s'}${th?` · used in <em>${th}</em> thread${th===1?'':'s'}`:''} · pinned ${ago(p.created)}<br>pins do not fade: they are held, not earned</div>`};
 const nodeHTML=k=>{const n=NDS[k],sp=SPACES[n.si],f=clamp((n.conf-.4)/.6,0,1);
-  return `<div class="k">${esc(SPACE_WORD[sp.id]||sp.id)} · ${esc(chanWord(n.chan))}</div><div class="t">${esc(n.label||sp.id)}</div>
+  return `<div class="k">node · ${esc(SPACE_WORD[sp.id]||sp.id)} · ${esc(chanWord(n.chan))}</div><div class="t">${esc(n.label||sp.id)}</div>
     <div class="m">how sure IRIS is: <em>${Math.round(n.conf*100)}%</em> · ${f<.02?'on the floor it was given: nothing has earned it more':'earned above the floor'}<br>used <em>${fmt(n.used||0)}</em> times${sp.write_lock!=null?`<br>${esc(LOCK_WORD[sp.write_lock]||'')}`:''}</div>`};
 
 // IMMUNE RESPONSE (Kyudo, mycelium_quorum_log): a live signal = a brief, small tightening + flicker of the territory it
@@ -1349,7 +1343,7 @@ sparkLines.frustumCulled=false;scene.add(sparkLines);
 const headPos=new Float32Array(SPK*3),headCol=new Float32Array(SPK*3);
 const headGeo=new THREE.BufferGeometry();headGeo.setAttribute('position',new THREE.BufferAttribute(headPos,3));headGeo.setAttribute('color',new THREE.BufferAttribute(headCol,3));
 const heads=new THREE.Points(headGeo,new THREE.PointsMaterial({size:R*.09,map:GLOW,vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
-heads.frustumCulled=false;scene.add(heads);
+heads.frustumCulled=false;scene.add(heads);KIND_OBJ.moment.push(sparkLines,heads);
 const sparks=Array.from({length:SPK},()=>({on:false,a:new V3(),b:new V3(),c:new V3(),t:0,sp:1,col:new THREE.Color(),gain:1,done:null,jit:.05}));
 function spark(a,b,col,{speed=.8,gain=1,done=null,bend=.5,jit=.05,ctrl=null}={}){
   const s=sparks.find(x=>!x.on);if(!s)return;
@@ -1748,7 +1742,7 @@ function buildTunnel(s){
         float a=vK>1.5?exp(-d*d*9.)*(1.-smoothstep(.3,.5,d)):smoothstep(.5,.08,d);gl_FragColor=vec4(vC,a*vA);}`,
       transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
 
-  // ── pins: still faceted crystals, LOCKED on the conversation strand (they do not drift); a checkpoint at the arch crown
+  // ── pins: shards in brackets, LOCKED on the conversation strand (they do not drift); a checkpoint at the arch crown
   const pinsHere=M.pins.filter(p=>p.session===s.id&&p.type!=='checkpoint').slice(0,24);
   const ckHere=M.pins.filter(p=>p.session===s.id&&p.type==='checkpoint').slice(0,3);
   const pinU=p=>clamp(uOf(p.created),.04,.93);
@@ -1757,7 +1751,7 @@ function buildTunnel(s){
   const pinList=pinBeads.map(b=>({p:b.p,world:b.world,u:b.u}));
   ckHere.forEach((p,i)=>{const pos=P1.clone().addScaledVector(Ud,(.9+.1)*rad1+i*.7).addScaledVector(T1,-.3);
     crystals.push({pos,dir:Ud.clone(),s:.45,col:new THREE.Color(pinType('checkpoint').col),held:p.held?1:0});pinList.push({p,world:pos.clone().add(TUN_OFF),u:1})});
-  if(crystals.length)g.add(Object.assign(new THREE.Mesh(crystalGeo(crystals),crystalMat({value:1})),{frustumCulled:false,renderOrder:2}));
+  if(crystals.length)g.add(pinSprites(crystals.map(c=>({pos:c.pos,col:c.col,held:c.held,s:c.s*.8})),{value:1}));
 
   // ── claims: the glyph (one glyph in every view; hover and selection read it)
   const threadU={...U,uSel:{value:-1},uSelOn:{value:0}};
@@ -2194,6 +2188,31 @@ const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifact
 LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
   a.onmouseenter=()=>scramble(a,w,14);$('lenses').appendChild(a)});
 function hint(t){$('hint').innerHTML=t}
+// THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
+const KEY=[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
+function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
+  const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
+  g.lineWidth=1.6;
+  if(kind==='claim'||kind==='learning'){const cols=['#ffffff','#5dffb0','#5dffb0','#7fe8ff','#7fe8ff','#8aa3b0'];
+    if(kind==='claim')for(let k=0;k<6;k++){const a0=k/6*Math.PI*2,a1=(k+1)/6*Math.PI*2;g.beginPath();g.moveTo(0,0);g.lineTo(Math.cos(a0)*13,Math.sin(a0)*13);g.lineTo(Math.cos(a1)*13,Math.sin(a1)*13);
+      g.closePath();g.globalAlpha=.28+.2*Math.cos(k-2.4);g.fillStyle=cols[k];g.fill()}
+    g.globalAlpha=kind==='claim'?.95:.6;g.strokeStyle='#cfe7f2';hex(13);g.stroke();if(kind==='claim'){g.globalAlpha=.9;g.fillStyle='#fff';g.beginPath();g.arc(0,0,2.6,0,7);g.fill()}}
+  else if(kind==='pin'){g.globalAlpha=.55;g.fillStyle='#ffcf6b';hex(6.5,Math.PI/6);g.fill();g.globalAlpha=.95;g.strokeStyle='#ffe6b0';
+    for(const sx of [-1,1]){g.beginPath();g.moveTo(sx*13,-11);g.lineTo(sx*16,-11);g.lineTo(sx*16,11);g.lineTo(sx*13,11);g.stroke()}}
+  else if(kind==='moment'){const gr=g.createLinearGradient(-16,8,12,-6);gr.addColorStop(0,'rgba(127,232,255,0)');gr.addColorStop(1,'rgba(214,246,255,.95)');
+    g.strokeStyle=gr;g.lineWidth=2;g.beginPath();g.moveTo(-16,8);g.lineTo(11,-5);g.stroke();g.fillStyle='#fff';g.beginPath();g.arc(11,-5,2.4,0,7);g.fill()}
+  else{g.globalAlpha=.85;g.strokeStyle='#9fd0e6';g.beginPath();g.arc(0,0,6,0,7);g.stroke();g.fillStyle='#cfe7f2';g.beginPath();g.arc(0,0,1.8,0,7);g.fill()}
+  return c}
+let keyFocus=null;
+function setKindFocus(k){keyFocus=k;const kind=k==='learning'?'claim':k;
+  for(const [kk,objs] of Object.entries(KIND_OBJ))for(const o of objs)o.visible=!kind||kk===kind;
+  // the rest of the organism steps back while one kind is singled out
+  mist.visible=moteObj.visible=!kind;skinMat.uniforms.uSkin.value=kind?.3:1;
+  // a claim still learning vs proven: the glyph layer shows only that tier
+  somaCellMat.uniforms.uTier.value=k==='claim'?1:k==='learning'?0:-1;
+  $('key').classList.toggle('iso',!!k);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k))}
+KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;a.append(Object.assign(document.createElement('span'),{textContent:w}),keyIcon(k));
+  a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
 const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').querySelector('.rl'),marks:[],pos:null,
   build(T){const NS='http://www.w3.org/2000/svg',svg=this.svg;svg.innerHTML='';this.marks=[];this.el.classList.toggle('on',!!T);if(!T)return;
     const W=svg.clientWidth||600,X=u=>8+u*(W-16),mk=(tag,at)=>{const e=document.createElementNS(NS,tag);for(const k in at)e.setAttribute(k,at[k]);svg.appendChild(e);return e};
@@ -2241,7 +2260,7 @@ function setLens(l){
   if(state.diving)return;
   if(cam.mode==='tunnel'){exitTunnel(()=>setLens(l));return}
   if(state.inside){exitInterior(()=>setLens(l));return}
-  state.lens=l;clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
+  state.lens=l;if(l!=='cortex'&&keyFocus)setKindFocus(null);clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
   document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
   const m=state.morphT,v=state.visT;
   const hx=l==='timeline';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
@@ -2295,7 +2314,7 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
   const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
   const s=M.sById.get(l.session);
   const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':String(l.cls).replace(/_/g,' '));
-  return `<div class="k">${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)} · ${syncHTML(syncClaim(l))}</div>
+  return `<div class="k">claim · ${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)} · ${syncHTML(syncClaim(l))}</div>
     <div class="t">${esc(l.claim)}</div>
     <div class="m">${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
@@ -2332,7 +2351,7 @@ function enterTunnel(s){
       T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
       $('scrub').classList.remove('on');
       document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
-      hint('scroll / w s · travel through the session &nbsp; ← → · neuron to neuron<br>hover · read a message or moment &nbsp; click a neuron · follow its thread &nbsp; esc · back');
+      hint('scroll / w s · travel through the session &nbsp; ← → · claim to claim<br>hover · read a message or moment &nbsp; click a claim · follow its thread &nbsp; esc · back');
       flash(false,REDUCED?1:700)},REDUCED?0:240)};
   if(state.lens==='timeline'&&!state.inside&&cam.mode==='orbit'){const bi=sess.indexOf(s);const p=new V3(0,helixY(sessS(s)),0);
     tweenTo(p.clone().add(camera.position.clone().sub(p).normalize().multiplyScalar(4)),p,22,.9,goIn)}
@@ -2545,7 +2564,7 @@ function selectThread(li){if(!tunnel)return;tunnel.sel=li;tunnel.threadU.uSel.va
   const L_=tunnel.linked;const us=tunnel.stars.filter(s=>s.li===li||L_.has(li+'-'+s.li)||L_.has(s.li+'-'+li)).map(s=>s.u).sort((a,b)=>a-b);
   tunnel.stops=us.filter((u,i)=>!i||u-us[i-1]>.004);
   const next=tunnel.stops.find(u=>u>cam.tp+.01);if(next!=null)cam.tpT=Math.max(0,next-.02);cam.idle=-9;
-  hint(`following one thread · ${tunnel.stops.length} linked neurons<br>scroll · next / previous &nbsp; enter · open in the mind &nbsp; esc · let go`)}
+  hint(`following one thread · ${tunnel.stops.length} linked claims<br>scroll · next / previous &nbsp; enter · open in the mind &nbsp; esc · let go`)}
 // step to the previous / next neuron: along the selected thread, or along every neuron of the session
 function neuronStep(dir){if(!tunnel)return;if(tunnel.stops)return threadStep(dir);
   const us=[...new Set(tunnel.stars.map(s=>s.u))].sort((a,b)=>a-b);const now=cam.tpT+.02;
@@ -2608,7 +2627,7 @@ function goSearch(){const h=searchHits;$('search').classList.remove('on');$('q')
   else if(h.s.length)enterTunnel(h.s[0]);
   else if(h.a.length){const a=h.a[0];setLens('artifacts');setTimeout(()=>{setTissueLevel([FORMAT_OF[a.kind]||'other',a.folder||'unsorted'],null);
     tissue.focus=tissue.cells.findIndex(c=>c.a===a)},1800)}}
-addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;
+addEventListener('resize',()=>{pinH.value=innerHeight*.5;renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;
   camera.updateProjectionMatrix();if(state.lens==='artifacts')layoutTissue(false)});
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2700,7 +2719,7 @@ renderer.setAnimationLoop(()=>{
   moteGeo.attributes.position.needsUpdate=moteGeo.attributes.aA.needsUpdate=true;
   // impulses
   updateSparks(dt);updateRings(dt);updateThreads(dt);updateSatellites(t);
-  updateCamera(dt);syncFrame(dt);
+  updateCamera(dt);syncFrame(dt);$('key').classList.toggle('on',state.lens==='cortex'&&cam.mode!=='tunnel'&&!state.diving);
   if(cam.mode==='tunnel'&&tunnel){
     // the far doorway opens as you near the end of the thread; the side door stays ajar
     tunnel.door.mesh.material.uniforms.uOpen.value=smooth01((cam.tp-.78)/.18);
@@ -2709,7 +2728,7 @@ renderer.setAnimationLoop(()=>{
     // arriving at a neuron names it, without a hover
     const here=cam.tp+.025;let best=-1,bd=.009;tunnel.stars.forEach((s,i)=>{const d=Math.abs(s.u-here);if(d<bd){bd=d;best=i}});
     if(best>=0&&!slots.hover?.on){const s=tunnel.stars[best];
-      setAnno('arrive','arr'+best,()=>project(s.world),`<div class="k">neuron · ${tunnel.sel===s.li?'on your thread':'in this session'}</div><div class="t">${esc(LM[s.li].claim)}</div>`)}
+      setAnno('arrive','arr'+best,()=>project(s.world),`<div class="k">claim · ${tunnel.sel===s.li?'on your thread':'in this session'}</div><div class="t">${esc(LM[s.li].claim)}</div>`)}
     else if(best<0)clearAnno('arrive');
     // near the end the two doorways name themselves: the next thread ahead, the way back on the side
     if(cam.tp>.86){const nx=tunnel.door.next;
