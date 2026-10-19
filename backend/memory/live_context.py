@@ -112,10 +112,12 @@ class LiveContextPackage:
                     tool_names=completed_tools,
                 )
                 if new_warnings and hasattr(self.package, "gradient_warnings"):
-                    existing = set(self.package.gradient_warnings or [])
-                    for w in new_warnings:
-                        existing.add(w)
-                    self.package.gradient_warnings = list(existing)
+                    # the field is a str: one warning per line, no repeats
+                    lines = [ln for ln in (self.package.gradient_warnings or "").split("\n") if ln]
+                    for w in ([new_warnings] if isinstance(new_warnings, str) else new_warnings):
+                        if w and str(w) not in lines:
+                            lines.append(str(w))
+                    self.package.gradient_warnings = "\n".join(lines)
         except Exception:
             pass
 
@@ -128,14 +130,21 @@ class LiveContextPackage:
                 completed_tool_names = [
                     ci.tool for ci in completed_items if ci.tool
                 ]
+                # The predictor ranks edges leaving the session's region; an
+                # empty list always answers [] (it has no session history of
+                # its own). settle=False: a steering read of the last settled
+                # edges - a cycle boundary must not wait on the writer queue.
                 predictions = predictor.predict(
                     session_id=self._session,
-                    current_node_ids=[],  # resolver uses session history
+                    current_node_ids=sorted(
+                        self._memory._mycelium._registry.get_region(self._session)
+                    ),
                     task_class=getattr(self.package, "task_class", "full"),
                     completed_tools=completed_tool_names,
+                    settle=False,
                 )
                 if predictions and hasattr(self.package, "tier2_predictions"):
-                    self.package.tier2_predictions = predictions
+                    self.package.tier2_predictions = ", ".join(predictions)
         except Exception:
             pass
 
@@ -144,6 +153,9 @@ class LiveContextPackage:
             if hasattr(self._memory, "mycelium_get_active_contracts"):
                 contracts = self._memory.mycelium_get_active_contracts(self._session)
                 if contracts and hasattr(self.package, "active_contracts"):
-                    self.package.active_contracts = contracts
+                    self.package.active_contracts = (
+                        contracts if isinstance(contracts, str)
+                        else "\n".join(str(c) for c in contracts)
+                    )
         except Exception:
             pass

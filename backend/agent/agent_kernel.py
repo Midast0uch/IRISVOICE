@@ -8196,6 +8196,8 @@ class AgentKernel:
                 pass
             try:
                 strategy_hint = str(context_package.topology_primitive) or ""
+                if strategy_hint == "unknown":  # no topology is no hint
+                    strategy_hint = ""
             except Exception:
                 pass
 
@@ -18686,6 +18688,10 @@ Respond with a JSON object:
         if from_voice:
             return "voice"
         _tc = str(getattr(self, "_der_task_class", "") or "").lower()
+        # TaskClassifier labels carry a "_task" suffix ("research_task");
+        # the bare set never matched them (MEMORY-FOUNDATION-ANALYSIS 13.2).
+        if _tc.endswith("_task"):
+            _tc = _tc[: -len("_task")]
         if _tc in ("research", "explore", "investigate"):
             return "research"
         return "der"
