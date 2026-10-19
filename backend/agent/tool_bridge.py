@@ -44,6 +44,46 @@ _DECISION_META: contextvars.ContextVar = contextvars.ContextVar(
 # the engine's answer and the Brain's ACTUAL answer. Without them a monitor or
 # surface row lands with no reference to judge it against, so no precision or
 # ECE can ever be computed from it.
+# web_intent/v3 (2026-10-18): the turn's ACTUAL web-tool usage, recorded at
+# the ONE dispatch chokepoint. The kernel's turn-grade web_used check read
+# only the DER's completed_items - but the quick-tier/crawler searches run
+# OUTSIDE the DER, so research turns that used the web were labelled "no web
+# needed" and d1's correct "yes" answers were scored wrong (measured live:
+# r01-r04 all passed WITH search; every row carried outside_label=no). The
+# scope is read on the CALLING task (the quick tier runs inside the turn's
+# asyncio task, where the turn scope is bound; the DER executor threads do
+# not propagate contextvars, but their usage is already covered by the
+# completed_items check). Bounded: drop-oldest, counted by nothing else.
+_WEB_USED_TURNS: "OrderedDict[str, bool]" = OrderedDict()
+_WEB_USED_CAP = 512
+
+
+def _note_web_tool_used(tool_name: str, result: Any) -> None:
+    """Record that THIS turn's web tool ran and did not fail. Never raises."""
+    try:
+        t = str(tool_name or "")
+        if not (t == "search" or t == "crawler_query" or t.startswith("browser")):
+            return
+        if isinstance(result, dict) and result.get("success") is False:
+            return  # a failed call is not usage
+        from backend.agent.decision_engine import scope_now
+
+        tid = str((scope_now() or {}).get("turn_id") or "")
+        if not tid:
+            return
+        _WEB_USED_TURNS[tid] = True
+        _WEB_USED_TURNS.move_to_end(tid)
+        while len(_WEB_USED_TURNS) > _WEB_USED_CAP:
+            _WEB_USED_TURNS.popitem(last=False)
+    except Exception:  # noqa: BLE001 — a label never blocks a tool call
+        pass
+
+
+def turn_used_web(turn_id: str) -> bool:
+    """Did THIS turn run a web tool that did not fail? (web_intent/v3 label)"""
+    return str(turn_id or "") in _WEB_USED_TURNS
+
+
 _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     "confidence", "candidates", "candidate_names", "threshold",
     "args_valid", "retried", "escalated",
@@ -1851,6 +1891,11 @@ class AgentToolBridge:
             from backend.agent.tool_errors import normalize_failure
             result = normalize_failure(result)
         except Exception:  # noqa: BLE001 — taxonomy must never break execution
+            pass
+        # web_intent/v3: the turn's actual web usage (see _note_web_tool_used).
+        try:
+            _note_web_tool_used(tool_name, result)
+        except Exception:  # noqa: BLE001 — a label never blocks a tool call
             pass
         return result
 

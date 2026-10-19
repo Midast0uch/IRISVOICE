@@ -390,9 +390,16 @@ def _score_web_intent(
                 "probability": round(float(noul.probability), 4),
                 "engine_latency_ms": getattr(noul, "engine_latency_ms", None),
                 "shadow": True,
-                # v2 (2026-10-17, oracle.md 7.5): the cohort stamp. v1 rows
-                # carry no criteria_version; the report scopes to v2 only.
-                "criteria_version": "web_intent/v2",
+                # v3 (2026-10-18): the cohort stamp. v1 rows carry no
+                # criteria_version; v2's cohort mixed pre-hold rows scored
+                # against the keyword (the noisy reference) and - the real
+                # defect - research turns whose web usage ran OUTSIDE the DER
+                # were labelled "no web needed" (the kernel read only DER
+                # items; the bridge's chokepoint flag now covers every
+                # dispatch) and the 256-char interpret budget cut the request
+                # behind a Windows path prefix. v3: the honest label + the
+                # interpret_web job (512 chars).
+                "criteria_version": "web_intent/v3",
                 # REQ-6 AC6.3a (T5.0): the scope ids ride the row.
                 **_scope,
             }, goal)

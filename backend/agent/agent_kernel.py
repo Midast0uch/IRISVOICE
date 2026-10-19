@@ -7410,6 +7410,19 @@ class AgentKernel:
                             ) == "success":
                                 _web_used = True
                                 break
+                    # v3 (2026-10-18): the DER items miss the quick-tier /
+                    # crawler searches (they run OUTSIDE the DER), so research
+                    # turns that used the web were labelled "no web needed"
+                    # and d1's correct "yes" answers scored wrong (measured:
+                    # r01-r04 passed WITH search, every row outside=no). The
+                    # bridge's chokepoint flag covers every dispatch.
+                    if not _web_used:
+                        try:
+                            from backend.agent.tool_bridge import turn_used_web
+
+                            _web_used = turn_used_web(_turn_id or "")
+                        except Exception:  # noqa: BLE001
+                            pass
                     _wi_n = _exp_wi.resolve_web_intent_turn(
                         _turn_id or "", _grade == "pass", _web_used
                     )
@@ -17948,8 +17961,17 @@ Respond with a JSON object:
             if _label is not None:
                 from backend.agent import surface_shadow as _ss_na
 
+                # DIAGNOSTIC (2026-10-18): the row does not store the goal
+                # (the whole frame for this consumer), so a live cohort cannot
+                # be replayed without it. One DEBUG record per row, keyed by
+                # step_id (the row carries the same id in its scope), with the
+                # label beside it - frame and outcome in one line.
+                logger.debug(
+                    "[needs_action] step=%s label=%s goal=%r",
+                    getattr(item, "step_id", "?"), _label, goal,
+                )
                 _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
-                                      True, None, "needs_action/v2",
+                                      True, None, "needs_action/v3",
                                       outside_label=_label)
         except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
             logger.debug("[DER] needs_action row skipped: %r", _na_exc)

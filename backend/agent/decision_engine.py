@@ -206,6 +206,15 @@ class OracleState:
 ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     OracleJob("interpret", "what does the user's message mean?",
               ("goal",), 64),
+    # web_intent gets its OWN job (2026-10-18): the interpret job's 64-id
+    # budget (256 chars) cut 6 of 14 live goals - and the goals START with an
+    # ~80-char Windows path ("The project is in C:\...\<task>. <instruction>"),
+    # so the cap left d1 reading a path instead of the request. 128 ids
+    # (512 chars) covers the longest measured goal (347). user_feedback keeps
+    # `interpret` (isolation, the judge_review precedent). Replay on real
+    # pairs: capped 0.8864 vs uncapped 0.9318.
+    OracleJob("interpret_web", "what does the user's message mean?",
+              ("goal",), 128),
     OracleJob("route", "which of these next actions? (the menu carries the content)",
               # `last_result` (2026-10-10): the previous step's result snippet.
               # MEASURED ROOT CAUSE of tool_choice's 45% parity accuracy: the
@@ -363,7 +372,7 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
 
 CONSUMER_JOBS: Dict[str, str] = {
     # `mode` REMOVED 2026-10-10 (owner): see the CONSUMERS tuple.
-    "web_intent": "interpret", "user_feedback": "interpret",
+    "web_intent": "interpret_web", "user_feedback": "interpret",
     "tool_choice": "route", "recovery_strategy": "route",
     # tool_approval (2026-10-10): its own job — the pre-call approval question.
     "tool_approval": "approve",

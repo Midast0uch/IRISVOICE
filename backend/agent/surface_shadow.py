@@ -46,8 +46,14 @@ SURFACE_CONSUMERS: Dict[str, str] = {
         "Is this step result too incomplete to proceed without more work?"
     ),
     "needs_action": (
-        "Does this step need to use a tool such as the browser, a file, "
-        "a web search or a command?"
+        # v3 (2026-10-18, replay on 40 REAL goal+outcome pairs): the v1
+        # wording scored 0.6407; this wording 0.7962. The difference: it
+        # names the COMPLETION of the step (running a tool vs writing an
+        # answer) instead of the abstract "need to use a tool" - the same
+        # concrete-nouns lesson every consumer has taught.
+        "Will this step be completed by running a tool (a file operation, "
+        "a command, a search or the browser), or by writing an answer "
+        "from what is already available?"
     ),
     # Session 364 (owner request). The DEPTH question, anchored to the task's
     # success criteria: `sufficient`/`done` ask whether the objective is

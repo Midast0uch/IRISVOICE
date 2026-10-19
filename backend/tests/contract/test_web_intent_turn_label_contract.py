@@ -1,4 +1,4 @@
-﻿"""Contract: the web_intent TURN-OUTCOME label (web_intent/v2, oracle.md 7.5).
+"""Contract: the web_intent TURN-OUTCOME label (web_intent/v3, oracle.md 7.5).
 
 Why it exists (measured live 2026-10-17, data/memory.db): the v1 reference was
 the keyword list - a noisy rule that misses requests naming a URL. At 266
@@ -39,7 +39,7 @@ def _row(turn="t1", chosen="yes"):
         "brain_choice": "no",
         "confidence": 0.8,
         "shadow": True,
-        "criteria_version": "web_intent/v2",
+        "criteria_version": "web_intent/v3",
         "turn_id": turn,
     }
 

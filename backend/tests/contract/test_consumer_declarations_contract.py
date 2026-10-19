@@ -182,7 +182,17 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # the incumbent reference and must stay out of the input). done/sufficient
     # keep judge_goal, so their input is untouched - the same isolation
     # pattern judge_review set (2026-10-16).
-    assert len(de.ORACLE_JOBS) == 12
+    # 13, not 12 (2026-10-18, web_intent/v3): web_intent gets its own
+    # `interpret_web` job - the interpret job's 64-id budget (256 chars) cut
+    # 6 of 14 live goals behind an ~80-char Windows path prefix, leaving d1
+    # reading a path instead of the request. 128 ids covers the longest
+    # measured goal (347 chars). user_feedback keeps `interpret` (isolation,
+    # the judge_review precedent).
+    assert len(de.ORACLE_JOBS) == 13
+    assert de.ORACLE_JOBS["interpret_web"].fields == ("goal",)
+    assert de.ORACLE_JOBS["interpret_web"].budget_ids == 128
+    assert de.CONSUMER_JOBS["web_intent"] == "interpret_web"
+    assert de.CONSUMER_JOBS["user_feedback"] == "interpret"
     assert de.ORACLE_JOBS["judge_depth"].fields == (
         "evidence", "coverage", "open_facts", "goal")
     assert de.ORACLE_JOBS["judge_depth"].budget_ids == 384

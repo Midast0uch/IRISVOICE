@@ -98,7 +98,9 @@ def test_the_label_rule():
     src = inspect.getsource(AgentKernel._der_run_node)
     assert 'any(c.get("ok_call", c.get("ok")) for c in _calls)' in src
     assert "not _calls and result.success" in src
-    assert '"needs_action/v2"' in src
+    # STALE-BY-SPEC (2026-10-18): v3 - the question changed to the
+    # concrete-outcome wording (replay 0.7962 vs 0.6407 on real pairs).
+    assert '"needs_action/v3"' in src
     assert "outside_label=_label" in src
 
 
