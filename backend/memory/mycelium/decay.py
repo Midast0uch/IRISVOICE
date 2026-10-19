@@ -210,6 +210,15 @@ def edge_decay_amount(rate: float, multiplier: float, days: float, n: Optional[i
     return rate * multiplier * days * evidence_weight(n)
 
 
+def landmark_credibility(score: float, rate: float, days: float, n: Optional[int]) -> float:
+    """What a landmark's score is worth after an idle span: the SAME law as an
+    edge (``edge_decay_amount``), with n = the evidence behind the claim
+    (activations + independent outside evidence). Computed from the stored
+    score and the span since the last touch, never written back, so a pass
+    that repeats changes nothing (integrity.py, MEMORY-FOUNDATION-ANALYSIS §16)."""
+    return max(0.0, score - edge_decay_amount(rate, 1.0, days, n))
+
+
 def node_confidence_after(
     confidence: float, rate: float, multiplier: float, days: float,
     floor: float = NODE_CONFIDENCE_FLOOR,

@@ -172,6 +172,10 @@ _SEED = [
     ("LANDMARK_PROMOTED", "memory", "advances", "world", "outside evidence promoted a landmark"),
     ("LANDMARK_STALE", "memory", "neutral", "world", "a landmark dependency changed"),
     ("LANDMARK_DEMOTED", "memory", "sets_back", "world", "a landmark was contradicted"),
+    # Kyudo integrity pass (integrity.py): the memory cleans itself; evidence stays "none"
+    ("LANDMARK_DISSOLVED", "memory", "sets_back", "agent", "a landmark lost its credibility or its coordinates and was absorbed (row kept)"),
+    ("LANDMARK_MERGED", "memory", "neutral", "agent", "duplicate landmarks were absorbed into a survivor"),
+    ("MEMORY_PRUNED", "memory", "sets_back", "agent", "orphan or dangling memory rows were removed or re-pointed"),
     ("CHAIN_CREATED", "memory", "advances", "agent", "a node chain crystallized"),
     ("CHAIN_VARIANT", "memory", "advances", "agent", "a proven pivot became a variant"),
     # sectors (MEMORY-FOUNDATION-ANALYSIS 5.1, SHADOW): computed and logged, read by nothing
