@@ -624,7 +624,10 @@ where it starts; never hex cells, never boxes, never fine-fibre bundles. Thick v
 `conversations.db` — the thread, and any strand forked from it via `parent_id`, which **branches off the
 thread** where it starts and grows back into it if it ends early; **your messages are leaves, IRIS's are
 buds** on the thread. Thin vines come from `memory.db` (one per event family); **a moment curls a
-tendril** off its family's vine. Small dim leaves grow at the stems' nodes. Hovering a message lights the
+tendril** off its family's vine, ending in a tight curl. Small dim leaves grow at the stems' nodes. The bark is
+fibrous and knotted, its colour drifting along the stem; a thin second stem twines round the thread and every
+forked strand. Leaves are curved blades on short stalks — they rise off the stem, droop back to the wall and
+cup across; side veins, a midrib, light through the rim. Hovering a message lights the
 moments of that turn and draws the links; hovering a moment lights its turn. A fan-out opens the thread
 into parallel thin vines that fold back (DER). Each task is a thin ring vine round the tunnel (red =
 failed, amber = partial, white = **you corrected IRIS**). A faint pulse runs along the stems at the pace
@@ -632,8 +635,12 @@ of the session's own attention (Caducean u); the tunnel's width follows x (smoot
 knots on the thread (§17.1). Neurons the session touched sit on the wall as the same glyph as in the
 cortex, joined by a tissue thread; click one to follow its thread (scroll / ← → step neuron to neuron;
 Enter opens it in the mind). A **thread rail** at the bottom shows the session's neurons and tasks in
-time; click to travel. A few very faint wall vines and a fine haze of particles line the tunnel (the
-synaptic space). The vines are one opaque mesh with a soft rim light — no additive glare, nothing that
+time; click to travel. A few very faint wall vines and a fine haze line the tunnel (the synaptic space).
+**Particles carry the sense of travelling through the memory**, each layer with a fixed budget and low light:
+**sap** — beads that ride inside the stems from start to end at the pace of the session's attention (u);
+**spores** — drifting along the vines and rising off the leaves; **vesicles** — floating through the tunnel
+towards the doorway, streaking while you move (the camera's travel speed); **motes** — a few large, very
+faint, out-of-focus specks right by the eye, for depth. The vines are one opaque mesh with a soft rim light — no additive glare, nothing that
 brightens with time. The far end is a **doorway** — an arch that opens onto the next thread (or back to
 the timeline for the newest); a side door returns to this thread's beginning; the cortex glows behind
 the entrance. **The doorway is a tall arch with a soft edge — no rim line, nothing round or puckered
@@ -733,8 +740,9 @@ same 500 ms cadence as `useCaducean`), and `landmark_id` on every `RECALL_*` eve
   Measured target: ≤ 8 ms GPU per frame at 1440×900 on the owner's machine, with the tool
   model loaded.
 - **Bounded scene.** ≤ 50k skin particles, ≤ 400 neurons drawn (the rest as dust), ≤ 3k axons,
-  tunnel built on entry and disposed on exit (vines: one opaque mesh of tubes - 22.7k vertices in the demo's
-  session 14, against ~400k additive fibre samples before; measured in the in-app browser: 27-30 fps vs 20-23).
+  tunnel built on entry and disposed on exit (demo session 14: vines + stalks 31.5k vertices, leaves 3.3k,
+  particles ~8.6k; against ~400k additive fibre samples before. In-app browser: 24-25 fps with the particles,
+  27-30 for the vines alone, 20-23 for the fibres).
 - **Reduced motion.** `prefers-reduced-motion`: cuts instead of flights, no auto-drift,
   sparks slowed, shockwave becomes a brightness change.
 - **Not only visual.** Every object has a text equivalent reachable by keyboard (Tab through
