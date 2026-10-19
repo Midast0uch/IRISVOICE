@@ -382,6 +382,48 @@ def main() -> int:
                                "weight": r["weight"] or 0.0, "threat": r["threat_after"], "shadow": bool(r["shadow"]),
                                "landmark": m.group(1) if m else None})
             quorum.reverse()
+
+        # ── recalls: what the memory gave the agent on each step of a turn (RECALL_DELIVERED, typed by
+        # agent_kernel._der_recall_delivered) and whether it helped (RECALL_HELPED / RECALL_MISLED, same
+        # recall_trace_id). refs are DER chain ids: resolved to the prior step they name (its thread, what it
+        # did, its tool, its result) - a short insight only, never the content.
+        rec_where = "AND thread_id NOT LIKE 'eval-%'" if args.no_eval else ""
+        traces: dict[str, dict] = {}
+        for r in q("SELECT ts, label, episode_id, step_index, thread_id, links, payload FROM memory_events "
+                   f"WHERE label IN ('RECALL_DELIVERED','RECALL_HELPED','RECALL_MISLED') {rec_where} "
+                   "ORDER BY ts DESC LIMIT 8000"):
+            tid = (jload(r["links"], {}) or {}).get("recall_trace_id")
+            if not tid:
+                continue
+            t = traces.setdefault(tid, {"outcome": None})
+            if r["label"] == "RECALL_DELIVERED":
+                p = jload(r["payload"], {}) or {}
+                t.update(turn=r["episode_id"], session=r["thread_id"], step=r["step_index"], ts=r["ts"],
+                         source=p.get("source") or "neighbors", refs=[x for x in (p.get("refs") or []) if x][:5])
+            else:
+                t["outcome"] = "helped" if r["label"] == "RECALL_HELPED" else "misled"
+        by_turn: dict[str, list] = defaultdict(list)
+        for t in traces.values():
+            if t.get("turn"):
+                by_turn[t["turn"]].append(t)
+        turn_ids = sorted(by_turn, key=lambda k: max(x["ts"] for x in by_turn[k]), reverse=True)[:60]
+        chain_ids = sorted({c for k in turn_ids for t in by_turn[k] for c in t["refs"]})
+        chain: dict[str, dict] = {}
+        for i in range(0, len(chain_ids), 400):
+            part = chain_ids[i:i + 400]
+            for r in q(f"SELECT chain_id, MIN(thread_id), MIN(insight), MIN(result), MIN(mediator), MIN(created_at), MIN(node_type) "
+                       f"FROM memory_chain WHERE chain_id IN ({','.join('?' * len(part))}) GROUP BY chain_id LIMIT 400", part):
+                chain[r[0]] = {"session": r[1], "did": (r[2] or "")[:140], "result": r[3] or None,
+                               "tool": (r[4] or "").split(":")[0] or None, "ts": ts_of(r[5]), "kind": r[6] or "step"}
+        recalls = []
+        for k in turn_ids:
+            ts_ = sorted(by_turn[k], key=lambda x: x["ts"])
+            recalls.append({"turn": k, "session": ts_[0]["session"], "ts": ts_[0]["ts"],
+                            "steps": [{"step": t["step"], "ts": t["ts"], "source": t["source"], "outcome": t["outcome"],
+                                       "refs": [chain.get(c, {"session": None, "did": "", "result": None, "tool": None,
+                                                              "ts": None, "kind": "step"}) for c in t["refs"]]}
+                                      for t in ts_]})
+        counts["recall_turns"] = len(by_turn)
     finally:
         con.close()
 
@@ -397,13 +439,14 @@ def main() -> int:
                      "eval_share": [eval_share[0] or 0, eval_share[1] or 0], "warnings": warnings, "available": available},
             "famCounts": fam_counts, "domCounts": dict(dom_counts), "sessions": sessions, "events": events, "landmarks": landmarks, "edges": edges,
             "episodes": episodes, "artifacts": artifacts, "oracle": oracle, "mind": [],
-            "sectors": sectors, "pins": pins, "spaces": spaces, "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum}
+            "sectors": sectors, "pins": pins, "spaces": spaces, "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum,
+            "recalls": recalls}
     OUT.write_text("window.IRIS_MEMORY = " + json.dumps(snap, ensure_ascii=False, separators=(",", ":")) + ";\n",
                    encoding="utf-8")
     print(f"[export_snapshot] wrote {OUT.name}: {len(sessions)} sessions, {len(events)} events, "
           f"{len(landmarks)} live landmarks, {len(edges)} edges, {len(episodes)} episodes, {len(artifacts)} artifacts, "
           f"{len(oracle)} decision points; {len(pins)} pins, {len(nodes)} nodes, {len(node_edges)} node edges, "
-          f"{len(spaces)} spaces, {len(sectors)} sectors, {len(quorum)} quorum rows; "
+          f"{len(spaces)} spaces, {len(sectors)} sectors, {len(quorum)} quorum rows, {len(recalls)} recall turns; "
           f"tables={available}; warnings={warnings}")
     return 0
 

@@ -1013,3 +1013,28 @@ for the memory not holding together: a session's failed tasks plus twice its sha
 timeline bead jolt red now and then; failures and setbacks desync their stretch of the corridor wall. Measured on the
 real store: 38 of 127 claims proven, territory sync 3-59%, four territories with no claims, no episodes in the
 snapshot (session sync then rests on moment evidence alone).
+
+### 18.9 Step 3 as built — the Synchronization view (2026-10-19)
+
+A fifth lens, **synchronization** (key 3), on the helix of time. It shows one turn at a time: every earlier step the
+memory handed to one of this turn's steps rises along a strand that bows out round the helix and assembles into the
+step it was given to; fragments keep flying up each strand. Strands draw themselves from their source on arrival.
+
+- **Data, all real:** `RECALL_DELIVERED` (typed by `agent_kernel._der_recall_delivered`; payload `source` + `refs`,
+  the DER chain ids of the prior steps) joined to `RECALL_HELPED` / `RECALL_MISLED` by `recall_trace_id`; each ref is
+  resolved to its `memory_chain` row (thread, `insight` = what that step did, `mediator` tool, `result`). The exporter
+  writes the 60 latest turns as `recalls` (references and a 140-char insight only).
+- **Encoding:** colour = recall source (similar earlier step cyan, earlier research amber, the timeline of this work
+  pink, a known case green); solidity = verdict (helped solid, no verdict an edge, misled a red desync). The turn's own
+  steps sit on a small coil at the top, joined by its path. Turn sync = share of steps whose recalls helped.
+- **Time lens:** round the selected turn, source height is log(age) over that turn's own sources, so a minutes-old
+  recall and a weeks-old one both read (on the global helix they would lie flat on the turn). The age is in the hover.
+- **Use:** ← → or scroll for another turn; hover anywhere on a strand to read the recalled step (what it did, where
+  from, its tool and result, the verdict); click it to step into that session (Esc returns here). Left alone, it
+  replays turn after turn every ~16 s.
+
+**Finding (hidden-failure rule: a near-constant value).** On the live store 3,432 of 3,717 recalls are `HELPED`, 0 are
+`MISLED`, the rest have no verdict. `_attribute_recalls` writes HELPED when the step "did not fail", so turn sync is
+~100% by construction; and every recalled chain row has `result = success` (the relevance gate passes only successes).
+Whether failed steps ever carry their `recall_trace_ids` to `record_step` is not visible from the events - to check
+before the sync value is trusted.
