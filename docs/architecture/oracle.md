@@ -669,7 +669,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v5`, 2026-10-19) | 11 (10/1) | young | - | none | shadow | distinct rows 11 < 100 (bar: 0.90 precision on >= 50 rows above); v5 reads 21/22 on the probe set, so the cohort must be built on live traffic |
+| `needs_action` (scope `needs_action/v5`, 2026-10-19) | 111 (91/20) | 0.6926 | 0.0414 | 0.8278 (59, 0.9492, 0.8608) | shadow: every bar clause passes, but the ACTING side does not | see 7.2a |
 | `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
 | `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
 | `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
@@ -678,6 +678,33 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `click_safety` | 92 (89/3) | 0.3034 | 0.0003 | 0.9595 | shadow | rows < 100 (and 3 wrong: minority < 5%) |
 | `depth_route` 27, `event_family` 67, `done` 47, `presentation` 13, `event_type:*` 1-32, `mode` (retired) 77 | below 100 | - | - | none | shadow | rows < 100 |
 | `recovery_strategy`, `sufficient` | 0 on d1 | - | - | none | shadow | failure-only paths (below) |
+
+### 7.2a The directional split: an aggregate bar can pass on the side that changes nothing
+
+`needs_action` met every clause on 2026-10-19 (111 distinct, OOF AUROC 0.6926,
+ECE 0.0414, threshold 0.8278, 59 rows above, precision 0.9492, Wilson 0.8608).
+The flip would have been unsafe, and the reason is in the metric, not the code.
+
+Only a "no tool needed" answer CHANGES behaviour: it moves a REACT step to
+DIRECT. A confident "yes" changes nothing (the rule already chose REACT). The
+bar's precision is over the confidence in the CHOSEN answer, so both directions
+pool into one number. Measured on the same 111 scored rows:
+
+| Threshold | Rows above | Precision (all) | No-side rows | No-side precision | Yes-side rows | Yes-side precision |
+|---|---|---|---|---|---|---|
+| 0.8278 | 76 | 0.868 | 17 | 0.706 | 59 | 0.915 |
+| 0.90 | 51 | 0.902 | 13 | 0.769 | 38 | 0.947 |
+| 0.95 | 24 | 1.000 | 7 | 1.000 | 17 | 1.000 |
+
+The pass is carried by the yes side. At the fitted threshold, ~29% of the
+confident "no" decisions are wrong: 5 of 17 steps would be sent to DIRECT when
+they needed a tool. At 0.95 the no side is clean (7/7) but has 7 rows - it needs
+50 before it can be trusted.
+
+Finding (2026-10-19): for an ASYMMETRIC consumer (only one direction acts) the
+bar must measure the acting side separately. A direction-scoped clause is the
+right fix; it is a bar change and needs the owner's decision, so the consumer
+stays shadow until then. Do not flip on the aggregate number.
 
 Enforcement today (2026-10-18): `tool_choice`, `escalate_incomplete`, `review_verdict`,
 `depth_met` and `tool_approval` are on (`.env`
