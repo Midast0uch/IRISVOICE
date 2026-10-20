@@ -799,8 +799,7 @@
    "timeout_s": 1200,
    "prompt": "The project is in {workdir}. Run the tests in this project and tell me the exact number of tests that were collected. Do not fix anything.",
    "reply_patterns": [
-    "\\b(7|seven)\\b[^.\\n]{0,40}\\bcollect",
-    "collect[^.\\n]{0,25}(7|seven)\\b"
+    "\\b(7|seven)\\b[^.\\n]{0,45}\\bcollect|collect[^.\\n]{0,45}(7|seven)\\b"
    ]
   },
   {

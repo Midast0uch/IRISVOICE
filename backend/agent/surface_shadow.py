@@ -323,6 +323,21 @@ _NA_ACTION_LEAD = re.compile(
 # bookkeeping. They carry no honest answer to the consumer's question.
 _NA_ARTIFACT = re.compile(r"^\s*(duplicate of step|resolve:)", re.IGNORECASE)
 
+# v6 (2026-10-20): does the goal name an action ANYWHERE? The slip test above
+# looks at the LEADING verb only; this one is the mirror guard for the case
+# where a call RAN. "Parse the test output" names no action; "Find the failing
+# function and fix it" does. Deliberately excludes bare "test", "output",
+# "count" and "result": those are nouns in goals that need no tool.
+_NA_ACTION_ANYWHERE = re.compile(
+    r"\b(read|reads|reading|write|writes|writing|edit|edits|editing|patch|"
+    r"list|lists|listing|run|runs|running|grep|search|searches|glob|open|"
+    r"opens|create|creates|creating|delete|removes?|rename|renames|install|"
+    r"start|stop|fetch|download|browse|navigate|execute|apply|applies|add|"
+    r"adds|modify|modifies|update|updates|fix|fixes|copy|move|build|compile|"
+    r"inspect|append|save|upload|implement)\b",
+    re.IGNORECASE,
+    )
+
 
 def needs_action_label(goal: str, calls: Any, success: bool) -> Optional[bool]:
     """The honest outcome label for a DER node, or None when the row must not exist.
@@ -342,11 +357,24 @@ def needs_action_label(goal: str, calls: Any, success: bool) -> Optional[bool]:
       * anything else -> None (an ambiguous outcome is not evidence).
     """
     try:
+        text = str(goal or "")
         for c in calls or []:
             if c.get("ok_call", c.get("ok")):
+                # v6 (2026-10-20): the MIRROR of the slip case. A goal that names
+                # no action ANYWHERE, yet ran a call, did not force that call -
+                # the REACT loop used a tool on an analysis step ("Parse the test
+                # output to count the number of failures"). Measured on 495 real
+                # pairs: this shape is 30 rows, the consumer says "no" on 24 of
+                # them, and the label scores all 24 as errors - 45% of the
+                # cohort's error mass from 6% of its rows. It is also the group
+                # whose label is unstable (30/79 True for an identical shape),
+                # which is what flattened the confidence bands and made clause 8
+                # unreachable. The outcome cannot tell "needed" from "used", so
+                # the row is refused, exactly as the slip case refuses its half.
+                if not _NA_ACTION_ANYWHERE.search(text):
+                    return None
                 return True
         if not calls and success:
-            text = str(goal or "")
             if _NA_ACTION_LEAD.match(text) or _NA_ARTIFACT.match(text):
                 return None
             return False

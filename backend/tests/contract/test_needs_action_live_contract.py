@@ -83,7 +83,7 @@ def test_outcome_row_without_a_label_has_no_outside_label_key(captured):
 # â”€â”€ (b) the label rule, read from the kernel source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_the_label_rule():
-    """The outcome label and its v4 slip rule.
+    """The outcome label: the v4 slip rule and its v6 mirror.
 
     v4 (2026-10-19): the label moved out of _der_run_node into
     surface_shadow.needs_action_label so the slip rule can be tested directly.
@@ -91,11 +91,19 @@ def test_the_label_rule():
     GOAL names a tool action completed without doing it - a slip, not evidence
     that the goal needed no tool. Those rows must not exist (d1's "yes" on them
     is correct, and v3 scored it as an error, inverting the ranking).
+
+    v6 (2026-10-20): the MIRROR case. A goal that names no action anywhere yet
+    RAN a call did not force that call - REACT used a tool on an analysis step.
+    Measured on 495 real pairs: 30 such rows, the consumer says "no" on 24, and
+    the label scored all 24 as errors (45% of the cohort's error mass from 6%
+    of its rows). It is the group whose label is unstable (30/79 True for an
+    identical shape), and that instability is what flattened the bands and made
+    clause 8 unreachable. The row is refused, symmetrically with the slip.
     """
     src = inspect.getsource(AgentKernel._der_run_node)
     assert ("_ss_na.needs_action_label(goal, result.calls, "
             "result.success)") in src
-    assert '"needs_action/v5"' in src
+    assert '"needs_action/v6"' in src
     assert "outside_label=_label" in src
     # the frame carries the step's expected output (the fix for the
     # write-goal blind spot)
@@ -105,8 +113,20 @@ def test_the_label_rule():
 
     ok_call = {"tool": "read_file", "ok": True}
     bad_call = {"tool": "run_tests", "ok": False}
-    # a call that ran -> a tool was needed
-    assert needs_action_label("anything", [ok_call], True) is True
+    # a call that ran on an ACTION goal -> a tool was needed
+    assert needs_action_label("Read the config file", [ok_call], True) is True
+    # v6 mirror: a call that ran on an ANALYSIS goal did not force that call
+    assert needs_action_label(
+        "Parse the test output to count how many tests passed",
+        [ok_call], True) is None
+    assert needs_action_label(
+        "Analyze the test output to identify the broken functions",
+        [ok_call], True) is None
+    assert needs_action_label(
+        "Extract the exact number of passing tests", [ok_call], True) is None
+    # an action verb anywhere in the goal keeps the row
+    assert needs_action_label(
+        "Find the failing function and fix it", [ok_call], True) is True
     # zero calls + success + an analysis goal -> the honest False class
     assert needs_action_label(
         "Parse the test output to count how many tests passed", [], True) is False

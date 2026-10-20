@@ -683,7 +683,8 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v5`, 2026-10-20) | 272 (220/52) | 0.6543 | 0.0414 | 0.8576 (92, 0.9239, 0.8512) | sampled: aggregate pass, clause 8 fails and cannot be fixed by traffic (acting 'no' 18 rows, bands flat) | see 7.2a |
+| `needs_action` (scope `needs_action/v6`, 2026-10-20) | 24 (20/4) | 0.8250 (in-sample) | 0.0372 | - (24 rows < 100) | sampled: needs rows; acting side 8/8 correct on the corrected label | see 7.2a |
+| `needs_action` (scope `needs_action/v5`, retired 2026-10-20) | 272 (220/52) | 0.6543 | 0.0414 | 0.8576 (92, 0.9239, 0.8512) | retired: its label pooled group B, which flattened the bands (45% of errors from 6% of rows) | see 7.2a |
 | `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
 | `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
 | `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
@@ -750,11 +751,37 @@ Above the fitted threshold: 39 rows at 0.615. Above 0.90: 21 rows at 0.619.
 Above 0.95: 7 rows at 1.000.
 
 The bands are flat from 0.50 to 0.95 (0.43-0.60) and only the last one is clean.
-The v5 question therefore does NOT rank its own "no" answers on this model: a
-confident "no" is no more reliable than a hesitant one. This is not a volume
-problem, so no amount of traffic reaches 50 rows at 0.90. Clause 8 is doing
-exactly its job by refusing the flip. The honest state of needs_action is
-settled: sampled, with a capability limit - not a data limit - recorded.
+
+**The cause was the LABEL, not the model (found later the same day).** The first
+reading of that table - "the question cannot rank its own no answers" - was
+wrong, and the measurement that overturned it is per goal SHAPE. On 495 real
+(goal, expected) pairs scored with the live v5 question, split by shape:
+
+| Shape | Label | n | Model says "no" | Accuracy |
+|---|---|---|---|---|
+| A analysis verb + an action verb later | True | 29 | 3 | 0.90 |
+| B analysis verb, NO action verb | True | 30 | 24 | **0.20** |
+| B analysis verb, NO action verb | False | 49 | 39 | 0.80 |
+| C action verb leads | True | 345 | 6 | 0.98 |
+| D other | - | 32 | - | 0.81 |
+
+Group B run with a call is 6% of the rows and 45% of the error mass (24 of 53).
+Its label is also UNSTABLE: for an identical shape, 30 of 79 ran a call - a coin
+flip. That is the signature of a non-causal label: the call was the REACT loop's
+choice, not a property of the goal. The label rule said "a call that RAN = a tool
+was needed", so an analysis step where the loop re-read material already in
+context was scored as needing a tool, and a CORRECT "no" became an error.
+
+v6 (2026-10-20) refuses that row, symmetric with the v4 slip rule ("a goal that
+names an action completed with no call is a slip"). A goal that names no action
+ANYWHERE (`_NA_ACTION_ANYWHERE`) yet ran a call did not force that call. The
+stamp moved to `needs_action/v6`; the question and the frame are unchanged.
+
+Effect on the first 24 v6 rows: raw AUROC 0.825 (v5: 0.665), acting side 8 of 8
+correct. The signal was there all along and the label mixture had destroyed it.
+The lesson is the general one this file keeps recording: when a confidence table
+is flat, suspect the LABEL before the model, and split by shape before
+concluding a capability limit.
 
 The pass is carried by the yes side. At the fitted threshold, ~29% of the
 confident "no" decisions are wrong: 5 of 17 steps would be sent to DIRECT when
