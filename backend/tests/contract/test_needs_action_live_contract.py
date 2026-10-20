@@ -48,7 +48,7 @@ def captured(monkeypatch):
     return rows
 
 
-# ── (b) the outcome row ─────────────────────────────────────────────────────
+# â”€â”€ (b) the outcome row â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_outcome_row_carries_the_outside_label(captured):
     ss._submit_shadow("needs_action", "Open the forms page", ss.AUTO_ENGINE, True, None,
@@ -80,7 +80,7 @@ def test_outcome_row_without_a_label_has_no_outside_label_key(captured):
     assert "label_source" not in captured[0]
 
 
-# ── (b) the label rule, read from the kernel source ─────────────────────────
+# â”€â”€ (b) the label rule, read from the kernel source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_the_label_rule():
     """The outcome label and its v4 slip rule.
@@ -95,7 +95,7 @@ def test_the_label_rule():
     src = inspect.getsource(AgentKernel._der_run_node)
     assert ("_ss_na.needs_action_label(goal, result.calls, "
             "result.success)") in src
-    assert '"needs_action/v4"' in src
+    assert '"needs_action/v5"' in src
     assert "outside_label=_label" in src
     # the frame carries the step's expected output (the fix for the
     # write-goal blind spot)
@@ -124,7 +124,7 @@ def test_the_label_rule():
     assert needs_action_label("anything", [bad_call], True) is None
 
 
-# ── (a) the enforced branch, read from the kernel source ────────────────────
+# â”€â”€ (a) the enforced branch, read from the kernel source â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_enforced_branch_moves_react_to_direct_only_when_the_oracle_acts():
     """Structural guard: the needs_action gate sits between the mode rule and the DIRECT return.
@@ -146,12 +146,26 @@ def test_enforced_branch_moves_react_to_direct_only_when_the_oracle_acts():
     assert mode_at < gate_at < set_at < direct_return_at
 
 
-# ── (c) the question wording and the consumer set ───────────────────────────
+# â”€â”€ (c) the question wording and the consumer set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_the_question_names_the_tools():
+    """The question names the concrete actions, and says to judge the action.
+
+    UPDATED 2026-10-19 (v5, measured). The old proxy was the words "browser",
+    "file", "search", "command". Two measured findings replaced it:
+      - naming "a file"/"a command" pulls ANALYSIS steps to "yes" ("Analyze the
+        test output..." at 0.53): 20/22 vs 21/22 for the verb form;
+      - the decisive defect was that the model judged the wording of the goal,
+        not the action it must perform (a READ goal read "no" at 0.82, an EDIT
+        goal at 0.65). v5 adds that clause: live 11/11 on real
+        (goal, expected_output) pairs.
+    So the test now pins the concrete verbs plus the action/wording clause, and
+    drops the noun proxy it replaced.
+    """
     text = ss.SURFACE_CONSUMERS["needs_action"].lower()
-    for word in ("browser", "file", "search", "command"):
+    for word in ("read", "write", "edit", "run", "search", "browse"):
         assert word in text
+    assert "not about the wording of the goal" in text
 
     decl = de.CONSUMER_DECLARATIONS["needs_action"]
     assert decl.criteria["true"].startswith("Yes:")
@@ -161,3 +175,4 @@ def test_the_question_names_the_tools():
     assert "use_thinking" not in de.CONSUMERS
     assert "use_thinking" not in de.CONSUMER_DECLARATIONS
     assert "use_thinking" not in ss.SURFACE_CONSUMERS
+

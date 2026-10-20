@@ -8282,7 +8282,7 @@ class AgentKernel:
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
             '"beats":["one-line direction statement","one-line time expectation"],'
-            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":["start"],"critical":true,"criticality":"load-bearing|supporting|cosmetic"}]}'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","expected_output":"the concrete result this step must produce","depends_on":["start"],"critical":true,"criticality":"load-bearing|supporting|cosmetic"}]}'
             "\n\n"
         "RULES:\n"
         # T12 (REQ-10 AC10.1/AC10.2/AC10.10/AC10.12): planned-beat authoring.
@@ -8308,10 +8308,18 @@ class AgentKernel:
         # model spent OUTPUT tokens on fields that were thrown away, and
         # every extra required field was another chance to emit malformed
         # JSON. A step is a GOAL; the fields kept are the ones the parser
-        # actually reads: step_id, step_number, description, depends_on,
-        # critical.
+        # actually reads: step_id, step_number, description, expected_output,
+        # depends_on, critical.
         '- Describe each step as a GOAL in "description". Do NOT name a tool; '
         'the runtime resolver picks it when the step executes.' + chr(10) +
+        # expected_output (2026-10-19): every step's product was empty, so the
+        # verifier had nothing to check a node step against (a node step was
+        # VERIFIED whenever its calls ran, even when its own tests failed) and
+        # the needs_action Oracle saw a goal with no artifact. One short clause
+        # per step; the parser caps it at 200 chars.
+        "- In 'expected_output', state the concrete product of the step: the "
+        "exact answer, file change or number it must produce. One clause, not "
+        "a restatement of the goal.\n" +
         # Parallel nodes (owner 2026-10-04): independent steps run side by
         # side, so the planner names the RESULTS a step needs. Empty = the
         # step before (the safe default); ["start"] = needs no earlier result.
@@ -8430,6 +8438,15 @@ class AgentKernel:
                                 # via explorer.propose â€” never pre-assigned here.
                                 tool=None,
                                 params={},
+                                # 2026-10-19: the planner now declares the step's
+                                # product. It was always empty, so verification had
+                                # nothing to check and the needs_action Oracle saw
+                                # a goal with no artifact. Optional: an older or
+                                # non-compliant plan still parses.
+                                expected_output=(
+                                    str(raw_step.get("expected_output") or "").strip()[:200]
+                                    or None
+                                ),
                                 critical=bool(raw_step.get("critical", True)),
                                 depends_on=_plan_step_deps(raw_step, steps),
                                 # T5 (KD-9): planner-declared criticality,
@@ -10651,6 +10668,11 @@ Respond with a JSON object:
                 # criticality rides the queue item â€” intent only until the
                 # finalize site confirms it (AC1.6).
                 declared_criticality=getattr(step, "criticality", "supporting") or "supporting",
+                # 2026-10-19: carry the planner's declared product onto the node.
+                # It was dropped here, so every node item had expected_output=None
+                # (the verifier had nothing to check; the needs_action Oracle saw
+                # a goal with no artifact).
+                expected_output=getattr(step, "expected_output", None) or None,
                 coordinate_signal=(
                     getattr(context_package, "topology_position", "") or ""
                     if context_package
@@ -17982,7 +18004,7 @@ Respond with a JSON object:
                 _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
                                       True,
                                       {"goal": goal, "expected": _na_expected},
-                                      "needs_action/v4",
+                                      "needs_action/v5",
                                       outside_label=_label)
         except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
             logger.debug("[DER] needs_action row skipped: %r", _na_exc)

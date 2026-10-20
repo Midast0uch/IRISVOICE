@@ -61,9 +61,22 @@ SURFACE_CONSUMERS: Dict[str, str] = {
         #    ambiguous alone; the step's EXPECTED OUTPUT makes the artifact
         #    explicit. With it, the same 4 hard write/edit goals moved from
         #    "no" (0.97-0.99) to "yes" (0.77-0.86).
-        "Does this step need a tool - to read, run, write or edit a file, "
-        "run a command, search, or use the browser - or does it only "
-        "answer from information already available?"
+        #
+        # v5 (2026-10-19) - measured on 11 REAL production (goal, expected)
+        # pairs where the planner now fills expected_output, plus the 11-case
+        # hard probe. v4 said "no" to a READ goal (0.82) and an EDIT goal
+        # (0.65): the model judged the WORDING of the goal, not the action it
+        # must perform. The added clause ("Decide about the action the step
+        # must perform, not about the wording of the goal") fixes both:
+        # live 11/11, hard 10/11 (one miss: "Add the balance_on(date) method"
+        # at 0.64, an API addition with no file named - genuinely ambiguous).
+        # A variant that also names a file/a command scores 10/11 and 10/11:
+        # the nouns pull analysis steps ("Analyze the test output...") to yes
+        # at 0.53. Hence the verbs.
+        "Does this step take an ACTION in the project - read, write, edit, "
+        "run, search or browse - or does it only give an ANSWER from what "
+        "is already known? Decide about the action the step must perform, "
+        "not about the wording of the goal."
     ),
     # Session 364 (owner request). The DEPTH question, anchored to the task's
     # success criteria: `sufficient`/`done` ask whether the objective is
