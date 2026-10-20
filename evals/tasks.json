@@ -790,6 +790,318 @@
    "reply_patterns": [
     "\\blongest_word\\b"
    ]
+  },
+  {
+   "id": "c25_collected_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me the exact number of tests that were collected. Do not fix anything.",
+   "reply_patterns": [
+    "\\b(7|seven)\\b[^.\\n]{0,40}\\bcollect",
+    "collect[^.\\n]{0,25}(7|seven)\\b"
+   ]
+  },
+  {
+   "id": "c26_failing_test_names",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and list the exact names of the failing tests. Do not fix anything.",
+   "reply_patterns": [
+    "(?<![A-Za-z])sub(?!\\w)",
+    "(?<![A-Za-z])div(?!\\w)",
+    "(?<![A-Za-z])power(?!\\w)"
+   ]
+  },
+  {
+   "id": "c27_passing_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me the exact number of tests that pass. Do not fix anything.",
+   "reply_patterns": [
+    "\\b(4|four)\\b[^.\\n]{0,40}\\bpass|\\bpass\\w*\\W{0,5}(4|four)\\b"
+   ]
+  },
+  {
+   "id": "c28_power_return_value",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Look at calc.py and tell me the exact value that power(2, 3) returns as the code is written. Do not change any file.",
+   "reply_patterns": [
+    "\\b(6|six)\\b"
+   ]
+  },
+  {
+   "id": "c29_div_return_value",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Look at calc.py and tell me the exact value that div(7, 2) returns as the code is written. Do not change any file.",
+   "reply_patterns": [
+    "\\bdiv\\b[^.\\n]{0,80}\\b3\\b|\\b3\\b[^.\\n]{0,80}\\bdiv\\b"
+   ]
+  },
+  {
+   "id": "c30_broken_function_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read calc.py and calculate how many of its functions give a wrong result. Give the exact number. Do not change any file.",
+   "reply_patterns": [
+    "\\b(3|three)\\b[^.\\n]{0,40}\\b(incorrect|wrong|broken|bug)|(incorrect|wrong|broken|bug)\\w*\\W{0,8}(3|three)\\b|\\b(3|three)\\b"
+   ]
+  },
+  {
+   "id": "c31_mul_div_names",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read calc.py and name the two functions that handle multiplication and division. Do not change any file.",
+   "reply_patterns": [
+    "(?<![A-Za-z])mul(?!\\w)",
+    "(?<![A-Za-z])div(?!\\w)"
+   ]
+  },
+  {
+   "id": "c32_longest_printed_word",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read main.py and tell me the exact word it prints as the longest word. Do not change any file.",
+   "reply_patterns": [
+    "\\blongest\\b[^.\\n]{0,60}\\bthe\\b|\\bthe\\b[^.\\n]{0,40}\\blongest\\b"
+   ]
+  },
+  {
+   "id": "c33_printed_line_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read main.py and tell me the exact number of lines it prints. Do not change any file.",
+   "reply_patterns": [
+    "\\b(3|three)\\b[^.\\n]{0,40}\\bline|line\\w*\\W{0,5}(3|three)\\b"
+   ]
+  },
+  {
+   "id": "c34_broken_function_name",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read textstats.py and tell me the name of the function that gives a wrong result. Do not fix anything.",
+   "reply_patterns": [
+    "\\blongest_word\\b"
+   ]
+  },
+  {
+   "id": "c35_word_count_printed",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read main.py and tell me the exact number it prints next to words:. Do not change any file.",
+   "reply_patterns": [
+    "\\b(4|four)\\b"
+   ]
+  },
+  {
+   "id": "c36_true_longest_word",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read main.py and tell me the actual longest word in the SAMPLE text. Do not change any file.",
+   "reply_patterns": [
+    "\\bquicksilver\\b"
+   ]
+  },
+  {
+   "id": "c37_longest_word_length",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read main.py and tell me the exact number of letters in the longest word of the SAMPLE text. Do not change any file.",
+   "reply_patterns": [
+    "\\b(11|eleven)\\b"
+   ]
+  },
+  {
+   "id": "c38_config_timeout",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact value of timeout. Do not change any file.",
+   "reply_patterns": [
+    "\\b(30|thirty)\\b"
+   ]
+  },
+  {
+   "id": "c39_config_retries",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact value of retries. Do not change any file.",
+   "reply_patterns": [
+    "\\b(5|five)\\b"
+   ]
+  },
+  {
+   "id": "c40_config_section_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact number of sections it defines. Do not change any file.",
+   "reply_patterns": [
+    "\\b(3|three)\\b"
+   ]
+  },
+  {
+   "id": "c41_config_port",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact value of port. Do not change any file.",
+   "reply_patterns": [
+    "\\b(8090|8,090)\\b"
+   ]
+  },
+  {
+   "id": "c42_config_level",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact value of level. Do not change any file.",
+   "reply_patterns": [
+    "\\bdebug\\b"
+   ]
+  },
+  {
+   "id": "c43_config_host",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact value of host. Do not change any file.",
+   "reply_patterns": [
+    "127\\.0\\.0\\.1"
+   ]
+  },
+  {
+   "id": "c44_config_key_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the exact number of keys it defines in total across all sections. Do not change any file.",
+   "reply_patterns": [
+    "\\b(5|five)\\b"
+   ]
+  },
+  {
+   "id": "c45_config_level_section",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read settings.ini and tell me the name of the section that defines level. Do not change any file.",
+   "reply_patterns": [
+    "\\blogging\\b"
+   ]
+  },
+  {
+   "id": "c46_sales_row_count",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and tell me the exact number of product rows it holds. Do not change any file.",
+   "reply_patterns": [
+    "\\b(6|six)\\b"
+   ]
+  },
+  {
+   "id": "c47_sales_units_total",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and tell me the exact total of the units column. Do not change any file.",
+   "reply_patterns": [
+    "\\b(26|twenty-six|twenty six)\\b"
+   ]
+  },
+  {
+   "id": "c48_sales_most_units",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and tell me the product with the largest units value. Do not change any file.",
+   "reply_patterns": [
+    "\\bbolt\\b"
+   ]
+  },
+  {
+   "id": "c49_sales_highest_price",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and tell me the product with the highest price. Do not change any file.",
+   "reply_patterns": [
+    "\\bgadget\\b"
+   ]
+  },
+  {
+   "id": "c50_sales_cheapest",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and tell me the product with the lowest price. Do not change any file.",
+   "reply_patterns": [
+    "\\bbolt\\b"
+   ]
+  },
+  {
+   "id": "c51_sales_revenue_total",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and calculate the exact total revenue, where revenue is units times price for each row. Do not change any file.",
+   "reply_patterns": [
+    "64\\.5|64,5|\\b64\\b[^.\\n]{0,2}50"
+   ]
+  },
+  {
+   "id": "c52_sales_average_units",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Read sales.csv and calculate the average units per product, rounded to two decimal places. Give the exact number. Do not change any file.",
+   "reply_patterns": [
+    "\\b4\\.33\\b"
+   ]
   }
  ]
 }

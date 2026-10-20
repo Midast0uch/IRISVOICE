@@ -683,7 +683,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v5`, 2026-10-20) | 214 (173/41) | 0.6800 | 0.0493 | 0.8312 (89, 0.9326, 0.8606) | sampled: every aggregate clause passes, clause 8 fails (acting 'no': 16 rows, precision 0.75) | see 7.2a |
+| `needs_action` (scope `needs_action/v5`, 2026-10-20) | 272 (220/52) | 0.6543 | 0.0414 | 0.8576 (92, 0.9239, 0.8512) | sampled: aggregate pass, clause 8 fails and cannot be fixed by traffic (acting 'no' 18 rows, bands flat) | see 7.2a |
 | `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
 | `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
 | `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
@@ -729,6 +729,32 @@ across passes whose thresholds moved 0.83 -> 0.91 -> 0.83). Its precision swings
 (0.0414 -> 0.0454 -> 0.0493). Conclusion: needs_action needs DISTINCT analysis
 steps, not more runs of the same tasks; repeated passes are not a path to
 clause 8.
+
+**28 distinct analysis tasks did not fix it either (2026-10-20).** c25-c52 were
+authored for exactly this (read a file or run a command, then state one exact
+fact; no edits; 27/28 pass). They added 21 distinct "no" goals and 58 distinct
+rows (214 -> 272, threshold 0.8576, 92 above, 0.9239, Wilson 0.8512, ECE 0.0414,
+AUROC 0.6543). The acting side moved 16 -> 18 rows above the CALIBRATED
+threshold. On RAW confidence in the chosen answer, the 79 "no" rows distribute:
+
+| Confidence band | No-rows | Precision |
+|---|---|---|
+| 0.50-0.60 | 2 | 0.500 |
+| 0.60-0.70 | 12 | 0.583 |
+| 0.70-0.80 | 14 | 0.500 |
+| 0.80-0.90 | 30 | 0.600 |
+| 0.90-0.95 | 14 | 0.429 |
+| 0.95-1.00 | 7 | 1.000 |
+
+Above the fitted threshold: 39 rows at 0.615. Above 0.90: 21 rows at 0.619.
+Above 0.95: 7 rows at 1.000.
+
+The bands are flat from 0.50 to 0.95 (0.43-0.60) and only the last one is clean.
+The v5 question therefore does NOT rank its own "no" answers on this model: a
+confident "no" is no more reliable than a hesitant one. This is not a volume
+problem, so no amount of traffic reaches 50 rows at 0.90. Clause 8 is doing
+exactly its job by refusing the flip. The honest state of needs_action is
+settled: sampled, with a capability limit - not a data limit - recorded.
 
 The pass is carried by the yes side. At the fitted threshold, ~29% of the
 confident "no" decisions are wrong: 5 of 17 steps would be sent to DIRECT when
