@@ -45,6 +45,49 @@ def _shadow(cid="sufficient", chosen=True, brain=True, conf=0.9, **extra):
     return {"tool": "no_tool", "decision": d}
 
 
+class TestOneRowPerInput:
+    """2026-10-20: a rescored input is a repeat, not new evidence.
+
+    The legacy key used the rounded confidence, which jitters on every
+    rescore, so the same goal counted as a NEW row each pass (measured:
+    needs_action 226 "distinct" rows, 17 collapsed, after two passes over one
+    101-task set). A row that carries an input_key dedupes on WHAT WAS ASKED.
+    """
+
+    def test_a_rescored_input_collapses_however_its_confidence_jitters(
+        self, tmp_path,
+    ):
+        db = _db(tmp_path, [
+            (None, _shadow(chosen=True, brain=True, conf=0.91, input_key="a1")),
+            (None, _shadow(chosen=True, brain=True, conf=0.73, input_key="a1")),
+            (None, _shadow(chosen=False, brain=True, conf=0.66, input_key="a1")),
+        ])
+        rows, skipped = load_rows(db)
+        assert len(rows) == 1
+        assert rows[0]["repeats"] == 3
+        assert skipped["duplicates"] == 2
+
+    def test_two_different_inputs_stay_two_rows(self, tmp_path):
+        db = _db(tmp_path, [
+            (None, _shadow(chosen=True, brain=True, conf=0.91, input_key="a1")),
+            (None, _shadow(chosen=True, brain=True, conf=0.91, input_key="b2")),
+        ])
+        rows, skipped = load_rows(db)
+        assert len(rows) == 2
+        assert skipped["duplicates"] == 0
+
+    def test_rows_without_the_key_keep_the_legacy_dedupe(self, tmp_path):
+        # Old rows carry no input identity; the same goal at two confidences
+        # still counts twice for them, exactly as before the key existed.
+        db = _db(tmp_path, [
+            (None, _shadow(chosen=True, brain=True, conf=0.91)),
+            (None, _shadow(chosen=True, brain=True, conf=0.73)),
+        ])
+        rows, skipped = load_rows(db)
+        assert len(rows) == 2
+        assert skipped["duplicates"] == 0
+
+
 class TestTheLabelRules:
     def test_a_shadow_row_is_labelled_by_parity_with_the_brain(self, tmp_path):
         db = _db(tmp_path, [

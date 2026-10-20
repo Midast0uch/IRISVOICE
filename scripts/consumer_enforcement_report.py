@@ -231,8 +231,16 @@ def load_rows(
             if ref is None:
                 ref = d.get("brain_bool")
             engine = str(d.get("engine") or "")
-            key = (str(cid), engine, round(conf, 4), str(d.get("chosen")),
-                   str(ref), bool(correct))
+            # ONE ROW PER INPUT (2026-10-20): a row that carries an input_key
+            # (surface_shadow.input_key, bound at the call site) dedupes on
+            # WHAT WAS ASKED, so a rescore of the same goal can never count as
+            # new evidence however its confidence jitters. Rows without the
+            # key keep the legacy tuple - the ledger holds nothing else for
+            # them (see the docstring above).
+            ik = d.get("input_key")
+            key = ((str(cid), engine, str(ik), str(ref)) if ik else
+                   (str(cid), engine, round(conf, 4), str(d.get("chosen")),
+                    str(ref), bool(correct)))
             if dedupe and key in seen:
                 seen[key]["repeats"] += 1
                 skipped["duplicates"] += 1
@@ -267,6 +275,9 @@ def load_rows(
                 # the FRAME/QUESTION cohort the row was measured under (the
                 # stamp), so a report can be scoped to ONE cohort (--scope)
                 "criteria_version": d.get("criteria_version"),
+                # the INPUT identity (surface_shadow.input_key) when the call
+                # site bound one - the honest dedupe key for new rows
+                "input_key": ik,
             }
             seen[key] = row
             rows.append(row)

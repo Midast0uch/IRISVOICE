@@ -36,11 +36,32 @@ Non-Requirements so it is not re-proposed.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("surface_shadow")
+
+
+def input_key(consumer_id: str, statement: str,
+              frame: Optional[dict] = None) -> str:
+    """A stable identity for the INPUT a row was scored on (2026-10-20).
+
+    The ledger's dedupe key is (consumer, engine, confidence, chosen,
+    reference, correct) and confidence jitters on every rescore, so the same
+    goal rescored counted as NEW evidence (measured: needs_action 226
+    "distinct" rows, 17 collapsed, after two passes over one 101-task set).
+    This key pins the row to what was ASKED, not to how confidently it was
+    answered. The report prefers it when present; rows without it keep the
+    legacy key.
+    """
+    payload = json.dumps(
+        {"c": consumer_id, "s": statement, "f": frame or None},
+        sort_keys=True, ensure_ascii=False, default=str,
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 SURFACE_CONSUMERS: Dict[str, str] = {
     "escalate_incomplete": (
@@ -208,6 +229,7 @@ def shadow_row(
     noul: Optional[Any],
     brain_bool: Optional[bool],
     scope: Optional[Dict[str, str]] = None,
+    input_key: Optional[str] = None,
 ) -> Optional[dict]:
     """The CT-DEI-6-shaped row for a surface judgment, or None.
 
@@ -229,6 +251,8 @@ def shadow_row(
         "brain_bool": brain_bool,
         "shadow": True,
     }
+    if input_key:
+        row["input_key"] = input_key
     if scope:
         row.update(scope)
     return row
@@ -288,6 +312,7 @@ def surface_bool(
 
     noul = score_surface_bool(consumer_id, statement, engine=engine, frame=frame)
     _scope = _scope_now()
+    _ik = input_key(consumer_id, statement, frame)
 
     if acts is not None:
         _engine_decides = bool(enforced and noul is not None and acts(
@@ -300,15 +325,16 @@ def surface_bool(
     if _engine_decides:
         value = bool(noul.true(_cut))
         return value, shadow_row(consumer_id, noul, brain_bool=value,
-                                 scope=_scope)
+                                 scope=_scope, input_key=_ik)
 
     try:
         value = bool(brain_bool_fn())
     except Exception as e:  # noqa: BLE001 — fail safe, never raise
         logger.warning("[surface] %s legacy decider failed: %r", consumer_id, e)
         return False, shadow_row(consumer_id, noul, brain_bool=None,
-                                 scope=_scope)
-    return value, shadow_row(consumer_id, noul, brain_bool=value, scope=_scope)
+                                 scope=_scope, input_key=_ik)
+    return value, shadow_row(consumer_id, noul, brain_bool=value, scope=_scope,
+                             input_key=_ik)
 
 
 _NA_ACTION_LEAD = re.compile(
@@ -394,10 +420,12 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
     the lane."""
     _frame = dict(frame) if frame else None
     _scope = dict(scope) if scope else _scope_now()
+    _ik = input_key(consumer_id, statement, _frame)
 
     def _job() -> None:
         noul = score_surface_bool(consumer_id, statement, engine=engine, frame=_frame)
-        row = shadow_row(consumer_id, noul, brain_bool=brain_bool, scope=_scope)
+        row = shadow_row(consumer_id, noul, brain_bool=brain_bool, scope=_scope,
+                         input_key=_ik)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
         if row is not None and outside_label is not None:

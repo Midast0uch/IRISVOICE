@@ -170,7 +170,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
     route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
                     browser_next (shadow, element ids as options)
     approve job --- tool_approval (ENFORCED: the pre-call guard; post-hoc rows keep flowing)
-    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v5, shadow: young cohort)
+    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v6, shadow: sampled; acting precision below bar)
     judge_review -- review_verdict (ENFORCED, refuse-only)
     judge_step ---- escalate_incomplete (ENFORCED)
     judge_goal ---- done | sufficient
@@ -230,7 +230,7 @@ Each has an id, a declared decision type and criteria, and one job.
 | `escalate_incomplete` | judge_step | noul | incomplete-result keyword list | `der_loop` |
 | `done`, `sufficient` | judge_goal | noul | Brain done-bit / sufficiency gate | `monitor_shadow` |
 | `depth_met` | judge_depth | noul | the loop's run grade below threshold | `surface_shadow`, run-grade point; ENFORCED, tighten-only, labelled by the EXTERNAL turn verdict |
-| `needs_action` | interpret_step | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; v4, shadow (see 7.2/7.4) |
+| `needs_action` | interpret_step | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; v6, shadow (see 7.2/7.4) |
 | `presentation` | shape | choice | reply-surface rules | `agent_kernel` reply surface |
 | `narration` | shape | choice | deterministic beat rule | `agent_kernel` |
 | `web_intent` | interpret | noul | duplicated web-trigger keyword lists | `explorer`; v2 turn-outcome label |
@@ -375,7 +375,7 @@ identity = model_id | readout_mode | criteria_hash
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp instead: `tc-frame-v8` (post-hoc tool_choice
   parity rows), `tc-decide-v3` (Oracle-decided rows), `tool_approval/v6`,
-  `browser_next/v1`, `needs_action/v5`, `review_verdict/v4`, `depth_met/v3`,
+  `browser_next/v1`, `needs_action/v6`, `review_verdict/v4`, `depth_met/v3`,
   `web_intent/v3`. The report and the fit take `--scope CONSUMER=STAMP` to measure
   one cohort and never blend two. A stamp is never reused: v2 of
   `review_verdict` was withdrawn (62 obsolete rows) and v5 of `tool_approval`
@@ -501,9 +501,10 @@ caller; the DER node path is the live deciding path.
 
 Each DER step runs DIRECT (one text answer, no tools) or REACT (the tool loop). The rule `external_reference.mode_for_goal` picks DIRECT only for a goal that opens with a question word; a REACT step that needs no tool pays a full tool-loop call and makes zero calls.
 
-**Label (v4, unchanged in v5).** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v5`, `label_source` `outcome`). The label comes from `surface_shadow.needs_action_label(goal, calls, success)`:
+**Label (v6).** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v6`, `label_source` `outcome`). The label comes from `surface_shadow.needs_action_label(goal, calls, success)`:
 
-- a call that RAN -> True (a tool was needed);
+- a call that RAN and a goal that names an action ANYWHERE -> True (a tool was needed);
+- a call that RAN and a goal that names NO action anywhere (`_NA_ACTION_ANYWHERE`) -> NO ROW (v6, the mirror rule): the loop forced that call, the goal did not. v5 counted these as True; they are 6% of rows and 45% of the error mass, and their label is a coin flip (30 of 79 ran a call) - the signature of a non-causal label;
 - zero calls, a successful step, and a goal that does not name a tool action -> False;
 - zero calls, a successful step, and an ACTION-led goal ("Run main.py to verify...", "Write the slugify function to textutils.py") -> NO ROW: that is a slip, not proof the goal needed no tool. v3 counted these as False and poisoned 15 of 294 real pairs;
 - a planner artifact ("Duplicate of step 1 (already completed)...") -> no row;
@@ -521,7 +522,9 @@ Measured 2026-10-19 on 294 real goal+outcome pairs: the write/edit/update/add go
 
 RESOLVED 2026-10-19: the planner now declares `expected_output`. The prompt carries the field, `_plan_task` passes it onto `PlanStep`, and the plan-to-queue conversion was dropping it (every node item had `expected_output=None`); it now carries it through. Live verification: empty in 21/21 rows before, populated after ("Successful execution of app.py without errors"). The user request is NOT a substitute for it: frame `goal+request` scores 7/12 - a request that mentions running tests makes analysis steps read as tool-needing.
 
-**State (2026-10-19, v5).** Cohort young: 11 distinct rows, 10 correct / 1 wrong. Precision in the no-direction measured 0.20-0.24 on the v3 live cohort and 0.53-0.78 in the best offline subsets; the bar needs 0.90 on >= 50 rows above. Traffic changed the same day (8 run-and-report eval tasks, c17-c24) to generate the honest False class: distinct 173 -> 188, correct 130 -> 141, OOF AUROC 0.5834 -> 0.5632. It did not move precision, because the remaining misreads are on write/edit goals, not on the analysis steps the new tasks create.
+**State (2026-10-20, v6, honest count).** 472 distinct rows (432 correct / 40 wrong), OOF AUROC 0.8309, OOF ECE 0.0146, calibrated threshold 0.62 (472 above, precision 0.9153, Wilson 0.8867). Every aggregate clause is met. The one failing clause is directional: the acting answer ("no") has 89 rows above the calibrated threshold at precision 0.8427 (Wilson 0.7531) < 0.90. The 9-15 wrong "no"s are action goals the model misreads as answerable without a tool ("Implement the parse_duration function based on tests" at 0.84, "Create inventory.py..." at 0.79, "Read the contents of textstats.py..." at 0.84) - the same defect class v5 fixed on the read side, now on the implement side. Fix offline on the recorded rows before any traffic (see 7.2a).
+
+The count itself is new: until 2026-10-20 the report's dedupe key had no input identity, and the quantized engine emits few distinct confidences, so DIFFERENT goals with equal (confidence, chosen) collapsed - 483 real sites (474 distinct goals) counted as 226. `surface_shadow.input_key` now binds each row to its input at the call site; the report prefers it; the existing v6 cohort was backfilled from the backend log (positional join on the FIFO lane, verified on step_id + label, 483/483).
 
 **History.** v1 earned the bar on 2026-10-13 (235 rows, 216 distinct, OOF AUROC 0.8043, ECE 0.0404, precision 0.9174 at 109 rows above) and was demoted 2026-10-18 when the label was found to count the loop's `ok` instead of the call outcome, which turned informative pytest runs into 'no tool needed' rows. v2 (call-level label) and v3 (concrete-outcome question) never re-earned the bar.
 
@@ -683,7 +686,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v6`, 2026-10-20) | 24 (20/4) | 0.8250 (in-sample) | 0.0372 | - (24 rows < 100) | sampled: needs rows; acting side 8/8 correct on the corrected label | see 7.2a |
+| `needs_action` (scope `needs_action/v6`, 2026-10-20) | 472 (432/40) | 0.8309 | 0.0146 | 0.62 (472, 0.9153, 0.8867) | sampled: acting answer 'no' 89 above at 0.8427 (Wilson 0.7531) < 0.90 | see 7.2a |
 | `needs_action` (scope `needs_action/v5`, retired 2026-10-20) | 272 (220/52) | 0.6543 | 0.0414 | 0.8576 (92, 0.9239, 0.8512) | retired: its label pooled group B, which flattened the bands (45% of errors from 6% of rows) | see 7.2a |
 | `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
 | `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
@@ -787,6 +790,42 @@ The pass is carried by the yes side. At the fitted threshold, ~29% of the
 confident "no" decisions are wrong: 5 of 17 steps would be sent to DIRECT when
 they needed a tool. At 0.95 the no side is clean (7/7) but has 7 rows - it needs
 50 before it can be trusted.
+
+**The instrument was starving the bar, not the traffic (2026-10-20).** The
+dedupe key was (consumer, engine, confidence, chosen, reference, correct) with
+no input identity, and the quantized engine emits few distinct confidences, so
+DIFFERENT goals with equal (confidence, chosen) collapsed into one row. Two
+full passes wrote 483 real sites - 474 distinct goals, measured from the
+backend log's `[needs_action]` lines - and the report counted 226. The earlier
+"row inflation" reading above was half right for the wrong reason: repeats do
+slip through when their confidence jitters, but the dominant error on this
+cohort was the opposite one, collapse. Both failures have one cause: the key
+does not name the input.
+
+The fix is `surface_shadow.input_key` (sha1 of consumer + statement + frame,
+bound at the call site, stamped on every new row); the report prefers it when
+present and falls back to the legacy tuple for old rows. The existing v6
+cohort was backfilled in one pass: the `oracle_shadow` lane is FIFO with one
+writer and zero measured drops, so DB insertion order equals log line order;
+each row was joined to its log line and verified on (step_id, label) - 483/483
+matched, 472 distinct inputs, 11 true repeats now collapse honestly.
+
+On the honest count every aggregate clause passes (472 rows, OOF AUROC 0.8309,
+ECE 0.0146, threshold 0.62, 472 above at 0.9153, Wilson 0.8867) and the acting
+row count passes (89 >= 50). What still fails is acting PRECISION: 0.8427
+(Wilson 0.7531) < 0.90. The wrong "no"s pulled up by input key are action
+goals read as answerable: "Implement the parse_duration function based on
+tests" (0.84), "Create inventory.py with the Inventory class..." (0.79), "Fix
+the identified bugs in the geometry module." (0.71), "Implement the
+balance_on(date) method in the Ledger class" (0.89), "Compile and return the
+list of failing test names" (0.86), "Read the contents of textstats.py to
+identify the function with wrong results" (0.84). The next question revision
+is measured OFFLINE on these recorded rows - the v4/v5/v6 sequence each took
+minutes on recorded pairs, and each traffic pass costs two hours. Traffic is
+the confirmation step, never the diagnosis step.
+
+The same collapse applies to every consumer whose rows lack an input key, so
+the honest distinct counts in 7.2 are lower bounds for them.
 
 Finding (2026-10-19): for an ASYMMETRIC consumer (only one direction acts) the
 bar must measure the acting side separately. A direction-scoped clause is the
