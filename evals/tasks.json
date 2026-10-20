@@ -707,9 +707,9 @@
    "timeout_s": 1200,
    "prompt": "The project is in {workdir}. Run the tests in this project and name every test that fails. Do not fix anything.",
    "reply_patterns": [
-    "\\bsub\\b",
-    "\\bdiv\\b",
-    "\\bpower\\b"
+    "(?<![A-Za-z])sub(?!\\w)",
+    "(?<![A-Za-z])div(?!\\w)",
+    "(?<![A-Za-z])power(?!\\w)"
    ]
   },
   {
