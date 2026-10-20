@@ -91,6 +91,42 @@ class TestBarRecordedPerConsumer:
         assert "benchmarks" in str(BAR_PATH)
         assert _REPO in BAR_PATH.parents
 
+    def test_the_acting_clause_grades_the_side_that_acts(self):
+        """An asymmetric consumer is graded on the answer that changes behaviour.
+
+        Measured 2026-10-19 (needs_action/v5, 111 rows): the aggregate bar passed
+        (precision 0.9492) while the acting answer, the only one that moves a
+        step to DIRECT, stood at 13 rows / low precision. The clause makes that
+        state "shadow" with the acting gap, and only a clean acting side passes.
+        """
+        good = {
+            "rows_distinct": 120,
+            "classes": {"correct": 96, "wrong": 24},
+            "threshold": 0.9,
+            "rows_above": 60,
+            "oof": {
+                "auroc": 0.8, "ece": 0.02,
+                "precision_at_t": 0.95, "wilson_lb": 0.9,
+                # the aggregate passes; the acting side does not
+                "acting_answer": "no", "acting_rows_above": 13,
+                "acting_precision": 0.77, "acting_wilson_lb": 0.5,
+            },
+            "acting_required": True,
+        }
+        status, gap = derive_status(120, 0.95, 0.0, honest=good)
+        assert status == "shadow"
+        assert "acting answer 'no'" in gap and "13 rows" in gap
+
+        good["oof"].update(acting_rows_above=60, acting_precision=0.95,
+                           acting_wilson_lb=0.9)
+        assert derive_status(120, 0.95, 0.0, honest=good)[0] == "enforced"
+
+        # The same numbers WITHOUT the clause still pass: adoption is explicit,
+        # so a report run cannot demote a consumer that already decides.
+        del good["acting_required"]
+        good["oof"].update(acting_rows_above=13, acting_precision=0.5)
+        assert derive_status(120, 0.95, 0.0, honest=good)[0] == "enforced"
+
     def test_an_absent_or_broken_record_is_empty_not_fatal(self, tmp_path):
         """A missing/garbled record is EMPTY — never an exception."""
         missing = tmp_path / "nope.json"

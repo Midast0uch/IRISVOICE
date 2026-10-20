@@ -40,6 +40,32 @@ MIN_PRECISION = 0.90
 # measured ECE cannot be flipped on precision alone.
 MAX_ECE = 0.05
 
+# THE ACTING CLAUSE (2026-10-19). An asymmetric consumer changes behaviour in
+# ONE direction only. The clauses above measure precision over the confidence in
+# the CHOSEN answer, so for these consumers the direction that changes NOTHING
+# can carry the bar. Measured on needs_action/v5 (111 rows): aggregate precision
+# 0.9492 at the fitted threshold, while the acting answer ("no tool needed", the
+# only one that moves a step to DIRECT) stood at 0.706 on 17 rows - about 5 of 17
+# confident "no" decisions would have skipped a needed tool. So a consumer that
+# ACTS on one answer must also clear precision and Wilson LB on THAT answer.
+#
+# Which answer acts, per consumer (the site's change, not the engine's guess):
+ACTING_ANSWER: Dict[str, str] = {
+    "needs_action": "no",          # a confident "no tool" moves the step to DIRECT
+    "tool_approval": "no",         # a confident "this call will fail" refuses the call
+    "review_verdict": "veto",      # a confident "veto" refuses the step
+    "depth_met": "no",             # a confident "not deep enough" pushes more work
+    "escalate_incomplete": "yes",  # a confident "incomplete" escalates
+}
+
+# MEASURED ADOPTION. A consumer joins this set only after its cohort has been
+# re-measured under the clause; otherwise a report run could silently demote a
+# consumer that is deciding today, which is a policy change disguised as a tool
+# run. needs_action adopted it first because its aggregate bar passed while its
+# acting side did not.
+ACTING_ENFORCED = {"needs_action"}
+MIN_ACTING_ROWS_ABOVE = 50
+
 # THE HARDENED BAR (2026-10-05, Oracle Stage A). The three clauses above were
 # measured to pass on evidence that proves nothing: the same input rescored many
 # times counted as many rows (web_intent 654 distinct of 2690; presentation 2
@@ -179,6 +205,27 @@ def _derive_hardened(
     ece = oof.get("ece")
     if ece is None or ece > max_ece:
         return "shadow", f"oof calibrated ECE {ece} > {max_ece:.2f}"
+    # The ACTING clause: only the answer that changes behaviour is graded, and
+    # only for consumers that adopted it (see ACTING_ENFORCED).
+    if h.get("acting_required"):
+        ans = str(oof.get("acting_answer") or "?")
+        a_above = int(oof.get("acting_rows_above") or 0)
+        a_prec = oof.get("acting_precision")
+        a_wlb = oof.get("acting_wilson_lb")
+        if a_above < MIN_ACTING_ROWS_ABOVE:
+            return "shadow", (
+                f"acting answer '{ans}' has {a_above} rows above threshold "
+                f"< {MIN_ACTING_ROWS_ABOVE}"
+            )
+        if a_prec is None or a_prec < min_precision:
+            return "shadow", (
+                f"acting answer '{ans}' precision {a_prec} < {min_precision:.2f} "
+                "(the aggregate is carried by the direction that changes nothing)"
+            )
+        if a_wlb is None or a_wlb < MIN_WILSON_LB:
+            return "shadow", (
+                f"acting answer '{ans}' Wilson LB {a_wlb} < {MIN_WILSON_LB}"
+            )
     return "enforced", ""
 
 

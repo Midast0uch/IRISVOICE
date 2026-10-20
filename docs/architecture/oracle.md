@@ -543,6 +543,20 @@ All must hold, and the first one missing is recorded as the gap:
 | 5 | Wilson 95% lower bound at that threshold | >= 0.85 (`MIN_WILSON_LB`) |
 | 6 | distinct rows at or above the threshold | >= 50 (`MIN_ROWS_ABOVE`) |
 | 7 | out-of-fold calibrated ECE | <= 0.05 (`MAX_ECE`) |
+| 8 | ACTING clause (asymmetric consumers only): rows above the threshold that carry the answer which changes behaviour | >= 50 (`MIN_ACTING_ROWS_ABOVE`), precision >= 0.90, Wilson LB >= 0.85 |
+
+**Clause 8 - why it exists (2026-10-19).** Clauses 4-6 measure precision over the
+confidence in the CHOSEN answer. For a consumer that changes behaviour in one
+direction only, the other direction can carry that precision while the acting
+side is unsafe. Measured on `needs_action/v5` (111 rows): aggregate precision
+0.9492 at the fitted threshold passed every clause, while the acting answer
+("no tool needed", the only one that moves a step to DIRECT) stood at 13 rows
+above the threshold and precision 0.71. The consumer is now `sampled`, with the
+acting gap recorded. `ACTING_ANSWER` declares which answer acts per consumer;
+`ACTING_ENFORCED` lists the consumers that have ADOPTED the clause (today
+`needs_action` only). Adoption is explicit so a report run can never silently
+demote a consumer that is already deciding (that would be a policy change
+disguised as a measurement).
 
 The report checks the clauses in this order and names the first one that fails: rows, both classes, minority share, AUROC, a threshold exists, rows at or above it, precision, Wilson bound, ECE.
 

@@ -172,14 +172,27 @@ def oof_calibrated(
     return out
 
 
-def fit_consumer(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def fit_consumer(
+    rows: Sequence[Dict[str, Any]], *, acting: Optional[str] = None,
+) -> Dict[str, Any]:
     """The calibration entry for ONE consumer's distinct rows of one backend.
 
     ``rows`` carry ``confidence`` (in the chosen answer) and ``correct``; a row
-    may carry ``repeats`` (how many ledger rows it stands for)."""
-    data = sorted((float(r["confidence"]), bool(r["correct"])) for r in rows)
+    may carry ``repeats`` (how many ledger rows it stands for) and ``chosen``
+    (the answer the engine gave).
+
+    ``acting`` names the ONE answer that changes behaviour (consumer_bar.
+    ACTING_ANSWER). When given, the entry also carries that answer's precision
+    and Wilson LB at the calibrated threshold: the side that actually acts, so
+    the bar cannot be carried by the side that changes nothing."""
+    data = sorted(
+        ((float(r["confidence"]), bool(r["correct"]), r.get("chosen"))
+         for r in rows),
+        key=lambda p: p[0],
+    )
     xs = [d[0] for d in data]
     ok = [d[1] for d in data]
+    ch = [d[2] for d in data]
     a, b = sum(ok), len(ok) - sum(ok)
     entry: Dict[str, Any] = {
         "method": "isotonic",
@@ -208,7 +221,25 @@ def fit_consumer(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         entry["rows_above"] = n_above
         entry["oof"].update(precision_at_t=round(k / n_above, 4),
                             wilson_lb=round(wilson_lb(k, n_above), 4))
+        if acting:
+            want = _answer_key(acting)
+            sel = [i for i in range(len(xs))
+                   if cal[i] >= t and _answer_key(ch[i]) == want]
+            kk = sum(1 for i in sel if ok[i])
+            entry["oof"].update(
+                acting_answer=want,
+                acting_rows_above=len(sel),
+                acting_precision=(round(kk / len(sel), 4) if sel else None),
+                acting_wilson_lb=(round(wilson_lb(kk, len(sel)), 4) if sel else None),
+            )
     return entry
+
+
+def _answer_key(ans: Any) -> str:
+    """Normalize an answer to a comparable word: True -> 'yes', False -> 'no'."""
+    if isinstance(ans, bool):
+        return "yes" if ans else "no"
+    return str(ans).strip().lower()
 
 
 def fit_all(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

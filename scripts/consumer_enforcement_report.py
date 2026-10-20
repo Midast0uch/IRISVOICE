@@ -73,6 +73,8 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from backend.agent.consumer_bar import (  # noqa: E402
+    ACTING_ANSWER,
+    ACTING_ENFORCED,
     MAX_ECE,
     MIN_AUROC,
     MIN_MINORITY,
@@ -94,6 +96,23 @@ from scripts.calibrate_decision_threshold import (  # noqa: E402
     decision_label,
 )
 from scripts.fit_oracle_calibration import fit_consumer  # noqa: E402
+
+
+def _honest_with_acting(cid: str, grp: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The fit, plus the acting-side numbers for a consumer that adopted the
+    clause (consumer_bar.ACTING_ENFORCED).
+
+    Asymmetric consumers change behaviour in ONE direction only: needs_action
+    acts on 'no', tool_approval on 'no', review_verdict on 'veto'. The bar's
+    precision pools both directions, so the direction that changes nothing can
+    carry it (measured 2026-10-19: needs_action aggregate 0.949, acting side
+    0.706). The clause measures the side that acts."""
+    honest = fit_consumer(
+        grp, acting=ACTING_ANSWER.get(cid) if cid in ACTING_ENFORCED else None
+    )
+    if cid in ACTING_ENFORCED:
+        honest["acting_required"] = True
+    return honest
 
 
 def parse_scopes(items) -> Dict[str, str]:
@@ -395,7 +414,10 @@ def measure(
             "rows": len(grp),
             "rows_raw": sum(int(r.get("repeats", 1)) for r in grp),
             # The out-of-fold numbers the hardened bar reads (fit_consumer).
-            "honest": fit_consumer(grp),
+            # The acting clause (2026-10-19) is computed only for the consumers
+            # that have ADOPTED it, so a report run can never silently demote a
+            # consumer that is deciding today.
+            "honest": _honest_with_acting(cid, grp),
             "rows_above_threshold": len(above),
             "precision": round(precision, 4),
             "ece": ece,
