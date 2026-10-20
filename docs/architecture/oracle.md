@@ -683,7 +683,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v5`, 2026-10-19) | 111 (91/20) | 0.6926 | 0.0414 | 0.8278 (59, 0.9492, 0.8608) | shadow: every bar clause passes, but the ACTING side does not | see 7.2a |
+| `needs_action` (scope `needs_action/v5`, 2026-10-20) | 214 (173/41) | 0.6800 | 0.0493 | 0.8312 (89, 0.9326, 0.8606) | sampled: every aggregate clause passes, clause 8 fails (acting 'no': 16 rows, precision 0.75) | see 7.2a |
 | `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
 | `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
 | `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
@@ -709,6 +709,26 @@ pool into one number. Measured on the same 111 scored rows:
 | 0.8278 | 76 | 0.868 | 17 | 0.706 | 59 | 0.915 |
 | 0.90 | 51 | 0.902 | 13 | 0.769 | 38 | 0.947 |
 | 0.95 | 24 | 1.000 | 7 | 1.000 | 17 | 1.000 |
+
+**Traffic does not fix it (measured 2026-10-19/20, three coding passes).** The
+same 24 coding tasks ran three times:
+
+| Pass | Distinct rows | Fitted threshold | No-side rows above | No-side precision | TRUE distinct no-pairs |
+|---|---|---|---|---|---|
+| 1 (mixed groups) | 111 | 0.8278 | 13 | 0.71 | 26 |
+| 2 (coding) | 156 | 0.9065 | 11 | 0.91 | 31 |
+| 3 (coding) | 214 | 0.8312 | 16 | 0.75 | 36 |
+
+Rows doubled (+103) while the true number of distinct "no" inputs grew by 10:
+a repeat of the same task produces the same goal text with a slightly different
+confidence, which the dedupe key counts as new. That is row inflation, not
+evidence. The acting pocket also moves AGAINST the traffic: more "yes" rows lift
+the fitted threshold, and the "no" rows then sit below it (13 -> 11 -> 16 rows
+across passes whose thresholds moved 0.83 -> 0.91 -> 0.83). Its precision swings
+0.71 -> 0.91 -> 0.75 on 11-16 rows. ECE also drifts toward the bound
+(0.0414 -> 0.0454 -> 0.0493). Conclusion: needs_action needs DISTINCT analysis
+steps, not more runs of the same tasks; repeated passes are not a path to
+clause 8.
 
 The pass is carried by the yes side. At the fitted threshold, ~29% of the
 confident "no" decisions are wrong: 5 of 17 steps would be sent to DIRECT when
