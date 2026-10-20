@@ -53,6 +53,10 @@ _ALL_FS = lambda _t: True          # noqa: E731
     ("thanks", [], xr.NONE),
     ("", [], xr.NONE),
     ("add and/or logic to the parser", [], xr.NONE),      # prose, not a repo
+    # a DEICTIC "project" is the workspace, not an external artifact (c29)
+    ("Read the calc.py file from the project directory", [], xr.NONE),
+    ("Read the contents of calc.py in the project directory", [], xr.NONE),
+    ("summarise this project's layout", [], xr.NONE),
 ])
 def test_shapes(goal, sources, expected):
     assert xr.classify(goal, sources, exists=_NO_FS) == expected
@@ -62,6 +66,36 @@ def test_prose_slash_is_not_a_slug():
     """`and/or` is the false positive that would break ordinary goals."""
     assert xr.classify("support and/or improve the parser", [], exists=_NO_FS) == xr.NONE
     assert not xr.is_external(xr.classify("support and/or improve it", [], exists=_NO_FS))
+
+
+def test_a_deictic_project_is_the_workspace_not_an_artifact():
+    """The word "project" alone must not send a LOCAL read to the web.
+
+    Measured live (2026-10-20, eval c29): the plan step "Read the calc.py file
+    from the project directory" was classified NAMED_ARTIFACT on the bare word
+    "project", so the DER domain guard replaced its read_file pick with a web
+    search for the goal text. The crawl fetched an unrelated
+    github.com/jni/calc-python/calc.py and the final reply said the local file's
+    content was missing from the tool results.
+    """
+    for goal in (
+        "Read the calc.py file from the project directory",
+        "Read the contents of calc.py in the project directory",
+        "list the project files",
+        "summarise this project's layout",
+        "check the project root",
+    ):
+        shape = xr.classify(goal, [], exists=_NO_FS)
+        assert shape == xr.NONE, (goal, shape)
+        assert not xr.domain_mismatch(goal, ["read_file"], []), goal
+
+    # A NAMED project is still external - the fix must not blunt the guard.
+    for goal in (
+        "Read the README and main files from the OpenAI math project",
+        "explore the ten-proofs project on github",
+        "read the docs for this",
+    ):
+        assert xr.classify(goal, [], exists=_NO_FS) == xr.NAMED_ARTIFACT, goal
 
 
 # ── 2. the slug ambiguity ────────────────────────────────────────────────────

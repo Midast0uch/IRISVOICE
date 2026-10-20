@@ -133,7 +133,20 @@ _NAMED_ARTIFACT_RE = re.compile(
     r"\b(?:repo(?:sitory)?|project|paper|article|preprint|publication|docs|"
     r"documentation|blog|post|thread|issue|release|website|site)\b",
     re.IGNORECASE,
-)
+    )
+
+# A DEICTIC "project" points INTO the workspace, not outside it (2026-10-20).
+# "Read the calc.py file from the project directory" matched NAMED_ARTIFACT on
+# the bare word "project", so the DER domain guard overrode a LOCAL read_file
+# pick with a web search for the goal text. The crawl returned an unrelated
+# github.com/.../calc.py and the reply reported the local file as missing (eval
+# c29). Only the deictic / contained forms are removed here: a NAMED project -
+# "the OpenAI math project" - keeps its name and still classifies external.
+_DEICTIC_PROJECT_RE = re.compile(
+    r"\b(?:this|the|that|your|our|current|local|same)\s+project(?:'s|s')?"
+    r"(?:\s+(?:directory|dir|folder|root|path|tree|files?|code|scratch|layout))?\b",
+    re.IGNORECASE,
+    )
 
 
 def _hosts_in(text: str) -> list[str]:
@@ -212,7 +225,7 @@ def classify(
     if _hosts_in(text):
         return HOST
 
-    if _NAMED_ARTIFACT_RE.search(text):
+    if _NAMED_ARTIFACT_RE.search(_DEICTIC_PROJECT_RE.sub(" ", text)):
         return NAMED_ARTIFACT
 
     # An explicit local path is a reference too - and it is NOT external.
