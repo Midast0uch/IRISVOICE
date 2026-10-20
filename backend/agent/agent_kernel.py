@@ -17957,23 +17957,32 @@ Respond with a JSON object:
         # under-counted - the same conflation that held tool_approval below
         # chance before v6. A call that RAN is a tool that was needed.
         try:
-            _calls = result.calls or []
-            _label = (True if any(c.get("ok_call", c.get("ok")) for c in _calls)
-                      else False if (not _calls and result.success) else None)
-            if _label is not None:
-                from backend.agent import surface_shadow as _ss_na
+            from backend.agent import surface_shadow as _ss_na
 
+            # v4 (2026-10-19): the label, the frame and the stamp all changed
+            # together, and each was measured first (294 real pairs):
+            #  - the label no longer calls a SLIP "no tool needed"
+            #    (surface_shadow.needs_action_label);
+            #  - the frame now carries the step's expected output, which is
+            #    what makes a write/edit goal read as an action;
+            #  - the question no longer has "writing" on both sides.
+            _label = _ss_na.needs_action_label(goal, result.calls, result.success)
+            _na_expected = str(getattr(item, "expected_output", "") or "")
+            _calls = result.calls or []
+            if _label is not None:
                 # DIAGNOSTIC (2026-10-18): the row does not store the goal
                 # (the whole frame for this consumer), so a live cohort cannot
                 # be replayed without it. One DEBUG record per row, keyed by
                 # step_id (the row carries the same id in its scope), with the
                 # label beside it - frame and outcome in one line.
                 logger.debug(
-                    "[needs_action] step=%s label=%s goal=%r",
-                    getattr(item, "step_id", "?"), _label, goal,
+                    "[needs_action] step=%s label=%s goal=%r expected=%r",
+                    getattr(item, "step_id", "?"), _label, goal, _na_expected,
                 )
                 _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
-                                      True, None, "needs_action/v3",
+                                      True,
+                                      {"goal": goal, "expected": _na_expected},
+                                      "needs_action/v4",
                                       outside_label=_label)
         except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
             logger.debug("[DER] needs_action row skipped: %r", _na_exc)

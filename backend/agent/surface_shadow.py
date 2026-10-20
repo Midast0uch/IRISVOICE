@@ -37,6 +37,7 @@ Non-Requirements so it is not re-proposed.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger("surface_shadow")
@@ -46,14 +47,23 @@ SURFACE_CONSUMERS: Dict[str, str] = {
         "Is this step result too incomplete to proceed without more work?"
     ),
     "needs_action": (
-        # v3 (2026-10-18, replay on 40 REAL goal+outcome pairs): the v1
-        # wording scored 0.6407; this wording 0.7962. The difference: it
-        # names the COMPLETION of the step (running a tool vs writing an
-        # answer) instead of the abstract "need to use a tool" - the same
-        # concrete-nouns lesson every consumer has taught.
-        "Will this step be completed by running a tool (a file operation, "
-        "a command, a search or the browser), or by writing an answer "
-        "from what is already available?"
+        # v4 (2026-10-19, measured on 294 REAL goal+outcome pairs). Two
+        # defects in v3, both reproduced before the change:
+        #
+        # 1. THE WORD "writing" SAT ON BOTH SIDES. v3's NO side ended "by
+        #    writing an answer from what is already available", so d1 read
+        #    "Write the slugify function to textutils.py" as an ANSWER
+        #    (p=0.11 for a tool) - and it misread Update/Edit/Add goals the
+        #    same way at 0.17-0.45. Those are 8 of the 9 wrong "no" answers
+        #    on tool-needing steps, i.e. the whole precision ceiling.
+        # 2. THE FRAME CARRIED ONLY THE GOAL. A goal that names an action
+        #    ("Write the slugify function to textutils.py") is still
+        #    ambiguous alone; the step's EXPECTED OUTPUT makes the artifact
+        #    explicit. With it, the same 4 hard write/edit goals moved from
+        #    "no" (0.97-0.99) to "yes" (0.77-0.86).
+        "Does this step need a tool - to read, run, write or edit a file, "
+        "run a command, search, or use the browser - or does it only "
+        "answer from information already available?"
     ),
     # Session 364 (owner request). The DEPTH question, anchored to the task's
     # success criteria: `sufficient`/`done` ask whether the objective is
@@ -286,6 +296,50 @@ def surface_bool(
         return False, shadow_row(consumer_id, noul, brain_bool=None,
                                  scope=_scope)
     return value, shadow_row(consumer_id, noul, brain_bool=value, scope=_scope)
+
+
+_NA_ACTION_LEAD = re.compile(
+    r"^\s*(run|read|write|edit|update|create|modify|execute|search|list|"
+    r"navigate|open|install|copy|move|delete|add|apply|build|compile|test|"
+    r"check|verify|inspect|rename|remove|append|save|fetch|download|upload|"
+    r"implement)\b",
+    re.IGNORECASE,
+)
+# A planner marker is not a step goal: "Duplicate of step 1 (already
+# completed) - skip or rephrase" and the RESOLVE markers describe the PLAN's
+# bookkeeping. They carry no honest answer to the consumer's question.
+_NA_ARTIFACT = re.compile(r"^\s*(duplicate of step|resolve:)", re.IGNORECASE)
+
+
+def needs_action_label(goal: str, calls: Any, success: bool) -> Optional[bool]:
+    """The honest outcome label for a DER node, or None when the row must not exist.
+
+    ``needs_action`` asks whether the GOAL needs a tool call. The outcome
+    labels that question only when it is unambiguous:
+
+      * a call that RAN  -> True (a tool was needed; the v2 rule, kept)
+      * no call + success -> False, but ONLY when the goal does not name a
+        tool action. Measured on 294 real goal+outcome pairs (2026-10-19): 15
+        rows whose goal was "Run main.py to verify ..." / "Edit the geometry
+        files ..." completed with no call. Those are SLIPS - the agent
+        skipped the work - not evidence that the goal needed no tool; the
+        consumer's own answer for them ("yes") is correct, so labelling them
+        "no" made correct answers count as errors and inverted the ranking.
+        A shape test cannot know the step slipped, so it refuses the row.
+      * anything else -> None (an ambiguous outcome is not evidence).
+    """
+    try:
+        for c in calls or []:
+            if c.get("ok_call", c.get("ok")):
+                return True
+        if not calls and success:
+            text = str(goal or "")
+            if _NA_ACTION_LEAD.match(text) or _NA_ARTIFACT.match(text):
+                return None
+            return False
+        return None
+    except Exception:  # noqa: BLE001 - a measurement never fails a step
+        return None
 
 
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,

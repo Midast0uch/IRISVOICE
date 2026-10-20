@@ -83,25 +83,45 @@ def test_outcome_row_without_a_label_has_no_outside_label_key(captured):
 # ── (b) the label rule, read from the kernel source ─────────────────────────
 
 def test_the_label_rule():
-    """Structural guard: the outcome label expressions are inline in _der_run_node.
+    """The outcome label and its v4 slip rule.
 
-    Reads the source of AgentKernel._der_run_node. A call that worked labels True. No call and a
-    successful step labels False. Anything else gets no row. The row is keyed to needs_action/v2.
-
-    STALE-BY-SPEC update (2026-10-18): the label reads the CALL-level outcome
-    (`ok_call`, falling back to `ok`) instead of the loop's `ok` alone - `ok`
-    counts a non-zero returncode as failure, so a node whose only call was an
-    informative pytest run mid-iteration emitted NO row (the conflation that
-    held tool_approval below chance before its v6). A call that RAN is a tool
-    that was needed. The stamp moved v1 -> v2 (a label change is a new cohort).
+    v4 (2026-10-19): the label moved out of _der_run_node into
+    surface_shadow.needs_action_label so the slip rule can be tested directly.
+    The rule measured on 294 real goal+outcome pairs: a zero-call step whose
+    GOAL names a tool action completed without doing it - a slip, not evidence
+    that the goal needed no tool. Those rows must not exist (d1's "yes" on them
+    is correct, and v3 scored it as an error, inverting the ranking).
     """
     src = inspect.getsource(AgentKernel._der_run_node)
-    assert 'any(c.get("ok_call", c.get("ok")) for c in _calls)' in src
-    assert "not _calls and result.success" in src
-    # STALE-BY-SPEC (2026-10-18): v3 - the question changed to the
-    # concrete-outcome wording (replay 0.7962 vs 0.6407 on real pairs).
-    assert '"needs_action/v3"' in src
+    assert ("_ss_na.needs_action_label(goal, result.calls, "
+            "result.success)") in src
+    assert '"needs_action/v4"' in src
     assert "outside_label=_label" in src
+    # the frame carries the step's expected output (the fix for the
+    # write-goal blind spot)
+    assert '{"goal": goal, "expected": _na_expected}' in src
+
+    from backend.agent.surface_shadow import needs_action_label
+
+    ok_call = {"tool": "read_file", "ok": True}
+    bad_call = {"tool": "run_tests", "ok": False}
+    # a call that ran -> a tool was needed
+    assert needs_action_label("anything", [ok_call], True) is True
+    # zero calls + success + an analysis goal -> the honest False class
+    assert needs_action_label(
+        "Parse the test output to count how many tests passed", [], True) is False
+    # zero calls + success + an ACTION goal -> a slip: no row
+    assert needs_action_label(
+        "Run main.py to verify the changes work correctly", [], True) is None
+    assert needs_action_label(
+        "Write the slugify function to textutils.py", [], True) is None
+    # planner markers are not goals
+    assert needs_action_label(
+        "Duplicate of step 1 (already completed) - skip or rephrase", [], True) is None
+    # no call and no success -> ambiguous
+    assert needs_action_label("anything", [], False) is None
+    # a failed call never labels True
+    assert needs_action_label("anything", [bad_call], True) is None
 
 
 # ── (a) the enforced branch, read from the kernel source ────────────────────

@@ -687,6 +687,109 @@
    "reply_patterns": [
     "2012"
    ]
+  },
+  {
+   "id": "c16_explain_then_fix",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. First, explain in words what is wrong with sum_range and why the test fails. Then fix mathutils.py so every test passes. Do not change the test.",
+   "reply_patterns": [
+    "\\brange\\b"
+   ]
+  },
+  {
+   "id": "c17_name_failing_tests",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and name every test that fails. Do not fix anything.",
+   "reply_patterns": [
+    "\\bsub\\b",
+    "\\bdiv\\b",
+    "\\bpower\\b"
+   ]
+  },
+  {
+   "id": "c18_count_passing",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me exactly how many tests pass. Do not fix anything.",
+   "reply_patterns": [
+    "\\b(4|four)\\b[^.\\n]{0,40}\\bpass|\\bpass\\w*\\W{0,5}(4|four)\\b"
+   ]
+  },
+  {
+   "id": "c19_count_collected",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me the exact total number of tests that were collected. Do not fix anything.",
+   "reply_patterns": [
+    "\\b(7|seven)\\b"
+   ]
+  },
+  {
+   "id": "c20_broken_functions",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and summarize which functions in calc.py are broken. Do not fix anything.",
+   "reply_patterns": [
+    "\\bsub\\b",
+    "\\bdiv\\b",
+    "\\bpower\\b"
+   ]
+  },
+  {
+   "id": "c21_power_wrong_value",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me the exact wrong value that power() returns in its failing test. Do not fix anything.",
+   "reply_patterns": [
+    "\\b6\\b"
+   ]
+  },
+  {
+   "id": "c22_count_printed_lines",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run main.py in this project and tell me exactly how many lines it prints. Do not change any file.",
+   "reply_patterns": [
+    "\\b(3|three)\\b"
+   ]
+  },
+  {
+   "id": "c23_word_count_value",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run main.py in this project and tell me the exact number it prints after the word words:. Do not change any file.",
+   "reply_patterns": [
+    "\\b4\\b"
+   ]
+  },
+  {
+   "id": "c24_broken_function_name",
+   "group": "coding",
+   "mode": "developer",
+   "path": "dev_cli",
+   "timeout_s": 1200,
+   "prompt": "The project is in {workdir}. Run the tests in this project and tell me the name of the function that is broken. Do not fix anything.",
+   "reply_patterns": [
+    "\\blongest_word\\b"
+   ]
   }
  ]
 }

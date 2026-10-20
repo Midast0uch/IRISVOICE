@@ -188,10 +188,18 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # reading a path instead of the request. 128 ids covers the longest
     # measured goal (347 chars). user_feedback keeps `interpret` (isolation,
     # the judge_review precedent).
-    assert len(de.ORACLE_JOBS) == 13
+    # 14, not 13 (2026-10-19, needs_action/v4): needs_action gets its own
+    # `interpret_step` job. It used to share click_safety's `guard` job (goal
+    # only); MEASURED on 294 real pairs, the goal alone leaves a write/edit
+    # step ambiguous ("Write the slugify function to textutils.py" read as an
+    # answer at p=0.11) and the step's EXPECTED OUTPUT resolves it.
+    assert len(de.ORACLE_JOBS) == 14
     assert de.ORACLE_JOBS["interpret_web"].fields == ("goal",)
     assert de.ORACLE_JOBS["interpret_web"].budget_ids == 128
     assert de.CONSUMER_JOBS["web_intent"] == "interpret_web"
+    assert de.ORACLE_JOBS["interpret_step"].fields == ("goal", "expected")
+    assert de.ORACLE_JOBS["interpret_step"].budget_ids == 160
+    assert de.CONSUMER_JOBS["needs_action"] == "interpret_step"
     assert de.CONSUMER_JOBS["user_feedback"] == "interpret"
     assert de.ORACLE_JOBS["judge_depth"].fields == (
         "evidence", "coverage", "open_facts", "goal")

@@ -1,4 +1,4 @@
-# Oracle - Architecture Blueprint
+﻿# Oracle - Architecture Blueprint
 
 The Oracle is IRIS's local decision engine. This file describes what it is, every
 layer it touches, how a decision is made, how it earns the right to act, and how well
@@ -170,7 +170,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
     route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
                     browser_next (shadow, element ids as options)
     approve job --- tool_approval (ENFORCED: the pre-call guard; post-hoc rows keep flowing)
-    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (re-earning on v2)
+    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v4, shadow: expected_output empty)
     judge_review -- review_verdict (ENFORCED, refuse-only)
     judge_step ---- escalate_incomplete (ENFORCED)
     judge_goal ---- done | sufficient
@@ -230,7 +230,7 @@ Each has an id, a declared decision type and criteria, and one job.
 | `escalate_incomplete` | judge_step | noul | incomplete-result keyword list | `der_loop` |
 | `done`, `sufficient` | judge_goal | noul | Brain done-bit / sufficiency gate | `monitor_shadow` |
 | `depth_met` | judge_depth | noul | the loop's run grade below threshold | `surface_shadow`, run-grade point; ENFORCED, tighten-only, labelled by the EXTERNAL turn verdict |
-| `needs_action` | guard | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; re-earning on v2 (demoted 2026-10-18, see 7.4) |
+| `needs_action` | interpret_step | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; v4, shadow (see 7.2/7.4) |
 | `presentation` | shape | choice | reply-surface rules | `agent_kernel` reply surface |
 | `narration` | shape | choice | deterministic beat rule | `agent_kernel` |
 | `web_intent` | interpret | noul | duplicated web-trigger keyword lists | `explorer`; v2 turn-outcome label |
@@ -266,6 +266,7 @@ declared, because an input that carries the answer measures nothing.
 | `route` | which of these next actions? | coverage, open_facts, depth_met, grade, goal, done_when, calls_this_step, step_facts, last_result, task_class, previous_chosen, previous_outcome, step_index, needs_vision, vision_candidates, ruled_out, error_snippet, pushes_used | 384 |
 | `approve` | will this call succeed? | goal, calls_this_step, last_result, proposed_tool, tool_description, args, offered_tools | 384 |
 | `guard` | is this action safe without asking? | goal; image field `screenshot` | 128 |
+| `interpret_step` | does this STEP need a tool, or does it only answer from what is known? | goal, expected | 160 |
 | `interpret` | what does the user's message mean? | goal | 64 |
 | `judge_step` | did this step do its part? | goal | 96 |
 | `judge_review` | did this step do its part? | goal | 288 |
@@ -374,8 +375,8 @@ identity = model_id | readout_mode | criteria_hash
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp instead: `tc-frame-v8` (post-hoc tool_choice
   parity rows), `tc-decide-v3` (Oracle-decided rows), `tool_approval/v6`,
-  `browser_next/v1`, `needs_action/v2`, `review_verdict/v4`, `depth_met/v3`,
-  `web_intent/v2`. The report and the fit take `--scope CONSUMER=STAMP` to measure
+  `browser_next/v1`, `needs_action/v4`, `review_verdict/v4`, `depth_met/v3`,
+  `web_intent/v3`. The report and the fit take `--scope CONSUMER=STAMP` to measure
   one cohort and never blend two. A stamp is never reused: v2 of
   `review_verdict` was withdrawn (62 obsolete rows) and v5 of `tool_approval`
   was superseded the same day, and neither name comes back.
@@ -500,13 +501,29 @@ caller; the DER node path is the live deciding path.
 
 Each DER step runs DIRECT (one text answer, no tools) or REACT (the tool loop). The rule `external_reference.mode_for_goal` picks DIRECT only for a goal that opens with a question word; a REACT step that needs no tool pays a full tool-loop call and makes zero calls.
 
-**Label.** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v1`, `label_source` `outcome`): a tool call that worked means a tool was needed (True); done with zero calls means it was not (False); anything else writes no row. `brain_bool` is the rule's answer (True: the rule chose REACT).
+**Label (v4).** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v4`, `label_source` `outcome`). The label comes from `surface_shadow.needs_action_label(goal, calls, success)`:
+
+- a call that RAN -> True (a tool was needed);
+- zero calls, a successful step, and a goal that does not name a tool action -> False;
+- zero calls, a successful step, and an ACTION-led goal ("Run main.py to verify...", "Write the slugify function to textutils.py") -> NO ROW: that is a slip, not proof the goal needed no tool. v3 counted these as False and poisoned 15 of 294 real pairs;
+- a planner artifact ("Duplicate of step 1 (already completed)...") -> no row;
+- a call set with no successful call -> no row.
+
+`brain_bool` is the rule's answer (True: the rule chose REACT).
 
 **Decision.** With `needs_action` enforced, before the tool loop starts the Oracle is asked; a 'no tool' answer whose calibrated confidence clears the threshold moves the step to DIRECT. The rule's own DIRECT choices are never changed. A step moved to DIRECT writes no outcome row, so later cohorts see fewer of those cases.
 
-**Question.** 'Does this step need to use a tool such as the browser, a file, a web search or a command?' (Yes: it needs the browser, a file, a search or a command / No: it only writes or reasons about information that is already available). On 16 hand-labelled step goals with real d1 the old wording ('requires calling a tool') scored 11/16 - it said no to opening a URL, editing a file, listing a folder and saving a file - and this wording 16/16.
+**Question (v4).** 'Does this step need a tool - to read, run, write or edit a file, run a command, search, or use the browser - or does it only answer from information already available?' (Yes: it acts on a file, a command, a search or the browser / No: it only answers from what is already known.)
 
-**Earned 2026-10-13.** Two full eval rounds: 235 rows, 216 distinct (164 correct / 52 wrong), OOF AUROC 0.8043, ECE 0.0404, threshold 0.80 calibrated, 109 rows above, precision 0.9174, Wilson 0.8505.
+Measured 2026-10-19 on 294 real goal+outcome pairs (268 True / 26 False, 490 deduped rows): the write/edit/update/add goals are misread as 'no' whenever the question's own words put the artifact verb on the answer side (the old wording said 'it only writes or reasons about information that is already available', so 'Write X' matched the no-side). The v4 wording puts the verbs only on the yes side. It scores 11/11 on a hard probe set (6 tool goals, 5 analysis goals) when the frame also carries the step's expected output. The noun-only variant ('a file operation, a command, a search or the browser') names every tool but drops the verbs and scores 8/11 - it misreads 'Write', 'Edit' and 'Add'.
+
+**Frame (v4).** Job `interpret_step`, fields `goal, expected` (160 ids). The `expected` field is what moved four hard write goals from 'no' (0.95-0.99) to 'yes' (0.77-0.86) in the offline probe.
+
+LIVE LIMIT (measured 2026-10-19): the DER planner leaves `expected_output` empty on every step of the coding tasks (`expected=''` in the v4 diagnostics, 21/21 rows), so in production the frame is goal-only and the write-goal blind spot remains. The user request is NOT a substitute: frame `goal+request` scores 7/12 - it makes the Oracle answer 'yes' to analysis steps whose request mentions running tests.
+
+**State (2026-10-19, v4).** Cohort young: 11 distinct rows, 10 correct / 1 wrong. Precision in the no-direction measured 0.20-0.24 on the v3 live cohort and 0.53-0.78 in the best offline subsets; the bar needs 0.90 on >= 50 rows above. Traffic changed the same day (8 run-and-report eval tasks, c17-c24) to generate the honest False class: distinct 173 -> 188, correct 130 -> 141, OOF AUROC 0.5834 -> 0.5632. It did not move precision, because the remaining misreads are on write/edit goals, not on the analysis steps the new tasks create.
+
+**History.** v1 earned the bar on 2026-10-13 (235 rows, 216 distinct, OOF AUROC 0.8043, ECE 0.0404, precision 0.9174 at 109 rows above) and was demoted 2026-10-18 when the label was found to count the loop's `ok` instead of the call outcome, which turned informative pytest runs into 'no tool needed' rows. v2 (call-level label) and v3 (concrete-outcome question) never re-earned the bar.
 
 ---
 
@@ -652,8 +669,8 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v1`, 2026-10-18) | 1126 (833/293) | 0.6538 | 0.0153 | none | shadow | no threshold at precision >= 0.90 on the accumulated cohort; re-earning on v2 |
-| `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow | ECE 0.0544 > 0.05 |
+| `needs_action` (scope `needs_action/v4`, 2026-10-19) | 11 (10/1) | young | - | none | shadow | distinct rows 11 < 100; the no-direction precision measured 0.20-0.24 on the v3 cohort, 0.53-0.78 in the best offline subsets (bar 0.90). `expected` is empty in production, so the frame is goal-only |
+| `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
 | `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
 | `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
 | `browser_next` | 126 (71/55) | 0.7059 | 0.095 | none | shadow | no threshold reaches precision 0.90 on 50 rows |
@@ -667,7 +684,11 @@ Enforcement today (2026-10-18): `tool_choice`, `escalate_incomplete`, `review_ve
 `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`).
 `needs_action` is allow-listed but NOT deciding: its bar, recomputed on the accumulated
 v1 cohort (1126 rows), no longer holds a 90%-precision threshold, so `decides()` fails
-closed - it re-earns on the v2 cohort (the call-level outcome label). The five deciding
+closed. v4 (2026-10-19) fixed the label (a slip is no longer counted as "no tool
+needed"), the question (the artifact verbs sit only on the yes side) and the frame
+(`interpret_step`, goal + expected), but the planner leaves `expected` empty, so the
+write-goal misreads remain and the cohort is young (11 rows). It re-earns only when
+the expected-output field is populated or the write-goal reading is fixed. The five deciding
 consumers each cost one question at their site: `tool_choice` before the model call,
 `escalate_incomplete` at step settle, `review_verdict` at review (refuse-only: a
 confident veto where the Brain passed), `depth_met` at the run grade (tighten-only:
@@ -706,7 +727,7 @@ The 2026-10-13 diagnoses below are kept as the record of what was wrong. Every
 one of the four label-defect consumers has since been fixed by the 7.5 method
 and three of them now decide (see 7.2):
 
-- **`needs_action`: given a live home 2026-10-13** (section 4.1) and switched on after two eval rounds. **`use_thinking`: removed** (section 3.1). **Demoted 2026-10-18**: the bar, recomputed on its accumulated v1 cohort (1126 rows), no longer holds a 90%-precision threshold - fail-closed by design. The v2 label (the CALL-level outcome, `ok_call`) fixes the same returncode conflation that broke `tool_approval`'s v1-v5 labels; it re-earns on the v2 cohort.
+- **`needs_action`: given a live home 2026-10-13** (section 4.1) and switched on after two eval rounds. **`use_thinking`: removed** (section 3.1). **Demoted 2026-10-18**: the bar, recomputed on its accumulated v1 cohort (1126 rows), no longer holds a 90%-precision threshold - fail-closed by design. v2 (call-level label) and v3 (concrete-outcome question) never re-earned. **v4 2026-10-19** fixed three things and still does not earn: (a) the label no longer counts a zero-call ACTION step as "no tool needed" (15 of 294 real pairs were slips); (b) the question keeps the artifact verbs on the yes side only (the v3 wording's "it only writes..." matched "Write X" on the no side); (c) the frame gained `expected`. Measured limits: the planner leaves `expected` empty on every coding step, and the user request is not a substitute (7/12, it makes analysis steps read as tool-needing). The remaining misreads are write/edit goals; the new run-and-report tasks (c17-c24) build the honest False class but do not touch that error. It stays shadow until `expected_output` is populated or the write-goal reading is fixed.
 - **`recovery_strategy`, `sufficient`: failure-only paths.** 183 `recovery_strategy` rows and 5 `sufficient` rows exist, none on the d1 identity with a label; both are asked only after a step fails.
 - **`depth_met`: FIXED 2026-10-18** (was "a rule's output as the reference", oof AUROC 0.40, inverted). The external verdict label (`turn_verdict_label` + `POST /api/eval/verdict` from the eval harness) and the `judge_depth` job (evidence first, coverage in, grade out) took it to 0.7103 - ENFORCED.
 - **`web_intent`: label FIXED 2026-10-18** (was "a noisy reference"). The v2 turn-outcome label (URL-by-rule, else web-usage-and-passed) works and the question is replay-validated at 0.7679 on real pairs; the cohort is capped by the eval's fixed task set (~61 distinct inputs) and needs diverse traffic (the 10 added r26-r35 tasks, browser groups, live usage).
@@ -718,7 +739,7 @@ and three of them now decide (see 7.2):
 ### 7.5 The method that took the label-defect consumers to the bar (2026-10-17/18)
 
 The order, proven four times (review_verdict, tool_approval, depth_met, and
-needs_action's v2 relabel): (1) find the LIVE decision the consumer should own
+needs_action's v2-v4 relabels): (1) find the LIVE decision the consumer should own
 and its caller; (2) give it an OUTCOME label - something that happened outside
 the Oracle - instead of agreement with a rule; (3) make the question ask what
 the label measures; (4) replay the wording on REAL frames with REAL outcomes
@@ -734,7 +755,7 @@ The remaining consumers, in order of tractability:
 
 - **`narration`, `user_feedback`** - only ECE misses (0.0512, 0.0544 vs 0.05); more rows usually settle it. `user_feedback` also needs adding to `CONSUMERS` before the owner can switch it on.
 - **`web_intent`** - the label and question are done; it needs diverse traffic to reach 100 distinct rows.
-- **`needs_action`** - re-earn on the v2 cohort (the call-level outcome label).
+- **`needs_action`** - re-earn on v4: the label and question are fixed and the traffic now builds the False class, but the planner leaves `expected` empty, so the write/edit goals still read as "no". Fix the frame source (populate expected_output, or derive the artifact from the plan) before promising a cohort.
 - **`browser_next`** - a precision problem at every threshold; a frame fix (the same replay recipe) is the next lever.
 - **`click_safety`, `depth_route`, `done`, `presentation`, event consumers** - rows below 100; more traffic.
 
@@ -854,3 +875,4 @@ Under `backend/tests/` (`contract/` unless a path is given).
 - `test_click_safety_contract.py` - browser actions pass the click-safety gate.
 - `test_call_closing_fence_contract.py` - `call_closing` is refused everywhere; the node loop never reads it.
 - `test_verdict_consumer_shape.py`, `test_presentation_observer_contract.py`, `behavioral/test_decision_engine_behavioral.py`, `behavioral/test_decision_engine_gates.py` - verdict envelope, presentation writes no steering field, a full DER step, surface and narration gates.
+

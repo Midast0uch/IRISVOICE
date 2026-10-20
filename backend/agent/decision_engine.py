@@ -215,6 +215,17 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # pairs: capped 0.8864 vs uncapped 0.9318.
     OracleJob("interpret_web", "what does the user's message mean?",
               ("goal",), 128),
+    # `interpret_step` (2026-10-19) is needs_action's OWN job. It used to
+    # share click_safety's `guard` job (goal only, 128 ids, plus an image
+    # field it never sends). MEASURED on 294 real goal+outcome pairs: the
+    # goal ALONE leaves a write/edit step ambiguous - "Write the slugify
+    # function to textutils.py" read as an ANSWER at p=0.11 - and the
+    # step's EXPECTED OUTPUT resolves it (the same four hard goals moved to
+    # "yes" at 0.77-0.86). 160 ids (640 chars) holds the longest measured
+    # goal (347) plus a typical expected-output line.
+    OracleJob("interpret_step",
+              "will this step act on the project or answer from what is known?",
+              ("goal", "expected"), 160),
     OracleJob("route", "which of these next actions? (the menu carries the content)",
               # `last_result` (2026-10-10): the previous step's result snippet.
               # MEASURED ROOT CAUSE of tool_choice's 45% parity accuracy: the
@@ -385,7 +396,9 @@ CONSUMER_JOBS: Dict[str, str] = {
     # done_when, calls_this_step and the page head as last_result; the element
     # labels ride the option lines.
     "browser_next": "route",
-    "click_safety": "guard", "needs_action": "guard",
+    "click_safety": "guard",
+    # Its own job since v4: the step's EXPECTED OUTPUT is part of the frame.
+    "needs_action": "interpret_step",
     "review_verdict": "judge_review",
     "escalate_incomplete": "judge_step",
     # REQ-10: the per-call closing question has its own job (AC10.7).
