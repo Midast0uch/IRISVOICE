@@ -103,7 +103,10 @@ def test_the_label_rule():
     src = inspect.getsource(AgentKernel._der_run_node)
     assert ("_ss_na.needs_action_label(goal, result.calls, "
             "result.success)") in src
-    assert '"needs_action/v6"' in src
+    # v7 (2026-10-20): the question gained create/implement/fix on the yes
+    # side (measured by full-cohort replay, oracle.md 7.2a); the label rule
+    # and the frame are unchanged from v6.
+    assert '"needs_action/v7"' in src
     assert "outside_label=_label" in src
     # the frame carries the step's expected output (the fix for the
     # write-goal blind spot)

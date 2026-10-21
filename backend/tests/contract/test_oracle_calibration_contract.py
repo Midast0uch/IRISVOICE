@@ -270,6 +270,34 @@ class TestThresholdRule:
         assert 46 / 50 >= 0.90 and wilson_lb(46, 50) < 0.85
         assert pick_threshold(cal, ok) is None
 
+    def test_the_pick_honours_the_acting_side(self):
+        """2026-10-20: a clean non-acting side drags the smallest qualifying
+        threshold to the floor, and clause 8 then judges every acting answer
+        ever given - the measured needs_action case (yes side 0.98 clean,
+        threshold 0.4762, acting precision 0.8172 at it). With the acting
+        rows named, the pick moves UP to where the acting side holds its own
+        clauses; it can only become more restrictive, never less."""
+        # 400 clean "yes" (200 high, 200 low), 55 clean high "no",
+        # 15 dirty low "no".
+        cal = [0.9] * 200 + [0.6] * 200 + [0.9] * 55 + [0.6] * 15
+        ok = [True] * 455 + [False] * 15
+        ch = [True] * 400 + [False] * 70
+        # the legacy pick: the floor, where the acting side is 55/70 = 0.786
+        assert pick_threshold(cal, ok) == (0.6, 470, 455)
+        # the acting-aware pick: the high cut, where the acting side is 55/55
+        assert pick_threshold(cal, ok, chosen=ch, acting_key="no") == (
+            0.9, 255, 255)
+
+    def test_no_threshold_when_the_acting_side_never_cleans(self):
+        """The same cohort with the dirty acting rows at the TOP: no cut
+        holds the acting clauses, so the acting-aware pick refuses entirely
+        (the gap is named by the bar, not papered over by a low threshold)."""
+        cal = [0.9] * 200 + [0.6] * 200 + [0.9] * 55 + [0.9] * 15
+        ok = [True] * 455 + [False] * 15
+        ch = [True] * 400 + [False] * 70
+        assert pick_threshold(cal, ok) == (0.6, 470, 455)
+        assert pick_threshold(cal, ok, chosen=ch, acting_key="no") is None
+
 
 # -- 4. The hardened bar ------------------------------------------------------
 

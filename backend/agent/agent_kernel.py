@@ -18004,7 +18004,7 @@ Respond with a JSON object:
                 _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
                                       True,
                                       {"goal": goal, "expected": _na_expected},
-                                      "needs_action/v6",
+                                      "needs_action/v7",
                                       outside_label=_label)
         except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
             logger.debug("[DER] needs_action row skipped: %r", _na_exc)

@@ -52,6 +52,7 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from backend.agent.consumer_bar import (  # noqa: E402
+    MIN_ACTING_ROWS_ABOVE,
     MIN_PRECISION,
     MIN_ROWS_ABOVE,
     MIN_WILSON_LB,
@@ -121,28 +122,54 @@ def fit_isotonic(
         stack[lo:hi + 1] = [pool(stack[lo], stack[hi])]
     return [[round(b[1] / b[0], 6), round(mean_y(b), 6)] for b in stack]
 
-
 def pick_threshold(
     cal: Sequence[float], correct: Sequence[bool],
-    *, min_rows: int = MIN_ROWS_ABOVE, min_precision: float = MIN_PRECISION,
+    *,
+    min_rows: int = MIN_ROWS_ABOVE, min_precision: float = MIN_PRECISION,
     min_wilson: float = MIN_WILSON_LB,
+    chosen: Optional[Sequence[Any]] = None, acting_key: Optional[str] = None,
+    min_acting_rows: int = MIN_ACTING_ROWS_ABOVE,
 ) -> Optional[Tuple[float, int, int]]:
     """Smallest t with precision(cal >= t) >= min_precision, Wilson LB >=
     min_wilson, and at least min_rows rows at/above it; ``(t, n_above, k)`` or
     None. Walks the distinct values from the top, so the last qualifying value
-    is the smallest."""
+    is the smallest.
+
+    ACTING SIDE (2026-10-20): when ``chosen`` and ``acting_key`` are given,
+    a threshold must ALSO hold the acting clauses at/above it (rows >=
+    min_acting_rows, precision >= min_precision, Wilson LB >= min_wilson).
+    Without this the clean non-acting side drags the pick to the floor and
+    clause 8 judges every acting answer ever given, including the weak ones
+    the threshold was supposed to exclude - the measured case (needs_action:
+    yes side 0.98 clean, threshold picked at 0.4762, acting side 0.8172
+    judged there). The pick can only move UP, so this makes enforcement more
+    restrictive, never less."""
     order = sorted(range(len(cal)), key=lambda i: cal[i], reverse=True)
     best = None
     k = 0
     i = 0
+    ka = 0  # correct acting rows at/above the current value
+    ja = 0  # acting rows at/above the current value
     while i < len(order):
         v = cal[order[i]]
         j = i
         while j < len(order) and cal[order[j]] == v:
             k += 1 if correct[order[j]] else 0
+            if chosen is not None and acting_key is not None \
+                    and _answer_key(chosen[order[j]]) == acting_key:
+                ja += 1
+                ka += 1 if correct[order[j]] else 0
             j += 1
         if j >= min_rows and k / j >= min_precision and wilson_lb(k, j) >= min_wilson:
-            best = (v, j, k)
+            acting_ok = True
+            if chosen is not None and acting_key is not None:
+                acting_ok = (
+                    ja >= min_acting_rows
+                    and ka / ja >= min_precision
+                    and wilson_lb(ka, ja) >= min_wilson
+                )
+            if acting_ok:
+                best = (v, j, k)
         i = j
     return best
 
@@ -214,7 +241,11 @@ def fit_consumer(
     scored = [{"confidence": c, "correct": v} for c, v in zip(cal, ok)]
     ece, brier = _ece_brier(scored)
     entry["oof"].update(ece=ece, brier=brier, auroc=_auroc(scored))
-    pick = pick_threshold(cal, ok)
+    pick = pick_threshold(
+        cal, ok,
+        chosen=ch if acting else None,
+        acting_key=_answer_key(acting) if acting else None,
+    )
     if pick is not None:
         t, n_above, k = pick
         entry["threshold"] = t

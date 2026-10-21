@@ -170,7 +170,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
     route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
                     browser_next (shadow, element ids as options)
     approve job --- tool_approval (ENFORCED: the pre-call guard; post-hoc rows keep flowing)
-    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v6, shadow: sampled; acting precision below bar)
+    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v7, shadow: seeding the honest cohort)
     judge_review -- review_verdict (ENFORCED, refuse-only)
     judge_step ---- escalate_incomplete (ENFORCED)
     judge_goal ---- done | sufficient
@@ -230,7 +230,7 @@ Each has an id, a declared decision type and criteria, and one job.
 | `escalate_incomplete` | judge_step | noul | incomplete-result keyword list | `der_loop` |
 | `done`, `sufficient` | judge_goal | noul | Brain done-bit / sufficiency gate | `monitor_shadow` |
 | `depth_met` | judge_depth | noul | the loop's run grade below threshold | `surface_shadow`, run-grade point; ENFORCED, tighten-only, labelled by the EXTERNAL turn verdict |
-| `needs_action` | interpret_step | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; v6, shadow (see 7.2/7.4) |
+| `needs_action` | interpret_step | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; v7, shadow (see 7.2/7.4) |
 | `presentation` | shape | choice | reply-surface rules | `agent_kernel` reply surface |
 | `narration` | shape | choice | deterministic beat rule | `agent_kernel` |
 | `web_intent` | interpret | noul | duplicated web-trigger keyword lists | `explorer`; v2 turn-outcome label |
@@ -375,7 +375,7 @@ identity = model_id | readout_mode | criteria_hash
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp instead: `tc-frame-v8` (post-hoc tool_choice
   parity rows), `tc-decide-v3` (Oracle-decided rows), `tool_approval/v6`,
-  `browser_next/v1`, `needs_action/v6`, `review_verdict/v4`, `depth_met/v3`,
+  `browser_next/v1`, `needs_action/v7`, `review_verdict/v4`, `depth_met/v3`,
   `web_intent/v3`. The report and the fit take `--scope CONSUMER=STAMP` to measure
   one cohort and never blend two. A stamp is never reused: v2 of
   `review_verdict` was withdrawn (62 obsolete rows) and v5 of `tool_approval`
@@ -501,7 +501,7 @@ caller; the DER node path is the live deciding path.
 
 Each DER step runs DIRECT (one text answer, no tools) or REACT (the tool loop). The rule `external_reference.mode_for_goal` picks DIRECT only for a goal that opens with a question word; a REACT step that needs no tool pays a full tool-loop call and makes zero calls.
 
-**Label (v6).** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v6`, `label_source` `outcome`). The label comes from `surface_shadow.needs_action_label(goal, calls, success)`:
+**Label (v6, unchanged in v7).** At the end of every REACT step `_der_run_node` writes one `needs_action` row on the `oracle_shadow` lane (`surface_shadow._submit_shadow(..., outside_label=...)`, `criteria_version` `needs_action/v7`, `label_source` `outcome`). The label comes from `surface_shadow.needs_action_label(goal, calls, success)`:
 
 - a call that RAN and a goal that names an action ANYWHERE -> True (a tool was needed);
 - a call that RAN and a goal that names NO action anywhere (`_NA_ACTION_ANYWHERE`) -> NO ROW (v6, the mirror rule): the loop forced that call, the goal did not. v5 counted these as True; they are 6% of rows and 45% of the error mass, and their label is a coin flip (30 of 79 ran a call) - the signature of a non-causal label;
@@ -514,9 +514,11 @@ Each DER step runs DIRECT (one text answer, no tools) or REACT (the tool loop). 
 
 **Decision.** With `needs_action` enforced, before the tool loop starts the Oracle is asked; a 'no tool' answer whose calibrated confidence clears the threshold moves the step to DIRECT. The rule's own DIRECT choices are never changed. A step moved to DIRECT writes no outcome row, so later cohorts see fewer of those cases.
 
-**Question (v5).** 'Does this step take an ACTION in the project - read, write, edit, run, search or browse - or does it only give an ANSWER from what is already known? Decide about the action the step must perform, not about the wording of the goal.'
+**Question (v7).** 'Does this step take an ACTION in the project - read, write, edit, create, implement, fix, run, search or browse - or does it only give an ANSWER from what is already known? Decide about the action the step must perform, not about the wording of the goal.'
 
-Measured 2026-10-19 on 294 real goal+outcome pairs: the write/edit/update/add goals were misread as 'no' whenever the artifact verb sat on the answer side ('it only writes...' matched 'Write X'). v4 put the verbs on the yes side, then the live replay showed the remaining defect: the model judged the WORDING of the goal (a READ goal read 'no' at 0.82, an EDIT goal at 0.65). v5 adds the action/wording clause: live 11/11 on real (goal, expected_output) pairs and 10/11 on the hard probe (one miss: 'Add the balance_on(date) method' at 0.64 - an API addition with no file named). A variant that also names 'a file'/'a command' scores 20/22: the nouns pull analysis steps to 'yes' ('Analyze the test output...' at 0.53).
+v5 history (kept): measured 2026-10-19 on 294 real goal+outcome pairs, the write/edit/update/add goals were misread as 'no' whenever the artifact verb sat on the answer side; v4 put the verbs on the yes side, then the live replay showed the model judged the WORDING of the goal (a READ goal read 'no' at 0.82, an EDIT goal at 0.65). v5 added the action/wording clause: live 11/11 on real (goal, expected_output) pairs and 10/11 on the hard probe. A variant that also names 'a file'/'a command' scores 20/22: the nouns pull analysis steps to 'yes'.
+
+v7 (2026-10-20): measured by full-cohort replay on the 474 distinct recorded inputs (the honest v6 cohort, input_key-joined to the backend log), judged by `fit_consumer` with the acting-aware threshold pick. v5's yes side is a CLOSED verb list, and the remaining wrong acting "no"s are action goals whose verbs sit outside it ('Implement the parse_duration function based on tests' 0.84, 'Create inventory.py...' 0.79, 'Fix the identified bugs...' 0.71). Adding create/implement/fix to the list is the whole change: OOF AUROC 0.8345, ECE 0.025, threshold 0.8041 (398 above, precision 0.9648, Wilson 0.9418), ACTING 58 rows at 0.9483 (Wilson 0.8586) - every clause met on the replay. Two prose variants that describe the fetch/change outcome instead of listing verbs score WORSE (AUROC 0.80/0.81, no threshold): d1 reads the closed verb list better than prose. The label rule and the frame are unchanged from v6; the stamp moved to `needs_action/v7`.
 
 **Frame (v4/v5).** Job `interpret_step`, fields `goal, expected` (160 ids). The `expected` field is what moved four hard write goals from 'no' (0.95-0.99) to 'yes' (0.77-0.86) in the offline probe.
 
@@ -580,7 +582,9 @@ How the numbers are made:
 - **Fit.** Isotonic (monotone) map from raw confidence to P(correct); pool-adjacent-
   violators with blocks pooled to at least 20 rows; 5-fold stratified out-of-fold
   predictions, so a map is never judged on its own rows. The threshold is the smallest
-  calibrated value whose out-of-fold precision, Wilson bound and row count all hold.
+  calibrated value whose out-of-fold precision, Wilson bound and row count all hold -
+  and, for a consumer in `ACTING_ENFORCED`, whose ACTING-side clauses also hold at it
+  (6.1 rule 5; without this the clean non-acting side drags the pick to the floor).
 - **Status** (`derive_status`): `enforced` when every clause holds; `sampled` when the
   bar is unmet, the consumer is sampling-eligible and has at least one outcome-labelled
   row; otherwise `shadow` with the first missing clause as the gap.
@@ -652,6 +656,46 @@ How the numbers are made:
      contain `d1-3b`). Every consumer's calibration restarts; no threshold carries
      over. A fine-tune that does not raise held-out accuracy at high confidence is not
      shipped.
+
+### 6.1 Traffic methodology (measured 2026-10-13..20)
+
+Traffic buys ROWS, not truth. Every defect this file records was found OFFLINE on
+recorded rows, and the passes run before these rules were measured were partly
+wasted. The rules, each one paid for:
+
+1. **One input, one row.** A row counts once per distinct input
+   (`surface_shadow.input_key`, bound at the call site), never once per rescore.
+   Before the key existed the report's dedupe used the rounded confidence, and the
+   quantized engine emits few distinct confidences, so DIFFERENT goals collapsed:
+   483 real sites counted as 226 (7.2a). After every pass, read the raw/distinct
+   ratio and `skipped["duplicates"]`: a pass that adds rows without adding distinct
+   inputs added nothing.
+2. **Diagnose offline, confirm with traffic.** A question, label or frame change is
+   measured by replay on the recorded cohort first
+   (`scripts/replay_needs_action.py`; `scripts/replay_tool_choice.py` for the tool
+   menu). v4, v5, v6 and v7 of `needs_action` were each found and proven this way -
+   minutes of engine time. A full eval pass is ~2 hours and can only CONFIRM a fix;
+   it can never find one. Traffic is the last step, never the loop.
+3. **Never feed a quality-blocked consumer.** Rows cannot fix OOF AUROC < 0.65
+   (`web_intent` 0.46, `call_closing` 0.50, `depth_met` unscoped 0.52, `depth_route`
+   0.56, `tool_approval` post-hoc 0.60, `done` 0.62 - see 7.2). For those, fix the
+   question or the label on the rows already recorded; more traffic is more of the
+   same noise at the same cost.
+4. **Volume-blocked consumers fill themselves.** Consumers that fire every turn
+   (`event_family`, `mode`, `presentation`, `event_type:*`) reach 100 rows from
+   ordinary passes. No dedicated traffic is ever spent on them.
+5. **The threshold pick honours the acting side** (2026-10-20). For an asymmetric
+   consumer the clean non-acting side drags the smallest qualifying threshold to
+   the floor, and clause 8 then judges every acting answer ever given, including the
+   weak ones the threshold exists to exclude (measured: `needs_action` yes side
+   0.98 clean, threshold picked at 0.4762, acting precision 0.8172 judged there).
+   `pick_threshold` now requires the acting clauses at the picked threshold, so the
+   pick can only move UP - more restrictive, never less.
+6. **The measured sequence for one consumer:** replay -> fix -> stamp a new
+   `criteria_version` -> ONE pass -> scoped report -> bar record (`--write` with a
+   scope for EVERY enforced consumer, or the recompute demotes them) -> the owner's
+   `IRIS_DECISION_ENFORCE`. Repeated passes over one fixed task set are not a path
+   to the bar (7.2a: rows doubled while true distinct grew by 10).
 
 ---
 

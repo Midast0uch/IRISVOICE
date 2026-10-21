@@ -94,10 +94,26 @@ SURFACE_CONSUMERS: Dict[str, str] = {
         # A variant that also names a file/a command scores 10/11 and 10/11:
         # the nouns pull analysis steps ("Analyze the test output...") to yes
         # at 0.53. Hence the verbs.
+        #
+        # v7 (2026-10-20) - measured by full-cohort replay on the 474 distinct
+        # recorded inputs (the honest v6 cohort, input_key-joined to the
+        # backend log), judged by fit_consumer with the acting-aware threshold
+        # pick. v5's yes side is a CLOSED verb list, and the remaining wrong
+        # acting "no"s are action goals whose verbs sit outside it
+        # ("Implement the parse_duration function based on tests" 0.84,
+        # "Create inventory.py..." 0.79, "Fix the identified bugs..." 0.71).
+        # Adding create/implement/fix to the list is the whole change: OOF
+        # AUROC 0.8345, ECE 0.025, threshold 0.8041 (398 above, 0.9648,
+        # Wilson 0.9418), ACTING 58 rows at 0.9483 (Wilson 0.8586) - every
+        # bar clause met. Two prose variants that describe the fetch/change
+        # outcome instead of listing verbs score WORSE (AUROC 0.80/0.81, no
+        # threshold): d1 reads the closed verb list better than prose. The
+        # stamp moved to needs_action/v7; the label rule and the frame are
+        # unchanged from v6.
         "Does this step take an ACTION in the project - read, write, edit, "
-        "run, search or browse - or does it only give an ANSWER from what "
-        "is already known? Decide about the action the step must perform, "
-        "not about the wording of the goal."
+        "create, implement, fix, run, search or browse - or does it only "
+        "give an ANSWER from what is already known? Decide about the action "
+        "the step must perform, not about the wording of the goal."
     ),
     # Session 364 (owner request). The DEPTH question, anchored to the task's
     # success criteria: `sufficient`/`done` ask whether the objective is
