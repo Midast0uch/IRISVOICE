@@ -168,6 +168,9 @@ already owns `openStrand` and the composer refs. The composer's `#` list gains a
 
 ### 5.1 One search, two answers
 
+> **Superseded (owner, 2026-10-21): text search only, built for memory.db — see `MEMORY-SURFACE-BUILD.md` §3.** The
+> two-answer design below is kept for the record; answer 2 (the recall preview) is not built.
+
 `/` opens the search line at the top centre (as today). It returns two answers side by side, because a user asks two
 different questions with the same words:
 
@@ -325,16 +328,22 @@ None of this exists yet (checked 2026-10-21: no `/api/memory/*` routes, no `memo
 | Oracle | `GET /api/memory/oracle` | bar record + calibration + recent decisions |
 | live | WS `memory_event`, `landmark_update`, `recall` (delivered/verdict), `oracle_decision`, `integrity_pass` | broadcast from the existing single writers (the lanes), never a new writer |
 
-## 11. Decisions for the owner
+## 11. Decisions (answered by the owner, 2026-10-21)
 
-1. **Where the memory lives in the app:** (a) a Surface in the dashboard rail that can go full-window (recommended:
-   it reuses the dashboard wing and its maximize), (b) its own Tauri window, (c) a full-screen overlay over the widget.
-2. **Corrections (J7):** keep v1 read-only (as §13 says), and design confirm / mark wrong / pin / forget for v2 as USER
-   evidence events through the backend (recommended), or include them in v1.
-3. **"Session" → "strand"** in every memory label (recommended; it matches the chat).
-4. **Follow mode:** on automatically in an idle cortex (recommended) or only on `f`.
-5. **The recall preview** in search (runs the context-package build as a dry-run): yes (recommended, behind its
-   no-write contract) or text search only.
+1. **Where it lives:** a **surface of the dashboard** (`components/dark-glass-dashboard.tsx` inside
+   `components/dashboard-wing.tsx`), next to Workspace hub, Browser, Models and Marketplace. It is no longer a design
+   demo: it is built as its own component. The build plan is `MEMORY-SURFACE-BUILD.md`.
+2. **Corrections are part of v1** (confirm, mark wrong, forget, pin / unpin, hold / release), each one USER evidence
+   written by the backend, undoable.
+3. **The word "session" is retired from every label.** A session could sit inside any thread or strand, so it names
+   nothing the user can find. The words are: thread, strand, turn, step, moment, claim, pin, node, artifact; memory
+   that did not come from a chat is "outside chat" with its source (an evaluation run, a test, the system).
+4. **Follow mode is ON by default, and can be turned off.** It is the camera acting like a camera operator at a live
+   event: when IRIS remembers or records something, the view drifts toward it so the user sees the action. Any input
+   from the user pauses it for 20 s; a toggle in the HUD (and `f`) turns it off; the choice is remembered per viewer.
+5. **Search is text only, and it is built for memory.db, not like a web search** (§5.1 is replaced by
+   `MEMORY-SURFACE-BUILD.md` §3): it searches what the memory holds, ranks by how alive and how proven a thing is
+   under the memory's own growth/decay law, and says why each result ranks where it does. No recall preview.
 
 ## 12. Order of work (each phase has DONE / NOT THIS)
 
