@@ -100,6 +100,14 @@ _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     # Without this key on the whitelist the version is dropped in transit and
     # every row becomes unattributable the moment a criterion is edited.
     "criteria_version",
+    # input_key (2026-10-20): the INPUT identity (surface_shadow.input_key,
+    # sha1 of consumer + statement + frame) bound at the call site. The
+    # report's honest dedupe key: one row per INPUT, however the confidence
+    # jitters or collides. Without this key on the whitelist it is dropped in
+    # transit and the ledger falls back to the confidence tuple - measured:
+    # different goals with equal (confidence, chosen) collapsed and 435
+    # needs_action/v7 rows reached the report with no input identity at all.
+    "input_key",
     # brain_choice (2026-09-27): the parity reference for a LABEL consumer.
     # brain_bool covers a consumer whose answer IS a boolean (sufficient, done,
     # has_gaps...). A label consumer (mode, review_verdict, web_intent...) has a
