@@ -1405,6 +1405,8 @@ from backend.api.frontend_logs import router as frontend_logs_router
 # Turn verdict reporting (oracle.md 7.5, depth_met/v3): the OUTSIDE label for
 # held shadow rows - the eval harness POSTs a turn's hidden-test verdict here.
 from backend.api.eval_verdict import router as eval_verdict_router
+# Read-only Memory surface API (/api/memory/*): overview, claims, threads, strand, turn, oracle.
+from backend.api.memory import router as memory_surface_router
 
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
@@ -1414,6 +1416,7 @@ app.include_router(caducean_debug_router)
 app.include_router(browser_surface_router)
 app.include_router(frontend_logs_router)
 app.include_router(eval_verdict_router)
+app.include_router(memory_surface_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────
