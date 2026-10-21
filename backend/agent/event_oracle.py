@@ -376,13 +376,15 @@ def run_user_feedback(
 
 def observe_user_message(
     owner: Any, text: str, *, thread_id: Optional[str], turn_id: Optional[str] = None,
-    from_voice: bool = False,
+    from_voice: bool = False, episode_id: Optional[str] = None,
 ) -> bool:
     """THE user-message hook (``AgentKernel.process_text_message``: text and voice).
 
     Cheap and synchronous: read the previous assistant turn, resolve the store, queue
     ONE job. All model work is on the ``event_oracle`` lane, the write on the
-    ``memory_events`` lane. Returns whether the job was queued. Never raises."""
+    ``memory_events`` lane. ``episode_id`` is the row's "<conversation>:<turn>" (the strand
+    contract, MEMORY-UX-PLAN 4.2); it falls back to the bare ``turn_id``.
+    Returns whether the job was queued. Never raises."""
     try:
         if not (text or "").strip():
             return False
@@ -397,7 +399,7 @@ def observe_user_message(
             if conn is None:
                 return
             lane("memory_events").submit(
-                "memory_events:user_feedback", _emit, conn, mi, thread_id, turn_id, kw,
+                "memory_events:user_feedback", _emit, conn, mi, thread_id, episode_id or turn_id, kw,
             )
 
         queued = lane("event_oracle").submit(

@@ -24,7 +24,7 @@ import re
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 from backend.memory.db import app_flush, app_write
 
@@ -125,6 +125,15 @@ SIGMA_BEFORE: ContextVar[Optional[str]] = ContextVar("memory_events_sigma_before
 
 def _sigma_from() -> Optional[str]:
     return SIGMA_BEFORE.get()
+
+
+# The strand the writing lane job belongs to: (conversation id, the session ids its kernel runs
+# under). Set by agent/event_emit.py for the duration of a job. Callers type events with the
+# session id they hold; emit_event, the ONE row writer, re-keys the ROW to the conversation
+# (thread_id = conversation id, episode_id = "<conversation>:<turn>" - MEMORY-UX-PLAN 4.2,
+# strand_ids.conversation_row_ids). Cases, the chain and the physics keep the caller's id.
+# Unset: the row carries the ids it was given.
+STRAND: ContextVar[Optional[Tuple[str, FrozenSet[str]]]] = ContextVar("memory_events_strand", default=None)
 
 
 def ensure_schema(conn) -> None:
@@ -330,6 +339,12 @@ def emit_event(
         if spec is None:
             logger.info("[memory_events] unclassified label=%s family_hint=%s (Layer 3)", label, family_hint)
         event_id = "ev-" + uuid.uuid4().hex[:16]
+        row_thread, row_episode = thread_id, episode_id
+        strand = STRAND.get()
+        if strand is not None:
+            from backend.memory.strand_ids import conversation_row_ids
+
+            row_thread, row_episode = conversation_row_ids(strand[0], strand[1], thread_id, episode_id)
         # One writer: queued on the native writer (app_write commits itself
         # when this connection is not the native-owned store).
         app_write(
@@ -339,7 +354,7 @@ def emit_event(
             "exec_domain, topic_domain, label_source, label_confidence, sigma_from, sigma_to, "
             "hash_signature, hash_scheme, hex_bin, action_signature, cost, links, payload) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, time.time(), ea.SCHEMA_VERSION, episode_id, step_index, thread_id, family,
+            (event_id, time.time(), ea.SCHEMA_VERSION, row_episode, step_index, row_thread, family,
              label, valence, actor, evidence, cause_key, outcome_key, trigger, exec_domain,
              topic_domain, label_source, label_confidence, sigma_from, sigma_to,
              ea.hash_signature(sigma_to or sigma_from, exec_domain, topic_domain), ea.HASH_SCHEME,
@@ -907,6 +922,32 @@ def record_research_observed(conn, *, thread_id: Optional[str], document_id: str
         return ["OBSERVED"] if eid else []
     except Exception as exc:  # noqa: BLE001
         logger.warning("[memory_events] record_research_observed failed doc=%s: %s", document_id, exc)
+        return []
+
+
+_TOMBSTONE_LABELS = ("STRAND_DELETED", "STRAND_RENAMED")
+
+
+def record_strand_tombstone(conn, *, label: str, thread_id: str, payload: dict,
+                            coords: Optional[str] = None) -> List[str]:
+    """STRAND_DELETED / STRAND_RENAMED: chat deleted or renamed a conversation and the
+    memory keeps its title (titles live only in conversations.db). ``thread_id`` is the
+    conversation id. The user did it: evidence ``user``, actor ``user``. Not typed during a
+    chat turn, so no episode and no chain row (bookkeeping about memory, S12: the payload
+    is the title and ids, never message content)."""
+    try:
+        if label not in _TOMBSTONE_LABELS:
+            logger.warning("[memory_events] tombstone refused label=%s thread=%s", label, thread_id)
+            return []
+        ensure_schema(conn)
+        eid = emit_event(
+            conn, label=label, evidence="user", actor="user", thread_id=thread_id,
+            sigma_from=_sigma_from(), sigma_to=coords, payload=payload, chain=False,
+        )
+        return [label] if eid else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_events] record_strand_tombstone failed label=%s thread=%s: %s",
+                       label, thread_id, exc)
         return []
 
 

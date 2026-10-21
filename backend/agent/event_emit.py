@@ -20,14 +20,25 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
-def submit(owner, fn_name: str, **kwargs) -> None:
+def submit(owner, fn_name: str, *, conversation_id: Optional[str] = None, **kwargs) -> None:
     """Run ``memory_events.<fn_name>(conn, ...)`` on lane("memory_events").
 
     ``owner`` carries ``_memory_interface`` (a kernel); None falls back to the
     process-wide interface. ``fn_name == "emit_event"`` gets the coordinate as
     sigma_from/sigma_to, every other writer (Wave E) gets ``coords=``.
+    The rows the job writes are keyed to the owner's conversation (``conversation_id``, else
+    ``owner.conversation_id``): thread_id = conversation, episode_id = "<conversation>:<turn>"
+    (memory_events.STRAND). Bound here, at submit time: the kernel moves to the next turn.
     """
     try:
+        conv = conversation_id or getattr(owner, "conversation_id", None)
+        strand = None
+        if isinstance(conv, str) and conv:
+            sessions = frozenset(
+                s for s in (getattr(owner, "session_id", None), getattr(owner, "_turn_session_id", None))
+                if isinstance(s, str) and s
+            )
+            strand = (conv, sessions)
         mi = getattr(owner, "_memory_interface", None)
         if mi is None and owner is None:
             from backend.memory import get_memory_interface
@@ -58,6 +69,7 @@ def submit(owner, fn_name: str, **kwargs) -> None:
             except Exception:  # noqa: BLE001
                 before, coords = None, None
             token = _me.SIGMA_BEFORE.set(before)
+            strand_token = _me.STRAND.set(strand)
             try:
                 if fn_name == "emit_event":
                     _me.ensure_schema(conn_l)
@@ -67,6 +79,7 @@ def submit(owner, fn_name: str, **kwargs) -> None:
                 else:
                     getattr(_me, fn_name)(conn_l, coords=coords, **kwargs)
             finally:
+                _me.STRAND.reset(strand_token)
                 _me.SIGMA_BEFORE.reset(token)
 
         lane("memory_events").submit(f"memory_events:{fn_name}", _job)
@@ -74,8 +87,11 @@ def submit(owner, fn_name: str, **kwargs) -> None:
         logger.debug("[memory_events] submit %s skipped: %s", fn_name, exc)
 
 
-def peek_kernel(conversation_id: Optional[str] = None, session_id: Optional[str] = None) -> Any:
-    """The live kernel of a conversation (or session), never constructing one."""
+def peek_kernel(conversation_id: Optional[str] = None, session_id: Optional[str] = None,
+                episode_id: Optional[str] = None) -> Any:
+    """The live kernel of a conversation (or session), never constructing one. Several
+    kernels can run under one session id ("session_iris"); ``episode_id`` picks the one
+    whose current turn it is."""
     try:
         mod = sys.modules.get("backend.agent.agent_kernel")
         live = getattr(mod, "_agent_kernel_instances", None)
@@ -84,9 +100,12 @@ def peek_kernel(conversation_id: Optional[str] = None, session_id: Optional[str]
         if conversation_id and conversation_id in live:
             return live[conversation_id]
         if session_id:
-            for k in list(live.values()):
-                if getattr(k, "session_id", None) == session_id:
+            same = [k for k in list(live.values()) if getattr(k, "session_id", None) == session_id]
+            for k in same:
+                if episode_id and getattr(k, "_event_episode_id", None) == episode_id:
                     return k
+            if same:
+                return same[0]
     except Exception:  # noqa: BLE001
         pass
     return None
@@ -101,10 +120,10 @@ def emit(owner, label: str, *, evidence: str = "none", thread_id: Optional[str] 
     ``f"{session}:{turn_id}"``, the same task id Wave E uses). Never raises."""
     try:
         if owner is None:
-            owner = peek_kernel(conversation_id, thread_id)
+            owner = peek_kernel(conversation_id, thread_id, episode_id)
         thread_id = thread_id or getattr(owner, "session_id", None)
         episode_id = episode_id or getattr(owner, "_event_episode_id", None)
-        submit(owner, "emit_event", label=label, evidence=evidence, thread_id=thread_id,
-               episode_id=episode_id, **kw)
+        submit(owner, "emit_event", conversation_id=conversation_id, label=label, evidence=evidence,
+               thread_id=thread_id, episode_id=episode_id, **kw)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[memory_events] emit %s skipped: %s", label, exc)

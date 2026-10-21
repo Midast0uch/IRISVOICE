@@ -111,7 +111,7 @@ def test_recovery_route_is_a_pivot_typed_by_the_node_reason(store):  # noqa: F81
     assert len(added) == 1
     (row,) = rows(store, "PIVOT")
     assert (row["family"], row["evidence"], row["episode_id"], row["trigger"]) == (
-        "control", "verifier", EPISODE, "empty")
+        "control", "verifier", "c:turn-ev", "empty")   # the stub kernel's conversation is "c" (strand ids contract)
     assert json.loads(row["payload"])["to_tool"] == "fetch.vision"
 
 

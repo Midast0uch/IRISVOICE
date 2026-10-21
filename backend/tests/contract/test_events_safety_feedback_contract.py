@@ -35,6 +35,7 @@ from backend.tests.contract._events_fixture import BlockedLane, memory_interface
 from backend.tests.contract.test_click_safety_contract import _btn, gate  # noqa: F401
 
 EPISODE = "sess-fb:turn-fb"
+ROW_EPISODE = "conv-fb:turn-fb"   # the row key once the conversation is known (strand ids contract)
 
 
 @pytest.fixture()
@@ -70,9 +71,9 @@ async def test_unsafe_click_is_refused_then_pivots(live, gate):  # noqa: F811
     assert [r["label"] for r in evs] == ["UNSAFE_REFUSED", "PIVOT"]
     refused, pivot = evs
     assert (refused["family"], refused["evidence"], refused["episode_id"], refused["thread_id"]) == (
-        "safety", "verifier", EPISODE, "sess-fb")
+        "safety", "verifier", ROW_EPISODE, "conv-fb")
     assert (pivot["family"], pivot["trigger"], pivot["episode_id"]) == (
-        "control", Reason.PERMISSION_DENIED.value, EPISODE)
+        "control", Reason.PERMISSION_DENIED.value, ROW_EPISODE)
     assert "Buy now" not in json.dumps(evs, default=str), "untrusted element text stays out of the rows"
 
 
@@ -91,8 +92,8 @@ async def test_unsure_unanswered_is_escalated_no_response_pivot(live, gate):  # 
     assert res["pivot"] is True  # ASK_TIMEOUT_S is 1 in the gate fixture
     assert _labels(live) == ["ESCALATED_UNSURE", "NO_RESPONSE", "PIVOT"]
     unsure, silent, _pivot = rows(live)
-    assert (unsure["family"], unsure["episode_id"]) == ("safety", EPISODE)
-    assert (silent["family"], silent["episode_id"]) == ("feedback", EPISODE)
+    assert (unsure["family"], unsure["episode_id"]) == ("safety", ROW_EPISODE)
+    assert (silent["family"], silent["episode_id"]) == ("feedback", ROW_EPISODE)
     assert json.loads(silent["payload"])["purpose"] == "safety"
     assert "CLARIFY_ASKED" not in _labels(live), "the gate's own question is not a clarification"
 
@@ -118,7 +119,7 @@ async def test_unsure_answered_is_approval_or_denial_from_the_user(live, gate, m
     assert [r["label"] for r in evs] == (
         ["ESCALATED_UNSURE", label, "PIVOT"] if pivots else ["ESCALATED_UNSURE", label])
     user_row = evs[1]
-    assert (user_row["family"], user_row["evidence"], user_row["episode_id"]) == ("feedback", "user", EPISODE)
+    assert (user_row["family"], user_row["evidence"], user_row["episode_id"]) == ("feedback", "user", ROW_EPISODE)
 
 
 # ── ask_user: clarification, escalation, timeout ──────────────────────────────
@@ -160,7 +161,7 @@ def test_a_browser_takeover_is_an_escalation(live, tool):
     tool.ask_browser_takeover(takeover_url="https://x.test", reason="captcha", turn_id="turn-fb",
                               conversation_id="conv-fb")
     (row,) = rows(live)
-    assert (row["family"], row["label"], row["episode_id"]) == ("control", "ESCALATED", EPISODE)
+    assert (row["family"], row["label"], row["episode_id"]) == ("control", "ESCALATED", ROW_EPISODE)
 
 
 def test_a_safety_question_emits_no_clarify_event(live, tool):

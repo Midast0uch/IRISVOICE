@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -382,13 +383,66 @@ def add_message(
         return msg
 
 
+# Tombstones (MEMORY-SURFACE-BUILD section 4 cases 1/2/8): titles live ONLY in this store, so
+# when a conversation is deleted or renamed the memory is told, once per conversation, and
+# keeps the title (STRAND_DELETED / STRAND_RENAMED in memory.db, on the memory_events lane).
+_TOMBSTONE_TITLE_MAX = 300   # a payload is a bounded reference (memory_events._PAYLOAD_MAX)
+_tombstones_lost = 0         # tombstones that could not be queued (read by tests and the health view)
+
+
+def tombstones_lost() -> int:
+    return _tombstones_lost
+
+
+def _type_tombstone(label: str, conversation_id: str, payload: dict) -> bool:
+    """Queue ONE tombstone on lane("memory_events"). Off the request path, bounded (the
+    lane drops past its depth), never raises; a tombstone that is not queued is counted and
+    logged. Only the memory interface the running app already holds is used - no memory
+    store open means no memory to tell (counted all the same)."""
+    global _tombstones_lost
+    ok = False
+    try:
+        mem = sys.modules.get("backend.memory")
+        mi = mem.get_memory_interface() if mem is not None else None
+        if mi is not None:
+            from backend.memory import memory_events
+
+            ok = bool(memory_events.submit(
+                mi, "record_strand_tombstone", label=label, thread_id=conversation_id, payload=payload,
+            ))
+    except Exception as exc:  # noqa: BLE001 - chat delete/rename never fails on the memory
+        logger.warning("[conversation_store] tombstone failed label=%s conv=%s: %s",
+                       label, conversation_id, exc)
+    if not ok:
+        _tombstones_lost += 1
+        logger.warning("[conversation_store] tombstone not queued label=%s conv=%s (lost so far: %d)",
+                       label, conversation_id, _tombstones_lost)
+    return ok
+
+
+_TOMBSTONE_SQL = """
+SELECT c.id, c.title, c.parent_id, c.tags, c.reports_to,
+       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id)
+FROM conversations c WHERE c.id = ? OR c.parent_id = ?
+"""
+
+
 def delete_conversation(conversation_id: str) -> bool:
-    """Delete a conversation by ID (from both dict and SQLite)."""
+    """Delete a conversation by ID (from both dict and SQLite). One STRAND_DELETED
+    tombstone per deleted conversation (a root's strands included) keeps the titles."""
+    global _tombstones_lost
     with _lock:
         if conversation_id not in _conversations:
             return False
         del _conversations[conversation_id]
         conn = _get_conn()
+        gone = []
+        try:
+            gone = conn.execute(_TOMBSTONE_SQL, (conversation_id, conversation_id)).fetchall()
+        except Exception as exc:  # noqa: BLE001 - the delete goes on; the loss is counted
+            _tombstones_lost += 1
+            logger.warning("[conversation_store] tombstone read failed conv=%s (lost so far: %d): %s",
+                           conversation_id, _tombstones_lost, exc)
         # Deleting a thread root deletes its strands too (no orphan strands that
         # /api/threads can no longer reach).
         children = [r[0] for r in conn.execute(
@@ -401,15 +455,24 @@ def delete_conversation(conversation_id: str) -> bool:
             (conversation_id, conversation_id),
         )
         # CASCADE in the schema deletes messages too
-        return True
+    at = time.time()
+    for cid, title, parent_id, tags, reports_to, message_count in gone:
+        _type_tombstone("STRAND_DELETED", cid, {
+            "title": (title or "")[:_TOMBSTONE_TITLE_MAX], "parent_id": parent_id,
+            "tags": _load_tags(tags), "reports_to": reports_to,
+            "message_count": message_count, "at": at,
+        })
+    return True
 
 
 def update_conversation_title(conversation_id: str, title: str) -> bool:
-    """Update the title of a conversation."""
+    """Update the title of a conversation. A changed title leaves one STRAND_RENAMED
+    tombstone (the old title stays searchable in the memory)."""
     with _lock:
         conv = _conversations.get(conversation_id)
         if not conv:
             return False
+        old_title = conv["title"]
         conv["title"] = title
         conv["updated_at"] = _now()
         conn = _get_conn()
@@ -417,7 +480,12 @@ def update_conversation_title(conversation_id: str, title: str) -> bool:
             "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
             (title, conv["updated_at"], conversation_id),
         )
-        return True
+    if title != old_title:
+        _type_tombstone("STRAND_RENAMED", conversation_id, {
+            "old_title": (old_title or "")[:_TOMBSTONE_TITLE_MAX],
+            "new_title": (title or "")[:_TOMBSTONE_TITLE_MAX], "at": time.time(),
+        })
+    return True
 
 
 def toggle_pin_conversation(conversation_id: str) -> bool:

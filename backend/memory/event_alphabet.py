@@ -184,6 +184,13 @@ _SEED = [
     ("SECTOR_SPLIT", "memory", "neutral", "agent", "a sector whose outcomes disagree grew a child"),
     ("SECTOR_MERGED", "memory", "neutral", "agent", "two sectors merged; the absorbed key is an alias"),
     ("SECTOR_DISSOLVED", "memory", "sets_back", "agent", "a candidate sector expired and folded into its parent"),
+    # strand tombstones (MEMORY-SURFACE-BUILD section 4, cases 1/2/8). Family "memory", not
+    # "environment": a tombstone is the memory keeping what chat is about to lose (the
+    # strand's title lives only in conversations.db), like OFFLOADED keeps its placeholder.
+    # Actor "user": the user deleted or renamed it in chat. Written by
+    # memory_events.record_strand_tombstone.
+    ("STRAND_DELETED", "memory", "neutral", "user", "a conversation was deleted in chat; the tombstone keeps its title"),
+    ("STRAND_RENAMED", "memory", "neutral", "user", "a conversation was renamed in chat; the tombstone keeps the old title"),
     # safety
     ("UNSAFE_REFUSED", "safety", "neutral", "agent", "an unsafe action was refused"),
     ("ESCALATED_UNSURE", "safety", "neutral", "agent", "an unsure action was put to the user"),
