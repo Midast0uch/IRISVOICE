@@ -440,6 +440,15 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
 
     def _job() -> None:
         noul = score_surface_bool(consumer_id, statement, engine=engine, frame=_frame)
+        if noul is None:
+            # COUNT THE SILENT MISS (2026-10-20): an engine-unavailable window
+            # (one failed /v1/models probe blanks 300 s) swallowed 87 of 157
+            # sites in one eval pass and nothing showed the loss. A missing
+            # score must be visible, never a quiet zero-yield pass.
+            logger.debug("[surface] %s shadow row not written: no score "
+                         "(engine unavailable or refused the consumer)",
+                         consumer_id)
+            return
         row = shadow_row(consumer_id, noul, brain_bool=brain_bool, scope=_scope,
                          input_key=_ik)
         if row is not None and criteria_version:

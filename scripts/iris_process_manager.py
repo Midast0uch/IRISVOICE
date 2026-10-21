@@ -268,6 +268,14 @@ _SERVICE_PORTS = {"backend": 8090, "frontend": 3000, "launcher": 8080}
 _SERVICE_SIGNATURES = {
     "backend": (
         "start-backend.py",
+        # The backend's HEAVY server children (2026-10-20). They are spawned
+        # detached, so taskkill /T misses them, and each dead backend left
+        # ~3.2 GB behind (llama-server 2.2 GB + fermion 1 GB). Measured: three
+        # backend deaths in one evening dropped the machine to 1.5 GB free and
+        # every later backend died faster - a death spiral. Reaped at stop and
+        # at preflight, only while the backend is not tracked alive.
+        "llama-server",
+        "fermion.exe serve phonon",
         # "backend.audio.parakeet_sherpa_worker" retired 2026-10-08 (phonon2-d1-model-swap)
     ),
     "frontend": (
@@ -634,6 +642,10 @@ def stop_service(name: str) -> bool:
     if not _is_alive(pid):
         print(f"[{name}] pid {pid} not alive, clearing stale pid file")
         _clear_pid(name)
+        # The backend died without a stop: its detached server children
+        # (llama-server, fermion) are still holding gigabytes. Reap them on
+        # the same condition - not tracked alive (2026-10-20).
+        _reap_orphans(name)
         return False
     print(f"[{name}] killing pid {pid} (and tree)...")
     if sys.platform == "win32":
@@ -650,6 +662,11 @@ def stop_service(name: str) -> bool:
             except ProcessLookupError:
                 pass
     _clear_pid(name)
+    # Reap the detached server children taskkill /T missed (llama-server,
+    # fermion): with the pid file cleared the service is not tracked alive,
+    # so every signature match is by definition an orphan of the backend we
+    # just killed. Without this each stop leaks ~3.2 GB (2026-10-20).
+    _reap_orphans(name)
     return True
 
 
