@@ -8878,7 +8878,10 @@ class AgentKernel:
         try:
             from backend.agent.event_oracle import observe_user_message
 
-            observe_user_message(self, text, thread_id=_conv_id, turn_id=turn_id, from_voice=from_voice)
+            observe_user_message(
+                self, text, thread_id=_conv_id, turn_id=turn_id, from_voice=from_voice,
+                episode_id=f"{_conv_id}:{turn_id}" if turn_id else None,
+            )
         except Exception as _eo_err:  # noqa: BLE001 - an observer never blocks a turn
             logger.debug("[AgentKernel] event oracle observe skipped: %r", _eo_err)
 
