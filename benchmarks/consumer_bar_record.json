@@ -13,7 +13,7 @@
     "ece": null,
     "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
     "precision": 0.0,
-    "rows": 166,
+    "rows": 271,
     "status": "shadow"
   },
   "call_closing": {
@@ -28,9 +28,9 @@
     },
     "consumer_id": "call_closing",
     "ece": null,
-    "gap": "oof AUROC 0.4995 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4998 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 1578,
+    "rows": 2449,
     "status": "shadow"
   },
   "click_safety": {
@@ -44,10 +44,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "click_safety",
-    "ece": 0.4398,
-    "gap": "minority class 2.9% < 5%",
+    "ece": 0.4218,
+    "gap": "minority class 1.8% < 5%",
     "precision": 1.0,
-    "rows": 105,
+    "rows": 166,
     "status": "shadow"
   },
   "depth_met": {
@@ -62,10 +62,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "depth_met",
-    "ece": 0.0669,
+    "ece": 0.0983,
     "gap": "",
-    "precision": 0.9082,
-    "rows": 324,
+    "precision": 0.9509,
+    "rows": 1109,
     "status": "enforced"
   },
   "depth_route": {
@@ -80,9 +80,9 @@
     },
     "consumer_id": "depth_route",
     "ece": null,
-    "gap": "oof AUROC 0.5213 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5516 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 119,
+    "rows": 498,
     "status": "shadow"
   },
   "done": {
@@ -96,10 +96,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "done",
-    "ece": 0.0712,
-    "gap": "oof calibrated ECE 0.0761 > 0.05",
-    "precision": 0.9423,
-    "rows": 122,
+    "ece": 0.104,
+    "gap": "oof AUROC 0.6053 < 0.65 (confidence does not rank errors)",
+    "precision": 0.7868,
+    "rows": 351,
     "status": "shadow"
   },
   "escalate_incomplete": {
@@ -113,10 +113,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "escalate_incomplete",
-    "ece": 0.1788,
+    "ece": 0.2202,
     "gap": "",
-    "precision": 0.9141,
-    "rows": 777,
+    "precision": 0.9542,
+    "rows": 1455,
     "status": "enforced"
   },
   "event_family": {
@@ -131,9 +131,9 @@
     },
     "consumer_id": "event_family",
     "ece": null,
-    "gap": "distinct rows 68 < 100",
+    "gap": "oof AUROC 0.5062 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 68,
+    "rows": 105,
     "status": "shadow"
   },
   "event_type:control": {
@@ -148,9 +148,9 @@
     },
     "consumer_id": "event_type:control",
     "ece": null,
-    "gap": "distinct rows 14 < 100",
+    "gap": "distinct rows 23 < 100",
     "precision": 0.0,
-    "rows": 14,
+    "rows": 23,
     "status": "shadow"
   },
   "event_type:delivery": {
@@ -165,9 +165,9 @@
     },
     "consumer_id": "event_type:delivery",
     "ece": null,
-    "gap": "distinct rows 17 < 100",
+    "gap": "distinct rows 23 < 100",
     "precision": 0.0,
-    "rows": 17,
+    "rows": 23,
     "status": "shadow"
   },
   "event_type:feedback": {
@@ -181,6 +181,23 @@
       "readout_mode": "letters"
     },
     "consumer_id": "event_type:feedback",
+    "ece": null,
+    "gap": "distinct rows 3 < 100",
+    "precision": 0.0,
+    "rows": 3,
+    "status": "shadow"
+  },
+  "event_type:intent": {
+    "config": {
+      "backend_id": "d1-3b-ad-q4_k_m+letters|letters|3368a26b3a9f",
+      "backend_identity_source": "declared d1 variant",
+      "calibrated_cap": 32,
+      "candidate_cap": 32,
+      "criteria_hash": "3368a26b3a9f",
+      "engine_id": "d1-3b-ad-q4_k_m+letters",
+      "readout_mode": "letters"
+    },
+    "consumer_id": "event_type:intent",
     "ece": null,
     "gap": "distinct rows 1 < 100",
     "precision": 0.0,
@@ -199,9 +216,9 @@
     },
     "consumer_id": "event_type:knowledge",
     "ece": null,
-    "gap": "distinct rows 33 < 100",
+    "gap": "distinct rows 53 < 100",
     "precision": 0.0,
-    "rows": 33,
+    "rows": 53,
     "status": "shadow"
   },
   "event_type:memory": {
@@ -216,9 +233,9 @@
     },
     "consumer_id": "event_type:memory",
     "ece": null,
-    "gap": "distinct rows 26 < 100",
+    "gap": "distinct rows 49 < 100",
     "precision": 0.0,
-    "rows": 26,
+    "rows": 49,
     "status": "shadow"
   },
   "mode": {
@@ -249,11 +266,11 @@
       "readout_mode": "letters"
     },
     "consumer_id": "narration",
-    "ece": 0.2009,
-    "gap": "oof calibrated ECE 0.0546 > 0.05",
-    "precision": 0.8993,
-    "rows": 824,
-    "status": "shadow"
+    "ece": 0.1282,
+    "gap": "",
+    "precision": 0.8612,
+    "rows": 1406,
+    "status": "enforced"
   },
   "needs_action": {
     "config": {
@@ -262,16 +279,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "b6d225dbcc4b",
-      "criteria_version": "needs_action/v2",
+      "criteria_version": "needs_action/v7",
       "engine_id": "d1-3b-ad-q4_k_m+letters",
       "readout_mode": "letters"
     },
     "consumer_id": "needs_action",
     "ece": null,
-    "gap": "distinct rows 0 < 100",
+    "gap": "",
     "precision": 0.0,
-    "rows": 0,
-    "status": "shadow"
+    "rows": 641,
+    "status": "enforced"
   },
   "presentation": {
     "config": {
@@ -285,9 +302,9 @@
     },
     "consumer_id": "presentation",
     "ece": null,
-    "gap": "distinct rows 35 < 100",
+    "gap": "distinct rows 48 < 100",
     "precision": 0.0,
-    "rows": 35,
+    "rows": 48,
     "status": "shadow"
   },
   "recovery_strategy": {
@@ -319,11 +336,11 @@
       "readout_mode": "letters"
     },
     "consumer_id": "review_verdict",
-    "ece": 0.0842,
-    "gap": "",
-    "precision": 0.9227,
-    "rows": 538,
-    "status": "enforced"
+    "ece": 0.0628,
+    "gap": "enforcement bar unmet (no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows); rung live",
+    "precision": 0.8375,
+    "rows": 1464,
+    "status": "sampled"
   },
   "sufficient": {
     "config": {
@@ -354,10 +371,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "tool_approval",
-    "ece": null,
+    "ece": 0.0389,
     "gap": "",
-    "precision": 0.0,
-    "rows": 524,
+    "precision": 0.9168,
+    "rows": 2143,
     "status": "enforced"
   },
   "tool_choice": {
@@ -372,11 +389,11 @@
       "readout_mode": "letters"
     },
     "consumer_id": "tool_choice",
-    "ece": 0.1011,
-    "gap": "",
-    "precision": 0.9571,
-    "rows": 1161,
-    "status": "enforced"
+    "ece": 0.0829,
+    "gap": "enforcement bar unmet (oof AUROC 0.617 < 0.65 (confidence does not rank errors)); rung live",
+    "precision": 0.876,
+    "rows": 2231,
+    "status": "sampled"
   },
   "user_feedback": {
     "config": {
@@ -389,11 +406,11 @@
       "readout_mode": "letters"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.2251,
-    "gap": "oof calibrated ECE 0.053 > 0.05",
-    "precision": 0.9146,
-    "rows": 340,
-    "status": "shadow"
+    "ece": 0.2372,
+    "gap": "",
+    "precision": 0.9007,
+    "rows": 628,
+    "status": "enforced"
   },
   "web_intent": {
     "config": {
@@ -407,9 +424,9 @@
     },
     "consumer_id": "web_intent",
     "ece": null,
-    "gap": "oof AUROC 0.4641 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4433 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 333,
+    "rows": 607,
     "status": "shadow"
   }
 }

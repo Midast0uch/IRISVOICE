@@ -170,7 +170,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
     route job  ---- tool_choice (enforced) | recovery_strategy | depth_route
                     browser_next (shadow, element ids as options)
     approve job --- tool_approval (ENFORCED: the pre-call guard; post-hoc rows keep flowing)
-    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v7, shadow: seeding the honest cohort)
+    guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v7, ENFORCED: the DIRECT/REACT mode rule)
     judge_review -- review_verdict (ENFORCED, refuse-only)
     judge_step ---- escalate_incomplete (ENFORCED)
     judge_goal ---- done | sufficient
@@ -524,9 +524,9 @@ v7 (2026-10-20): measured by full-cohort replay on the 474 distinct recorded inp
 
 RESOLVED 2026-10-19: the planner now declares `expected_output`. The prompt carries the field, `_plan_task` passes it onto `PlanStep`, and the plan-to-queue conversion was dropping it (every node item had `expected_output=None`); it now carries it through. Live verification: empty in 21/21 rows before, populated after ("Successful execution of app.py without errors"). The user request is NOT a substitute for it: frame `goal+request` scores 7/12 - a request that mentions running tests makes analysis steps read as tool-needing.
 
-**State (2026-10-20, v6, honest count).** 472 distinct rows (432 correct / 40 wrong), OOF AUROC 0.8309, OOF ECE 0.0146, calibrated threshold 0.62 (472 above, precision 0.9153, Wilson 0.8867). Every aggregate clause is met. The one failing clause is directional: the acting answer ("no") has 89 rows above the calibrated threshold at precision 0.8427 (Wilson 0.7531) < 0.90. The 9-15 wrong "no"s are action goals the model misreads as answerable without a tool ("Implement the parse_duration function based on tests" at 0.84, "Create inventory.py..." at 0.79, "Read the contents of textstats.py..." at 0.84) - the same defect class v5 fixed on the read side, now on the implement side. Fix offline on the recorded rows before any traffic (see 7.2a).
+**State (2026-10-21, v7, live gate passed).** 641 distinct rows (598 correct / 43 wrong) on the running identity, OOF AUROC 0.8634, OOF ECE 0.0167, calibrated threshold 0.6244 (614 rows above, precision 0.9479, Wilson 0.9274). Clause 8 on live traffic: the acting answer ("no") holds 101 rows above the threshold at precision 0.9208 (Wilson 0.8514). Every clause of the hardened bar is met; the bar record was written scoped (`--scope needs_action=needs_action/v7` with a scope for every enforced consumer) and `decides("needs_action")` returns 0.6244 - the consumer is ON. The full-corpus replay (981 recorded inputs, both eras, re-scored under the v7 question) had predicted exactly this: threshold 0.8362, acting 121 rows at 0.9174 - the live gate confirmed it (see 7.2a).
 
-The count itself is new: until 2026-10-20 the report's dedupe key had no input identity, and the quantized engine emits few distinct confidences, so DIFFERENT goals with equal (confidence, chosen) collapsed - 483 real sites (474 distinct goals) counted as 226. `surface_shadow.input_key` now binds each row to its input at the call site; the report prefers it; the existing v6 cohort was backfilled from the backend log (positional join on the FIFO lane, verified on step_id + label, 483/483).
+The count itself is new: until 2026-10-20 the report's dedupe key had no input identity, and the quantized engine emits few distinct confidences, so DIFFERENT goals with equal (confidence, chosen) collapsed - 483 real sites (474 distinct goals) counted as 226. `surface_shadow.input_key` now binds each row to its input at the call site; the report prefers it; the existing cohorts were backfilled from the backend logs (positional join on the FIFO lane, verified on step_id + label). The key also had to be added to the bridge's `_DECISION_META_KEYS` whitelist - without it every row written through the bridge reached the ledger without the key (435 v7 rows; found and fixed 2026-10-21).
 
 **History.** v1 earned the bar on 2026-10-13 (235 rows, 216 distinct, OOF AUROC 0.8043, ECE 0.0404, precision 0.9174 at 109 rows above) and was demoted 2026-10-18 when the label was found to count the loop's `ok` instead of the call outcome, which turned informative pytest runs into 'no tool needed' rows. v2 (call-level label) and v3 (concrete-outcome question) never re-earned the bar.
 
@@ -725,20 +725,19 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 
 | Consumer | Distinct rows (correct/wrong) | OOF AUROC | OOF ECE | Threshold (rows above, precision, Wilson) | Measured status | Gap |
 |---|---|---|---|---|---|---|
-| `tool_choice` (scope `tc-decide-v3`, 2026-10-13) | 688 (568/120) | 0.7617 | 0.0187 | 0.7215 (524, 0.9008, 0.8722) | meets the bar; ON | - |
+| `tool_choice` (scope `tc-decide-v3`, 2026-10-21 recompute) | 2231 (1886/345) | 0.617 | 0.0129 | 0.881 (391, 0.9003, 0.8665) | sampled: DEMOTED 2026-10-21 - the grown cohort (688 -> 2231 rows from the eval passes) no longer ranks errors (AUROC < 0.65) | re-earn on a question/frame revision, measured offline first |
 | `escalate_incomplete` (2026-10-13) | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON | - |
-| `review_verdict` (scope `review_verdict/v4`, 2026-10-17) | 184 (162/22) | 0.8994 | 0.0274 | 0.5386 (165, 0.9212, 0.8699) | meets the bar; ON (refuse-only) | - |
+| `review_verdict` (scope `review_verdict/v4`, 2026-10-21 recompute) | 1464 (1142/322) | 0.6563 | 0.0164 | none | sampled: DEMOTED 2026-10-21 - the grown cohort (184 -> 1464 rows) holds no 0.90-precision threshold | re-earn on a frame revision, measured offline first |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
-| `tool_approval` (scope `tool_approval/v6`, 2026-10-18) | 433 (326/107) | 0.7313 | 0.0398 | 0.7597 (176, 0.9034, 0.8508) | meets the bar; ON (the pre-call guard) | - |
-| `needs_action` (scope `needs_action/v6`, 2026-10-20) | 472 (432/40) | 0.8309 | 0.0146 | 0.62 (472, 0.9153, 0.8867) | sampled: acting answer 'no' 89 above at 0.8427 (Wilson 0.7531) < 0.90 | see 7.2a |
-| `needs_action` (scope `needs_action/v5`, retired 2026-10-20) | 272 (220/52) | 0.6543 | 0.0414 | 0.8576 (92, 0.9239, 0.8512) | retired: its label pooled group B, which flattened the bands (45% of errors from 6% of rows) | see 7.2a |
-| `user_feedback` | 165 (145/20) | 0.9078 | 0.0544 | 0.5912 (154, 0.9156, 0.8609) | shadow (bar earned 2026-10-19: 363 distinct, AUROC 0.9512, precision 0.9112) | no live decision site |
-| `narration` | 332 (266/66) | 0.7571 | 0.0512 | 0.8326 (212, 0.9009, 0.8533) | shadow | ECE 0.0512 > 0.05 |
-| `web_intent` (scope `web_intent/v2`) | 61 (34/27) | unstable at this size | - | none | shadow | distinct rows < 100 (the eval's fixed task set caps the distinct inputs; the question is replay-validated at 0.7679 on real pairs) |
+| `tool_approval` (scope `tool_approval/v6`, 2026-10-21 recompute) | 2143 (1524/619) | 0.6816 | 0.0096 | 0.7908 (474, 0.9008, 0.8706) | meets the bar; ON (the pre-call guard) | - |
+| `needs_action` (scope `needs_action/v7`, 2026-10-21) | 641 (598/43) | 0.8634 | 0.0167 | 0.6244 (614, 0.9479, 0.9274) | meets the bar; ON - ACTING: 101 rows above at 0.9208 (Wilson 0.8514) | - |
+| `user_feedback` (2026-10-21 recompute) | 628 (535/93) | 0.8808 | 0.0325 | 0.0005 (594, 0.9007, 0.874) | enforced in the bar record; no live decision site | wire a decision site |
+| `narration` (2026-10-21 recompute) | - | - | - | - | enforced in the bar record | - |
+| `web_intent` (scope `web_intent/v2`) | 607 (462/145) | 0.4433 | 0.0434 | none | shadow | AUROC < 0.65 (quality-blocked: fix the question/label offline, never with traffic) |
 | `browser_next` | 126 (71/55) | 0.7059 | 0.095 | none | shadow | no threshold reaches precision 0.90 on 50 rows |
-| `call_closing` | 657 (122/535) | 0.4951 | 0.0 | none | shadow, refused by design | AUROC < 0.65 |
-| `click_safety` | 92 (89/3) | 0.3034 | 0.0003 | 0.9595 | shadow | rows < 100 (and 3 wrong: minority < 5%) |
-| `depth_route` 27, `event_family` 67, `done` 47, `presentation` 13, `event_type:*` 1-32, `mode` (retired) 77 | below 100 | - | - | none | shadow | rows < 100 |
+| `call_closing` | 657 (122/535) | 0.4998 | 0.0 | none | shadow, refused by design | AUROC < 0.65 |
+| `click_safety` | 92 (89/3) | 0.3034 | 0.0003 | 0.9595 | shadow | rows < 100 (and minority < 5%) |
+| `depth_route` 27, `event_family` 99, `done` 47, `presentation` 48, `event_type:*` 1-53, `mode` (retired) 77 | below 100 | - | - | none | shadow | rows < 100 |
 | `recovery_strategy`, `sufficient` | 0 on d1 | - | - | none | shadow | failure-only paths (below) |
 
 ### 7.2a The directional split: an aggregate bar can pass on the side that changes nothing
@@ -871,31 +870,63 @@ the confirmation step, never the diagnosis step.
 The same collapse applies to every consumer whose rows lack an input key, so
 the honest distinct counts in 7.2 are lower bounds for them.
 
+**The v7 live seeding (2026-10-21 night) - three findings.**
+
+1. THE WHITELIST DROP. The bridge's `_DECISION_META_KEYS` whitelist did not
+   carry `input_key`, so every row written through the bridge reached the
+   ledger WITHOUT it: a full seeding pass (435 needs_action/v7 rows)
+   deduped on the confidence tuple - the exact collapse the key exists to
+   prevent. Found by the join audit (0 of 435 rows carried the key while the
+   call site stamped every one); fixed the same day, and the 435 rows were
+   backfilled by the same verified FIFO log join across the five sequential
+   v7-era backends (435/435 matched on (step_id, label), 428 distinct
+   inputs). Lesson: a new row field must be added to the whitelist in the
+   same change, or it silently never lands.
+
+2. THE 10 WRONG ACTING "NO"S, CLASSIFIED BY WHAT THE STEP ACTUALLY DID
+   (pulled from the log's tool-dispatch lines around each site). Seven are
+   GENUINE model errors and two question gaps: a write goal with no file
+   named ("Write the Inventory class code..." at 0.90 while the step ran
+   write_file) and web-material goals ("Extract ... from the page" at 0.96
+   while the step ran browser_act). Three are LABEL defects: the noun "a
+   copy" matches the verb "copy" in `_NA_ACTION_ANYWHERE`; "modify" sits in
+   the label's action regex but not in the question's verb list, so the
+   model is scored against actions it was never taught; and an action-led
+   goal whose step only listed/read because the action happened in another
+   step. The label-defect class is the v6 mirror in new shapes - when model
+   and label disagree, audit the label first.
+
+3. THE FULL-CORPUS REPLAY MEETS THE BAR. All 981 recorded inputs from both
+   eras (the v6-era goals carry the same label rule; v7 changed only the
+   question), re-scored through the real engine under the CURRENT v7
+   question and frame, judged by `fit_consumer(acting="no")` with the
+   acting-aware pick: threshold 0.8362, 837 rows above at precision 0.9606
+   (Wilson 0.9451), ACTING 121 rows at 0.9174 (Wilson 0.8545) - every
+   clause met. The live 445-row cohort fails only on volume: the v7 era had
+   run 1.5 passes; the corpus is the two-pass size. A label variant (L3:
+   the action regex narrowed to the question's own verb list, plus an
+   article guard so "a copy" is a noun) also passes on the same corpus
+   (acting 171 rows at 0.9181, Wilson 0.8673) and is the next lever if the
+   live gate lands marginal.
+
 Finding (2026-10-19): for an ASYMMETRIC consumer (only one direction acts) the
 bar must measure the acting side separately. A direction-scoped clause is the
 right fix; it is a bar change and needs the owner's decision, so the consumer
 stays shadow until then. Do not flip on the aggregate number.
 
-Enforcement today (2026-10-18): `tool_choice`, `escalate_incomplete`, `review_verdict`,
-`depth_met` and `tool_approval` are on (`.env`
+Enforcement today (2026-10-21): `needs_action`, `escalate_incomplete`, `depth_met`
+and `tool_approval` are ON (`decides()` returns their fitted thresholds; `.env`
 `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`).
-`needs_action` is allow-listed but NOT deciding: its bar, recomputed on the accumulated
-v1 cohort (1126 rows), no longer holds a 90%-precision threshold, so `decides()` fails
-closed. v4 (2026-10-19) fixed the label (a slip is no longer counted as "no tool
-needed"), the question (the artifact verbs sit only on the yes side) and the frame
-(`interpret_step`, goal + expected), and `expected_output` now reaches the node (it was dropped in the plan-to-queue
-conversion). The question then still judged the wording, not the action: v5 fixes
-that clause. The cohort is young (11 rows); it re-earns on traffic. The five deciding
-consumers each cost one question at their site: `tool_choice` before the model call,
-`escalate_incomplete` at step settle, `review_verdict` at review (refuse-only: a
-confident veto where the Brain passed), `depth_met` at the run grade (tighten-only:
-a confident "not deep enough" pushes more work), and `tool_approval` before each
-call (refuse-only: a confident "it will fail" asks the model to correct the call,
-bounded at `_MAX_GUARD_CORRECTIONS=2` per node). Below each threshold the incumbent
-decides. The `escalate_incomplete`, `narration` and `user_feedback` labels are
-agreement with their incumbent, so meeting the bar means "agrees with the rule",
-not "is right"; every consumer switched on since 2026-10-17 is labelled by an
-outside outcome instead.
+`tool_choice` and `review_verdict` are allow-listed but NOT deciding: the 2026-10-21
+recompute on their GROWN cohorts (tool_choice 688 -> 2231 rows, review_verdict
+184 -> 1464) no longer meets the bar (AUROC 0.617; no 0.90-precision threshold) -
+fail-closed by design, and the honest signal that a cohort can outgrow its earned
+bar. `narration` and `user_feedback` earn the bar but `user_feedback` has no live
+decision site. The four deciding consumers each cost one question at their site:
+`needs_action` before the tool loop (a confident "no tool needed" moves a REACT
+step to DIRECT), `escalate_incomplete` at step settle, `depth_met` at the run grade
+(tighten-only), and `tool_approval` before each call (refuse-only, bounded at
+`_MAX_GUARD_CORRECTIONS=2` per node). Below each threshold the incumbent decides.
 
 ### 7.3 Cost per decision
 

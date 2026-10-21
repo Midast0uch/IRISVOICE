@@ -274,11 +274,26 @@ def _answer_key(ans: Any) -> str:
 
 
 def fit_all(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """consumer id -> entry, for rows already scoped to ONE backend."""
+    """consumer id -> entry, for rows already scoped to ONE backend.
+
+    A consumer in ACTING_ENFORCED is fitted with its acting answer, so the
+    threshold WRITTEN for the runtime is the same acting-aware pick the bar
+    was measured on (2026-10-21: the fit wrote 0.5 for needs_action while the
+    report's bar held at 0.6244 - the runtime would have enforced a more
+    permissive threshold than the evidence was measured at).
+    """
+    from backend.agent.consumer_bar import ACTING_ANSWER, ACTING_ENFORCED
+
     by: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
         by.setdefault(r["consumer_id"], []).append(r)
-    return {cid: fit_consumer(grp) for cid, grp in sorted(by.items())}
+    return {
+        cid: fit_consumer(
+            grp,
+            acting=ACTING_ANSWER.get(cid) if cid in ACTING_ENFORCED else None,
+        )
+        for cid, grp in sorted(by.items())
+    }
 
 
 def main() -> int:
