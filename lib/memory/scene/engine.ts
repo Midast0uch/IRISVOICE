@@ -20,6 +20,10 @@ export interface MemoryEngineOptions {
 export interface MemoryEngine {
   /** Keys act only while the surface is the active one. */
   setActive(active: boolean): void;
+  /** Memory is what the user looks at: keep full sharpness, give up frames instead. */
+  setFocus(focused: boolean): void;
+  /** The governor's state (development). */
+  stats(): { pageFps: number; maxFps: number; dpr: number };
   /** Stop drawing (hidden, another surface, a closed dashboard); resume picks up without a time jump. */
   pause(): void;
   resume(): void;
@@ -2648,13 +2652,13 @@ const _frame=()=>{
 // ── the host's controls ─────────────────────────────────────────────────────────────────────────
 // THE FRAME GOVERNOR. The surface shares the page with the whole app (the chat, the dashboard): a Memory frame must
 // never starve it. Measured 2026-10-21 in a software-WebGL pane: the app fell from 56 to 16 fps with Memory open, while
-// the JavaScript of a frame took only ~1.6 ms - the cost is the GPU's drawing, which runs after the script and is only
-// visible as a longer interval between animation frames. So the governor watches the PAGE's frame interval (every
-// callback, drawn or skipped): below ~40 fps the render resolution drops first (down to 0.6 of a CSS pixel), then the
-// frame cap (down to 15); above ~55 fps both climb back. Point sizes follow the resolution (U.uPix): the same look,
-// only softer.
-const _BASE_DPR = DPR, _MIN_DPR = 0.6;
-let _capFps = 30, _maxFps = 30, _lastDraw = 0, _lastTick = 0, _gap = 16, _n = 0;
+// the JavaScript of a frame took only ~1.6 ms - the cost is the GPU's drawing, visible only as a longer interval between
+// animation frames. So the governor watches the PAGE's frame interval (every callback, drawn or skipped): below ~40 fps
+// it gives up FRAMES first (the cap 30 -> 15), and sharpness last. A lower render resolution blurs the 1-pixel lattice
+// and makes the cortex look sketched (owner, 2026-10-21: "faded … like lines from a scratchpad"), so the resolution
+// floor is the full resolution while Memory has the spotlight (it is what the user is looking at) and 0.85 otherwise.
+const _BASE_DPR = DPR;
+let _minDpr = _BASE_DPR, _capFps = 30, _maxFps = 30, _lastDraw = 0, _lastTick = 0, _gap = 16, _n = 0;
 const _setDpr = (d) => { DPR = d; renderer.setPixelRatio(DPR); composer.setPixelRatio?.(DPR); U.uPix.value = DPR; };
 const _governed = () => {
   const now = performance.now();
@@ -2662,13 +2666,14 @@ const _governed = () => {
   _lastTick = now;
   if (++_n % 40 === 0) {
     if (_gap > 25) {
-      if (DPR > _MIN_DPR + 0.01) _setDpr(Math.max(_MIN_DPR, DPR * 0.85));
-      else _maxFps = Math.max(15, _maxFps - 5);
+      if (_maxFps > 15) _maxFps = Math.max(15, _maxFps - 5);
+      else if (DPR > _minDpr + 0.01) _setDpr(Math.max(_minDpr, DPR * 0.9));
     } else if (_gap < 18) {
-      if (_maxFps < _capFps) _maxFps = Math.min(_capFps, _maxFps + 5);
-      else if (DPR < _BASE_DPR - 0.01) _setDpr(Math.min(_BASE_DPR, DPR / 0.85));
+      if (DPR < _BASE_DPR - 0.01) _setDpr(Math.min(_BASE_DPR, DPR / 0.9));
+      else if (_maxFps < _capFps) _maxFps = Math.min(_capFps, _maxFps + 5);
     }
   }
+  if (DPR < _minDpr - 0.01) _setDpr(_minDpr);   // the floor rose (the spotlight came back): sharp again at once
   if (now - _lastDraw < 1000 / _maxFps - 1.5) return;
   _lastDraw = now;
   _frame();
@@ -2680,6 +2685,8 @@ canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); pause()
 resume();
 return {
   setActive(a) { _active = !!a; },
+  /** Memory is what the user looks at (spotlit, detached): never trade its sharpness for frames. */
+  setFocus(f) { _minDpr = f ? _BASE_DPR : Math.min(_BASE_DPR, 0.85); },
   /** The governor's state (development): frame cost, frame cap, resolution. */
   stats() { return { pageFps: Math.round(1000 / _gap), maxFps: _maxFps, dpr: Math.round(DPR * 100) / 100 }; },
   pause, resume,

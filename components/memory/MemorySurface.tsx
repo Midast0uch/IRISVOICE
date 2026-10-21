@@ -75,6 +75,7 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
     if (!e) return
     const on = isActive && !hidden
     e.setActive(on && isFlat)
+    e.setFocus(isFlat)
     if (on) e.resume()
     else e.pause()
   }, [ready, isActive, hidden, isFlat, failed])
