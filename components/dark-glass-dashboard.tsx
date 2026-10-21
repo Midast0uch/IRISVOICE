@@ -37,6 +37,8 @@ import type { Palette as BrandPalette } from '@/lib/brandPalette';
 // cli-workspace-unification T7 (REQ-7 AC2): the Workspace Hub surface —
 // lazy-loaded so the hub bundle only loads when the rail node is clicked.
 const DeveloperWorkspace = lazy(() => import('@/components/workspace/DeveloperWorkspace'));
+// The Memory surface (docs/Design/Memory-Cortex/MEMORY-SURFACE-BUILD.md). three.js loads only when it opens.
+const MemorySurface = lazy(() => import('@/components/memory/MemorySurface'));
 import { MonitorPage } from '@/components/dashboard/MonitorPage';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
 import { VisionLifecycleChip } from '@/components/iris/browser/VisionLifecycleChip';
@@ -104,7 +106,7 @@ const MAIN_NODES_DATA = [
 
 // The surfaces the rail's Surfaces view lists, in order. (The Inference console is not one
 // any more: it moves into Monitor. `inference_console` still routes there.)
-const SURFACE_IDS = ['hub', 'browser', 'models', 'marketplace'];
+const SURFACE_IDS = ['hub', 'memory', 'browser', 'models', 'marketplace'];
 
 const CATEGORY_LABELS: Record<string, string> = {
   input: 'Input',
@@ -1335,7 +1337,7 @@ export function DarkGlassDashboard({
     }
   }, [selectSectionWs]);
 
-  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'hub']);
+  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'hub', 'memory']);
 
   const handleSubAppChange = useCallback((appId: string) => {
     // The Inference console is part of Monitor now; the old route (the
@@ -1360,6 +1362,8 @@ export function DarkGlassDashboard({
         if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
           onRequestSpotlight?.();
         }
+      } else if (action === 'open_memory') {
+        handleSubAppChange('memory');
       } else if (action === 'open_inference_console') {
         handleSubAppChange('inference_console');
         if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
@@ -1433,6 +1437,12 @@ export function DarkGlassDashboard({
     )
     return () => clearTimeout(t)
   }, [crawler.active, crawler.error, crawler.pagesDone])
+
+  const memoryFlat = spotlightState === 'dashboardSpotlight' || isDetached;
+  useEffect(() => {
+    if (activeSubApp === 'memory' && !memoryFlat) onRequestSpotlight?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only opening Memory asks for the spotlight
+  }, [activeSubApp]);
 
   // Navigate to a sub-app when initialSubApp is set from outside (e.g., Browse button in WheelView)
   useEffect(() => {
@@ -1666,6 +1676,7 @@ export function DarkGlassDashboard({
       badge: runningAgentTasks > 0 ? runningAgentTasks : undefined,
       title: `Workspace hub — ${runningAgentTasks} running`,
     },
+    { id: 'memory', label: 'Memory', title: 'What IRIS remembers' },
     {
       id: 'browser', label: 'Browser',
       badge: crawlState.active ? 'live' : undefined,
@@ -2343,6 +2354,12 @@ export function DarkGlassDashboard({
           <UnifiedMarketplaceModelsSurface key="marketplace" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
          ) : activeSubApp === 'models' ? (
            <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
+        ) : activeSubApp === 'memory' ? (
+          <div className="w-full h-full">
+            <Suspense fallback={<div className="h-full" style={{ background: '#020306' }} />}>
+              <MemorySurface isActive isFlat={memoryFlat} onRequestSpotlight={onRequestSpotlight} />
+            </Suspense>
+          </div>
         ) : activeSubApp === 'hub' ? (
           /* T7/T8/T9 (REQ-7 AC2, REQ-5, REQ-6): the Visual Workspace Hub —
              focus-mode-controlled multi-agent Kanban board. */

@@ -122,6 +122,7 @@ export default function Home() {
       const action = ce.detail?.action;
       const subApp =
         action === 'open_models_screen' ? 'models' :
+        action === 'open_memory' ? 'memory' :
         action === 'open_inference_console' ? 'inference_console' :
         null;
       if (subApp) {
