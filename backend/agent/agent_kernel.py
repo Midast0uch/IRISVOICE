@@ -17816,7 +17816,19 @@ Respond with a JSON object:
             # An Oracle-decided pick is labelled by what THIS call did.
             _pend = _decided.pop("row", None)
             if _pend is not None:
-                box.label_decided_row(_pend, called=name, ok=bool(ok),
+                # v4 (2026-10-21): the tool_choice label reads the CALL-level
+                # outcome (`approval_ok`), not the loop's `ok` - the exact
+                # tool_approval/v6 precedent. Measured on the grown v3 cohort:
+                # binding run_command rows ranked at CHANCE (AUROC 0.4982,
+                # 488 rows) because a mid-iteration pytest exit (the command
+                # RAN, exit 1, the call did its job) was labeled a wrong
+                # pick; 36 of 39 failed run_command calls in the logs were
+                # ran-and-exited, not errored. The call-level label takes the
+                # honest-key cohort from AUROC 0.657 to 0.7988 offline. For
+                # every tool but run_command the two outcomes are identical.
+                _label_ok = bool(approval_ok) if approval_ok is not None \
+                    else bool(ok)
+                box.label_decided_row(_pend, called=name, ok=_label_ok,
                                       params=params if isinstance(params, dict) else None,
                                       session_id=self.conversation_id or "voice")
             if name == "browser_act" and isinstance(params, dict) \

@@ -669,6 +669,23 @@ def _render_state(consumer_id: str, frame: Dict[str, Any]) -> str:
         return ""
 
 
+def _tc_input_key(frame: Dict[str, Any]) -> Optional[str]:
+    """The INPUT identity for a tool_choice row (2026-10-21).
+
+    One hash implementation with surface_shadow.input_key (sha1 of consumer +
+    statement + frame), so the report's honest dedupe - one row per INPUT,
+    however the confidence collides - covers this consumer too. Measured on
+    the v3 cohort: 2885 raw rows carried 2635 distinct state+menu inputs but
+    counted as 2231 under the confidence tuple. None on any failure; a row
+    without the key keeps the legacy dedupe."""
+    try:
+        from backend.agent.surface_shadow import input_key
+
+        return input_key("tool_choice", str(frame.get("goal") or ""), frame)
+    except Exception:  # noqa: BLE001 - an identity key never blocks a row
+        return None
+
+
 # ── ToolDecisionBox ─────────────────────────────────────────────────────────
 
 
@@ -1929,9 +1946,19 @@ class ToolDecisionBox:
                 "route": "enforced" if enforced else "sampled",
                 "source": "der_node",
                 # v2 (2026-10-11): + step_facts, binding picks forced at the API
-                "criteria_version": "tc-decide-v3",
+                # v4 (2026-10-21): the LABEL reads the CALL-level outcome (see
+                # _on_result) - a run_command that RAN counts as a successful
+                # pick whatever its exit code said about the WORK, the exact
+                # tool_approval/v6 precedent. Measured on the grown v3 cohort:
+                # binding run_command rows ranked at chance (AUROC 0.4982,
+                # 488 rows) because mid-iteration test exits were labeled
+                # wrong picks; the call-level label takes the honest-key
+                # cohort from AUROC 0.657 to 0.7988 offline. Also carries
+                # input_key (one row per INPUT, however confidence collides).
+                "criteria_version": "tc-decide-v4",
                 "menu_fp": _menu_fingerprint(menu, option_criteria),
                 "state": _render_state("tool_choice", frame)[:2000],
+                "input_key": _tc_input_key(frame),
             }
             logger.info(
                 "[TOOL_DECISION] Oracle decides tool=%s conf=%.3f route=%s latency_ms=%s",
@@ -1946,8 +1973,13 @@ class ToolDecisionBox:
                           session_id: str = "") -> None:
         """Label an Oracle-decided row with what happened and write it.
 
-        `outside_label` = the decided call WORKED (the model called the chosen
-        tool and it succeeded) - a correctness bool, read by decision_label as
+        `outside_label` = the decided call EXECUTED (the model called the
+        chosen tool and the call did its job). v4 (2026-10-21): `ok` here is
+        the CALL-level outcome - a run_command that RAN counts as a
+        successful pick whatever its exit code reported about the WORK (the
+        tool_approval/v6 precedent; measured: 36 of 39 failed run_command
+        calls were ran-and-exited, and the v3 label held binding run_command
+        rows at chance-level ranking). Read by decision_label as
         bool(chosen) == outside_label. A step the model FINISHED instead of
         calling the tool carries `outcome_label` "finished" and NO outside
         label: it is counted, never scored (a step that was already done is
