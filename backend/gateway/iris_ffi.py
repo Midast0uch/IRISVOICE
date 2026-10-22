@@ -716,6 +716,22 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
             db_path, _ci_exc,
         )
 
+    # Memory surface API (MEMORY-SURFACE-BUILD.md): recall refs name chain ids, and
+    # resolving them without an index on chain_id was a full scan of ~42k rows with big
+    # text columns (11 s warm, 98 s cold, measured), so the API gated the lookup off.
+    # The ALTER loop above guarantees the column. IF NOT EXISTS: built once.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_chain_chain_id "
+            "ON memory_chain(chain_id)"
+        )
+        conn.commit()
+    except Exception as _cc_exc:  # noqa: BLE001 — a missing index is slow, not wrong
+        logger.warning(
+            "[iris_ffi] idx_memory_chain_chain_id not created (db=%s): %s",
+            db_path, _cc_exc,
+        )
+
 
 class _PythonFallbackEngine:
     """Pure Python fallback — uses sqlite3 (or sqlcipher3 if available)."""

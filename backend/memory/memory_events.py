@@ -107,6 +107,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_events_episode ON memory_events(episode_id
 CREATE INDEX IF NOT EXISTS idx_memory_events_label ON memory_events(family, label);
 CREATE INDEX IF NOT EXISTS idx_memory_events_hash ON memory_events(hash_signature);
 CREATE INDEX IF NOT EXISTS idx_memory_events_ts ON memory_events(ts);
+-- One strand's events by thread (Memory surface API, MEMORY-SURFACE-BUILD.md). Without it the API reads a
+-- capped ts-window scan and marks the answer "partial". Existing stores get it in ensure_schema below.
+CREATE INDEX IF NOT EXISTS idx_memory_events_thread_ts ON memory_events(thread_id, ts);
 """
 
 
@@ -162,6 +165,18 @@ def ensure_schema(conn) -> None:
             conn.execute("ALTER TABLE memory_events ADD COLUMN hex_bin TEXT")
             conn.commit()
             logger.info("[memory_events] ALTER added column hex_bin")
+        # Live stores predate idx_memory_events_thread_ts too (the table exists, so the DDL above
+        # never ran for them). Memory surface API, MEMORY-SURFACE-BUILD.md: one strand's events by
+        # thread; before it, a capped ts-window scan and a "partial" answer. IF NOT EXISTS: a no-op
+        # once built, once per connection. A missing index is slow, not wrong.
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_events_thread_ts "
+                "ON memory_events(thread_id, ts)"
+            )
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[memory_events] idx_memory_events_thread_ts not created: %s", exc)
         if len(_COLUMNS_OK) > 64:   # bounded: connections are few and long-lived
             _COLUMNS_OK.clear()
         _COLUMNS_OK.add(id(conn))
