@@ -27,6 +27,7 @@ import { Xur } from '@/components/Xur';
 import { WingMenu, type WingMenuItem } from '@/components/chrome/WingMenu';
 import { ModelRoutingTable } from '@/components/dashboard/ModelRoutingTable';
 import { DashboardRail, type RailPlace, type RailView } from '@/components/dashboard/DashboardRail';
+import { SpotlightState } from '@/hooks/useUILayoutState';
 import {
   changeKey, changeSection, changedKeys, isPlainFieldSection, isSegmented, sectionMatches, sectionSummary,
 } from '@/components/dashboard/settingsModel';
@@ -1359,14 +1360,14 @@ export function DarkGlassDashboard({
       const { action } = e.detail || {};
       if (action === 'open_models_screen') {
         handleSubAppChange('models');
-        if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
+        if (spotlightState !== SpotlightState.DASHBOARD_SPOTLIGHT) {
           onRequestSpotlight?.();
         }
       } else if (action === 'open_memory') {
         handleSubAppChange('memory');
       } else if (action === 'open_inference_console') {
         handleSubAppChange('inference_console');
-        if (spotlightState !== 'DASHBOARD_SPOTLIGHT') {
+        if (spotlightState !== SpotlightState.DASHBOARD_SPOTLIGHT) {
           onRequestSpotlight?.();
         }
       } else if (action === 'test_output') {
@@ -1438,7 +1439,7 @@ export function DarkGlassDashboard({
     return () => clearTimeout(t)
   }, [crawler.active, crawler.error, crawler.pagesDone])
 
-  const memoryFlat = spotlightState === 'dashboardSpotlight' || isDetached;
+  const memoryFlat = spotlightState === SpotlightState.DASHBOARD_SPOTLIGHT || isDetached;
   useEffect(() => {
     if (activeSubApp === 'memory' && !memoryFlat) onRequestSpotlight?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only opening Memory asks for the spotlight

@@ -9,6 +9,15 @@ module.exports = {
   // their __tests__ duplicates reference moved modules (temp/ -> lib/cli) and
   // their duplicate manual mocks poison jest-haste-map.
   testPathIgnorePatterns: ["/node_modules/", "/.iris-worktree/", "/.claude/worktrees/", "/llama\\.cpp", "/llama\\.cpp-prismml/", "/llama\\.cpp-turboquant/"],
+  // jest-haste-map walks the whole rootDir to build its file map, and on Windows (no watchman) it re-walks it on
+  // every run. testPathIgnorePatterns does NOT stop that walk; modulePathIgnorePatterns does (it is the map's ignore
+  // pattern, applied while walking). Measured 2026-10-21: `jest --listTests` did not finish in 10 min on the C: hard
+  // disk, walking the Python venvs, data/, src-tauri/target, the llama.cpp trees, 25 worktree copies under
+  // .claude/worktrees and the .next junction into the Next cache. No frontend module or test lives in these folders
+  // (every test is under __tests__/), so the walk skips them.
+  modulePathIgnorePatterns: [
+    "<rootDir>/(\\.claude|\\.commandcode|\\.git|\\.iris-[^/]*|\\.mcm|\\.next|\\.opencode|\\.playwright-mcp|\\.pytest_cache|\\.ruff_cache|\\.venv|\\.workbuddy-ai|\\.zcode|IRISVOICE|MagicMock|backend|benchmarks|bootstrap|data|dist|docs|evals|evidence|iris-launcher|llama[^/]*|logs|models|notes|prototype|research|screenshots|specs|src-tauri|test-results|tests|venv|verification|__pycache__)/",
+  ],
   transform: {
     "^.+\\.(ts|tsx|js|jsx|mjs)$": [
       "babel-jest",
