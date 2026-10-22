@@ -992,16 +992,31 @@ LM.forEach((l,i)=>{const S=somaPos[i],born=bornOf(i),cand=l.tier==='candidate';
     for(let k=0;k<=K;k++){const t=k/K,q=1-t;pts.push(new V3(q*q*A.x+2*q*t*C.x+t*t*B.x,q*q*A.y+2*q*t*C.y+t*t*B.y,q*q*A.z+2*q*t*C.z+t*t*B.z))}
     const born=Math.max(bornOf(e.a),bornOf(e.b));
     for(let k=0;k<K;k++)frost(pts[k],pts[k+1],k/K,(k+1)/K,.4+1.2*body,e.a,e.b,e.grew?1:0,1,born,k===2&&body>.5?1:2)}}   // one frost knot mid-way on a strong bridge
+// CROWDING: additive light sums where links overlap, so a dense knot burns white (measured on the live memory:
+// 73 claims mostly in one territory, centre brightness 122 with 72 pure-white pixels). Taking the brightest value
+// instead (MAX blending) fixed the knot but hid every single link wherever the haze behind it was brighter - the
+// links vanished from inside the orb (owner, 2026-10-21). So the blending stays additive and each segment is dimmed
+// by how crowded its neighbourhood is: a lone link keeps its full light, a knot of links shares one budget.
+const AR_DEN=(()=>{const P=AR.pos,nSeg=P.length/12,h=R*.05,cell=new Map(),mid=new Float32Array(nSeg*3),den=new Float32Array(nSeg*4);
+  const key=(x,y,z)=>Math.floor(x/h)+','+Math.floor(y/h)+','+Math.floor(z/h);
+  for(let s_=0;s_<nSeg;s_++){const o=s_*12,x=(P[o]+P[o+6])/2,y=(P[o+1]+P[o+7])/2,z=(P[o+2]+P[o+8])/2;mid.set([x,y,z],s_*3);
+    const k=key(x,y,z);let a=cell.get(k);if(!a)cell.set(k,a=[]);a.push(s_)}
+  for(let s_=0;s_<nSeg;s_++){const x=mid[s_*3],y=mid[s_*3+1],z=mid[s_*3+2],cx=Math.floor(x/h),cy=Math.floor(y/h),cz=Math.floor(z/h);let n=0;
+    for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)for(let q=-1;q<=1;q++){const a=cell.get((cx+i)+','+(cy+j)+','+(cz+q));if(!a)continue;
+      for(const t of a){const dx=mid[t*3]-x,dy=mid[t*3+1]-y,dz=mid[t*3+2]-z;if(dx*dx+dy*dy+dz*dz<h*h)n++}}
+    den.fill(n,s_*4,s_*4+4)}
+  return den})();
 const arGeo=new THREE.BufferGeometry();
 [['position',AR.pos,3],['aNx',AR.nx,3],['aSide',AR.side,1],['aT',AR.t,1],['aW',AR.w,1],['aAB',AR.ab,2],['aG',AR.g,1],['aK',AR.k,1],['aBorn',AR.born,1]]
   .forEach(([n,a,k])=>arGeo.setAttribute(n,new THREE.Float32BufferAttribute(a,k)));
+arGeo.setAttribute('aDen',new THREE.Float32BufferAttribute(AR_DEN,1));
 arGeo.setIndex(AR.pos.length/3>65535?new THREE.Uint32BufferAttribute(AR.idx,1):new THREE.Uint16BufferAttribute(AR.idx,1));
 // brightness never builds up with the amount of memory: more bridges, each one dimmer
 const uEdge={value:clamp(Math.sqrt(500/Math.max(1,M.edges.length)),.35,1)};
 const arborMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uRes:arborRes,uSomaTex:{value:somaTex},uSearch:forestU.uSearch,uVis:forestU.uVis,uFocusDim:forestU.uFocusDim,
     uNear:forestU.uNear,uScrub:forestU.uScrub,uBrand:{value:BRAND}},
   vertexShader:`uniform float uTime,uSearch,uFocusDim,uVis,uNear,uEdge,uScrub;uniform vec2 uRes;uniform sampler2D uSomaTex;
-    attribute vec3 aNx;attribute float aSide,aT,aW,aG,aK,aBorn;attribute vec2 aAB;varying float vA,vH,vS,vRun;
+    attribute vec3 aNx;attribute float aSide,aT,aW,aG,aK,aBorn,aDen;attribute vec2 aAB;varying float vA,vH,vS,vRun;
     void main(){vec4 a0=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2,0),0),b0=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2,0),0);
       vec4 a1=texelFetch(uSomaTex,ivec2(int(aAB.x+.5)*2+1,0),0),b1=texelFetch(uSomaTex,ivec2(int(aAB.y+.5)*2+1,0),0);
       float hl=max(max(a0.b,b0.b),max(a1.b,b1.b)),wake=max(a0.r,b0.r);
@@ -1011,15 +1026,11 @@ const arborMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uRes:arborRes,uSom
       float grown=aK>.5?1.:step(aT,a0.a+.001);                                     // a claim still learning has a shorter arbor
       float run=pow(fract(aT*1.4-uTime*.45+aAB.x*.37),14.)*(wake+aG*.7);            // light running out along it
       vRun=run;vH=hl;vS=aSide;
-      vA=(.065+.04*aW)*grown*step(aBorn,uScrub)*(1.+hl*.9)*(1.+run*2.5)*mix(1.,.2,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis*uEdge*mix(.75,1.,uNear)*smoothstep(1.5,5.,-mv.z);   // a branch right at your eye dissolves instead of crossing the view
+      vA=(.065+.04*aW)*grown*step(aBorn,uScrub)*(1.+hl*.9)*(1.+run*2.5)*mix(1.,.2,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis*uEdge*mix(.75,1.,uNear)*smoothstep(1.5,5.,-mv.z)*clamp(sqrt(6./max(aDen,1.)),.22,1.);   // a crowded knot shares one budget   // a branch right at your eye dissolves instead of crossing the view
       gl_Position=c0;}`,
-  // premultiplied: under MAX blending the GPU ignores the blend factors, so the colour carries its own alpha
-  fragmentShader:`uniform vec3 uBrand;varying float vA,vH,vS,vRun;void main(){float a=vA*(1.-vS*vS);
-    gl_FragColor=vec4(mix(mix(uBrand,vec3(.72,.88,1.),.55),vec3(1.),clamp(vH*.5+vRun*.6,0.,1.))*a,a);}`,
-  // Overlapping links take the BRIGHTEST value, never the sum (owner rule: brightness never builds up). Measured
-  // 2026-10-21 on the live memory: 73 claims, most in one territory, their frost links stacked additively in the
-  // centre - brightness 122 with 72 pure-white pixels; with MAX 97 and 0. Dense knots stay crisp, never white.
-  transparent:true,depthWrite:false,blending:THREE.CustomBlending,blendEquation:THREE.MaxEquation,side:THREE.DoubleSide});
+  fragmentShader:`uniform vec3 uBrand;varying float vA,vH,vS,vRun;void main(){
+    gl_FragColor=vec4(mix(mix(uBrand,vec3(.72,.88,1.),.55),vec3(1.),clamp(vH*.5+vRun*.6,0.,1.)),vA*(1.-vS*vS));}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
 const arbors=new THREE.Mesh(arGeo,arborMat);arbors.frustumCulled=false;cortex.add(arbors);KIND_OBJ.claim.push(arbors);
 
 // fragments: the 84k semantic pieces are a faint mist; the uncounted landmarks are dust
@@ -2343,9 +2354,12 @@ function coreHit(x,y){const c=project(new V3()),e=project(new V3(R*.2,0,0).apply
 // pins and nodes answer a hover with a swelling cell at their own point (cortex level only)
 function hoverThing(x,y){
   const ok=state.inside?p=>p.distanceTo(camera.position)<R*1.1:p=>p.dot(camera.position)>0;
-  const pk=nearestScreen(pinInfo.map(q=>ok(q.tip)?q.tip:null),x,y,15);
+  const pk=nearestScreen(pinInfo.map(q=>ok(q.tip)?q.tip:null),x,y,state.inside?15:9);   // smaller from outside: the territories come first
   if(pk>=0){canvas.style.cursor='default';setAnno('hover','pin'+pk,()=>project(pinInfo[pk].tip),pinHTML(pk),{cell:true,col:pinType(PINS[pk].type).col});return true}
-  const nk=nearestScreen(nodePos.map(p=>ok(p)?p:null),x,y,11);
+  // nodes are inside the orb, on the layer shells: from outside they are hovered only with the layers shown (s) or
+  // singled out in the key - otherwise they covered the whole front of the orb and no territory could be clicked
+  const nodesOn=state.inside||state.showSpaces||keyFocus==='node';
+  const nk=nodesOn?nearestScreen(nodePos.map(p=>ok(p)?p:null),x,y,11):-1;
   if(nk>=0){canvas.style.cursor='default';setAnno('hover','node'+nk,()=>project(nodePos[nk]),nodeHTML(nk),{cell:true,col:chanTint(NDS[nk].chan)});return true}
   if(slots.hover?.key&&/^(pin|node)/.test(slots.hover.key))clearAnno('hover');
   return false}
