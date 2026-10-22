@@ -1013,9 +1013,13 @@ const arborMat=new THREE.ShaderMaterial({uniforms:{...U,uEdge,uRes:arborRes,uSom
       vRun=run;vH=hl;vS=aSide;
       vA=(.065+.04*aW)*grown*step(aBorn,uScrub)*(1.+hl*.9)*(1.+run*2.5)*mix(1.,.2,uSearch*(1.-max(a0.b,b0.b)))*mix(1.,.4,uFocusDim*(1.-hl))*uVis*uEdge*mix(.75,1.,uNear)*smoothstep(1.5,5.,-mv.z);   // a branch right at your eye dissolves instead of crossing the view
       gl_Position=c0;}`,
-  fragmentShader:`uniform vec3 uBrand;varying float vA,vH,vS,vRun;void main(){
-    gl_FragColor=vec4(mix(mix(uBrand,vec3(.72,.88,1.),.55),vec3(1.),clamp(vH*.5+vRun*.6,0.,1.)),vA*(1.-vS*vS));}`,
-  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,side:THREE.DoubleSide});
+  // premultiplied: under MAX blending the GPU ignores the blend factors, so the colour carries its own alpha
+  fragmentShader:`uniform vec3 uBrand;varying float vA,vH,vS,vRun;void main(){float a=vA*(1.-vS*vS);
+    gl_FragColor=vec4(mix(mix(uBrand,vec3(.72,.88,1.),.55),vec3(1.),clamp(vH*.5+vRun*.6,0.,1.))*a,a);}`,
+  // Overlapping links take the BRIGHTEST value, never the sum (owner rule: brightness never builds up). Measured
+  // 2026-10-21 on the live memory: 73 claims, most in one territory, their frost links stacked additively in the
+  // centre - brightness 122 with 72 pure-white pixels; with MAX 97 and 0. Dense knots stay crisp, never white.
+  transparent:true,depthWrite:false,blending:THREE.CustomBlending,blendEquation:THREE.MaxEquation,side:THREE.DoubleSide});
 const arbors=new THREE.Mesh(arGeo,arborMat);arbors.frustumCulled=false;cortex.add(arbors);KIND_OBJ.claim.push(arbors);
 
 // fragments: the 84k semantic pieces are a faint mist; the uncounted landmarks are dust
@@ -1931,7 +1935,7 @@ function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).norma
   cam.vel.set(0,0,0);cam.lean.set(0,0);cam.roll=0;cam.pyaw=cam.yaw;cam.idle=0}
 const dirOf=(yaw,pitch)=>new V3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch));
 const keys={};
-const __cortex={cortex,camera,project:v=>project(v),cam,mouse,keys,get state(){return state},M,IMM,get tunnel(){return tunnel},setLens:l=>setLens(l),enter:i=>enterTunnel(sess[i]),
+const __cortex={scene,renderer,composer,bloom,cortex,camera,project:v=>project(v),cam,mouse,keys,get state(){return state},M,IMM,get tunnel(){return tunnel},setLens:l=>setLens(l),enter:i=>enterTunnel(sess[i]),
   dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length,sync:()=>sync,syncFor:id=>buildSyncFor(id)}; // inspection handle for the mockup
 const angWrap=a=>{a=(a+Math.PI)%(Math.PI*2);if(a<0)a+=Math.PI*2;return a-Math.PI};
 function updateCamera(dt){
