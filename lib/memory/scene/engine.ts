@@ -1692,7 +1692,7 @@ function disposeTunnel(){if(!tunnel)return;scene.remove(tunnel.g);tunnel.g.trave
 // ═══════════════════════════════════════════════════════════════════════════
 const REC_SRC={neighbors:{col:'#7fe8ff',word:'a similar earlier step'},prior_research:{col:'#ffcf6b',word:'earlier research'},
   chain_timeline:{col:'#f08ad6',word:'the timeline of this work'},known_case:{col:'#5dffb0',word:'a known case'}};
-const prettyThread=t=>{const m=/^eval-(.+?)(-[0-9a-f]{6})?$/.exec(t||'');return m?'[eval] '+m[1].replace(/_/g,' '):String(t||'an earlier session').slice(0,48)};
+const prettyThread=t=>{const m=/^eval-(.+?)(-[0-9a-f]{6})?$/.exec(t||'');return m?'[eval] '+m[1].replace(/_/g,' '):String(t||'an earlier strand').slice(0,48)};
 const sessOf=id=>id&&M.sById?M.sById.get(id):null;
 const titleOf=id=>sessOf(id)?.objective||prettyThread(id);
 // a point in time on the helix; what is older than the first session sinks below it (compressed)
@@ -1772,7 +1772,7 @@ function syncHoverStrand(x,y){
     <div class="t">${esc(r.did||'an earlier step')}</div><div class="m">from <em>${esc(titleOf(r.session))}</em>${r.ts?' · '+ago(r.ts):''}<br>
     ${r.tool&&r.tool!=='none'?esc(r.tool.replace(/_/g,' '))+' · ':''}${r.result==='success'?'it worked there':r.result?esc(r.result):'outcome unknown'}<br>
     ${st.outcome==='helped'?'the step it was given to was verified':st.outcome==='misled'?'<span class="w">the step it was given to failed</span>':'no verdict yet'}</div>
-    ${go?'<span class="go">click · step into that session</span>':''}`);return true}
+    ${go?'<span class="go">click · step into that strand</span>':''}`);return true}
 function syncClick(){if(sync.hover<0)return false;const s=sessOf(sync.refs[sync.hover].r.session);if(s){enterTunnel(s);return true}return false}
 function syncFrame(dt){const on=state.lens==='timeline'&&cam.mode==='orbit'&&!cam.tween&&sync.sid!=null;syncG.visible=on;if(!on)return;
   syncU.uRes.value.set(innerWidth,innerHeight);syncU.uAsm.value=Math.min(1,syncU.uAsm.value+dt/1.6)}
@@ -2008,7 +2008,7 @@ function updateCamera(dt){
 // 10. HUD: scramble text (XurOrb), leader-line annotations (video 2), lenses
 // ═══════════════════════════════════════════════════════════════════════════
 const CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←';
-function scramble(el,text,frames=22){const len=text.length;let f=0;clearInterval(el._sc);
+function scramble(el,text,frames=22){const len=text.length;let f=0;clearInterval(el._sc);el._final=text;
   if(REDUCED){el.textContent=text;return}
   el._sc=setInterval(()=>{f++;let o='';for(let i=0;i<len;i++)o+=f/frames>i/len||text[i]===' '?text[i]:CHARS[Math.floor(Math.random()*CHARS.length)];
     el.textContent=o;if(f>=frames){clearInterval(el._sc);el.textContent=text}},30)}
@@ -2124,15 +2124,15 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
 // where you are, as a path: memory > the view > the territory or session you are in > the claim you hold
 let crumbKey='';
 function updateCrumb(){const parts=['memory'];
-  if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','session · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
+  if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
   else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'how iris decides'}[state.lens];if(lw)parts.push(lw);
     if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
     if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
-    if(state.lens==='timeline'&&sync.sid)parts.push('session · '+titleOf(sync.sid))}
+    if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
   const k=parts.join('|');if(k===crumbKey)return;crumbKey=k;
   $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')}
 function updateStats(fps){const c=M.meta.counts||{};
-  $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> certainties · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> sessions<br>`+
+  $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands<br>`+
   `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
   `${PINS.length||NDS.length?` · <em>${PINS.length}</em> pins · <em>${NDS.length}</em> nodes in <em>${SPACES.length}</em> layers`:''}<br>`+
   `${Math.round(fps)} fps · ${fmt(NS+NI+mistN+(tunnel?26000:0))} points · ${esc(M.meta.source)}`}
@@ -2144,8 +2144,9 @@ function tickGuard(q,ri){const col=q.shadow?'#7d8f9b':q.signal==='quorum_reorgan
   const tx=tickLines[1].querySelector('.tx');tx.style.color='rgba(212,236,246,.55)';
   scramble(tx,(QUORUM_WORD[q.signal]||String(q.signal).replace(/_/g,' '))+' · '+ago(q.ts),16)}
 function tick(e){const col=FAM[FAMI[e.family]]?.color||'#fff';const strong=e.evidence==='user';
+  {const o=tickLines[1].querySelector('.tx');if(o&&o._sc){clearInterval(o._sc);if(o._final!=null)o.textContent=o._final}}   // finish its letters first
   tickLines[0].innerHTML=tickLines[1].innerHTML;
-  tickLines[1].innerHTML=`<span class="dot" style="background:${e.valence==='sets_back'?'#ff4a3d':col};box-shadow:0 0 8px ${col}"></span><span class="tx"></span><span style="color:var(--faint)"> · ${FAM[FAMI[e.family]]?.word||'other'}</span>`;
+  tickLines[1].innerHTML=`<span class="dot" style="background:${e.valence==='sets_back'?'#ff4a3d':col};box-shadow:0 0 8px ${col}"></span><span class="tx"></span><span style="color:var(--faint)"> · ${FAM[FAMI[e.family]]?.word||'other'}${e._past&&e.ts?' · '+ago(e.ts):''}</span>`;
   const tx=tickLines[1].querySelector('.tx');tx.style.color=strong?'#fff':`rgba(212,236,246,${.35+(EVID[e.evidence]??.2)*.65})`;tx.style.fontWeight=strong?600:400;scramble(tx,readEvent(e),16)}
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2173,7 +2174,7 @@ function setLens(l){
   if(l==='oracle'){cam.targetT.set(0,0,0);cam.distT=44;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0}
   if(l==='artifacts'){cam.targetT.set(-1.0*R,0,0);cam.distT=62;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0;setTimeout(()=>layoutTissue(false),900)}
   hint({cortex:'drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme',
-    timeline:'scroll · move through time &nbsp; hover a session · what the memory gave it<br>hover its strands · read a recall &nbsp; click · step inside',
+    timeline:'scroll · move through time &nbsp; hover a strand · what the memory gave it<br>hover its strands · read a recall &nbsp; click · step inside',
     artifacts:'hover · a cell swells &nbsp; click · open it',
     oracle:'hover a sector · what IRIS is learning to decide'}[l]);
 }
@@ -2217,7 +2218,7 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
     <div class="m">${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
-    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that session</span>`:''}`}
+    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}`}
 annosEl.addEventListener('click',e=>{
   if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(e.target.closest('[data-home]')){exitTunnel();return}
@@ -2249,7 +2250,7 @@ function enterTunnel(s){
       T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
       $('scrub').classList.remove('on');
       document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
-      hint('scroll / w s · travel through the session &nbsp; ← → · claim to claim<br>hover · read a message or moment &nbsp; click a claim · follow its thread &nbsp; esc · back');
+      hint('scroll / w s · travel through the strand &nbsp; ← → · claim to claim<br>hover · read a message or moment &nbsp; click a claim · follow its thread &nbsp; esc · back');
       flash(false,REDUCED?1:700)},REDUCED?0:240)};
   if(state.lens==='timeline'&&!state.inside&&cam.mode==='orbit'){const bi=sess.indexOf(s);const p=new V3(0,helixY(sessS(s)),0);
     tweenTo(p.clone().add(camera.position.clone().sub(p).normalize().multiplyScalar(4)),p,22,.9,goIn)}
@@ -2326,6 +2327,11 @@ state.secPulse=new Array(16).fill(0);state.pupilT=1;state.openT=0;state.focusDim
 function simulate(dt){
   const t=clock.elapsedTime;
   for(let i=queue.length-1;i>=0;i--)if(queue[i].at<=t){const q=queue.splice(i,1)[0];q.fn()}
+  // A REAL memory shows only what happened. The replay below invents activity (old moments re-emitted as live, recall
+  // chains, promotions that change a claim's tier, corrections, Oracle decisions); it is the demo's stand-in for the
+  // live tap and must never run on data/memory.db (found 2026-10-22: the surface showed "remembering this helped" and
+  // promoted claims that were never promoted). Real activity arrives from the backend's live messages only.
+  if(USE_REAL)return;
   if(t>nextEv){nextEv=t+rand(.9,2.4);const e=pick(M.events.length?M.events:[{family:'knowledge',label:'OBSERVED',actor:'tool',evidence:'claim',valence:'neutral'}]);
     emit({...e,landmark:e.family==='memory'?e.landmark:null})}
   if(t>nextRecall){nextRecall=t+rand(8,13);recallChain()}
@@ -2338,6 +2344,7 @@ function simulate(dt){
     if(m.state==='in'){m.state='out';m.rT=R*.58;emit({family:'memory',label:'OFFLOADED',actor:'agent',evidence:'claim',valence:'neutral'})}
     else{m.state='in';m.rT=R*.3;emit({family:'memory',label:'RESTRETCHED',actor:'agent',evidence:'claim',valence:'advances'})}}
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 13. input
@@ -2465,7 +2472,7 @@ tcv.addEventListener('click',e=>{const x=_px(e),y=_py(e);
 // a thread = one thought and everything linked to it in this session; scrolling then travels
 // from one of its neurons to the next along the wall
 function selectThread(li){if(!tunnel)return;tunnel.sel=li;tunnel.threadU.uSel.value=li;tunnel.threadU.uSelOn.value=li>=0?1:0;
-  if(li<0){tunnel.stops=null;hint('scroll / w s · travel through the session<br>hover · read a moment &nbsp; esc · back to the mind');return}
+  if(li<0){tunnel.stops=null;hint('scroll / w s · travel through the strand<br>hover · read a moment &nbsp; esc · back to the mind');return}
   const L_=tunnel.linked;const us=tunnel.stars.filter(s=>s.li===li||L_.has(li+'-'+s.li)||L_.has(s.li+'-'+li)).map(s=>s.u).sort((a,b)=>a-b);
   tunnel.stops=us.filter((u,i)=>!i||u-us[i-1]>.004);
   const next=tunnel.stops.find(u=>u>cam.tp+.01);if(next!=null)cam.tpT=Math.max(0,next-.02);cam.idle=-9;
@@ -2548,7 +2555,9 @@ camera.position.set(0,R*1.2,R*6);cam.look.set(0,0,0);
 setLens('cortex');
 ORC.forEach((o,i)=>{skinMat.uniforms.uSecProg.value[i]=barProgress(o);skinMat.uniforms.uSecState.value[i]=STATE_RANK[o.state]??0});
 {const d=new Date(T0*1000);$('scrub').querySelector('.lbl0').textContent=d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})}
-tick({family:'memory',label:'RECALL_DELIVERED',actor:'agent',evidence:'claim',valence:'neutral'});
+// the ticker's first lines: on a real memory the two newest REAL moments, each saying when it happened; the demo opens on a sample
+if(USE_REAL){const last=[...M.events].filter(e=>e.ts).sort((a,b)=>a.ts-b.ts).slice(-2);last.forEach(e=>tick({...e,_past:true}))}
+else tick({family:'memory',label:'RECALL_DELIVERED',actor:'agent',evidence:'claim',valence:'neutral'});
 let fpsAcc=0,fpsN=0,fps=60,statT=0,slowFrames=0;
 const _frame=()=>{
   const dt=Math.min(clock.getDelta(),.1),t=clock.elapsedTime; // flights keep real time on slow frames
@@ -2638,7 +2647,7 @@ const _frame=()=>{
     // arriving at a neuron names it, without a hover
     const here=cam.tp+.025;let best=-1,bd=.009;tunnel.stars.forEach((s,i)=>{const d=Math.abs(s.u-here);if(d<bd){bd=d;best=i}});
     if(best>=0&&!slots.hover?.on){const s=tunnel.stars[best];
-      setAnno('arrive','arr'+best,()=>project(s.world),`<div class="k">claim · ${tunnel.sel===s.li?'on your thread':'in this session'}</div><div class="t">${esc(LM[s.li].claim)}</div>`)}
+      setAnno('arrive','arr'+best,()=>project(s.world),`<div class="k">claim · ${tunnel.sel===s.li?'on your thread':'in this strand'}</div><div class="t">${esc(LM[s.li].claim)}</div>`)}
     else if(best<0)clearAnno('arrive');
     // near the end the two doorways name themselves: the next thread ahead, the way back on the side
     if(cam.tp>.86){const nx=tunnel.door.next;
