@@ -1076,11 +1076,12 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         available["sectors"] = bool(sec_cols)
         available["landmark_sectors"] = bool(ls_cols)
         if "sector_key" in sec_cols:
-            want = ("sector_key", "parent_key", "label", "status", "members", "outside_evidence", "last_activity")
+            # the live table names its last change updated_at (last_activity was the exporter's guess): either one
+            want = ("sector_key", "parent_key", "label", "status", "members", "outside_evidence", "last_activity", "updated_at")
             # PLAN  … FROM mycelium_sectors WHERE COALESCE(status,'proven') != 'dissolved' LIMIT 200 -> SCAN (19 rows)
             sectors = [{"key": r["sector_key"], "parent": r["parent_key"] or None, "label": clip(r["label"], 60),
                         "status": r["status"] or "proven", "members": r["members"] or 0,
-                        "evidence": r["outside_evidence"] or 0, "last": ts_of(r["last_activity"])}
+                        "evidence": r["outside_evidence"] or 0, "last": ts_of(r["last_activity"] or r["updated_at"])}
                        for r in con.execute(f"SELECT {pick_cols(sec_cols, want)} FROM mycelium_sectors "
                                             f"WHERE COALESCE(status, 'proven') != 'dissolved' LIMIT 200")]
         if sectors and {"landmark_id", "sector_key"} <= ls_cols and lm_ids:
