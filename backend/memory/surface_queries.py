@@ -52,6 +52,7 @@ import logging
 import re
 import sqlite3
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -927,8 +928,20 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
     events = max(1, min(int(events), SNAPSHOT_EVENTS_MAX))
     warnings: list[str] = []
     available: dict[str, bool] = {}
+    # WHERE THE TIME GOES (2026-10-21: a first call after a backend start took > 300 s, the next 1.0 s): one INFO line
+    # per call with the total and each part, so the next cold start names the slow statement group.
+    ref, t_start, parts = uuid.uuid4().hex[:8], time.perf_counter(), {}
+    t_lap = t_start
+
+    def lap(part: str) -> None:
+        nonlocal t_lap
+        t_now = time.perf_counter()
+        parts[part] = parts.get(part, 0.0) + (t_now - t_lap)
+        t_lap = t_now
+
     with read_only(db or memory_db_path()) as con:
         have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        lap("open")
         # ① counts. PLAN (live store 2026-10-21): every COUNT(*) below is a SCAN of the table's smallest covering index
         # (events 42k, chain 42k, chunks 120k index entries) or of a small table (landmarks 3.3k, edges 466, merges 3k,
         # episodes 464, documents 454); no row is read.
@@ -942,6 +955,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                   "landmarks_absorbed": n("mycelium_landmarks", "WHERE absorbed = 1") if "absorbed" in lm_cols else 0,
                   "edges": n("mycelium_landmark_edges"), "merges": n("mycelium_landmark_merges"),
                   "episodes": n("episodes"), "fragments": n("context_chunks"), "artifacts": n("document_data")}
+        lap("counts")
         ev_cols = table_cols(con, "memory_events")
         ev_thread_idx = "memory_events" in have and has_index_on(con, "memory_events", "thread_id")
 
@@ -949,6 +963,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         #       -> SCAN memory_events USING COVERING INDEX idx_memory_events_label (family, label) (42k entries)
         fam_counts = {r[0]: r[1] for r in con.execute("SELECT family, COUNT(*) FROM memory_events GROUP BY family")} \
             if "memory_events" in have else {}
+        lap("fam_counts")
         # territories of the lattice: topic domains. memory_chain is the only table that carries them in volume
         # (2026-10-18: memory_events ~90% NULL); NULL counts as "general"
         dom_counts: dict[str, int] = {}
@@ -959,6 +974,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                 #          topic_domain). It reads one value per row; the cost is measured in the report.
                 for r in con.execute(f"SELECT COALESCE(topic_domain, 'general'), COUNT(*) FROM {tbl} GROUP BY 1"):
                     dom_counts[r[0]] = dom_counts.get(r[0], 0) + r[1]
+                lap(f"dom_counts_{tbl}")
         # eval share of the events: exact when thread_id is indexed (a range count on the index), else a sample
         # of the newest events (the ts index; bounded) and a warning
         eval_share = [0, 0]
@@ -976,6 +992,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                    (SNAPSHOT_EVAL_SAMPLE,)).fetchone()
                 eval_share = [s or 0, t or 0]
                 warnings.append(f"eval_share is a sample of the newest {t} events: memory_events(thread_id) is not indexed")
+        lap("eval_share")
 
         # ② events (newest first, bounded) and the threads they belong to
         # PLAN  SELECT <cols> FROM memory_events [WHERE thread_id NOT LIKE 'eval-%'] ORDER BY ts DESC LIMIT ?
@@ -997,6 +1014,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         else:
             counts["sessions"] = len(by_thread)
             warnings.append("sessions counts the threads of the newest events: memory_events(thread_id) is not indexed")
+        lap("events")
 
         # ③ landmarks that are still live (absorbed ones were merged into a survivor)
         # PLAN  SELECT <cols> FROM mycelium_landmarks WHERE COALESCE(absorbed,0)=0 ORDER BY created_at DESC LIMIT 400
@@ -1045,6 +1063,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                               "domain": "general"})  # landmarks carry no domain column yet
         if not any(r["micro_abstract_text"] for r in lm_rows):
             warnings.append("no live landmark has micro_abstract_text")
+        lap("landmarks")
         # PLAN  SELECT … FROM mycelium_landmark_edges WHERE from_landmark_id IN (…) AND to_landmark_id IN (…) LIMIT 3000
         #       -> SEARCH mycelium_landmark_edges USING INDEX idx_landmark_edges_from (from_landmark_id=?) (466 rows, small)
         edges = []
@@ -1062,12 +1081,14 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         # (nodes.source_channel is the same value for a coordinate node). NULL on every row = legacy internal; the page
         # then draws the plain membrane.
         ei_cols = table_cols(con, "mycelium_episode_index")
+        lap("landmark_edges")
         available["landmark_channel"] = "source_channel" in ei_cols and "landmark_id" in ei_cols
         if available["landmark_channel"] and lm_ids:
             chan = _channels(con, lm_ids)   # PLAN  SEARCH mycelium_episode_index USING INDEX idx_epindex_landmark
             for lm in landmarks:
                 lm["channel"] = chan.get(lm["id"])
 
+        lap("landmark_channels")
         # sectors: territories read from the registry when the tables exist (a newer build creates them); the page falls
         # back to the topic-domain territories otherwise. Roots are big, children nested.
         sectors: list[dict] = []
@@ -1095,6 +1116,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                         root, hops = parent[root], hops + 1
                     lm["sector"], lm["domain"] = key, root
 
+        lap("sectors")
         # ④ sessions: one per thread, shaped by its Caducean trajectory
         tph = _marks(len(thread_ids))
         traj: dict[str, list] = {}
@@ -1113,6 +1135,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             exits = {r[0]: r for r in con.execute(f"SELECT session_id, natural_exit, drift, conversation_id "
                                                   f"FROM caducean_session_exits WHERE session_id IN ({tph}) LIMIT 2000",
                                                   thread_ids)}
+        lap("trajectories")
         titles: dict[str, str] = {}
         conv_of = {t: (exits[t][3] if t in exits and exits[t][3] else t) for t in thread_ids}
         messages: dict[str, list] = {}
@@ -1143,6 +1166,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                                            "ended": ts_of(r[3])})
             else:
                 warnings.append("data/conversations.db not found: session titles fall back to thread ids")
+        lap("chat_store")
         sessions = []
         now = time.time()
         for t in thread_ids:
@@ -1156,6 +1180,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                              "traj": traj.get(t, []), "eval": t.startswith(EVAL_THREAD_PREFIX), "episodes": [],
                              "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, [])})
 
+        lap("sessions")
         # ⑤ episodes (task runs)
         episodes = []
         sess_ids = set(thread_ids)
@@ -1174,6 +1199,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             s["episodes"] = [e["id"] for e in episodes if e["session"] == s["id"]]
         episodes = [e for e in episodes if e["session"] in sess_ids]
 
+        lap("episodes")
         # ⑥ things IRIS made (names and kinds only; no content, no blobs)
         artifacts = []
         if "document_data" in have:
@@ -1189,6 +1215,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                 artifacts.append({"id": r["document_id"], "kind": kind, "name": name, "folder": folder,
                                   "session": r["conversation_id"], "ts": ts_of(r["created_at"]), "weight": 1.0, "seed": i + 1})
 
+        lap("artifacts")
         # ⑦ pins (MEMORY-FOUNDATION-ANALYSIS 13.3): explicit memory, held not earned. 0 rows today: the page then shows
         # none. "held in context" has no stored flag yet; the 'held' / 'context' tag stands in.
         pins: list[dict] = []
@@ -1227,6 +1254,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                              "held": bool({"held", "context"} & set(tags)), "links": len(refs) + nfile + nimg + nurl,
                              "refs": refs[:12], "tags": tags[:6], "domain": dom})
 
+        lap("pins")
         # ⑧ coordinate spaces (registry) and the nodes in them: layers, with trust channel and confidence
         spaces: list[dict] = []
         nodes: list[dict] = []
@@ -1261,6 +1289,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                            "traversals": r["traversal_count"] or 0, "observations": r["observation_count"] or 0,
                                            "last": ts_of(r["last_traversed"])})
 
+        lap("nodes")
         # ⑨ immune response (Kyudo): the durable quorum log. A live row (shadow=0) is a signal that counted; shadow=1 rows
         # are measured only; quorum_reorganization_reset is the region relaxing. The landmark a signal names (activation
         # anomaly) or the session it came from tells the page which territory it touched.
@@ -1278,6 +1307,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                "landmark": m.group(1) if m else None})
             quorum.reverse()
 
+        lap("quorum")
         # ⑩ recalls: what the memory gave the agent on each step of a turn (RECALL_DELIVERED, typed by
         # agent_kernel._der_recall_delivered) and whether it helped (RECALL_HELPED / RECALL_MISLED, same recall_trace_id).
         # refs are DER chain ids: resolved to the prior step they name (its thread, what it did, its tool, its result) - a
@@ -1307,6 +1337,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             if t.get("turn"):
                 by_turn.setdefault(t["turn"], []).append(t)
         turn_ids = sorted(by_turn, key=lambda k: max(x["ts"] for x in by_turn[k]), reverse=True)[:SNAPSHOT_RECALL_TURNS]
+        lap("recall_events")
         chain_ids = sorted({c for k in turn_ids for t in by_turn[k] for c in t["refs"]})
         chain: dict[str, dict] = {}
         if chain_ids and has_index_on(con, "memory_chain", "chain_id"):
@@ -1327,8 +1358,13 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                                               "ts": None, "kind": "step"}) for c in t["refs"]]}
                                       for t in ts_]})
         counts["recall_turns"] = len(by_turn)
+        lap("recalls")
 
     oracle = _snap_oracle(warnings)
+    lap("oracle")
+    logger.info("[memory_snapshot] ref=%s total_ms=%d threads=%d events=%d eval=%s parts_ms=%s", ref,
+                (time.perf_counter() - t_start) * 1000, threads, events, include_eval,
+                " ".join(f"{k}={v * 1000:.0f}" for k, v in parts.items()))
     return {"meta": {"source": "data/memory.db (read-only snapshot)", "generated": time.time(), "counts": counts,
                      "eval_share": eval_share, "warnings": warnings, "available": available},
             "famCounts": fam_counts, "domCounts": dom_counts, "sessions": sessions, "events": out_events,

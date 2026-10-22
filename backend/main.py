@@ -1037,6 +1037,16 @@ async def lifespan(app: FastAPI):
         app.state.ready = True
         logger.info("IRIS Backend startup completed successfully!")
 
+        # Memory surface: fill the snapshot cache once, in the background, after a delay and when no turn runs
+        # (measured 2026-10-21: the first GET /api/memory/snapshot after a start took > 300 s on the cold
+        # hard disk). One daemon thread; IRIS_MEMORY_SNAPSHOT_WARMUP=0 turns it off. Never blocks /health.
+        try:
+            from backend.api.memory import start_snapshot_warmup
+
+            start_snapshot_warmup()
+        except Exception as _mw_err:  # noqa: BLE001 - a warm-up never fails startup
+            logger.warning(f"  - [WARM] memory snapshot warm-up not started: {_mw_err}")
+
         # ── REQ-6 AC6.2: post-boot working-set reclamation ────────────────
         # Startup imports (FastAPI routers, agent kernel, audio engine) leave
         # transient heap pages resident in the Uvicorn process's working set.
