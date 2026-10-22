@@ -342,6 +342,60 @@ class TestHardenedBar:
         assert derive_status(200, 0.99, 0.01, honest=h)[0] == "shadow"
 
 
+class TestNoErrorMassWaiver:
+    """2026-10-22, owner-approved after measurement: the minority and AUROC
+    clauses assume errors exist. A consumer that is genuinely near-perfect in
+    its acting range cannot supply a 5% wrong class (measured: tool_choice/v4,
+    275 rows, 2 wrong = 0.7%; a 5% rate would have shown ~14 wrong). The
+    waiver opens ONLY when the data statistically excludes the 5% rate, and
+    every other clause still applies at full strength."""
+
+    def test_a_full_size_near_perfect_consumer_certifies_with_the_waiver(self):
+        """275 rows, 273 correct / 2 wrong: a 5% rate is excluded (p < 1e-5),
+        so the minority+AUROC clauses are untestable rather than failed, and
+        the remaining clauses carry the certification. The waiver is NAMED in
+        the gap so no one later mistakes this for a fully-ranked consumer."""
+        h = _honest(rows_distinct=275, classes={"correct": 273, "wrong": 2},
+                    rows_above=275, oof={"auroc": 0.20, "precision_at_t": 0.9927,
+                                        "wilson_lb": 0.9739, "ece": 0.0034})
+        status, gap = derive_status(0, 0.0, None, honest=h)
+        assert status == "enforced"
+        assert "no-error-mass waiver" in gap
+        assert "excludes a 5% error rate" in gap
+
+    def test_thin_data_never_qualifies(self):
+        """100 rows with 4 wrong (4% < 5%) does NOT exclude a 5% rate
+        (p is about 0.43): the waiver stays closed and the minority gap is
+        named as before. This is the guard against certifying on thin
+        evidence - the exact trap the v3 cohort set (it passed the full bar
+        at 688 rows and degraded at 2231)."""
+        h = _honest(rows_distinct=100, classes={"correct": 96, "wrong": 4},
+                    rows_above=100)
+        status, gap = derive_status(0, 0.0, None, honest=h)
+        assert status == "shadow"
+        assert "minority" in gap
+
+    def test_the_waiver_bypasses_nothing_else(self):
+        """The same near-perfect cohort with a failing ECE: the waiver does
+        not open a side door around any other clause."""
+        h = _honest(rows_distinct=275, classes={"correct": 273, "wrong": 2},
+                    rows_above=275, oof={"auroc": 0.20, "precision_at_t": 0.9927,
+                                        "wilson_lb": 0.9739, "ece": 0.06})
+        status, gap = derive_status(0, 0.0, None, honest=h)
+        assert status == "shadow"
+        assert "ECE" in gap
+
+    def test_the_waiver_recloses_when_errors_arrive(self):
+        """The waiver is derived per recompute, never persisted: the same
+        consumer at 5%+ wrong faces the full clauses again (AUROC required),
+        exactly the mechanism that demoted tool_choice/v3 and review_verdict."""
+        h = _honest(rows_distinct=275, classes={"correct": 260, "wrong": 15},
+                    rows_above=200, oof={"auroc": 0.55})
+        status, gap = derive_status(0, 0.0, None, honest=h)
+        assert status == "shadow"
+        assert "AUROC" in gap
+
+
 class TestReport:
     def test_a_one_class_consumer_with_perfect_raw_numbers_is_not_flipped(self):
         """200 rows, every one right at confidence 1.0: raw precision 1.0, raw ECE

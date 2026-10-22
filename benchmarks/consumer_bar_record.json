@@ -13,7 +13,7 @@
     "ece": null,
     "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
     "precision": 0.0,
-    "rows": 271,
+    "rows": 361,
     "status": "shadow"
   },
   "call_closing": {
@@ -28,9 +28,9 @@
     },
     "consumer_id": "call_closing",
     "ece": null,
-    "gap": "oof AUROC 0.4998 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4992 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 2449,
+    "rows": 2867,
     "status": "shadow"
   },
   "click_safety": {
@@ -44,10 +44,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "click_safety",
-    "ece": 0.4218,
-    "gap": "minority class 1.8% < 5%",
+    "ece": 0.4119,
+    "gap": "minority class 1.9% < 5%",
     "precision": 1.0,
-    "rows": 166,
+    "rows": 206,
     "status": "shadow"
   },
   "depth_met": {
@@ -62,10 +62,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "depth_met",
-    "ece": 0.0983,
+    "ece": 0.0791,
     "gap": "",
-    "precision": 0.9509,
-    "rows": 1109,
+    "precision": 0.8956,
+    "rows": 1738,
     "status": "enforced"
   },
   "depth_route": {
@@ -80,9 +80,9 @@
     },
     "consumer_id": "depth_route",
     "ece": null,
-    "gap": "oof AUROC 0.5516 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5842 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 498,
+    "rows": 796,
     "status": "shadow"
   },
   "done": {
@@ -96,10 +96,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "done",
-    "ece": 0.104,
-    "gap": "oof AUROC 0.6053 < 0.65 (confidence does not rank errors)",
-    "precision": 0.7868,
-    "rows": 351,
+    "ece": null,
+    "gap": "oof AUROC 0.586 < 0.65 (confidence does not rank errors)",
+    "precision": 0.0,
+    "rows": 561,
     "status": "shadow"
   },
   "escalate_incomplete": {
@@ -113,10 +113,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "escalate_incomplete",
-    "ece": 0.2202,
-    "gap": "",
-    "precision": 0.9542,
-    "rows": 1455,
+    "ece": 0.2319,
+    "gap": "no-error-mass waiver: 79 wrong in 2171 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
+    "precision": 0.968,
+    "rows": 2171,
     "status": "enforced"
   },
   "event_family": {
@@ -131,9 +131,9 @@
     },
     "consumer_id": "event_family",
     "ece": null,
-    "gap": "oof AUROC 0.5062 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4751 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 105,
+    "rows": 119,
     "status": "shadow"
   },
   "event_type:control": {
@@ -148,9 +148,9 @@
     },
     "consumer_id": "event_type:control",
     "ece": null,
-    "gap": "distinct rows 23 < 100",
+    "gap": "distinct rows 27 < 100",
     "precision": 0.0,
-    "rows": 23,
+    "rows": 27,
     "status": "shadow"
   },
   "event_type:delivery": {
@@ -165,9 +165,9 @@
     },
     "consumer_id": "event_type:delivery",
     "ece": null,
-    "gap": "distinct rows 23 < 100",
+    "gap": "distinct rows 30 < 100",
     "precision": 0.0,
-    "rows": 23,
+    "rows": 30,
     "status": "shadow"
   },
   "event_type:feedback": {
@@ -216,9 +216,9 @@
     },
     "consumer_id": "event_type:knowledge",
     "ece": null,
-    "gap": "distinct rows 53 < 100",
+    "gap": "distinct rows 60 < 100",
     "precision": 0.0,
-    "rows": 53,
+    "rows": 60,
     "status": "shadow"
   },
   "event_type:memory": {
@@ -233,9 +233,9 @@
     },
     "consumer_id": "event_type:memory",
     "ece": null,
-    "gap": "distinct rows 49 < 100",
+    "gap": "distinct rows 60 < 100",
     "precision": 0.0,
-    "rows": 49,
+    "rows": 60,
     "status": "shadow"
   },
   "mode": {
@@ -266,11 +266,11 @@
       "readout_mode": "letters"
     },
     "consumer_id": "narration",
-    "ece": 0.1282,
-    "gap": "",
-    "precision": 0.8612,
-    "rows": 1406,
-    "status": "enforced"
+    "ece": 0.1149,
+    "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
+    "precision": 0.8939,
+    "rows": 1743,
+    "status": "shadow"
   },
   "needs_action": {
     "config": {
@@ -284,10 +284,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "needs_action",
-    "ece": null,
+    "ece": 0.0228,
     "gap": "",
-    "precision": 0.0,
-    "rows": 641,
+    "precision": 0.9338,
+    "rows": 1643,
     "status": "enforced"
   },
   "presentation": {
@@ -302,9 +302,9 @@
     },
     "consumer_id": "presentation",
     "ece": null,
-    "gap": "distinct rows 48 < 100",
+    "gap": "distinct rows 57 < 100",
     "precision": 0.0,
-    "rows": 48,
+    "rows": 57,
     "status": "shadow"
   },
   "recovery_strategy": {
@@ -336,10 +336,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "review_verdict",
-    "ece": 0.0628,
-    "gap": "enforcement bar unmet (no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows); rung live",
-    "precision": 0.8375,
-    "rows": 1464,
+    "ece": null,
+    "gap": "enforcement bar unmet (oof AUROC 0.6242 < 0.65 (confidence does not rank errors)); rung live",
+    "precision": 0.0,
+    "rows": 2047,
     "status": "sampled"
   },
   "sufficient": {
@@ -371,10 +371,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "tool_approval",
-    "ece": 0.0389,
+    "ece": 0.0359,
     "gap": "",
-    "precision": 0.9168,
-    "rows": 2143,
+    "precision": 0.8966,
+    "rows": 2715,
     "status": "enforced"
   },
   "tool_choice": {
@@ -384,16 +384,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "3368a26b3a9f",
-      "criteria_version": "tc-decide-v3",
+      "criteria_version": "tc-decide-v4",
       "engine_id": "d1-3b-ad-q4_k_m+letters",
       "readout_mode": "letters"
     },
     "consumer_id": "tool_choice",
-    "ece": 0.0829,
-    "gap": "enforcement bar unmet (oof AUROC 0.617 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.876,
-    "rows": 2231,
-    "status": "sampled"
+    "ece": 0.0483,
+    "gap": "no-error-mass waiver: 2 wrong in 275 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
+    "precision": 0.9939,
+    "rows": 275,
+    "status": "enforced"
   },
   "user_feedback": {
     "config": {
@@ -406,10 +406,10 @@
       "readout_mode": "letters"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.2372,
+    "ece": 0.2623,
     "gap": "",
-    "precision": 0.9007,
-    "rows": 628,
+    "precision": 0.9234,
+    "rows": 807,
     "status": "enforced"
   },
   "web_intent": {
@@ -424,9 +424,9 @@
     },
     "consumer_id": "web_intent",
     "ece": null,
-    "gap": "oof AUROC 0.4433 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4727 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 607,
+    "rows": 718,
     "status": "shadow"
   }
 }

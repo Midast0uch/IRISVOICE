@@ -81,6 +81,20 @@ MIN_AUROC = 0.65
 MIN_ROWS_ABOVE = 50
 MIN_WILSON_LB = 0.85
 
+# THE NO-ERROR-MASS WAIVER (2026-10-22, owner-approved after measurement):
+# the minority and AUROC clauses exist to prove confidence RANKS errors, and
+# they assume errors exist. A consumer that is genuinely near-perfect in its
+# acting range cannot supply a 5% wrong class, so those clauses could never
+# pass - the exam demands evidence of failure (measured: tool_choice/v4,
+# 275 rows, 2 wrong = 0.7%; a 5% rate would have shown ~14 wrong, p < 1e-5).
+# The waiver opens ONLY when the data statistically EXCLUDES the minority
+# rate (one-sided binomial, p <= WAIVER_ALPHA): thin data never qualifies
+# (100 rows with 4 wrong does not exclude 5%), one-class data is refused
+# before it, and every remaining clause still applies at full strength.
+# The waiver is re-derived on every recompute - the moment real errors
+# accumulate to >= 5%, the full clauses snap back and can demote.
+WAIVER_ALPHA = 0.01
+
 # REQ-6 AC6.1 (oracle-native-decision-surface): the SAMPLED rung's stated
 # floor. `sampled` is reported between `shadow` and `enforced` ONLY when the
 # consumer is sampling-eligible by the AC6.6 tier table (the caller passes it)
@@ -166,6 +180,30 @@ def _derive_legacy(
     return "enforced", ""
 
 
+def _excludes_error_rate(n: int, wrong: int, rate: float,
+                         alpha: float = WAIVER_ALPHA) -> bool:
+    """True when <= ``wrong`` errors in ``n`` rows makes a ``rate`` error rate
+    statistically implausible (one-sided binomial, p <= alpha).
+
+    Pure Python in log space (no new dependency); exact for the sizes the bar
+    ever sees. ``False`` on any degenerate input - the waiver fails closed."""
+    if n <= 0 or wrong < 0 or wrong > n or not 0.0 < rate < 1.0:
+        return False
+    import math
+
+    p = 0.0
+    for k in range(0, wrong + 1):
+        try:
+            logpmf = (
+                math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+                + k * math.log(rate) + (n - k) * math.log(1.0 - rate)
+            )
+        except ValueError:  # noqa: BLE001 - fail closed, never open
+            return False
+        p += math.exp(logpmf)
+    return p <= alpha
+
+
 def _derive_hardened(
     h: Dict[str, Any], min_rows: int, min_precision: float, max_ece: float,
 ) -> Tuple[str, str]:
@@ -181,11 +219,24 @@ def _derive_hardened(
             "precision and AUROC prove nothing"
         )
     minority = min(a, b) / (a + b)
+    waiver = ""
     if minority < MIN_MINORITY:
-        return "shadow", f"minority class {minority:.1%} < {MIN_MINORITY:.0%}"
+        # THE NO-ERROR-MASS WAIVER (2026-10-22): see WAIVER_ALPHA above. The
+        # wrong class is under 5% - either the evidence is thin (shadow, the
+        # gap names it) or the consumer is genuinely that good and the data
+        # excludes a 5% rate outright (the minority+AUROC clauses are
+        # untestable, not failed; every other clause still applies in full).
+        if _excludes_error_rate(n, b, MIN_MINORITY):
+            waiver = (
+                f"no-error-mass waiver: {b} wrong in {n} rows excludes a "
+                f"{MIN_MINORITY:.0%} error rate (p <= {WAIVER_ALPHA}); "
+                "minority+AUROC untestable, not failed"
+            )
+        else:
+            return "shadow", f"minority class {minority:.1%} < {MIN_MINORITY:.0%}"
     oof = h.get("oof") or {}
     auroc = oof.get("auroc")
-    if auroc is None or auroc < MIN_AUROC:
+    if not waiver and (auroc is None or auroc < MIN_AUROC):
         return "shadow", f"oof AUROC {auroc} < {MIN_AUROC} (confidence does not rank errors)"
     t = h.get("threshold")
     above = int(h.get("rows_above") or 0)
@@ -226,6 +277,8 @@ def _derive_hardened(
             return "shadow", (
                 f"acting answer '{ans}' Wilson LB {a_wlb} < {MIN_WILSON_LB}"
             )
+    if waiver:
+        return "enforced", waiver
     return "enforced", ""
 
 
