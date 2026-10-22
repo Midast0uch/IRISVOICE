@@ -725,7 +725,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 
 | Consumer | Distinct rows (correct/wrong) | OOF AUROC | OOF ECE | Threshold (rows above, precision, Wilson) | Measured status | Gap |
 |---|---|---|---|---|---|---|
-| `tool_choice` (scope `tc-decide-v3`, 2026-10-21 recompute) | 2231 (1886/345) | 0.617 | 0.0129 | 0.881 (391, 0.9003, 0.8665) | sampled: DEMOTED 2026-10-21 - the grown cohort (688 -> 2231 rows from the eval passes) no longer ranks errors (AUROC < 0.65) | re-earn on a question/frame revision, measured offline first |
+| `tool_choice` (scope `tc-decide-v4`, 2026-10-21) | 98 live rows (97/1), all binding picks at conf >= 0.9 | untestable at this size (1 wrong row) | 0.0002 | 0.9872 (98, 0.9898, 0.9444) | sampled: the v4 label fix is shipped and live-excellent; the bar needs error mass to certify (see 7.2b) | rows + minority mass on traffic |
 | `escalate_incomplete` (2026-10-13) | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON | - |
 | `review_verdict` (scope `review_verdict/v4`, 2026-10-21 recompute) | 1464 (1142/322) | 0.6563 | 0.0164 | none | sampled: DEMOTED 2026-10-21 - the grown cohort (184 -> 1464 rows) holds no 0.90-precision threshold | re-earn on a frame revision, measured offline first |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
@@ -927,6 +927,50 @@ decision site. The four deciding consumers each cost one question at their site:
 step to DIRECT), `escalate_incomplete` at step settle, `depth_met` at the run grade
 (tighten-only), and `tool_approval` before each call (refuse-only, bounded at
 `_MAX_GUARD_CORRECTIONS=2` per node). Below each threshold the incumbent decides.
+
+### 7.2b tool_choice v4: the label defect, and the bar's error-mass problem (2026-10-21)
+
+The 2026-10-21 demotion cause was found offline, the 6.1 way. The honest
+state-keyed v3 cohort (2428 rows - the rows carry the full rendered `state`,
+so the input identity is computable from the row itself; 2885 raw rows held
+2635 distinct inputs but counted as 2231 under the confidence tuple) showed
+BINDING run_command rows ranking at CHANCE (AUROC 0.4982, 488 rows). The v3
+label read the loop's `ok`, which counts a non-zero returncode as failure, so
+a mid-iteration pytest exit - the command RAN, the call did its job - was
+labeled a wrong pick. Measured from the logs: 36 of 39 failed run_command
+calls were ran-and-exited, not errored. v4 reads the call-level outcome
+(`approval_ok`), the exact tool_approval/v6 precedent; the offline re-label
+takes the honest cohort from AUROC 0.657 to 0.7988 (an upper bound - the
+per-row call-level outcome is not recoverable from the old rows, so the
+v3 cohort was retired, not converted). Shipped as `tc-decide-v4` with
+`input_key` on every row; the structural pins proven to fail on the old
+code (`test_tool_choice_label_contract.py`).
+
+The live v4 cohort after two seeding passes (100% sampling + the eval
+side-effects switch, the documented seeding mechanism for a demoted
+consumer): 98 rows, 97 correct / 1 wrong, every row a binding pick at
+confidence >= 0.9. Two findings:
+
+1. **The demoted consumer can only seed one confidence band.** A sampled
+   pick binds only at raw confidence >= `IRIS_ORACLE_FORCE_MIN` (0.9);
+   below it `_choose_tool` discards the row. So while demoted, the cohort
+   is structurally conf >= 0.9 - the full range only forms under
+   enforcement. The v3 cohort's range came from its enforced era.
+2. **The bar needs error mass, and the fixed consumer barely makes
+   errors.** The minority clause (>= 5% wrong) exists to prove the
+   confidence RANKS errors; a consumer that is genuinely ~99% right in its
+   acting range cannot supply that mass, and at a 1-2% true error rate the
+   clause may never pass - the bar's clauses assume errors exist. This is
+   a FINDING for the owner, not a clause to lower: the certification of a
+   near-perfect consumer is a bar-design question (does a 99%-precision
+   consumer need AUROC proof, or is the acting-range precision + Wilson
+   bound sufficient?).
+
+State: the fix is shipped and live-excellent (97/98 at the only confidence
+where a demoted pick acts); the consumer stays sampled; the cohort grows
+~55 rows per seeding pass or ~3 per ordinary pass; each re-measure is one
+report run. The v3-era simulation says the full-range behavior under the v4
+label is AUROC ~0.80 with every aggregate clause met.
 
 ### 7.3 Cost per decision
 
