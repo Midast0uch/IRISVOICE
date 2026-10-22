@@ -7,6 +7,7 @@
   GET /api/memory/strand/{id}                      one strand's corridor data (exporter session shape)
   GET /api/memory/turn/{conversation_id}/{turn_id} a turn's recalls (refs resolved) and moments
   GET /api/memory/oracle                           per-consumer state from the bar record + calibration files (no DB)
+  GET /api/memory/snapshot?threads=&events=&include_eval=  the whole dashboard model (the exporter's IRIS_MEMORY shape)
 
 Read-only by construction: every SQL statement lives in backend/memory/surface_queries.py (read-only
 connections, LIMIT on every query, index-backed). The handlers are plain `def`, so FastAPI runs them on its
@@ -114,6 +115,12 @@ def oracle_summary() -> dict:
     for c in consumers:
         states[c["state"]] = states.get(c["state"], 0) + 1
     return {"consumers": consumers, "states": states}
+
+
+@router.get("/snapshot")
+def memory_snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False):
+    """threads <= 120 and events <= 12000: a larger value is clamped, like the other limits."""
+    return _serve("snapshot", sq.snapshot, threads=threads, events=events, include_eval=include_eval)
 
 
 @router.get("/oracle")
