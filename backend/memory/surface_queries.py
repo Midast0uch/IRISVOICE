@@ -20,6 +20,13 @@ evidence kinds mapped onto the closed alphabet (LM_EVIDENCE), families raw, terr
 JSON keys follow docs/Design/Memory-Cortex/export_snapshot.py (landmark, event, episode, message shapes).
 The word "session" in a key (event.session, claim.session) is the exporter's key for a memory thread id.
 
+SNAPSHOT (end of file): snapshot() is the dashboard's WHOLE model in the exporter's shape (window.IRIS_MEMORY), moved here
+from docs/Design/Memory-Cortex/export_snapshot.py, which is now a thin CLI over it; GET /api/memory/snapshot serves it.
+Its statements follow the same rules. The one whole-table read left is the topic-domain count (GROUP BY topic_domain on
+memory_chain and memory_events: no index carries the column; 16 + 12 MiB, ~70 ms warm on the live store). The statements
+that would scan without memory_events(thread_id) / memory_chain(chain_id) are gated on has_index_on and warn in
+meta.warnings. Pin links (mycelium_pin_links, 22k rows, no index) are read only when both ends are indexed.
+
 MISSING INDEXES (owner decision needed; this module adds none):
   memory_events(thread_id [, ts])  - events of one strand. Until it exists, strand events come from a
       bounded ts-window scan (STRAND_EVENTS_WINDOW_SQL, at most WINDOW_SCAN_CAP rows) and the answer says
@@ -42,6 +49,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -131,10 +139,11 @@ def read_only(path: Path | str) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def _optional_chat_store() -> Iterator[Optional[sqlite3.Connection]]:
-    """The chat store, or None when it does not exist (a fresh install): chat-side answers are then empty."""
+def _optional_chat_store(path: Optional[Path | str] = None) -> Iterator[Optional[sqlite3.Connection]]:
+    """The chat store (`path`, else the one conversation_store uses), or None when it does not exist (a fresh
+    install): chat-side answers are then empty."""
     try:
-        with read_only(conversations_db_path()) as con:
+        with read_only(path or conversations_db_path()) as con:
             yield con
     except StoreUnavailable:
         yield None
@@ -861,3 +870,467 @@ def turn(conversation_id: str, turn_id: str) -> dict:
                                        "kind": "step", "resolved": False}) for c in t["refs"]]
     return {"conversation": conversation_id, "turn": turn_id, "recalls": steps, "moments": moments,
             "refs_resolved": resolved or not want, "truncated": len(rows) >= RECALL_ROWS_CAP}
+
+
+# ── snapshot: the whole memory model of the dashboard (docs/Design/Memory-Cortex/export_snapshot.py) ──
+# ONE model, ONE shape: window.IRIS_MEMORY = {meta, famCounts, domCounts, sessions, events, landmarks, edges,
+# episodes, artifacts, oracle, mind, sectors, pins, spaces, nodes, nodeEdges, quorum, recalls}. The offline exporter
+# is now a thin CLI over snapshot(); the mockup and the app read the same shape from the same SQL.
+SNAPSHOT_THREADS_MAX = 120          # API bound; the exporter's default is 48
+SNAPSHOT_EVENTS_MAX = 12000         # API bound; the exporter's default is 6000
+SNAPSHOT_EVENTS_PER_THREAD = 400    # the exporter's per-thread bound (EVENTS_CAP)
+SNAPSHOT_RECALL_ROWS = 8000
+SNAPSHOT_EVAL_SAMPLE = 6000         # events sampled for eval_share while memory_events(thread_id) is not indexed
+SNAPSHOT_LANDMARKS = 400
+SNAPSHOT_EDGES = 3000
+SNAPSHOT_TRAJECTORY_ROWS = 6000
+SNAPSHOT_TRAJECTORY_STEPS = 80
+SNAPSHOT_EPISODES = 300
+SNAPSHOT_ARTIFACTS = 80
+SNAPSHOT_PINS = 200
+SNAPSHOT_PIN_LINKS = 4000
+SNAPSHOT_NODES = 600
+SNAPSHOT_NODE_EDGES = 4000
+SNAPSHOT_QUORUM = 80
+SNAPSHOT_RECALL_TURNS = 60
+# the topic-domain registry (memory_chain.topic_domain values): a pin may name one in its tags
+DOM_KEYS = ["general", "web", "science", "data", "finance", "ai", "design", "mobile", "systems", "devops", "security", "hardware"]
+FAMILIES = ["intent", "control", "problem", "knowledge", "feedback", "delivery", "memory", "safety", "environment"]
+DOC_KIND = {"image": "image", "research": "web", "json": "doc", "markdown": "doc", "code": "code", "document": "doc",
+            "video": "video", "audio": "audio"}
+DOC_FOLDER = {"research": "research records", "json": "structured data", "markdown": "notes", "image": "images"}
+_BENCH_BAR = Path(__file__).resolve().parents[2] / "benchmarks" / "consumer_bar_record.json"
+
+
+def _snap_oracle(warnings: list[str]) -> list[dict]:
+    """Per-consumer state from the bar record (the exporter's shape; GET /oracle serves the richer one). No DB."""
+    out: list[dict] = []
+    try:
+        for cid, v in json.loads(_BENCH_BAR.read_text(encoding="utf-8")).items():
+            out.append({"consumer": cid, "state": v.get("status", "shadow"), "rows": v.get("rows") or 0,
+                        "auroc": v.get("auroc") or 0.5, "ece": v.get("ece"), "precision": v.get("precision") or 0.0})
+    except (OSError, ValueError, AttributeError) as exc:
+        warnings.append(f"consumer bar record unreadable: {exc}")
+    return out
+
+
+def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, *,
+             db: Optional[Path | str] = None, conv_db: Optional[Path | str] = None) -> dict:
+    """The dashboard's memory model, bounded and read-only. `threads` newest threads with their `events` newest
+    events (at most 400 each), 400 live landmarks, 300 episodes, 80 artifacts, 600 nodes, ... include_eval=False
+    drops eval-* threads. `db` / `conv_db` name another store (the exporter's --db; a git worktree has no data/).
+    Optional tables a newer build adds read as "none" (meta.available says which were found).
+
+    Every statement is LIMIT-bounded or a small-table read; the ones that would SCAN a big table when memory_events
+    (thread_id) / memory_chain(chain_id) are not indexed are gated on has_index_on and say so in meta.warnings."""
+    threads = max(1, min(int(threads), SNAPSHOT_THREADS_MAX))
+    events = max(1, min(int(events), SNAPSHOT_EVENTS_MAX))
+    warnings: list[str] = []
+    available: dict[str, bool] = {}
+    with read_only(db or memory_db_path()) as con:
+        have = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        # ① counts. PLAN (live store 2026-10-21): every COUNT(*) below is a SCAN of the table's smallest covering index
+        # (events 42k, chain 42k, chunks 120k index entries) or of a small table (landmarks 3.3k, edges 466, merges 3k,
+        # episodes 464, documents 454); no row is read.
+        def n(table: str, where: str = "") -> int:
+            return con.execute(f"SELECT COUNT(*) FROM {table} {where}").fetchone()[0] if table in have else 0
+
+        lm_cols = table_cols(con, "mycelium_landmarks")
+        live_sql = "WHERE COALESCE(absorbed, 0) = 0" if "absorbed" in lm_cols else ""
+        counts = {"events": n("memory_events"), "chain": n("memory_chain"),
+                  "landmarks": n("mycelium_landmarks", live_sql),
+                  "landmarks_absorbed": n("mycelium_landmarks", "WHERE absorbed = 1") if "absorbed" in lm_cols else 0,
+                  "edges": n("mycelium_landmark_edges"), "merges": n("mycelium_landmark_merges"),
+                  "episodes": n("episodes"), "fragments": n("context_chunks"), "artifacts": n("document_data")}
+        ev_cols = table_cols(con, "memory_events")
+        ev_thread_idx = "memory_events" in have and has_index_on(con, "memory_events", "thread_id")
+
+        # PLAN  SELECT family, COUNT(*) FROM memory_events GROUP BY family
+        #       -> SCAN memory_events USING COVERING INDEX idx_memory_events_label (family, label) (42k entries)
+        fam_counts = {r[0]: r[1] for r in con.execute("SELECT family, COUNT(*) FROM memory_events GROUP BY family")} \
+            if "memory_events" in have else {}
+        # territories of the lattice: topic domains. memory_chain is the only table that carries them in volume
+        # (2026-10-18: memory_events ~90% NULL); NULL counts as "general"
+        dom_counts: dict[str, int] = {}
+        for tbl in ("memory_chain", "memory_events"):
+            if tbl in have and "topic_domain" in table_cols(con, tbl):
+                # PLAN  SELECT COALESCE(topic_domain,'general'), COUNT(*) FROM <tbl> GROUP BY 1
+                #       -> SCAN <tbl> + TEMP B-TREE FOR GROUP BY: the one whole-table read of the snapshot (no index on
+                #          topic_domain). It reads one value per row; the cost is measured in the report.
+                for r in con.execute(f"SELECT COALESCE(topic_domain, 'general'), COUNT(*) FROM {tbl} GROUP BY 1"):
+                    dom_counts[r[0]] = dom_counts.get(r[0], 0) + r[1]
+        # eval share of the events: exact when thread_id is indexed (a range count on the index), else a sample
+        # of the newest events (the ts index; bounded) and a warning
+        eval_share = [0, 0]
+        if "memory_events" in have:
+            if ev_thread_idx:
+                # PLAN  SELECT COUNT(*) FROM memory_events WHERE thread_id >= 'eval-' AND thread_id < 'eval.'
+                #       -> SEARCH memory_events USING COVERING INDEX <the thread_id index> (thread_id>? AND thread_id<?)
+                eval_share = [con.execute("SELECT COUNT(*) FROM memory_events WHERE thread_id >= ? AND thread_id < ?",
+                                          (EVAL_THREAD_PREFIX, "eval.")).fetchone()[0], counts["events"]]
+            else:
+                # PLAN  SELECT SUM(...), COUNT(*) FROM (SELECT thread_id FROM memory_events ORDER BY ts DESC LIMIT ?)
+                #       -> SCAN memory_events USING INDEX idx_memory_events_ts (stops at the LIMIT)
+                s, t = con.execute("SELECT SUM(thread_id LIKE 'eval-%'), COUNT(*) FROM "
+                                   "(SELECT thread_id FROM memory_events ORDER BY ts DESC LIMIT ?)",
+                                   (SNAPSHOT_EVAL_SAMPLE,)).fetchone()
+                eval_share = [s or 0, t or 0]
+                warnings.append(f"eval_share is a sample of the newest {t} events: memory_events(thread_id) is not indexed")
+
+        # ② events (newest first, bounded) and the threads they belong to
+        # PLAN  SELECT <cols> FROM memory_events [WHERE thread_id NOT LIKE 'eval-%'] ORDER BY ts DESC LIMIT ?
+        #       -> SCAN memory_events USING INDEX idx_memory_events_ts (ts order; stops at the LIMIT)
+        where = "" if include_eval else "WHERE thread_id NOT LIKE 'eval-%'"
+        ev_want = ("event_id", "ts", "family", "label", "valence", "actor", "evidence", "episode_id", "thread_id", "links",
+                   "payload", "topic_domain")
+        ev_rows = con.execute(f"SELECT {pick_cols(ev_cols, ev_want)} FROM memory_events {where} ORDER BY ts DESC LIMIT ?",
+                              (events,)).fetchall() if "memory_events" in have else []
+        by_thread: dict[str, list] = {}
+        for r in ev_rows:
+            if r["thread_id"]:
+                by_thread.setdefault(r["thread_id"], []).append(r)
+        thread_ids = sorted(by_thread, key=lambda t: by_thread[t][0]["ts"], reverse=True)[:threads]
+        if ev_thread_idx:
+            # PLAN  SELECT COUNT(*) FROM (SELECT DISTINCT thread_id FROM memory_events)
+            #       -> SCAN memory_events USING COVERING INDEX <the thread_id index> (42k entries)
+            counts["sessions"] = con.execute("SELECT COUNT(DISTINCT thread_id) FROM memory_events").fetchone()[0]
+        else:
+            counts["sessions"] = len(by_thread)
+            warnings.append("sessions counts the threads of the newest events: memory_events(thread_id) is not indexed")
+
+        # ③ landmarks that are still live (absorbed ones were merged into a survivor)
+        # PLAN  SELECT <cols> FROM mycelium_landmarks WHERE COALESCE(absorbed,0)=0 ORDER BY created_at DESC LIMIT 400
+        #       -> SCAN mycelium_landmarks + TEMP B-TREE FOR ORDER BY (3.3k rows, small table)
+        lm_want = ("landmark_id", "label", "task_class", "micro_abstract_text", "tier", "is_permanent", "evidence",
+                   "activation_count", "contradictions", "last_activated", "last_verified", "created_at", "conversation_ref")
+        lm_rows = con.execute(f"SELECT {pick_cols(lm_cols, lm_want)} FROM mycelium_landmarks {live_sql} "
+                              f"ORDER BY created_at DESC LIMIT ?", (SNAPSHOT_LANDMARKS,)).fetchall() if lm_cols else []
+        lm_ids = [r["landmark_id"] for r in lm_rows]
+        lm_index = {lid: i for i, lid in enumerate(lm_ids)}
+        lm_fams: dict[str, dict[str, int]] = {}
+        out_events = []
+        for t in thread_ids:
+            for r in by_thread[t][:SNAPSHOT_EVENTS_PER_THREAD]:
+                links, payload = jload(r["links"], {}), jload(r["payload"], {})
+                # LANDMARK_* events name their landmark in the payload; RECALL_* events do not name one
+                lid = ((links.get("landmark_id") or links.get("landmark")) if isinstance(links, dict) else None) or \
+                      (payload.get("landmark") if isinstance(payload, dict) else None)
+                if lid in lm_index:
+                    fam = lm_fams.setdefault(lid, {})
+                    fam[r["family"]] = fam.get(r["family"], 0) + 1
+                out_events.append({"id": r["event_id"], "ts": r["ts"], "family": r["family"], "label": r["label"],
+                                   "valence": r["valence"], "actor": r["actor"], "evidence": r["evidence"],
+                                   "episode": r["episode_id"], "session": t, "domain": r["topic_domain"] or "general",
+                                   "landmark": lid if lid in lm_index else None})
+        landmarks = []
+        for r in lm_rows:
+            ev: list[dict] = []
+            kinds: dict[str, int] = {}
+            for e in jload(r["evidence"], [])[-400:]:
+                if not isinstance(e, dict):
+                    continue
+                k = LM_EVIDENCE.get(str(e.get("kind")), "claim")
+                kinds[k] = kinds.get(k, 0) + 1
+                if kinds[k] <= 4:  # the page shows counts; keep a few dated entries per kind
+                    ev.append({"kind": k, "at": ts_of(e.get("at")), "session": e.get("session")})
+            text = r["micro_abstract_text"] or (r["label"] or "").replace("_", " ")
+            ranked = sorted(lm_fams.get(r["landmark_id"], {}).items(), key=lambda kv: -kv[1])[:3]   # stable: ties keep event order
+            fams = [FAMILIES.index(f) for f, _ in ranked if f in FAMILIES] or [3, 6]
+            landmarks.append({"id": r["landmark_id"], "claim": text, "cls": r["task_class"] or "other",
+                              "tier": r["tier"] or "candidate", "permanent": bool(r["is_permanent"]), "evidence": ev,
+                              "evidence_counts": dict(kinds), "activations": r["activation_count"] or 0,
+                              "contradictions": r["contradictions"] or 0,
+                              "last_activated": ts_of(r["last_activated"]), "last_verified": ts_of(r["last_verified"]),
+                              "born": ts_of(r["created_at"]), "session": r["conversation_ref"], "fams": fams,
+                              "domain": "general"})  # landmarks carry no domain column yet
+        if not any(r["micro_abstract_text"] for r in lm_rows):
+            warnings.append("no live landmark has micro_abstract_text")
+        # PLAN  SELECT … FROM mycelium_landmark_edges WHERE from_landmark_id IN (…) AND to_landmark_id IN (…) LIMIT 3000
+        #       -> SEARCH mycelium_landmark_edges USING INDEX idx_landmark_edges_from (from_landmark_id=?) (466 rows, small)
+        edges = []
+        if lm_ids and "mycelium_landmark_edges" in have:
+            ph = _marks(len(lm_ids))
+            edges = [{"id": r[6], "a": lm_index[r[0]], "b": lm_index[r[1]], "score": r[2], "traversals": r[3], "hits": r[4],
+                      "misses": r[5], "last": ts_of(r[7])}
+                     for r in con.execute(
+                         f"SELECT from_landmark_id, to_landmark_id, score, traversal_count, hit_count, miss_count, edge_id, "
+                         f"last_traversed FROM mycelium_landmark_edges "
+                         f"WHERE from_landmark_id IN ({ph}) AND to_landmark_id IN ({ph}) LIMIT ?",
+                         lm_ids + lm_ids + [SNAPSHOT_EDGES])]
+
+        # Kyudo trust channel of a landmark: the highest channel that ever observed it, read from the episode index
+        # (nodes.source_channel is the same value for a coordinate node). NULL on every row = legacy internal; the page
+        # then draws the plain membrane.
+        ei_cols = table_cols(con, "mycelium_episode_index")
+        available["landmark_channel"] = "source_channel" in ei_cols and "landmark_id" in ei_cols
+        if available["landmark_channel"] and lm_ids:
+            chan = _channels(con, lm_ids)   # PLAN  SEARCH mycelium_episode_index USING INDEX idx_epindex_landmark
+            for lm in landmarks:
+                lm["channel"] = chan.get(lm["id"])
+
+        # sectors: territories read from the registry when the tables exist (a newer build creates them); the page falls
+        # back to the topic-domain territories otherwise. Roots are big, children nested.
+        sectors: list[dict] = []
+        sec_cols = table_cols(con, "mycelium_sectors")
+        ls_cols = table_cols(con, "mycelium_landmark_sectors")
+        available["sectors"] = bool(sec_cols)
+        available["landmark_sectors"] = bool(ls_cols)
+        if "sector_key" in sec_cols:
+            want = ("sector_key", "parent_key", "label", "status", "members", "outside_evidence", "last_activity")
+            # PLAN  … FROM mycelium_sectors WHERE COALESCE(status,'proven') != 'dissolved' LIMIT 200 -> SCAN (19 rows)
+            sectors = [{"key": r["sector_key"], "parent": r["parent_key"] or None, "label": clip(r["label"], 60),
+                        "status": r["status"] or "proven", "members": r["members"] or 0,
+                        "evidence": r["outside_evidence"] or 0, "last": ts_of(r["last_activity"])}
+                       for r in con.execute(f"SELECT {pick_cols(sec_cols, want)} FROM mycelium_sectors "
+                                            f"WHERE COALESCE(status, 'proven') != 'dissolved' LIMIT 200")]
+        if sectors and {"landmark_id", "sector_key"} <= ls_cols and lm_ids:
+            best = _best_sector(con, lm_ids)   # PLAN  SEARCH mycelium_landmark_sectors USING COVERING INDEX (landmark_id=?)
+            parent = {s["key"]: s["parent"] for s in sectors}
+            for lm in landmarks:
+                if lm["id"] in best:
+                    key = best[lm["id"]]
+                    root, hops = key, 0
+                    while parent.get(root) and hops < 6:
+                        root, hops = parent[root], hops + 1
+                    lm["sector"], lm["domain"] = key, root
+
+        # ④ sessions: one per thread, shaped by its Caducean trajectory
+        tph = _marks(len(thread_ids))
+        traj: dict[str, list] = {}
+        if "caducean_trajectories" in have and thread_ids:
+            # PLAN  … FROM caducean_trajectories WHERE session_id IN (…) ORDER BY session_id, step_num LIMIT 6000
+            #       -> SEARCH caducean_trajectories USING INDEX idx_ct_session (session_id=?) + TEMP B-TREE FOR ORDER BY
+            for r in con.execute(f"SELECT session_id, x, y, xi, u FROM caducean_trajectories WHERE session_id IN ({tph}) "
+                                 f"ORDER BY session_id, step_num LIMIT ?", thread_ids + [SNAPSHOT_TRAJECTORY_ROWS]):
+                steps = traj.setdefault(r[0], [])
+                if len(steps) < SNAPSHOT_TRAJECTORY_STEPS:
+                    steps.append({"x": r[1] or 0.0, "y": r[2] or 0.0, "xi": r[3] or 0.0, "u": r[4] or 0.0})
+        exits: dict[str, Any] = {}
+        if "caducean_session_exits" in have and thread_ids:
+            # PLAN  … FROM caducean_session_exits WHERE session_id IN (…) LIMIT 2000
+            #       -> SEARCH caducean_session_exits USING INDEX idx_se_session (session_id=?)
+            exits = {r[0]: r for r in con.execute(f"SELECT session_id, natural_exit, drift, conversation_id "
+                                                  f"FROM caducean_session_exits WHERE session_id IN ({tph}) LIMIT 2000",
+                                                  thread_ids)}
+        titles: dict[str, str] = {}
+        conv_of = {t: (exits[t][3] if t in exits and exits[t][3] else t) for t in thread_ids}
+        messages: dict[str, list] = {}
+        children: dict[str, list] = {}
+        with _optional_chat_store(conv_db if conv_db else (Path(db).with_name("conversations.db") if db else None)) as cdb:
+            if cdb is not None:
+                ids = list(thread_ids) + [e[3] for e in exits.values() if e[3]]
+                # PLAN  … FROM conversations WHERE id IN (…) LIMIT 4000
+                #       -> SEARCH conversations USING INDEX sqlite_autoindex_conversations_1 (id=?)
+                for r in cdb.execute(f"SELECT id, title FROM conversations WHERE id IN ({_marks(len(ids))}) LIMIT 4000", ids):
+                    if r[1]:
+                        titles[r[0]] = r[1]
+                # the conversation strands of the tunnel: its messages (a short preview, never the whole text) and the
+                # strands forked from it (parent_id)
+                for t in thread_ids:
+                    cid = conv_of[t]
+                    # PLAN  … FROM messages WHERE conversation_id = ? ORDER BY timestamp LIMIT 80
+                    #       -> SEARCH messages USING INDEX idx_messages_conv (conversation_id=?) + TEMP B-TREE
+                    for r in cdb.execute("SELECT role, timestamp, substr(text, 1, ?), length(text) FROM messages "
+                                         "WHERE conversation_id = ? ORDER BY timestamp LIMIT ?",
+                                         (PREVIEW_MESSAGE, cid, MESSAGES_CAP)):
+                        messages.setdefault(t, []).append({"role": "user" if r[0] == "user" else "iris", "ts": ts_of(r[1]),
+                                                           "text": r[2], "len": r[3] or 0})
+                    # PLAN  … FROM conversations WHERE parent_id = ? LIMIT 6 -> SEARCH … USING INDEX idx_conversations_parent
+                    for r in cdb.execute("SELECT id, title, created_at, updated_at FROM conversations WHERE parent_id = ? "
+                                         "LIMIT 6", (cid,)):
+                        children.setdefault(t, []).append({"id": r[0], "title": r[1], "started": ts_of(r[2]),
+                                                           "ended": ts_of(r[3])})
+            else:
+                warnings.append("data/conversations.db not found: session titles fall back to thread ids")
+        sessions = []
+        now = time.time()
+        for t in thread_ids:
+            rows = by_thread[t]
+            x = exits.get(t)
+            title = titles.get(t) or (titles.get(x[3]) if x and x[3] else None) or pretty_thread(t)
+            started, ended = rows[-1]["ts"], rows[0]["ts"]
+            live = now - ended < 600
+            sessions.append({"id": t, "objective": title, "started": started, "ended": None if live else ended,
+                             "exit": "live" if live else ("drift" if x and x[2] and not x[1] else "natural"),
+                             "traj": traj.get(t, []), "eval": t.startswith(EVAL_THREAD_PREFIX), "episodes": [],
+                             "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, [])})
+
+        # ⑤ episodes (task runs)
+        episodes = []
+        sess_ids = set(thread_ids)
+        if "episodes" in have:
+            # PLAN  … FROM episodes ORDER BY timestamp DESC LIMIT 300 -> SCAN episodes USING INDEX idx_ep_timestamp
+            for r in con.execute("SELECT id, session_id, task_summary, outcome_type, outcome_score, failure_reason, "
+                                 "user_corrected, user_confirmed, duration_ms, tool_sequence, timestamp FROM episodes "
+                                 "ORDER BY timestamp DESC LIMIT ?", (SNAPSHOT_EPISODES,)):
+                tools = [s.get("tool") for s in jload(r["tool_sequence"], []) if isinstance(s, dict) and s.get("tool")][:12]
+                episodes.append({"id": r["id"], "session": r["session_id"], "summary": (r["task_summary"] or "")[:160],
+                                 "outcome": r["outcome_type"] or "partial", "score": r["outcome_score"] or 0.0,
+                                 "failure_reason": r["failure_reason"], "corrected": bool(r["user_corrected"]),
+                                 "confirmed": bool(r["user_confirmed"]), "duration": (r["duration_ms"] or 0) / 1000.0,
+                                 "tools": tools, "ts": ts_of(r["timestamp"])})
+        for s in sessions:
+            s["episodes"] = [e["id"] for e in episodes if e["session"] == s["id"]]
+        episodes = [e for e in episodes if e["session"] in sess_ids]
+
+        # ⑥ things IRIS made (names and kinds only; no content, no blobs)
+        artifacts = []
+        if "document_data" in have:
+            # PLAN  … FROM document_data ORDER BY created_at DESC LIMIT 80 -> SCAN document_data USING INDEX idx_document_data_created
+            for i, r in enumerate(con.execute(
+                    "SELECT document_id, conversation_id, fmt, kind, title, summary, created_at, capture_path "
+                    "FROM document_data ORDER BY created_at DESC LIMIT ?", (SNAPSHOT_ARTIFACTS,))):
+                kind = "screen" if r["capture_path"] else DOC_KIND.get(r["kind"] or "", DOC_KIND.get(r["fmt"] or "", "doc"))
+                name = r["title"] or (r["summary"] or "")[:48] or f"{r['fmt'] or 'document'} · {str(r['document_id'])[:8]}"
+                # layers: format comes from kind; the folder is where it was captured, else what it is
+                folder = (Path(r["capture_path"]).parent.name if r["capture_path"] else None) or \
+                    DOC_FOLDER.get(r["fmt"] or "", r["fmt"] or "unsorted")
+                artifacts.append({"id": r["document_id"], "kind": kind, "name": name, "folder": folder,
+                                  "session": r["conversation_id"], "ts": ts_of(r["created_at"]), "weight": 1.0, "seed": i + 1})
+
+        # ⑦ pins (MEMORY-FOUNDATION-ANALYSIS 13.3): explicit memory, held not earned. 0 rows today: the page then shows
+        # none. "held in context" has no stored flag yet; the 'held' / 'context' tag stands in.
+        pins: list[dict] = []
+        pin_cols = table_cols(con, "mycelium_pins")
+        available["pins"] = bool(pin_cols)
+        if pin_cols:
+            want = ("pin_id", "title", "pin_type", "tags", "file_refs", "image_refs", "url_refs", "project_id",
+                    "created_at", "is_permanent")
+            # PLAN  … FROM mycelium_pins ORDER BY created_at DESC LIMIT 200 -> SCAN mycelium_pins + TEMP B-TREE
+            #       (an explicit-memory table: 0 rows today, tens by design)
+            prow = con.execute(f"SELECT {pick_cols(pin_cols, want)} FROM mycelium_pins ORDER BY created_at DESC LIMIT ?",
+                               (SNAPSHOT_PINS,)).fetchall()
+            pids = [r["pin_id"] for r in prow]
+            links_of: dict[str, list] = {}
+            if pids and "mycelium_pin_links" in have:
+                # mycelium_pin_links (21k rows) has no index: the lookup would SCAN it, so it runs only when the
+                # store indexes both ends (has_index_on); otherwise pin links count the refs of the pin row only.
+                if has_index_on(con, "mycelium_pin_links", "source_id") and has_index_on(con, "mycelium_pin_links", "target_id"):
+                    pph = _marks(len(pids))
+                    for r in con.execute(
+                            f"SELECT source_type, source_id, target_type, target_id, relationship FROM mycelium_pin_links "
+                            f"WHERE (source_type = 'pin' AND source_id IN ({pph})) OR (target_type = 'pin' AND target_id IN ({pph})) "
+                            f"LIMIT ?", pids + pids + [SNAPSHOT_PIN_LINKS]):
+                        mine, other = (r[1], (r[2], r[3])) if r[0] == "pin" else (r[3], (r[0], r[1]))
+                        links_of.setdefault(mine, []).append({"t": other[0], "id": other[1], "rel": r[4]})
+                else:
+                    warnings.append("pin links not read: mycelium_pin_links is not indexed")
+            known = set(DOM_KEYS) | {s["key"] for s in sectors}
+            for r in prow:
+                tags = [str(t) for t in jload(r["tags"], []) if isinstance(t, (str, int))][:8]
+                refs = links_of.get(r["pin_id"], [])
+                nfile, nimg, nurl = (len(jload(r[k], [])) for k in ("file_refs", "image_refs", "url_refs"))
+                dom = next((t for t in tags if t in known), None) or (r["project_id"] if r["project_id"] in known else None)
+                pins.append({"id": r["pin_id"], "title": clip(r["title"], 80), "type": r["pin_type"] or "note",
+                             "created": ts_of(r["created_at"]), "permanent": bool(r["is_permanent"]),
+                             "held": bool({"held", "context"} & set(tags)), "links": len(refs) + nfile + nimg + nurl,
+                             "refs": refs[:12], "tags": tags[:6], "domain": dom})
+
+        # ⑧ coordinate spaces (registry) and the nodes in them: layers, with trust channel and confidence
+        spaces: list[dict] = []
+        nodes: list[dict] = []
+        node_edges: list[dict] = []
+        sp_cols = table_cols(con, "mycelium_spaces")
+        available["spaces"] = bool(sp_cols)
+        if sp_cols:
+            want = ("space_id", "description", "active", "write_lock", "render_order", "position")
+            # PLAN  … FROM mycelium_spaces LIMIT 40 -> SCAN mycelium_spaces (a registry)
+            spaces = [{"id": r["space_id"], "description": clip(r["description"], 120),
+                       "active": bool(r["active"] if r["active"] is not None else 1), "write_lock": r["write_lock"],
+                       "render_order": r["render_order"], "position": r["position"]}
+                      for r in con.execute(f"SELECT {pick_cols(sp_cols, want)} FROM mycelium_spaces LIMIT 40")]
+        nd_cols = table_cols(con, "mycelium_nodes")
+        available["node_channel"] = "source_channel" in nd_cols
+        if nd_cols:
+            want = ("node_id", "space_id", "label", "confidence", "source_channel", "created_at", "updated_at", "access_count")
+            # PLAN  … FROM mycelium_nodes ORDER BY updated_at DESC LIMIT 600 -> SCAN mycelium_nodes + TEMP B-TREE (139 rows)
+            nrows = con.execute(f"SELECT {pick_cols(nd_cols, want)} FROM mycelium_nodes ORDER BY updated_at DESC LIMIT ?",
+                                (SNAPSHOT_NODES,)).fetchall()
+            nidx = {r["node_id"]: i for i, r in enumerate(nrows)}
+            nodes = [{"id": r["node_id"], "space": r["space_id"], "label": clip(r["label"], 48),
+                      "conf": r["confidence"] if r["confidence"] is not None else 0.5, "chan": r["source_channel"],
+                      "born": ts_of(r["created_at"]), "used": r["access_count"] or 0} for r in nrows]
+            ne_cols = table_cols(con, "mycelium_edges")
+            if ne_cols and nidx:
+                want = ("from_node_id", "to_node_id", "score", "traversal_count", "observation_count", "last_traversed")
+                # PLAN  … FROM mycelium_edges LIMIT 4000 -> SCAN mycelium_edges (241 rows; bounded by the LIMIT)
+                for r in con.execute(f"SELECT {pick_cols(ne_cols, want)} FROM mycelium_edges LIMIT ?", (SNAPSHOT_NODE_EDGES,)):
+                    if r["from_node_id"] in nidx and r["to_node_id"] in nidx:
+                        node_edges.append({"a": nidx[r["from_node_id"]], "b": nidx[r["to_node_id"]], "score": r["score"] or 0.0,
+                                           "traversals": r["traversal_count"] or 0, "observations": r["observation_count"] or 0,
+                                           "last": ts_of(r["last_traversed"])})
+
+        # ⑨ immune response (Kyudo): the durable quorum log. A live row (shadow=0) is a signal that counted; shadow=1 rows
+        # are measured only; quorum_reorganization_reset is the region relaxing. The landmark a signal names (activation
+        # anomaly) or the session it came from tells the page which territory it touched.
+        quorum: list[dict] = []
+        qc = table_cols(con, "mycelium_quorum_log")
+        available["quorum"] = bool(qc)
+        if qc:
+            want = ("ts", "session_id", "signal_type", "weight", "threat_after", "shadow", "detail")
+            # PLAN  … FROM mycelium_quorum_log ORDER BY ts DESC LIMIT 80 -> SCAN mycelium_quorum_log USING INDEX idx_quorum_log_ts
+            for r in con.execute(f"SELECT {pick_cols(qc, want)} FROM mycelium_quorum_log ORDER BY ts DESC LIMIT ?",
+                                 (SNAPSHOT_QUORUM,)):
+                m = re.search(r"landmark=(\S+)", r["detail"] or "")
+                quorum.append({"ts": r["ts"], "session": r["session_id"] or None, "signal": r["signal_type"],
+                               "weight": r["weight"] or 0.0, "threat": r["threat_after"], "shadow": bool(r["shadow"]),
+                               "landmark": m.group(1) if m else None})
+            quorum.reverse()
+
+        # ⑩ recalls: what the memory gave the agent on each step of a turn (RECALL_DELIVERED, typed by
+        # agent_kernel._der_recall_delivered) and whether it helped (RECALL_HELPED / RECALL_MISLED, same recall_trace_id).
+        # refs are DER chain ids: resolved to the prior step they name (its thread, what it did, its tool, its result) - a
+        # short insight only, never the content.
+        traces: dict[str, dict] = {}
+        if "memory_events" in have:
+            rec_where = "" if include_eval else "AND thread_id NOT LIKE 'eval-%'"
+            # PLAN  … FROM memory_events WHERE family = 'memory' AND label IN (…) [AND …] ORDER BY ts DESC LIMIT 8000
+            #       -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?) + TEMP B-TREE FOR
+            #          ORDER BY. The RECALL_* labels all live in family 'memory' (closed alphabet, EVENT_TAXONOMY); naming
+            #          it lets the label index answer, where label alone would SCAN the table in ts order.
+            for r in con.execute("SELECT ts, label, episode_id, step_index, thread_id, links, payload FROM memory_events "
+                                 f"WHERE family = 'memory' AND label IN ({_marks(len(RECALL_LABELS))}) {rec_where} "
+                                 "ORDER BY ts DESC LIMIT ?", RECALL_LABELS + (SNAPSHOT_RECALL_ROWS,)):
+                tid = (jload(r["links"], {}) or {}).get("recall_trace_id")
+                if not tid:
+                    continue
+                t = traces.setdefault(tid, {"outcome": None})
+                if r["label"] == "RECALL_DELIVERED":
+                    p = jload(r["payload"], {}) or {}
+                    t.update(turn=r["episode_id"], session=r["thread_id"], step=r["step_index"], ts=r["ts"],
+                             source=p.get("source") or "neighbors", refs=[x for x in (p.get("refs") or []) if x][:5])
+                else:
+                    t["outcome"] = "helped" if r["label"] == "RECALL_HELPED" else "misled"
+        by_turn: dict[str, list] = {}
+        for t in traces.values():
+            if t.get("turn"):
+                by_turn.setdefault(t["turn"], []).append(t)
+        turn_ids = sorted(by_turn, key=lambda k: max(x["ts"] for x in by_turn[k]), reverse=True)[:SNAPSHOT_RECALL_TURNS]
+        chain_ids = sorted({c for k in turn_ids for t in by_turn[k] for c in t["refs"]})
+        chain: dict[str, dict] = {}
+        if chain_ids and has_index_on(con, "memory_chain", "chain_id"):
+            # PLAN  … FROM memory_chain WHERE chain_id IN (…) GROUP BY chain_id LIMIT 400
+            #       -> SEARCH memory_chain USING INDEX <the chain_id index> (chain_id=?)
+            for part in _chunks(chain_ids):
+                for r in con.execute(CHAIN_REFS_SQL.format(marks=_marks(len(part))), part + [len(part)]):
+                    chain[r[0]] = {"session": r[1], "did": (r[2] or "")[:PREVIEW_INSIGHT], "result": r[3] or None,
+                                   "tool": (r[4] or "").split(":")[0] or None, "ts": ts_of(r[5]), "kind": r[6] or "step"}
+        elif chain_ids:
+            warnings.append("recall refs not resolved: memory_chain(chain_id) is not indexed")
+        recalls = []
+        for k in turn_ids:
+            ts_ = sorted(by_turn[k], key=lambda x: x["ts"])
+            recalls.append({"turn": k, "session": ts_[0]["session"], "ts": ts_[0]["ts"],
+                            "steps": [{"step": t["step"], "ts": t["ts"], "source": t["source"], "outcome": t["outcome"],
+                                       "refs": [chain.get(c, {"session": None, "did": "", "result": None, "tool": None,
+                                                              "ts": None, "kind": "step"}) for c in t["refs"]]}
+                                      for t in ts_]})
+        counts["recall_turns"] = len(by_turn)
+
+    oracle = _snap_oracle(warnings)
+    return {"meta": {"source": "data/memory.db (read-only snapshot)", "generated": time.time(), "counts": counts,
+                     "eval_share": eval_share, "warnings": warnings, "available": available},
+            "famCounts": fam_counts, "domCounts": dom_counts, "sessions": sessions, "events": out_events,
+            "landmarks": landmarks, "edges": edges, "episodes": episodes, "artifacts": artifacts,
+            "oracle": oracle, "mind": [], "sectors": sectors, "pins": pins, "spaces": spaces,
+            "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum, "recalls": recalls}
