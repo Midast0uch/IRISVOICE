@@ -1471,7 +1471,16 @@ class Reviewer:
                 # judged whether to RUN a step while never being told what the
                 # step is. The plan line also makes an otherwise-empty frame
                 # informative, so those rows are scored instead of skipped.
-                "criteria_version": "review_verdict/v7",
+                # review_verdict/v8 (2026-10-23, OWNER DECISION reading B) =
+                # the SAME v7 frame; the LABEL SEMANTICS changed. v7 measured
+                # AUROC 0.6741 / 62% correct, but ALL 52 refine verdicts were
+                # scored wrong: the map rewarded only pass (VERIFIED) and veto
+                # (FAILED), so the consumer's most common non-pass answer could
+                # never win and accuracy was capped at 63%. Reading B: the
+                # gate's job is to DETECT a deficient step - on FAILED, refine
+                # and veto are both correct; on VERIFIED, only pass. Bumped so
+                # the new semantics own a clean cohort.
+                "criteria_version": "review_verdict/v8",
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).

@@ -63,8 +63,21 @@ VERIFIED_LABELS = ("VERIFIED", "UNVERIFIED", "FAILED")
 #   VERIFIED   -> the step did its job. `pass` was RIGHT; `refine` (needs
 #                 another pass) and `veto` (refuse to run) were both WRONG -
 #                 too harsh against a step that settled fine.
-#   FAILED     -> the step did not do its job. `pass` and `refine` were WRONG
-#                 (refine lets a bad step continue); `veto` was RIGHT.
+#   FAILED     -> the step did NOT do its job, so the review SHOULD have
+#                 flagged it: `refine` ("needs another pass") and `veto`
+#                 ("refuse to run") both DETECTED the deficiency and both
+#                 were RIGHT; only `pass` (wave it through) was WRONG.
+#                 OWNER DECISION 2026-10-23 (reading B, predictive): the
+#                 earlier map scored `refine` on a failed step as WRONG
+#                 ("refine lets a bad step continue"). Measured consequence
+#                 in the v7 cohort: `refine` is the most common non-pass
+#                 answer and ALL 52 of its rows scored wrong - a class the
+#                 consumer could never win, capping accuracy at 63% no
+#                 matter how good the frame became. The gate's job is to
+#                 DETECT a deficient step; whether the loop then reworks or
+#                 refuses is a separate operational choice. `veto` remains
+#                 the only answer that STOPS a failed step, and the bar
+#                 still measures what it measures.
 #   UNVERIFIED -> neither confirmed nor refuted. There is NO ground truth here,
 #                 so no label is emitted and the row stays on parity. Stamping
 #                 a guess would be the exact phantom-agreement failure the
@@ -75,7 +88,7 @@ VERIFIED_LABELS = ("VERIFIED", "UNVERIFIED", "FAILED")
 # nearly every stamped row fell through unstamped and the label never landed.
 GROUND_TRUTH = {
     "VERIFIED": {"pass": True, "refine": False, "veto": False},
-    "FAILED": {"pass": False, "refine": False, "veto": True},
+    "FAILED": {"pass": False, "refine": True, "veto": True},
 }
 
 _LOCK = threading.Lock()

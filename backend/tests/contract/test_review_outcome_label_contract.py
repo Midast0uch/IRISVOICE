@@ -302,7 +302,12 @@ def test_the_pending_map_is_bounded_and_counts_its_drops(monkeypatch):
 
 def test_the_row_keeps_both_references(monkeypatch):
     """The owner's question: we do not have to choose. Both facts survive on the
-    one row, and label_source says which one the row is scored on."""
+    one row, and label_source says which one the row is scored on.
+
+    UPDATED 2026-10-23 with the owner's reading-B decision: a `refine` on a
+    FAILED step DETECTED the deficient step, so it is correct (True), not
+    wrong. The test still proves both references survive; only the truth
+    value moved."""
     monkeypatch.setenv(rol.ENV_FLAG, "1")
     row = _row(chosen="refine", brain="pass")
     rol.register(row)
@@ -311,8 +316,21 @@ def test_the_row_keeps_both_references(monkeypatch):
     assert row["brain_choice"] == "pass"
     assert row["chosen"] == "refine"
     # and the row is now scored against ground truth
-    assert row["outside_label"] is False
+    assert row["outside_label"] is True
     assert row["label_source"] == "outcome"
+
+
+def test_the_ground_truth_table_is_the_owner_decision_reading_b():
+    """2026-10-23 OWNER DECISION (reading B, predictive): the review's job is
+    to DETECT a deficient step. On a failed step, `refine` (needs another
+    pass) and `veto` (refuse to run) both detected it and are both correct;
+    only `pass` is wrong. On a verified step, only `pass` is correct. This
+    pin exists so a later edit cannot quietly restore the map that made
+    `refine` unwinnable (all 52 v7 refine rows scored wrong)."""
+    assert rol.GROUND_TRUTH["VERIFIED"] == {
+        "pass": True, "refine": False, "veto": False}
+    assert rol.GROUND_TRUTH["FAILED"] == {
+        "pass": False, "refine": True, "veto": True}
 
 
 # ── the REVERSE path: the step settles BEFORE the row is built ──────────────
