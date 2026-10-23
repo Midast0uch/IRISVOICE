@@ -1,4 +1,4 @@
-# Oracle - Architecture Blueprint
+﻿# Oracle - Architecture Blueprint
 
 The Oracle is IRIS's local decision engine. This file describes what it is, every
 layer it touches, how a decision is made, how it earns the right to act, and how well
@@ -727,7 +727,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 |---|---|---|---|---|---|---|
 | `tool_choice` (scope `tc-decide-v4`, 2026-10-22) | 275 (273/2) | untestable (waiver: 2 wrong in 275 rows excludes a 5% rate, p < 1e-5) | 0.0034 | 0.9524 (275, 0.9927, 0.9739) | meets the bar; ON - the no-error-mass waiver, named in the record | - |
 | `escalate_incomplete` (2026-10-13) | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON | - |
-| `review_verdict` (scope `review_verdict/v6`, 2026-10-23 recompute) | 75 outcome rows (36/39), integrity 1.0 | 0.6417 | - | none (max in-sample 0.5714 at 0.8077) | sampled: two REAL defects fixed (the outcome-label delivery never landed - `review_outcome_label` keyed `stamp` on the plain step id but `defer` looked up (step, turn) tuples, 5 contract pins red; and 124/314 v5 frames were the literal empty "RECENT RESULTS: ", scored at the prior) - but the consumer itself is WEAK: 48% correct, AUROC 0.6417, no 0.90-precision threshold | a frame/instruction revision with the step's plan, measured offline first |
+| `review_verdict` (scope `review_verdict/v7`, 2026-10-23) | 136 outcome rows (84/52), integrity 1.0 | 0.6741 | 0.0675 | none (best band 25 rows at 0.80, legacy 0.8077) | sampled: two REAL defects fixed (the outcome-label delivery never landed - `review_outcome_label` keyed `stamp` on the plain step id but `defer` looked up (step, turn) tuples, 5 contract pins red; and 124/314 v5 frames were the literal empty "RECENT RESULTS: ", scored at the prior) - but the consumer itself is WEAK: 48% correct, AUROC 0.6417, no 0.90-precision threshold | a frame/instruction revision with the step's plan, measured offline first |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-21 recompute) | 2143 (1524/619) | 0.6816 | 0.0096 | 0.7908 (474, 0.9008, 0.8706) | meets the bar; ON (the pre-call guard) | - |
 | `needs_action` (scope `needs_action/v7`, 2026-10-21) | 641 (598/43) | 0.8634 | 0.0167 | 0.6244 (614, 0.9479, 0.9274) | meets the bar; ON - ACTING: 101 rows above at 0.9208 (Wilson 0.8514) | - |
@@ -1164,6 +1164,7 @@ Under `backend/tests/` (`contract/` unless a path is given).
 - `test_click_safety_contract.py` - browser actions pass the click-safety gate.
 - `test_call_closing_fence_contract.py` - `call_closing` is refused everywhere; the node loop never reads it.
 - `test_verdict_consumer_shape.py`, `test_presentation_observer_contract.py`, `behavioral/test_decision_engine_behavioral.py`, `behavioral/test_decision_engine_gates.py` - verdict envelope, presentation writes no steering field, a full DER step, surface and narration gates.
+
 
 
 

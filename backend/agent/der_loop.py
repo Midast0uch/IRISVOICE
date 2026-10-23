@@ -1258,11 +1258,11 @@ class Reviewer:
     # This is the consumer's CRITERIA: the row stamp below moved to v4 and
     # the report measures the new cohort on its own rows, never blended.
     REVIEW_INSTRUCTION = (
-        "The recent results show how the work is going. "
-        "Answer pass when the results are on track and the step is ready to "
-        "do its part as-is. Answer refine when the results show the work "
-        "needs another pass. Answer veto when the step would repeat a "
-        "failure the results already show."
+        "STEP is the work about to run; RECENT RESULTS show how the work is "
+        "going. Answer pass when running this step is the right move as-is. "
+        "Answer refine when the results show the work needs another pass "
+        "first. Answer veto when the step would repeat a failure the results "
+        "already show."
     )
 
     def _shadow_review_verdict(
@@ -1330,7 +1330,9 @@ class Reviewer:
             # prior), polluting the cohort. v6 falls back to the last result
             # the model saw and writes NO row when even that is empty - an
             # empty frame is not evidence.
-            _ev = _review_frame_evidence(completed_steps, context_package)
+            _ev = _review_frame_evidence(
+                completed_steps, context_package,
+                str(getattr(item, "description", "") or ""))
             if _ev is None:
                 logger.debug(
                     "[ORACLE] review_verdict row skipped: the step left no "
@@ -1462,15 +1464,14 @@ class Reviewer:
                 # 0.673; empty evidence -> refine 0.502). The outcome label
                 # (IRIS_ORACLE_REVIEW_OUTCOME=1) is ON for this cohort;
                 # label_source splits the curves inside it.
-                # review_verdict/v6 (2026-10-22) = the v5 frame (the prior
-                # completed steps' envelope lines - the pre-execution gate's
-                # only evidence) with the EMPTY-FRAME hole closed: 124 of 314
-                # v5 frames were the literal "RECENT RESULTS: " and were
-                # scored at the prior (refine conf 0.522); v6 falls back to
-                # the last result the model saw and writes no row when even
-                # that is empty. The label rule is unchanged (the step's
-                # verified_label, delivered by the fixed review_outcome_label).
-                "criteria_version": "review_verdict/v6",
+                # review_verdict/v7 (2026-10-23) = v6's frame plus the STEP
+                # line (the plan, never the objective - v3's poison) and the
+                # instruction that names it. Measured on v6: 75 outcome rows,
+                # 48% correct, AUROC 0.6417, no 0.90 threshold - the gate
+                # judged whether to RUN a step while never being told what the
+                # step is. The plan line also makes an otherwise-empty frame
+                # informative, so those rows are scored instead of skipped.
+                "criteria_version": "review_verdict/v7",
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).
@@ -1771,28 +1772,37 @@ def _review_evidence_line(s) -> str:
         return ""
 
 
-def _review_frame_evidence(completed_steps, context_package=None) -> Optional[str]:
-    """The review gate's evidence, or None when there is none (v6, 2026-10-22).
+def _review_frame_evidence(completed_steps, context_package=None,
+                           plan: str = "") -> Optional[str]:
+    """The review gate's frame: the step's PLAN + the evidence (v7, 2026-10-23).
 
-    Measured live on v5: 124 of 314 frames were the literal
-    "RECENT RESULTS: " - the completed-steps list was empty at gate time -
-    and d1 answered those from the prior (refine conf 0.522 = the binary
-    prior), polluting the cohort with uninformative rows. v6 keeps the v5
-    content (the prior steps' envelope lines; the step under review has not
-    run yet - the gate is pre-execution) but never scores an empty frame:
-    it falls back to the last result the model saw, and returns None when
-    that is empty too - the caller then writes NO row.
+    v6 carried only the prior steps' envelope lines. Measured on v6: 75
+    outcome rows, 48% correct, AUROC 0.6417, no 0.90-precision threshold -
+    the gate cannot say whether running THIS step is right without being told
+    what THIS step is. v3 had taught the opposite lesson (step description +
+    the problem-shaped OBJECTIVE made d1 hedge "refine" on everything); v7 is
+    the untested middle: the PLAN line, never the objective, next to the
+    evidence. The plan also makes an otherwise-empty frame informative, so a
+    step with nothing else still writes a row.
+    Never raises.
     """
     try:
+        parts: List[str] = []
+        plan_txt = str(plan or "").strip()
+        if plan_txt:
+            parts.append("STEP: " + plan_txt[:300])
         lines = [
             ln for ln in (
                 _review_evidence_line(s) for s in (completed_steps or [])[-3:]
             ) if str(ln or "").strip()
         ]
         if lines:
-            return " | ".join(lines)
-        out = str(getattr(context_package, "last_result_text", "") or "").strip()
-        return ("output: " + out[:300]) if out else None
+            parts.append("RECENT RESULTS: " + " | ".join(lines))
+        else:
+            out = str(getattr(context_package, "last_result_text", "") or "").strip()
+            if out:
+                parts.append("RECENT RESULTS: output: " + out[:300])
+        return "\n".join(parts) if parts else None
     except Exception:  # noqa: BLE001 - a frame never blocks a row
         return None
 
