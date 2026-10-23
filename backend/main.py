@@ -705,6 +705,21 @@ async def lifespan(app: FastAPI):
         # own thread and reports when it is done.
         def _init_wake_and_audio() -> None:
             _t0 = datetime.now()
+            # IRIS_AUDIO_INPUT=0 disables the microphone path for measurement
+            # runs (2026-10-23). Measured: the owner's speech during an eval
+            # was processed as wake-word input (~50 frames/s), and a TTS
+            # worker recycle added a multi-minute model load on top - the
+            # combined disk/CPU load stalled the event loop until /health
+            # timed out and the pass aborted ("backend stopped answering").
+            # The Oracle's review decisions do not depend on the mic, so the
+            # measurement runs with the input path OFF. Default ("1") keeps
+            # the normal voice behaviour for the app.
+            if os.environ.get("IRIS_AUDIO_INPUT", "1").strip() == "0":
+                logger.info(
+                    "    [~] [WAKE] Microphone input disabled "
+                    "(IRIS_AUDIO_INPUT=0) - wake word and voice capture OFF"
+                )
+                return
             try:
                 if audio_engine.initialize_detector():  # reads phrase + sensitivity from WakeConfig
                     logger.info("    [+] [WAKE] Initialized with wake word config")

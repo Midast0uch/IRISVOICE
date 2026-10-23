@@ -133,6 +133,13 @@ def _spawn() -> bool:
         "-c", "2048",            # headroom: 4 parallel slots x 512 window
         "--parallel", "4",       # concurrent slots — sequential slots 503'd
                                  # under the backend's parallel recall calls
+        # No host-RAM prompt cache (2026-10-23, the d1 fix applied here):
+        # every embedded text is DISTINCT (memory events, recall texts), so
+        # the cache never pays, yet it kept EVERY prompt. Measured after the
+        # long eval passes: the sidecar grew to 5.4 GB RSS for a 350M model
+        # and left the machine at 1.1 GB free. Same disease, same cure as
+        # local_model_manager's d1 branch (592 prompts / 1.6 GB there).
+        "--cache-ram", "0",
         # CPU-only by spec (REQ-1 AC6): no -ngl flag.
     ]
     try:
