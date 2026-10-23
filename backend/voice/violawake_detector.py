@@ -586,7 +586,22 @@ class ViolawakeWakeWordDetector:
                             self._vad = None
                             self._recent_speech.clear()
                 elif self._utterance_peak > UTTERANCE_TRACE_FLOOR:
-                    logger.info(
+                    # MEASURED 2026-10-23 (two wedges in one day): this branch
+                    # fired on EVERY frame whose score sat between the trace
+                    # floor and the bar. Continuous microphone noise therefore
+                    # logged ~50 lines/s; the JSON file handler saturated the
+                    # hard disk, the event loop starved, /health timed out and
+                    # the eval reported "backend stopped answering". A real
+                    # attempt (peak within 80% of the bar) still logs at INFO;
+                    # noise-band frames log at DEBUG. Detection is untouched -
+                    # only the level of this diagnostic line changes.
+                    _trace_level = (
+                        logging.INFO
+                        if self._utterance_peak >= 0.8 * thr
+                        else logging.DEBUG
+                    )
+                    logger.log(
+                        _trace_level,
                         f"[ViolawakeDetector] utterance peak="
                         f"{self._utterance_peak:.3f} bar={thr:.3f} "
                         f"run={self._utterance_above_best} "
