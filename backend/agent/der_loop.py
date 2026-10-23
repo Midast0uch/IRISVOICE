@@ -975,6 +975,22 @@ BRAIN_VIS_MAX_CONCURRENCY = 4  # AC24.2: DER-owned Brain-Vis cap (Crawl reuses t
 _brain_vis_sem: Optional["asyncio.Semaphore"] = None
 
 
+def _review_input_key(goal: Optional[str]) -> Optional[str]:
+    """The INPUT identity for a review_verdict row (2026-10-22, v5).
+
+    One hash implementation with surface_shadow.input_key (sha1 of consumer +
+    statement + frame); the review frame IS the goal text, so statement and
+    frame are the same string. None on any failure - a row without the key
+    keeps the legacy dedupe."""
+    try:
+        from backend.agent.surface_shadow import input_key
+
+        text = goal or ""
+        return input_key("review_verdict", text, {"goal": text})
+    except Exception:  # noqa: BLE001 - an identity key never blocks a row
+        return None
+
+
 def brain_vis_semaphore() -> "asyncio.Semaphore":
     """Process-wide DER-owned Brain-Vis semaphore (AC24.2). Lazy: no loop binding at import."""
     global _brain_vis_sem
@@ -1179,7 +1195,8 @@ class Reviewer:
                 )
             ):
                 verdict, out = self._heuristic_review(item, completed_steps)
-                self._shadow_review_verdict(item, completed_steps, verdict)
+                self._shadow_review_verdict(item, completed_steps, verdict,
+                                            context_package)
                 return verdict, out
 
             prompt = self._build_review_prompt(
@@ -1206,7 +1223,8 @@ class Reviewer:
             # agreement. None -> the row lands unlabelled -> the fit counts
             # it as no_label, never as a pass.
             _ref_for_row = None if self._last_parse_failed else verdict
-            self._shadow_review_verdict(item, completed_steps, _ref_for_row)
+            self._shadow_review_verdict(item, completed_steps, _ref_for_row,
+                                        context_package)
             return verdict, out
 
         except Exception:
@@ -1252,6 +1270,7 @@ class Reviewer:
         item: QueueItem,
         completed_steps: List[QueueItem],
         brain_verdict: "ReviewVerdict",
+        context_package=None,
     ) -> Optional[dict]:
         """Score the verdict with the engine and expose the row (AC13.1).
 
@@ -1302,10 +1321,22 @@ class Reviewer:
             # frame carries the signal and nothing else. The 1152 cap =
             # judge_review's 288-id budget x 4 (the d1 backend caps at the
             # same number; the frame renders ~620 max).
-            goal = (
-                f"RECENT RESULTS: "
-                f"{' | '.join(_review_evidence_line(s) for s in completed_steps[-3:])}"
-            )[:1152]
+            # THE FRAME IS THE GATE'S EVIDENCE (v6, 2026-10-22, measured):
+            # the review is a PRE-EXECUTION gate - the step under review has
+            # not run, so the completed steps' envelope lines are the only
+            # real evidence. v5 still scored frames when that list was EMPTY:
+            # 124 of 314 frames were the literal "RECENT RESULTS: " and d1
+            # answered them from the prior (refine conf 0.522 = the binary
+            # prior), polluting the cohort. v6 falls back to the last result
+            # the model saw and writes NO row when even that is empty - an
+            # empty frame is not evidence.
+            _ev = _review_frame_evidence(completed_steps, context_package)
+            if _ev is None:
+                logger.debug(
+                    "[ORACLE] review_verdict row skipped: the step left no "
+                    "evidence to judge step_id=%s", getattr(item, "step_id", "?"))
+                return
+            goal = f"RECENT RESULTS: {_ev}"[:1152]
             # DIAGNOSTIC (2026-10-17): decision rows do not store the rendered
             # frame, so a live cohort cannot be replayed. This line is the
             # cheap permanent mitigation: one DEBUG record per review shows
@@ -1392,6 +1423,14 @@ class Reviewer:
                     else getattr(brain_verdict, "value", str(brain_verdict))
                 ),
                 "shadow": True,
+                # v5 (2026-10-22): the replay key and the input identity ride
+                # the row. The frame IS the goal text (step prose + envelope
+                # evidence), so state = that text and input_key hashes it with
+                # the consumer - one row per INPUT, however the confidence
+                # collides (the v4 cohort read 5866 raw rows as 2323 distinct
+                # under the confidence tuple; the collapse starved it).
+                "state": (goal or "")[:2000],
+                "input_key": _review_input_key(goal),
                 # criteria_version (session 364's mechanism; whitelisted in
                 # tool_bridge._DECISION_META_KEYS): the hand-maintained tag that
                 # scopes a cohort, so the enforcement report can measure THIS
@@ -1423,7 +1462,15 @@ class Reviewer:
                 # 0.673; empty evidence -> refine 0.502). The outcome label
                 # (IRIS_ORACLE_REVIEW_OUTCOME=1) is ON for this cohort;
                 # label_source splits the curves inside it.
-                "criteria_version": "review_verdict/v4",
+                # review_verdict/v6 (2026-10-22) = the v5 frame (the prior
+                # completed steps' envelope lines - the pre-execution gate's
+                # only evidence) with the EMPTY-FRAME hole closed: 124 of 314
+                # v5 frames were the literal "RECENT RESULTS: " and were
+                # scored at the prior (refine conf 0.522); v6 falls back to
+                # the last result the model saw and writes no row when even
+                # that is empty. The label rule is unchanged (the step's
+                # verified_label, delivered by the fixed review_outcome_label).
+                "criteria_version": "review_verdict/v6",
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).
@@ -1701,32 +1748,53 @@ class Reviewer:
 # with semantic cross-source verification.
 # ─────────────────────────────────────────────────────────────────────────────
 def _review_evidence_line(s) -> str:
-    """One completed step's evidence for the review_verdict frame (v4).
+    """One completed step's evidence line for the review_verdict frame (v4+).
 
-    The envelope LINE when the step carries one (status at the head, outcome
-    at the tail of its head+tail summary), else the raw result head. A long
-    line is capped head+tail - never a head-only amputation - for the same
-    physical reason tool_envelope._bound_summary gives: the outcome of a tool
-    run (pytest's "2 failed, 1 passed") lives at the END of its output.
-    Measured on the v1 live shape (raw result[:120], a dict repr): d1 read no
-    signal at all and answered a constant verdict (oof AUROC 0.5113); the
-    same cases with envelope lines rank 1.0000 (replay, real d1, 2026-10-17).
-    Never raises.
+    The envelope LINE (status/match at the head, suggestion + tool-result
+    summary at the tail) when the step carries one, else the raw result head.
+    A long line is capped head+tail - the outcome of a tool run (pytest's
+    "2 failed, 1 passed") lives at the END of its output. The review is a
+    PRE-EXECUTION gate: the reviewed step has not run, so the completed
+    steps' envelopes are the only real evidence there is. Never raises.
     """
     try:
         ev = getattr(s, "envelope", None)
         if ev is not None:
             ln = str(ev.line())
             if ln:
-                # 200 keeps 3 lines + STEP + OBJECTIVE inside judge_review's
-                # 1152-char cap; head 150 + tail 45 keeps both signal ends.
                 return ln if len(ln) <= 200 else f"{ln[:150]} [...] {ln[-45:]}"
-    except Exception:  # noqa: BLE001 — evidence degrades to the raw result
+    except Exception:  # noqa: BLE001 - evidence degrades to the raw result
         pass
     try:
         return str(getattr(s, "result", "") or "")[:120]
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _review_frame_evidence(completed_steps, context_package=None) -> Optional[str]:
+    """The review gate's evidence, or None when there is none (v6, 2026-10-22).
+
+    Measured live on v5: 124 of 314 frames were the literal
+    "RECENT RESULTS: " - the completed-steps list was empty at gate time -
+    and d1 answered those from the prior (refine conf 0.522 = the binary
+    prior), polluting the cohort with uninformative rows. v6 keeps the v5
+    content (the prior steps' envelope lines; the step under review has not
+    run yet - the gate is pre-execution) but never scores an empty frame:
+    it falls back to the last result the model saw, and returns None when
+    that is empty too - the caller then writes NO row.
+    """
+    try:
+        lines = [
+            ln for ln in (
+                _review_evidence_line(s) for s in (completed_steps or [])[-3:]
+            ) if str(ln or "").strip()
+        ]
+        if lines:
+            return " | ".join(lines)
+        out = str(getattr(context_package, "last_result_text", "") or "").strip()
+        return ("output: " + out[:300]) if out else None
+    except Exception:  # noqa: BLE001 - a frame never blocks a row
+        return None
 
 
 def _values_equivalent(a, b) -> bool:

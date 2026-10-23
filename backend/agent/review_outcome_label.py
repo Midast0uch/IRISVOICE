@@ -84,6 +84,7 @@ _LOCK = threading.Lock()
 _PENDING: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _CAP = 256
 _DROPPED = 0
+_COLLIDED = 0   # entries flushed ON PARITY because a later turn reused the id
 _WRITING = False
 
 # Outcomes whose STEP ALREADY SETTLED before this module was handed the row.
@@ -127,6 +128,7 @@ def stats() -> Dict[str, int]:
         return {
             "pending": len(_PENDING),
             "dropped_overflow": _DROPPED,
+            "flushed_collision": _COLLIDED,
             "recovered_after_settle": _SETTLED_AHEAD,
             "flushed_parity": _SWEPT,
         }
@@ -215,17 +217,59 @@ def defer(row: Optional[Dict[str, Any]], write) -> bool:
     sid = str(row.get("step_id") or "").strip()
     if not sid:
         return False  # no join key -> write it now on parity, as before
-    global _SETTLED_AHEAD
+    # THE TURN IS PART OF THE KEY (2026-10-22). `step_id` is the step's ORDINAL
+    # within a turn ("s2", "s3"), not a unique id - measured live: 2047
+    # review_verdict/v4 rows over 55 distinct step_ids. Keyed on step_id alone,
+    # a later turn's row OVERWROTE an earlier one still in flight (that earlier
+    # row was never written) or was stamped by the wrong turn's settle. The row
+    # carries its turn_id, so the pair is the real identity.
+    turn = str(row.get("turn_id") or "").strip()
+    global _SETTLED_AHEAD, _COLLIDED
     with _LOCK:
-        settled = _SETTLED.pop(sid, None)
+        settled = _SETTLED.pop((sid, turn), None)
         if settled is None:
-            _PENDING[sid] = {"row": row, "write": write}
+            settled = _SETTLED.pop((sid, ""), None)  # settle that named no turn
+        if settled is None:
+            # `stamp` receives NO turn (its callers pass the step id only), so
+            # it remembers the outcome under the PLAIN id. Without this pop the
+            # settled-ahead recovery could never fire - the five contract tests
+            # for that path failed on exactly this key mismatch (2026-10-22).
+            settled = _SETTLED.pop(sid, None)
+        if settled is not None:
+            _SETTLED_AHEAD += 1
+        else:
+            prior = _PENDING.get(sid)
+            if prior is not None and str(prior.get("turn") or "") != turn:
+                # A DIFFERENT TURN holds this ordinal. Never overwrite it: that
+                # would either lose the held row (it never gets written) or
+                # stamp it with this turn's outcome. Emit the held row NOW on
+                # its parity reference (counted) and take the slot. A missing
+                # label is honest; a wrong one poisons the calibration.
+                _COLLIDED += 1
+                _PENDING.pop(sid, None)
+                row_ptr = prior["row"]
+                write_ptr = prior["write"]
+            else:
+                row_ptr = write_ptr = None
+                _PENDING[sid] = {"row": row, "write": write, "turn": turn}
+                _PENDING.move_to_end(sid)
+                while len(_PENDING) > _CAP:
+                    _PENDING.popitem(last=False)
+                    globals()["_DROPPED"] += 1
+                return True
+    if settled is None and row_ptr is not None:
+        try:
+            with _Emitting():
+                write_ptr(row_ptr)
+        except Exception:  # noqa: BLE001 - a label never blocks a settle
+            pass
+        with _LOCK:
+            _PENDING[sid] = {"row": row, "write": write, "turn": turn}
             _PENDING.move_to_end(sid)
             while len(_PENDING) > _CAP:
                 _PENDING.popitem(last=False)
                 globals()["_DROPPED"] += 1
-            return True
-        _SETTLED_AHEAD += 1
+        return True
     # THE RACE, LOST: the step settled BEFORE this row was built. The review row
     # is built on lane("oracle_shadow") (see _shadow_review_verdict), but
     # `stamp` runs on the turn thread at settle, so the settle can arrive first.
@@ -236,7 +280,7 @@ def defer(row: Optional[Dict[str, Any]], write) -> bool:
     try:
         with _Emitting():
             write(row)
-    except Exception:  # noqa: BLE001 — a label never blocks a settle
+    except Exception:  # noqa: BLE001 - a label never blocks a settle
         pass
     return True  # already written: the caller must NOT write again
 
