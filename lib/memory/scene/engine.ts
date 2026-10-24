@@ -1297,6 +1297,7 @@ function bounceAt(el){const d=el-shockT,D=1.2;if(d<0||d>D)return 1;const x=d/D;r
 //    work failed the corridor desyncs. The far end is a tall soft arch the strands climb onto.
 // ═══════════════════════════════════════════════════════════════════════════
 const TUN_OFF=new V3(0,0,-3000);
+const UP=new V3(0,1,0);   // world up: the corridor runs along -z, so it is never parallel to the view
 let tunnel=null;
 const THREAD_COL=new THREE.Color('#c23aa8'),STRAND_COL=new THREE.Color('#e070d0');
 // conversations.db rows when the snapshot has them; otherwise the turns the events imply
@@ -1996,17 +1997,34 @@ function updateCamera(dt){
     const yv=angWrap(cam.yaw-(cam.pyaw??cam.yaw))/Math.max(dt,1e-3);cam.pyaw=cam.yaw;
     cam.roll=lerp(cam.roll,clamp(yv*.07-cam.vel.dot(right)*.012,-.14,.14),1-Math.pow(.04,dt));camera.rotateZ(cam.roll)}
   else if(cam.mode==='tunnel'&&tunnel){
-    if(!REDUCED&&cam.idle>2.5&&!tunnel.stops)cam.tpT+=dt*.0035;cam.idle+=dt; // no drift while following a thread
+    // a label under the pointer (a moment, a claim, a pin, a doorway) HOLDS the corridor: what is being read stays put
+    // (owner, 2026-10-24). Travel the user asks for - the wheel, w/s, a click on a stop - still moves it.
+    const held=slots.hover?.on&&cam.idle>.6&&!(keys.w||keys.s||keys.arrowup||keys.arrowdown);
+    if(held)cam.tpT=cam.tp;
+    else if(!REDUCED&&cam.idle>2.5&&!tunnel.stops)cam.tpT+=dt*.0035; // no drift while following a thread
+    cam.idle+=dt;
     if(keys.w||keys.arrowup)cam.tpT+=dt*.05;if(keys.s||keys.arrowdown)cam.tpT-=dt*.05;
     cam.tpT=clamp(cam.tpT,0,.985);cam.tp=lerp(cam.tp,cam.tpT,1-Math.pow(.02,dt));
     if(tunnel.partU){const v=(cam.tp-(tunnel.ptp??cam.tp))/Math.max(dt,1e-3);tunnel.ptp=cam.tp;tunnel.partU.uVel.value+=(v-tunnel.partU.uVel.value)*.12}  // travel speed: the vesicles streak
     // entering is synchronizing (design §18): a pale void that clears while the corridor's fragments fly together
     {const A=tunnel.tileU.uAsm;A.value=Math.min(1,A.value+dt/1.6);tunnel.fibU.uRes.value.set(innerWidth,innerHeight);
       if(state.voidT>0){state.voidT=Math.max(0,state.voidT-dt/1.3);voidCol.copy(DARK).lerp(VOID,smooth01(state.voidT));renderer.setClearColor(voidCol,1)}}
-    const P=tunnel.curve.getPointAt(cam.tp).add(TUN_OFF);
-    const T=tunnel.curve.getTangentAt(Math.min(1,cam.tp+.01));const {N,B}=tunnel.frameAt(cam.tp);
-    const Q=P.clone().addScaledVector(T,20).addScaledVector(N,mouse.ny*-5).addScaledVector(B,mouse.nx*5);
-    camera.position.copy(P);cam.look.copy(Q);camera.lookAt(Q)}
+    // THE VIEW. The camera rides the corridor's centre line and looks where the corridor GOES (a point further along
+    // the curve), not along the local tangent - so the far opening stays near the middle of the screen through a bend.
+    // The gaze eases into a bend instead of snapping, leans a little toward the pointer in SCREEN axes (the old lean used
+    // the Frenet normals, which twist along a near-straight curve: the same pointer turned the view a different way as
+    // you travelled), and banks gently into the bend.
+    const C=tunnel.curve,CL=tunnel.CL??=C.getLength(),P=C.getPointAt(cam.tp).add(TUN_OFF),T=C.getTangentAt(cam.tp);
+    const aimDir=C.getPointAt(Math.min(1,cam.tp+26/CL)).add(TUN_OFF).sub(P);
+    if(aimDir.lengthSq()<1)aimDir.copy(T);aimDir.normalize();
+    const dk=1-Math.pow(.02,dt);tunnel.dir=tunnel.dir?tunnel.dir.lerp(aimDir,dk).normalize():aimDir.clone();
+    const fwd=tunnel.dir,right=new V3().crossVectors(fwd,UP).normalize(),up=new V3().crossVectors(right,fwd);
+    const lk=1-Math.pow(.08,dt);cam.lean.x=lerp(cam.lean.x,mouse.nx*.12,lk);cam.lean.y=lerp(cam.lean.y,mouse.ny*.08,lk);
+    const t=clock.elapsedTime,sw=held?0:.004,sx=(Math.sin(t*.37)+.5*Math.sin(t*.91))*sw,sy=(Math.sin(t*.29+1)+.5*Math.sin(t*.77))*sw;
+    const Q=P.clone().addScaledVector(fwd,20).addScaledVector(right,20*(cam.lean.x+sx)).addScaledVector(up,20*(cam.lean.y+sy));
+    const lat=aimDir.dot(new V3().crossVectors(T,UP).normalize());   // how far the corridor ahead turns sideways
+    cam.roll=lerp(cam.roll,clamp(-lat*.5,-.08,.08),1-Math.pow(.05,dt));
+    camera.position.copy(P);cam.look.copy(Q);camera.up.copy(UP);camera.lookAt(Q);camera.rotateZ(cam.roll)}
   const fk=1-Math.pow(.01,dt);if(Math.abs(camera.fov-cam.fovT)>.01){camera.fov=lerp(camera.fov,cam.fovT,fk);camera.updateProjectionMatrix()}
 }
 
