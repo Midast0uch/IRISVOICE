@@ -15,6 +15,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from backend.memory.db import app_flush, app_write
+from backend.utils import memory_live
 
 from .landmark import Landmark, LandmarkIndex, _jaccard, add_landmark_evidence
 from .store import CoordNode, CoordinateStore
@@ -361,6 +362,8 @@ class LandmarkMerger:
                 now,
             ),
         )
+        # Live tap (utils/memory_live): the merge is written. Never raises.
+        memory_live.landmark_update(absorbed.landmark_id, "merged", survivor_id=survivor.landmark_id)
 
         # Mark affected profile sections dirty
         affected_spaces = {d.get("space_id") for d in merged_cluster}

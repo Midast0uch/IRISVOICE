@@ -27,6 +27,7 @@ import uuid
 from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
 from backend.memory.db import app_flush, app_write
+from backend.utils import memory_live
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +363,7 @@ def emit_event(
             row_thread, row_episode = conversation_row_ids(strand[0], strand[1], thread_id, episode_id)
         # One writer: queued on the native writer (app_write commits itself
         # when this connection is not the native-owned store).
+        ts = time.time()
         app_write(
             conn,
             "INSERT INTO memory_events (event_id, ts, schema_version, episode_id, step_index, "
@@ -369,13 +371,19 @@ def emit_event(
             "exec_domain, topic_domain, label_source, label_confidence, sigma_from, sigma_to, "
             "hash_signature, hash_scheme, hex_bin, action_signature, cost, links, payload) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (event_id, time.time(), ea.SCHEMA_VERSION, row_episode, step_index, row_thread, family,
+            (event_id, ts, ea.SCHEMA_VERSION, row_episode, step_index, row_thread, family,
              label, valence, actor, evidence, cause_key, outcome_key, trigger, exec_domain,
              topic_domain, label_source, label_confidence, sigma_from, sigma_to,
              ea.hash_signature(sigma_to or sigma_from, exec_domain, topic_domain), ea.HASH_SCHEME,
              ea.hex_bin_id(sigma_to or sigma_from, exec_domain, topic_domain),
              action_signature, _bounded_json(cost), _bounded_json(links), _bounded_json(payload)),
         )
+        # Live tap (utils/memory_live): the row is written, so the Memory surface may hear of it.
+        # A write that raised never reaches this line. One append to a bounded buffer; never raises.
+        memory_live.memory_event(
+            event_id=event_id, ts=ts, family=family, label=label, valence=valence, actor=actor,
+            evidence=evidence, episode_id=row_episode, thread_id=row_thread,
+            topic_domain=topic_domain, links=links, payload=payload)
         if chain and thread_id:
             ref = {"event_id": event_id, **(payload or {})}
             case_id = str((links or {}).get("case") or "")

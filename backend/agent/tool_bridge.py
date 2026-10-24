@@ -204,6 +204,7 @@ def _watch_ingest(thread: Any, tool_name: str) -> None:
 # crowd. One ordered lane writes one row at a time instead; the lane's single
 # watcher runs _watch_ingest on each row, so a blocked row still reports itself.
 from backend.utils.durability_queue import lane as _durability_lane  # noqa: E402
+from backend.utils import memory_live as _memory_live  # noqa: E402
 
 _LEDGER_LANE = _durability_lane(
     "ledger", watch=lambda handle, tool_name: _watch_ingest(handle, tool_name)
@@ -2760,6 +2761,10 @@ class AgentToolBridge:
                             "[tool-event] ffi ingest returned falsy for %s "
                             "(row dropped by store)", tool_name,
                         )
+                    elif _decision_block:
+                        # Live tap (utils/memory_live): an Oracle decision row landed. This
+                        # lane is the ledger's one writer; the tap never raises.
+                        _memory_live.oracle_decision(_decision_block)
                 except Exception as _exc:  # noqa: BLE001
                     logger.warning("[tool-event] ingest failed for %s: %s", tool_name, _exc)
                 # A COMPLETED write says so (2026-09-26). The row landing was
