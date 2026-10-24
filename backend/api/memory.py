@@ -8,6 +8,7 @@
   GET /api/memory/turn/{conversation_id}/{turn_id} a turn's recalls (refs resolved) and moments
   GET /api/memory/oracle                           per-consumer state from the bar record + calibration files (no DB)
   GET /api/memory/snapshot?threads=&events=&include_eval=  the whole dashboard model (the exporter's IRIS_MEMORY shape)
+  GET /api/memory/search?q=&kinds=&limit=          text search built for memory.db: ranked by the memory's own law (not a recall)
 
 The snapshot is single-flight and kept SNAPSHOT_TTL_S: concurrent requests share one computation, and
 start_snapshot_warmup() (called once the app is ready) fills the cache while nobody waits (2026-10-21: the first call
@@ -16,8 +17,8 @@ after a backend start took > 300 s on the cold hard disk, the next 1.0 s). meta.
 Read-only by construction: every SQL statement lives in backend/memory/surface_queries.py (read-only
 connections, LIMIT on every query, index-backed). The handlers are plain `def`, so FastAPI runs them on its
 worker thread pool: no store read ever blocks the event loop. Nothing here is on the answer path, writes a row,
-counts as a recall, or returns a message body longer than a preview. Not built yet (later phases): search,
-corrections, live WebSocket taps.
+counts as a recall, or returns a message body longer than a preview. Not built yet (later phases): corrections,
+live WebSocket taps.
 """
 from __future__ import annotations
 
@@ -228,6 +229,12 @@ def start_snapshot_warmup(delay_s: float = SNAPSHOT_WARMUP_DELAY_S) -> Optional[
     except Exception as exc:  # noqa: BLE001 - startup never fails on a warm-up
         logger.warning("[memory_api] snapshot warm-up not started: %s", exc)
         return None
+
+
+@router.get("/search")
+def memory_search(q: str = "", kinds: Optional[str] = None, limit: int = sq.SEARCH_LIMIT_DEFAULT):
+    """q: words, "phrases" and facets (sq.parse_query); kinds: comma-separated. A search is never a recall: it writes nothing."""
+    return _serve("search", sq.search, q, kinds=kinds or None, limit=limit)
 
 
 @router.get("/oracle")

@@ -41,19 +41,29 @@ TERRITORY RULE: a claim belongs to the root of the sector it weighs most in (myc
 with no sector row (30 of 72 today: the bootstrap seeds) is counted under "general" with sector null - the
 exporter's default, and visible as sector null on the card.
 
+SEARCH (end of file): search() answers GET /api/memory/search - text only, built for memory.db: claims, steps, moments, turns, pins,
+artifacts, nodes and strands, ranked by the memory's own law (rank = match x kind x strength). It reads whole the small tables and a
+newest-N WINDOW of the two big ones (memory_chain, memory_events), and says so in the answer. It adds no index and writes nothing.
+
 NOT DERIVABLE (said once, here): which TURN received a claim. RECALL_* events name chain ids, not landmark
 ids (export_snapshot.py says the same). What is derivable is the episodes that observed the claim
 (mycelium_episode_index.landmark_id, indexed): claim detail returns them as observed_in.
 """
 from __future__ import annotations
 
+import heapq
 import json
 import logging
+import math
 import re
 import sqlite3
+import threading
 import time
+import unicodedata
 import uuid
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -1371,3 +1381,1017 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             "landmarks": landmarks, "edges": edges, "episodes": episodes, "artifacts": artifacts,
             "oracle": oracle, "mind": [], "sectors": sectors, "pins": pins, "spaces": spaces,
             "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum, "recalls": recalls}
+
+
+
+
+
+
+
+
+
+# ── search: GET /api/memory/search ───────────────────────────────────────────────────────────────
+# MEMORY-SURFACE-BUILD.md section 3. Not a web search: the answer to "what does the memory hold about this, and how
+# much does it hold it". TEXT ONLY. It reads, it never writes: no activation, no RECALL event, no row (a search is
+# not a recall - contract-tested by the store's logical digest). One bounded statement per kind on a read-only
+# connection; the match is done in Python (accent-insensitive, which SQL LIKE cannot do), the rank by the memory's law.
+#
+# BOUNDS. The small tables (claims, nodes, pins, artifacts, conversations, tombstones) are read whole under a cap.
+# The big ones are read as a WINDOW: the newest N rows by the ts / created_at index (memory_chain 42k, memory_events 42k).
+# The response says so per kind (searched[kind]). No index and no FTS table is added: if the p95 budget fails, STOP.
+SEARCH_KINDS = ("claim", "strand", "pin", "turn", "artifact", "node", "step", "moment")   # also the display order
+SEARCH_LIMIT_DEFAULT = 40
+SEARCH_LIMIT_MAX = 100
+SEARCH_PER_KIND = 8              # results of one kind shown before "more" (kinds=<one kind> returns up to `limit`)
+SEARCH_QUERY_MAX = 300           # characters of q
+SEARCH_TERMS_MAX = 8             # words + phrases; the rest are reported in parse.ignored
+SEARCH_WINDOW_STEPS = 6000       # newest rows of memory_chain read per query
+SEARCH_WINDOW_MOMENTS = 6000     # newest rows of memory_events read per query
+SEARCH_WINDOW_TURNS = 5000       # newest episodes read per query (464 today: read whole)
+SEARCH_WHOLE_CAP = 20000         # rows of a small table read per query (claims 3.3k and growing: Kyudo keeps absorbed rows)
+SEARCH_TOMBSTONES = 2000
+SEARCH_ROW_TEXT = 400            # characters of insight / result read per step
+SEARCH_TITLE_MAX = 140
+SEARCH_SNIPPET_MAX = 160
+
+# kind weight: the memory's own truths first, the raw traffic last
+KIND_WEIGHT = {"claim": 1.0, "pin": 0.95, "strand": 0.85, "turn": 0.7, "artifact": 0.7, "node": 0.5, "step": 0.45, "moment": 0.4}
+KIND_WORD = {"claim": "a claim", "strand": "a conversation", "pin": "a pin", "turn": "a task", "artifact": "something IRIS made",
+             "node": "a point on the map", "step": "a step IRIS took", "moment": "a moment"}
+# strength = alive x (0.4 + 0.6 x proven) x (1 + 0.25 x used) x trust x mine
+ALIVE_FLOOR = 0.05
+PROVEN_BASE, PROVEN_SPAN = 0.4, 0.6
+USED_WEIGHT, USED_SATURATION = 0.25, 50      # used = log(1 + n) / log(1 + 50), at most 1
+MINE_BOOST = 1.5                              # your word: user evidence, a pin, a pinned conversation
+NEUTRAL_PROVEN = 0.5                          # a kind with no evidence of its own (pin, artifact, strand, node, step)
+CANDIDATE_FACTOR = 0.8                        # a learning claim's evidence counts 0.8 of a proven claim's
+CLEANED_FACTOR = 0.1                          # the rank shown for a cleaned claim; the sort also puts it after every live one
+GHOST_STRENGTH = 0.5
+FADING_BELOW = 0.85                           # a claim is "fading" when its decayed score is under 0.85 of the stored one
+
+# the evidence ladder (index.html EVID / EVID_WORD): user > recurrence/corroboration > test/completion > verifier > claim > none
+EVIDENCE_LADDER = {"user": 1.0, "recurrence": 0.86, "corroboration": 0.86, "test": 0.72, "completion": 0.72,
+                   "verifier": 0.45, "claim": 0.28, "none": 0.12}
+EVIDENCE_WORD = {"user": "you confirmed it", "test": "a test passed", "completion": "the task finished",
+                 "recurrence": "it held up again", "corroboration": "an independent source agreed",
+                 "verifier": "the reviewer checked it", "claim": "IRIS reported it", "none": "unconfirmed"}
+# landmark evidence is written as 'user_confirm' (landmark.OUTSIDE_EVIDENCE); the exporter's LM_EVIDENCE table lacks it
+SEARCH_EVIDENCE = {**LM_EVIDENCE, "user_confirm": "user"}
+# from:<word> -> the closed evidence alphabet
+FROM_WORDS = {"you": ("user",), "test": ("test",), "finished": ("completion",), "held-up": ("recurrence", "corroboration"),
+              "reviewer": ("verifier",), "iris": ("claim",)}
+# the plain words of the surface (index.html / lib/memory/scene/engine.ts READ, FAM, CLUSTER_WORD, SPACE_WORD, DOM_WORD)
+FAMILY_WORD = {"intent": "goals", "control": "plans", "problem": "problems", "knowledge": "knowledge", "feedback": "your feedback",
+               "delivery": "deliveries", "memory": "remembering", "safety": "safety", "environment": "the world"}
+EVENT_READ = {
+    "GOAL_SET": "you set a goal", "GOAL_REFINED": "the goal got sharper", "CLARIFY_ASKED": "IRIS asked what you meant",
+    "CLARIFY_ANSWERED": "you clarified", "PREFERENCE_STATED": "you said what you prefer", "GOAL_ABANDONED": "a goal was dropped",
+    "PLAN_MADE": "made a plan", "REPLAN": "changed the plan", "PIVOT": "changed direction",
+    "SPLIT": "split the work into parallel paths", "DELEGATED": "handed work to a helper", "ESCALATED": "asked for help",
+    "HALTED": "stopped on purpose", "BUDGET_HIT": "ran out of budget", "OBSTACLE": "hit an obstacle", "BUG": "found a bug",
+    "ATTEMPT": "tried a fix", "DEAD_END": "reached a dead end", "RESOLUTION": "found a way through", "FIX": "wrote a fix",
+    "VERIFIED_RESOLUTION": "the way through held", "VERIFIED_FIX": "the fix passed its test", "OBSERVED": "noticed something",
+    "CLAIM_CORROBORATED": "a second source agreed", "CLAIM_UPDATED": "updated a belief",
+    "CLAIM_CONTRADICTED": "a belief was contradicted", "SOURCE_UNRELIABLE": "a source proved unreliable",
+    "BELIEF_STALE": "a belief went stale", "CONFIRMATION": "you confirmed", "CORRECTION": "you corrected IRIS",
+    "APPROVAL": "you approved", "DENIAL": "you said no", "NO_RESPONSE": "no reply came", "ANSWER_GIVEN": "answered you",
+    "ARTIFACT_PRODUCED": "made something", "NARRATED": "spoke an update", "CARD_SHOWN": "showed you a card",
+    "RECALL_DELIVERED": "remembered something", "RECALL_USED": "used what it remembered",
+    "RECALL_HELPED": "remembering this helped", "RECALL_MISLED": "remembering this misled",
+    "RECALL_MISSED": "forgot something it knew", "APERTURE_DROPPED": "let a memory leave its mind",
+    "OFFLOADED": "set a thought aside", "RESTRETCHED": "brought a thought back",
+    "PREMATURE_EVICTION": "let a thought go too early", "LESSON": "learned a lesson",
+    "LANDMARK_PROMOTED": "IRIS is now sure about this", "LANDMARK_STALE": "a certainty went stale",
+    "LANDMARK_DEMOTED": "a certainty was withdrawn", "CHAIN_CREATED": "learned a way of working",
+    "CHAIN_VARIANT": "found a variation that works", "UNSAFE_REFUSED": "refused something unsafe",
+    "ESCALATED_UNSURE": "checked with you when unsure", "INJECTION_SUSPECTED": "spotted a manipulation attempt",
+    "PERMISSION_DENIED": "was not allowed", "DEPENDENCY_CHANGED": "a dependency changed",
+    "RESOURCE_LIMIT": "hit a limit of this machine", "WORLD_CHANGED": "the world changed",
+    # labels the live store carries that the mockup table does not name (the same plain register)
+    "LANDMARK_DISSOLVED": "a claim was cleaned away", "LANDMARK_MERGED": "two claims became one",
+    "MEMORY_PRUNED": "cleaned out what no longer earned its place", "SECTOR_BORN": "a new territory appeared",
+    "SECTOR_MERGED": "two territories became one", "SECTOR_PROVEN": "a territory was proven",
+    "STRAND_DELETED": "you deleted a conversation", "STRAND_RENAMED": "you renamed a conversation",
+}
+CLUSTER_WORD = {"preference": "your preferences", "implement": "building", "research": "research", "debug": "fixing things",
+                "voice": "voice", "environment": "this machine", "workflow": "ways of working"}
+SPACE_WORD = {"conduct": "how you like to work", "domain": "what you work on", "style": "how you like to be spoken to",
+              "chrono": "when you work", "context": "what goes on around the work", "capability": "what IRIS can do",
+              "toolpath": "which tools worked"}
+OUTCOME_WORD = {"success": "it finished", "partial": "it was partly done", "failure": "it failed", "miss": "it missed",
+                "cancelled": "it was cancelled"}
+
+_BARE_FACETS = {"proven": ("claim",), "learning": ("claim",), "cleaned": ("claim",), "contradicted": ("claim", "moment"),
+                "pinned": ("pin",), "failed": ("step", "moment", "turn"), "helped": ("moment",),
+                "outside": ("claim", "step", "moment", "turn", "artifact"), "eval": None}
+_KEYED_FACETS = {"kind": None, "in": ("claim", "step", "moment", "turn", "artifact", "strand"),
+                 "territory": ("claim", "step", "moment"), "from": ("claim", "moment"), "before": None, "after": None}
+_LAST_SPAN_DAYS = {"day": 1, "week": 7, "month": 30}
+_TOKEN_RE = re.compile(r'(?:(?P<key>[A-Za-z-]+):)?"(?P<phrase>[^"]*)"|(?P<word>\S+)')
+_WORD_RE = re.compile(r"[^\W_]+")
+
+
+def _squash(v: Any) -> str:
+    return " ".join(str(v).split()) if v else ""
+
+
+def _fold(s: str) -> str:
+    """Case- and accent-insensitive form; '_' reads as a space (labels, tool names). Keeps the length for ASCII."""
+    if not s.isascii():
+        s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+    return s.lower().replace("_", " ")
+
+
+def _utc_midnight(date_text: str) -> Optional[float]:
+    try:
+        return datetime.strptime(date_text, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _facet(name: str, value: Optional[str], kinds: Optional[tuple], **extra: Any) -> dict:
+    return {"facet": name, "value": value, "text": f"{name}:{value}" if value is not None else name,
+            "kinds": list(kinds) if kinds else None, **extra}
+
+
+def parse_query(q: str, now: Optional[float] = None) -> dict:
+    """The query language, parsed server-side so the surface can show the chips.
+      words (AND, word-PREFIX), "quoted phrases" (exact), and facets: proven learning contradicted pinned cleaned failed
+      helped outside eval | kind:<kind> in:<thread words> territory:<topic> from:<you|test|finished|held-up|reviewer|iris>
+      before:<YYYY-MM-DD> after:<YYYY-MM-DD> | last day / last week / last month.
+    A facet word the parser does not know (kind:nothing, from:nobody, before:soon) is a plain word. A facet word inside
+    quotes is a plain phrase. Returns {q, words, phrases, facets, ignored}; each facet names the kinds it can match."""
+    now = time.time() if now is None else now
+    toks = [(m.group("key"), m.group("phrase"), m.group("word")) for m in _TOKEN_RE.finditer(q)]
+    words: list[str] = []
+    phrases: list[str] = []
+    facets: list[dict] = []
+    i = 0
+    while i < len(toks):
+        key, phrase, word = toks[i]
+        i += 1
+        if phrase is not None:
+            if key and key.lower() in ("in", "territory") and _fold(phrase).strip():
+                facets.append(_facet(key.lower(), _squash(phrase), _KEYED_FACETS[key.lower()]))
+                continue
+            if key:
+                words += _WORD_RE.findall(_fold(key))
+            p = " ".join(_WORD_RE.findall(_fold(phrase)))
+            if p:
+                phrases.append(p)
+            continue
+        low = word.lower().strip('"')
+        if low in _BARE_FACETS:
+            facets.append(_facet(low, None, _BARE_FACETS[low]))
+            continue
+        if low == "last" and i < len(toks) and toks[i][2] and toks[i][2].lower() in _LAST_SPAN_DAYS:
+            span = toks[i][2].lower()
+            i += 1
+            facets.append({**_facet("last", span, None, at=now - _LAST_SPAN_DAYS[span] * 86400.0), "text": f"last {span}"})
+            continue
+        if ":" in low:
+            name, _, val = low.partition(":")
+            val = val.strip('"')
+            if name == "kind" and val in SEARCH_KINDS:
+                facets.append(_facet("kind", val, (val,)))
+                continue
+            if name == "from" and val.replace("_", "-") in FROM_WORDS:
+                facets.append(_facet("from", val.replace("_", "-"), _KEYED_FACETS["from"]))
+                continue
+            if name in ("before", "after") and _utc_midnight(val) is not None:
+                # after:D = from D's first second on; before:D = before D begins (UTC days, like the active-day clock)
+                facets.append(_facet(name, val, None, at=_utc_midnight(val)))
+                continue
+            if name in ("in", "territory") and _fold(val).strip():
+                facets.append(_facet(name, val, _KEYED_FACETS[name]))
+                continue
+        words += _WORD_RE.findall(_fold(word))
+    seen: set[str] = set()
+    words = [w for w in words if not (w in seen or seen.add(w))]
+    terms = [("word", w) for w in words] + [("phrase", p) for p in phrases]
+    ignored = [t[1] for t in terms[SEARCH_TERMS_MAX:]]
+    words = [t[1] for t in terms[:SEARCH_TERMS_MAX] if t[0] == "word"]
+    phrases = [t[1] for t in terms[:SEARCH_TERMS_MAX] if t[0] == "phrase"]
+    return {"q": q, "words": words, "phrases": phrases, "facets": facets, "ignored": ignored}
+
+
+@dataclass
+class _Plan:
+    terms: list                     # (needle, compiled regex, is_phrase)
+    kinds: tuple                    # the kinds searched, in display order
+    flags: set                      # bare facets present
+    evidence: Optional[set]         # from: -> the closed evidence alphabet
+    in_terms: list                  # one term list per in: facet
+    territory: list                 # folded topics
+    after: Optional[float] = None
+    before: Optional[float] = None
+    empty_reason: Optional[str] = None
+
+
+def _term_rx(word: str) -> re.Pattern:
+    return re.compile(r"(?<![^\W_])" + re.escape(word) + r"([^\W_]*)")
+
+
+def _terms_of(words: list[str], phrases: list[str]) -> list[tuple]:
+    out = [(w, _term_rx(w), False) for w in words]
+    for p in phrases:
+        parts = p.split()
+        out.append((parts[0], re.compile(r"(?<![^\W_])" + r"\s+".join(re.escape(x) for x in parts)), True))
+    return out
+
+
+def _plan_of(parsed: dict, kinds: Optional[list[str]]) -> _Plan:
+    allowed = set(kinds) if kinds else set(SEARCH_KINDS)
+    picked = {f["value"] for f in parsed["facets"] if f["facet"] == "kind"}
+    if picked:
+        allowed &= picked
+    for f in parsed["facets"]:
+        if f["kinds"] and f["facet"] != "kind":
+            allowed &= set(f["kinds"])
+    plan = _Plan(terms=_terms_of(parsed["words"], parsed["phrases"]), kinds=tuple(k for k in SEARCH_KINDS if k in allowed),
+                 flags={f["facet"] for f in parsed["facets"] if f["value"] is None}, evidence=None, in_terms=[], territory=[])
+    for f in parsed["facets"]:
+        if f["facet"] == "from":
+            plan.evidence = (plan.evidence or set()) | set(FROM_WORDS[f["value"]])
+        elif f["facet"] == "in":
+            plan.in_terms.append(_terms_of(_WORD_RE.findall(_fold(f["value"])), []))
+        elif f["facet"] == "territory":
+            plan.territory.append(_fold(f["value"]).strip())
+        elif f["facet"] in ("after", "last"):
+            plan.after = max(plan.after or f["at"], f["at"])
+        elif f["facet"] == "before":
+            plan.before = min(plan.before or f["at"], f["at"])
+    if not plan.kinds:
+        plan.empty_reason = "no kind of memory can satisfy these filters together"
+    return plan
+
+
+
+@lru_cache(maxsize=16384)
+def _squash_fold(text: str) -> tuple[str, str]:
+    o = _squash(text)
+    return o, _fold(o)
+
+
+def _F(weight: float, text: Any) -> Optional[tuple]:
+    """One searchable field, squashed and folded ONCE (when the corpus is prepared, not per keystroke; the many repeated
+    claim and event texts share one folding)."""
+    if not text:
+        return None
+    o, f = _squash_fold(text if isinstance(text, str) else str(text))
+    return (weight, o, f) if o else None
+
+
+def _score(terms: list[tuple], fields: list[tuple]) -> Optional[tuple[float, str, int]]:
+    """AND over the terms. fields = prepared [(weight, text, folded text)], heaviest first. A term scores the weight of the
+    best field it matches (x1.0 for a whole word or a phrase, x0.85 for a word prefix); the match is the mean over the
+    terms. Returns (match 0..1, the text of the first match, its position) or None. No terms = 1.0 (a facet-only query)."""
+    if not terms:
+        return 1.0, (fields[0][1] if fields else ""), 0
+    total = 0.0
+    first: Optional[tuple[str, int]] = None
+    if fields and any(t[0] not in fields[0][3] for t in terms):
+        return None
+    for needle, rx, phrase in terms:
+        best, where = 0.0, None
+        for w, orig, fol, _blob in fields:
+            if w <= best or needle not in fol:
+                continue
+            m = rx.search(fol)
+            if m is None:
+                continue
+            s = w * (1.0 if phrase or not m.group(1) else 0.85)
+            if s > best:
+                best, where = s, (orig, m.start())
+        if best == 0.0:
+            return None
+        total += best
+        first = first or where
+    return total / len(terms), first[0], first[1]
+
+
+def _excerpt(text: str, pos: int, n: int = SEARCH_SNIPPET_MAX) -> str:
+    """At most n characters of the text, around position pos."""
+    if len(text) <= n:
+        return text
+    start = max(0, min(pos - 40, len(text) - n))
+    body = n - (3 if start else 0)
+    trail = start + body < len(text)
+    if trail:
+        body -= 3
+    return ("..." if start else "") + text[start:start + body] + ("..." if trail else "")
+
+
+def _title_of(text: str) -> str:
+    t = _squash(text)
+    return t if len(t) <= SEARCH_TITLE_MAX else t[:SEARCH_TITLE_MAX - 3] + "..."
+
+
+def _payload_text(raw: Any) -> str:
+    """The string values of an event payload (never its keys), as one text."""
+    try:
+        d = json.loads(raw)
+    except (TypeError, ValueError):
+        return ""
+    out: list[str] = []
+
+    def walk(v: Any, depth: int) -> None:
+        if isinstance(v, str):
+            out.append(v[:200])
+        elif depth < 3 and isinstance(v, dict):
+            for x in v.values():
+                walk(x, depth + 1)
+        elif depth < 3 and isinstance(v, list):
+            for x in v[:20]:
+                walk(x, depth + 1)
+
+    walk(d, 0)
+    return " ".join(out)[:600]
+
+
+def _plain_event(family: Optional[str], label: Optional[str]) -> str:
+    return EVENT_READ.get(label or "") or f"{FAMILY_WORD.get(family or '', 'other')} · {(label or '').lower().replace('_', ' ')}"
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+
+# -- the prepared corpus: read once, folded once, kept SEARCH_CORPUS_TTL_S ------------------------------
+# A keystroke is a new query; the TEXT it searches does not change between keystrokes. Each kind's rows are read (bounded),
+# folded and kept for a few seconds, so the second keystroke matches in memory (measured: the first read of the parts costs
+# 0.3 s warm, a cached query 10-40 ms). The cache holds the store's rows only - it is not a recall, it never writes.
+# Bounded (SEARCH_CORPUS_MAX parts, each itself bounded by the caps above); one lock, so a part is read by one thread at a time
+# (single-flight: a second keystroke waits for the first read instead of repeating it). TTL 0 = always read (tests).
+SEARCH_CORPUS_TTL_S = 60.0       # the snapshot's TTL; a search is at most this stale (the answer says so: fresh_within_s)
+SEARCH_CORPUS_MAX = 16
+_corpus_lock = threading.Lock()
+_corpus: dict[tuple, tuple[float, Any]] = {}
+
+
+def _cached(path: Any, part: tuple, build: Any) -> Any:
+    key = (str(path), part)
+    with _corpus_lock:
+        hit = _corpus.get(key)
+        if hit is not None and time.monotonic() - hit[0] < SEARCH_CORPUS_TTL_S:
+            return hit[1]
+        val = build()   # raises: nothing is cached
+        _corpus[key] = (time.monotonic(), val)
+        while len(_corpus) > SEARCH_CORPUS_MAX:
+            _corpus.pop(min(_corpus, key=lambda k: _corpus[k][0]))
+        return val
+
+
+def _fields(*fs: Optional[tuple]) -> list[tuple]:
+    """A row's prepared fields. Each carries one blob of all the row's folded text: a term absent from the blob rejects the
+    row with one substring test (most rows of a 15,000-row corpus)."""
+    fs = [f for f in fs if f]
+    blob = " | ".join(f[2] for f in fs)
+    return [(w, o, f, blob) for w, o, f in fs]
+
+
+def _gone(why: str) -> dict:
+    return {"rows": [], "info": {"available": False, "why": why}}
+
+
+def _load_chat(con: sqlite3.Connection, cdb: Optional[sqlite3.Connection]) -> dict:
+    """Conversation titles and tags (chat store) + the memory's tombstones for the titles chat erased (section 4 case 1)."""
+    chat: dict[str, dict] = {}
+    if cdb is not None and "id" in table_cols(cdb, "conversations"):
+        cols = table_cols(cdb, "conversations")
+        want = ("id", "title", "parent_id", "tags", "pinned", "created_at", "updated_at")
+        # PLAN  SELECT id, title, parent_id, tags, pinned, created_at, updated_at FROM conversations LIMIT 20000
+        #       -> SCAN conversations (5.8k rows, a small table read whole; 55 ms warm)
+        for r in cdb.execute(f"SELECT {pick_cols(cols, want)} FROM conversations LIMIT ?", (SEARCH_WHOLE_CAP,)):
+            chat[r["id"]] = {"title": r["title"] or "", "parent": r["parent_id"], "tags": r["tags"], "pinned": bool(r["pinned"]),
+                             "updated": ts_of(r["updated_at"]) or ts_of(r["created_at"])}
+    renamed: dict[str, list[str]] = {}
+    deleted: dict[str, dict] = {}
+    if has_index_on(con, "memory_events", "family"):
+        # PLAN  SELECT ts, label, thread_id, payload FROM memory_events WHERE family = 'memory' AND label IN (?, ?)
+        #       ORDER BY ts DESC LIMIT 2000
+        #       -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?) + TEMP B-TREE FOR ORDER BY
+        for r in con.execute("SELECT ts, label, thread_id, payload FROM memory_events WHERE family = 'memory' AND label IN "
+                             "('STRAND_DELETED', 'STRAND_RENAMED') ORDER BY ts DESC LIMIT ?", (SEARCH_TOMBSTONES,)):
+            tid, pl = r["thread_id"], jload(r["payload"], {})
+            if not tid or not isinstance(pl, dict):
+                continue
+            if r["label"] == "STRAND_DELETED":
+                deleted.setdefault(tid, {"title": _squash(pl.get("title")), "at": ts_of(pl.get("at")) or r["ts"], "tags": pl.get("tags")})
+            elif pl.get("old_title"):
+                renamed.setdefault(tid, []).append(_squash(pl["old_title"]))
+    titles = {tid: c["title"] for tid, c in chat.items()}
+    strands: list[dict] = []
+    for tid, c in chat.items():
+        old = renamed.get(tid, [])
+        tags = " ".join(str(t) for t in jload(c["tags"], []) if isinstance(t, (str, int)))
+        strands.append({"kind": "strand", "id": tid, "title": c["title"] or pretty_thread(tid), "ts": c["updated"], "touch": c["updated"],
+                        "F": _fields(_F(1.0, c["title"]), _F(0.8, " ".join(old)), _F(0.6, tags)), "ghost": False,
+                        "mine": c["pinned"], "root": c["parent"] is None, "parent": c["parent"], "old": old})
+    for tid, d in deleted.items():
+        if tid in chat:
+            continue
+        titles[tid] = d["title"]
+        old = renamed.get(tid, [])
+        tags = " ".join(str(t) for t in (d["tags"] if isinstance(d["tags"], list) else []) if isinstance(t, (str, int)))
+        strands.append({"kind": "strand", "id": tid, "title": d["title"] or pretty_thread(tid), "ts": d["at"], "touch": d["at"],
+                        "F": _fields(_F(1.0, d["title"]), _F(0.8, " ".join(old)), _F(0.6, tags)), "ghost": True,
+                        "mine": False, "root": None, "parent": None, "old": old})
+    return {"rows": strands, "chat": chat, "titles": titles, "renamed": renamed,
+            "info": {"read": len(chat), "complete": len(chat) < SEARCH_WHOLE_CAP, "ghosts": len(deleted)}}
+
+
+def _load_claims(con: sqlite3.Connection, law: dict) -> dict:
+    cols = table_cols(con, "mycelium_landmarks")
+    if "landmark_id" not in cols:
+        return _gone("there is no claims table")
+    want = ("landmark_id", "label", "task_class", "micro_abstract_text", "tier", "is_permanent", "evidence", "activation_count",
+            "contradictions", "last_activated", "last_verified", "created_at", "conversation_ref", "absorbed", "falsify_if",
+            "cumulative_score")
+    # a cleaned claim's evidence (a big JSON, 11 MB over the table) is not read: it ranks last and says how it was cleaned
+    sel = ", ".join("CASE WHEN absorbed = 1 THEN NULL ELSE evidence END AS evidence" if c == "evidence" and {"absorbed", "evidence"} <= cols
+                    else (c if c in cols else f"NULL AS {c}") for c in want)
+    # PLAN  SELECT <cols> FROM mycelium_landmarks LIMIT 20000
+    #       -> SCAN mycelium_landmarks (4k rows - 72 live, the rest cleaned; a small table, read whole; 40 ms warm)
+    rows = con.execute(f"SELECT {sel} FROM mycelium_landmarks LIMIT ?", (SEARCH_WHOLE_CAP,)).fetchall()
+    sectors = _sectors(con)
+    parent = {x["key"]: x["parent"] for x in sectors}
+    slabel = {x["key"]: _fold(x["label"] or "") for x in sectors}
+    best_sector = _best_sector(con)
+    out: list[dict] = []
+    for r in rows:
+        absorbed, tier = bool(r["absorbed"]), r["tier"] or "candidate"
+        label = (r["label"] or "").replace("_", " ")
+        text = r["micro_abstract_text"] or label
+        cls = r["task_class"] or ""
+        ev = [e for e in jload(r["evidence"], []) if isinstance(e, dict)]
+        kinds = {SEARCH_EVIDENCE.get(str(e.get("kind")), "claim") for e in ev}
+        touch = max([r["created_at"] or 0.0, r["last_activated"] or 0.0, r["last_verified"] or 0.0] + [ts_of(e.get("at")) or 0.0 for e in ev])
+        key = best_sector.get(r["landmark_id"])
+        out.append({"kind": "claim", "id": r["landmark_id"], "title": text, "ts": r["created_at"], "touch": touch,
+                    "F": _fields(_F(1.0, text), _F(0.9, label), _F(0.6, cls), _F(0.6, CLUSTER_WORD.get(cls, ""))),
+                    "absorbed": absorbed, "tier": tier, "score": r["cumulative_score"] or 0.0, "permanent": bool(r["is_permanent"]),
+                    "acts": r["activation_count"] or 0, "n": (r["activation_count"] or 0) + law["independent"](ev),
+                    "contradictions": r["contradictions"] or 0, "kinds": kinds,
+                    "best": max(kinds, key=lambda k: EVIDENCE_LADDER.get(k, 0.0)) if kinds else "none", "mine": "user" in kinds,
+                    "falsify": r["falsify_if"], "thread": r["conversation_ref"],
+                    "places": [x for x in (_fold(_root_of(key, parent)) if key else "general", _fold(key or "general"),
+                                           slabel.get(key or "", "")) if x], "channel": None})
+    # Kyudo trust channel of the live claims (a cleaned claim ranks last whatever its trust). PLAN  SEARCH mycelium_episode_index
+    # USING INDEX idx_epindex_landmark (landmark_id=?), 72 seeks
+    chan = _channels(con, [c["id"] for c in out if not c["absorbed"]])
+    for c in out:
+        c["channel"] = chan.get(c["id"])
+    return {"rows": out, "by_id": {c["id"]: c for c in out}, "info": {"read": len(rows), "complete": len(rows) < SEARCH_WHOLE_CAP}}
+
+
+def _load_merges(con: sqlite3.Connection) -> dict:
+    """absorbed claim id -> the survivor it was merged into (the newest merge of an absorbed id wins)."""
+    if not table_cols(con, "mycelium_landmark_merges"):
+        return {}
+    # PLAN  SELECT absorbed_id, survivor_id FROM mycelium_landmark_merges ORDER BY created_at LIMIT 20000
+    #       -> SCAN mycelium_landmark_merges + TEMP B-TREE FOR ORDER BY (3k rows, small; the table is indexed on survivor_id only)
+    return {a: s for a, s in con.execute("SELECT absorbed_id, survivor_id FROM mycelium_landmark_merges ORDER BY created_at LIMIT ?",
+                                         (SEARCH_WHOLE_CAP,))}
+
+
+def _load_pins(con: sqlite3.Connection) -> dict:
+    out: list[dict] = []
+    seen: set[str] = set()
+    found = False
+    # PLAN  SELECT pin_id, title, pin_type, tags, created_at, substr(content, 1, 1000) FROM <pins | mycelium_pins> LIMIT 20000
+    #       -> SCAN pins / mycelium_pins (an explicit-memory table: 4 rows today, tens by design; read whole)
+    for table in ("pins", "mycelium_pins"):
+        cols = table_cols(con, table)
+        if "pin_id" not in cols:
+            continue
+        found = True
+        sel = pick_cols(cols, ("pin_id", "title", "pin_type", "tags", "created_at")) + \
+            (", substr(content, 1, 1000) AS content" if "content" in cols else ", NULL AS content")
+        for r in con.execute(f"SELECT {sel} FROM {table} LIMIT ?", (SEARCH_WHOLE_CAP,)):
+            if r["pin_id"] in seen:
+                continue
+            seen.add(r["pin_id"])
+            tags = " ".join(str(t) for t in jload(r["tags"], []) if isinstance(t, (str, int)))
+            # the pin store's own weights: title 50, content 30, tags 20 (pin_store.DEFAULT_SEARCH_WEIGHTS)
+            out.append({"kind": "pin", "id": r["pin_id"], "title": r["title"] or "pin", "ts": r["created_at"], "touch": None,
+                        "F": _fields(_F(1.0, r["title"]), _F(0.6, r["content"]), _F(0.4, tags)), "mine": True,
+                        "kindword": r["pin_type"] or "note"})
+    return {"rows": out, "info": {"read": len(out), "complete": True}} if found else _gone("there is no pins table")
+
+
+def _load_turns(con: sqlite3.Connection) -> dict:
+    if "task_summary" not in table_cols(con, "episodes"):
+        return _gone("there is no episodes table")
+    # PLAN  SELECT id, session_id, task_summary, failure_reason, outcome_type, user_confirmed, user_corrected, timestamp
+    #       FROM episodes ORDER BY timestamp DESC LIMIT 5000
+    #       -> SCAN episodes USING INDEX idx_ep_timestamp (stops at the LIMIT; 464 rows today)
+    rows = con.execute("SELECT id, session_id, task_summary, failure_reason, outcome_type, user_confirmed, user_corrected, timestamp "
+                       "FROM episodes ORDER BY timestamp DESC LIMIT ?", (SEARCH_WINDOW_TURNS,)).fetchall()
+    out = []
+    for r in rows:
+        ts, outcome = ts_of(r["timestamp"]), r["outcome_type"] or "partial"
+        out.append({"kind": "turn", "id": f"{r['session_id']}:{r['id']}", "title": r["task_summary"] or "a task", "ts": ts, "touch": ts,
+                    "F": _fields(_F(1.0, r["task_summary"]), _F(0.8, r["failure_reason"])), "thread": r["session_id"],
+                    "episode": r["id"], "outcome": outcome, "reason": r["failure_reason"], "confirmed": bool(r["user_confirmed"]),
+                    "failed": outcome in ("failure", "miss") or bool(r["failure_reason"]),
+                    "mine": bool(r["user_confirmed"] or r["user_corrected"])})
+    return {"rows": out, "info": {"read": len(rows), "window": SEARCH_WINDOW_TURNS, "complete": len(rows) < SEARCH_WINDOW_TURNS}}
+
+
+def _load_artifacts(con: sqlite3.Connection) -> dict:
+    cols = table_cols(con, "document_data")
+    if "document_id" not in cols:
+        return _gone("there is no documents table")
+    want = ("document_id", "conversation_id", "fmt", "kind", "title", "summary", "created_at", "capture_path")
+    # PLAN  SELECT document_id, conversation_id, fmt, kind, title, summary, created_at, capture_path FROM document_data
+    #       ORDER BY created_at DESC LIMIT 20000
+    #       -> SCAN document_data USING INDEX idx_document_data_created (454 rows; the content blob is not selected)
+    rows = con.execute(f"SELECT {pick_cols(cols, want)} FROM document_data ORDER BY created_at DESC LIMIT ?", (SEARCH_WHOLE_CAP,)).fetchall()
+    out = []
+    for r in rows:
+        name = r["title"] or (r["summary"] or "")[:48] or f"{r['fmt'] or 'document'} · {str(r['document_id'])[:8]}"
+        folder = (Path(r["capture_path"]).parent.name if r["capture_path"] else None) or DOC_FOLDER.get(r["fmt"] or "", r["fmt"] or "unsorted")
+        kind = "screen" if r["capture_path"] else DOC_KIND.get(r["kind"] or "", DOC_KIND.get(r["fmt"] or "", "doc"))
+        out.append({"kind": "artifact", "id": r["document_id"], "title": name, "ts": r["created_at"], "touch": r["created_at"],
+                    "F": _fields(_F(1.0, name), _F(0.6, r["fmt"]), _F(0.6, folder), _F(0.5, kind)), "thread": r["conversation_id"],
+                    "folder": folder, "mine": False})
+    return {"rows": out, "info": {"read": len(rows), "complete": len(rows) < SEARCH_WHOLE_CAP}}
+
+
+def _load_nodes(con: sqlite3.Connection) -> dict:
+    cols = table_cols(con, "mycelium_nodes")
+    if "node_id" not in cols:
+        return _gone("there is no nodes table")
+    want = ("node_id", "space_id", "label", "confidence", "updated_at", "access_count", "last_accessed", "last_decayed_at", "source_channel")
+    # PLAN  SELECT <cols> FROM mycelium_nodes LIMIT 20000 -> SCAN mycelium_nodes (140 rows, small; read whole)
+    rows = con.execute(f"SELECT {pick_cols(cols, want)} FROM mycelium_nodes LIMIT ?", (SEARCH_WHOLE_CAP,)).fetchall()
+    out = []
+    for r in rows:
+        label, space = (r["label"] or "").replace("_", " "), r["space_id"] or ""
+        touch = max(r["updated_at"] or 0.0, r["last_accessed"] or 0.0, r["last_decayed_at"] or 0.0)
+        out.append({"kind": "node", "id": r["node_id"], "title": label or r["node_id"], "ts": r["updated_at"], "touch": touch or None,
+                    "F": _fields(_F(1.0, label), _F(0.5, SPACE_WORD.get(space, "")), _F(0.5, space)), "space": space,
+                    "conf": r["confidence"] if r["confidence"] is not None else 0.5, "acts": r["access_count"] or 0,
+                    "channel": r["source_channel"], "mine": False})
+    return {"rows": out, "info": {"read": len(rows), "complete": len(rows) < SEARCH_WHOLE_CAP}}
+
+
+# the newest-N windows of the two big tables. The ORDER BY runs on the ts / created_at index; the row is joined by rowid and
+# its text is NOT read for a row that is no step (no mediator: an echo of an event) or an evaluation row when those are hidden.
+_STEPS_WINDOW_SQL = (
+    "SELECT c.rowid AS rid, c.thread_id, c.created_at, c.chain_id, c.topic_domain, c.mediator, "
+    "CASE WHEN c.mediator IS NULL OR (? AND c.thread_id >= 'eval-' AND c.thread_id < 'eval.') THEN NULL "
+    f"ELSE substr(c.insight, 1, {SEARCH_ROW_TEXT}) END AS insight, "
+    "CASE WHEN c.mediator IS NULL OR (? AND c.thread_id >= 'eval-' AND c.thread_id < 'eval.') THEN NULL "
+    f"ELSE substr(c.result, 1, {SEARCH_ROW_TEXT}) END AS result "
+    "FROM (SELECT rowid AS rid FROM memory_chain WHERE created_at >= ? AND created_at < ? ORDER BY created_at DESC LIMIT ?) w "
+    "JOIN memory_chain c ON c.rowid = w.rid")
+_MOMENTS_WINDOW_SQL = (
+    "SELECT e.event_id, e.ts, e.thread_id, e.episode_id, e.family, e.label, e.valence, e.actor, e.evidence, e.topic_domain, "
+    "CASE WHEN ? AND e.thread_id >= 'eval-' AND e.thread_id < 'eval.' THEN NULL ELSE e.payload END AS payload "
+    "FROM (SELECT rowid AS rid FROM memory_events WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT ?) w "
+    "JOIN memory_events e ON e.rowid = w.rid")
+
+
+def _load_steps(con: sqlite3.Connection, hide: int, lo: float, hi: float) -> dict:
+    if not has_index_on(con, "memory_chain", "created_at"):
+        return _gone("memory_chain(created_at) is not indexed: the newest-rows window cannot run")
+    # PLAN  SELECT … FROM (SELECT rowid AS rid FROM memory_chain WHERE created_at >= ? AND created_at < ?
+    #         ORDER BY created_at DESC LIMIT 6000) w JOIN memory_chain c ON c.rowid = w.rid
+    #       -> SEARCH memory_chain USING COVERING INDEX idx_memory_chain_created (created_at>? AND created_at<?),
+    #          then SEARCH c USING INTEGER PRIMARY KEY (rowid=?). At most 6000 index entries and 6000 row reads (9 ms warm).
+    rows = con.execute(_STEPS_WINDOW_SQL, (hide, hide, lo, hi, SEARCH_WINDOW_STEPS)).fetchall()
+    out, steps, hidden, oldest = [], 0, 0, None
+    for r in rows:
+        oldest = r["created_at"] if oldest is None or r["created_at"] < oldest else oldest
+        if r["mediator"] is None:
+            continue
+        steps += 1
+        if hide and (r["thread_id"] or "").startswith(EVAL_THREAD_PREFIX):
+            hidden += 1
+            continue
+        tool = r["mediator"].split(":")[0]
+        res = r["result"] or ""
+        out.append({"kind": "step", "id": r["chain_id"] or f"{r['thread_id']}#{r['rid']}", "title": r["insight"] or f"used {tool}",
+                    "ts": r["created_at"], "touch": r["created_at"], "thread": r["thread_id"], "chain": r["chain_id"], "tool": tool,
+                    "result": r["result"], "topic": r["topic_domain"] or "general", "mine": False, "failed": res == "failure",
+                    "F": _fields(_F(1.0, r["insight"]), _F(0.7, tool), _F(0.5, res if res != "success" else ""))})
+    return {"rows": out, "info": {"read": len(rows), "steps": steps, "window": SEARCH_WINDOW_STEPS, "since": oldest,
+                                  "complete": len(rows) < SEARCH_WINDOW_STEPS, "hidden": hidden}}
+
+
+def _load_moments(con: sqlite3.Connection, hide: int, lo: float, hi: float) -> dict:
+    if not has_index_on(con, "memory_events", "ts"):
+        return _gone("memory_events(ts) is not indexed: the newest-rows window cannot run")
+    # PLAN  SELECT … FROM (SELECT rowid AS rid FROM memory_events WHERE ts >= ? AND ts < ? ORDER BY ts DESC LIMIT 6000) w
+    #         JOIN memory_events e ON e.rowid = w.rid
+    #       -> SEARCH memory_events USING COVERING INDEX idx_memory_events_ts (ts>? AND ts<?), then SEARCH e USING INTEGER
+    #          PRIMARY KEY (rowid=?). At most 6000 index entries and 6000 row reads (payloads average 80 characters; 30-70 ms warm).
+    rows = con.execute(_MOMENTS_WINDOW_SQL, (hide, lo, hi, SEARCH_WINDOW_MOMENTS)).fetchall()
+    out, hidden, oldest = [], 0, None
+    for r in rows:
+        ts, tid, label = r["ts"], r["thread_id"], r["label"]
+        oldest = ts if oldest is None or ts < oldest else oldest
+        if hide and (tid or "").startswith(EVAL_THREAD_PREFIX):
+            hidden += 1
+            continue
+        ep = r["episode_id"]
+        plain = _plain_event(r["family"], label)
+        out.append({"kind": "moment", "id": r["event_id"], "title": plain, "ts": ts, "touch": ts, "thread": tid, "family": r["family"],
+                    "label": label, "evidence": r["evidence"], "valence": r["valence"], "topic": r["topic_domain"] or "general",
+                    "mine": r["evidence"] == "user" or r["actor"] == "user", "failed": r["valence"] == "sets_back",
+                    "turn": (f"{tid}:{ep[len(tid) + 1:] if ep.startswith(tid + ':') else ep}" if tid and ep else None),
+                    "F": _fields(_F(1.0, plain), _F(0.8, label), _F(0.6, FAMILY_WORD.get(r["family"] or "", "")),
+                                 _F(0.5, _payload_text(r["payload"])))})
+    return {"rows": out, "info": {"read": len(rows), "window": SEARCH_WINDOW_MOMENTS, "since": oldest,
+                                  "complete": len(rows) < SEARCH_WINDOW_MOMENTS, "hidden": hidden}}
+
+
+class _Search:
+    """One search call: the plan, the matched candidates. The prepared rows it reads are shared (cached) and never changed:
+    a candidate is a copy of its row."""
+
+    def __init__(self, plan: _Plan, now: float, law: dict, chat: dict) -> None:
+        self.p, self.now, self.law = plan, now, law
+        self.chat, self.titles, self.renamed = chat["chat"], chat["titles"], chat["renamed"]
+        self.n0 = plan.terms[0][0] if plan.terms else None   # the first needle: one substring test rejects most rows before _score
+        self.cands: list[dict] = []
+        self.totals: dict[str, int] = {k: 0 for k in plan.kinds}
+        self._tmemo: dict[str, int] = {}
+        self._hidden = 0                                 # evaluation rows skipped by the current reader
+
+    # -- shared filters ---------------------------------------------------------------------------
+    def time_ok(self, ts: Optional[float]) -> bool:
+        p = self.p
+        if p.after is None and p.before is None:
+            return True
+        if ts is None:
+            return False
+        return (p.after is None or ts >= p.after) and (p.before is None or ts < p.before)
+
+    def thread_ok(self, tid: Optional[str]) -> bool:
+        """Evaluation threads are hidden unless the eval facet is on (counted in _hidden); outside / in: narrow the rest."""
+        p = self.p
+        if tid is None:
+            return not p.in_terms      # no thread: outside the chat, and no thread name to match
+        code = self._tmemo.get(tid)
+        if code is None:
+            title = self.titles.get(tid)
+            if _is_eval_thread(tid, title) and "eval" not in p.flags:
+                code = 0
+            elif "outside" in p.flags and tid in self.chat:
+                code = -1
+            else:
+                code = 1
+                if p.in_terms:
+                    text = _fold(" ".join(str(n) for n in (title, tid, *self.renamed.get(tid, [])) if n))
+                    code = 1 if all(all(t[1].search(text) for t in terms) for terms in p.in_terms) else -1
+            self._tmemo[tid] = code
+        if code == 0:
+            self._hidden += 1
+        return code == 1
+
+    def add(self, row: dict, m: tuple) -> None:
+        self.totals[row["kind"]] += 1
+        self.cands.append({**row, "match": m[0], "snip": m[1], "pos": m[2]})
+
+    def places_ok(self, places: list[str]) -> bool:
+        return all(any(n.startswith(t) for n in places) for t in self.p.territory)
+
+    # -- matchers: one per kind, over the prepared rows -------------------------------------------------
+    def match_claims(self, rows: list[dict]) -> None:
+        p, n0 = self.p, self.n0
+        for r in rows:
+            if n0 is not None and (not r["F"] or n0 not in r["F"][0][3]):
+                continue
+            if "proven" in p.flags and (r["absorbed"] or r["tier"] != "landmark"):
+                continue
+            if "learning" in p.flags and (r["absorbed"] or r["tier"] != "candidate"):
+                continue
+            if "cleaned" in p.flags and not r["absorbed"]:
+                continue
+            if "contradicted" in p.flags and not r["contradictions"] > 0:
+                continue
+            if p.evidence is not None and not (r["kinds"] & p.evidence):
+                continue    # a cleaned claim's evidence is not read: from: cannot vouch for it
+            if p.territory and not self.places_ok(r["places"]):
+                continue
+            m = _score(p.terms, r["F"])     # the text first: it rejects almost every row; the thread / time filters see the rest
+            if m is not None and self.time_ok(r["ts"]) and self.thread_ok(r["thread"]):
+                self.add(r, m)
+
+    def match_strands(self, rows: list[dict]) -> None:
+        p, n0 = self.p, self.n0
+        for r in rows:
+            if n0 is not None and (not r["F"] or n0 not in r["F"][0][3]):
+                continue
+            m = _score(p.terms, r["F"])
+            if m is None or not self.time_ok(r["ts"]) or not self.thread_ok(r["id"]):
+                continue
+            # found by a name it no longer has: say which
+            was = None
+            if p.terms and r["old"] and _score(p.terms, r["F"][:1]) is None:
+                was = next((o for o in r["old"] if _score(p.terms, _fields(_F(1.0, o)))), None)
+            self.add({**r, "was": was}, m)
+
+    def match_plain(self, rows: list[dict], thread_key: Optional[str] = None) -> None:
+        """pins, tasks, artifacts, nodes, steps, moments: a time filter, a thread filter, the facets each carries."""
+        p, n0 = self.p, self.n0
+        for r in rows:
+            if n0 is not None and (not r["F"] or n0 not in r["F"][0][3]):
+                continue
+            if "failed" in p.flags and r["kind"] in ("step", "moment", "turn") and not r["failed"]:
+                continue
+            if r["kind"] == "moment":
+                if "contradicted" in p.flags and r["label"] != "CLAIM_CONTRADICTED":
+                    continue
+                if "helped" in p.flags and r["label"] != "RECALL_HELPED":
+                    continue
+                if p.evidence is not None and r["evidence"] not in p.evidence:
+                    continue
+            if p.territory and r["kind"] in ("step", "moment") and not self.places_ok([_fold(r["topic"])]):
+                continue
+            m = _score(p.terms, r["F"])
+            if m is not None and self.time_ok(r["ts"]) and (not thread_key or self.thread_ok(r[thread_key])):
+                self.add(r, m)
+
+    # -- rank: match x kind x strength ------------------------------------------------------------
+    def strengthen(self, c: dict, clock: Any) -> None:
+        """c['alive'], c['proven'], c['strength'], c['rank'] from the memory's own numbers. Computed here, never written back."""
+        law, kind = self.law, c["kind"]
+        days = clock.days_since(c["touch"]) if clock is not None and c.get("touch") else 0.0
+        c["days"] = days
+        if kind == "claim":
+            alive = c["score"] if c["permanent"] else law["credibility"](c["score"], law["rate"], days, c["n"])
+            c["fading"] = not c["permanent"] and c["score"] > 0 and alive < FADING_BELOW * c["score"]
+            ev = EVIDENCE_LADDER.get(c["best"], EVIDENCE_LADDER["none"])
+            proven = ev if c["tier"] == "landmark" else ev * CANDIDATE_FACTOR
+        elif kind == "node":
+            alive = law["node_after"](c["conf"], law["node_rate"], law["channel_mult"](c["channel"]), days)
+            proven = NEUTRAL_PROVEN
+        elif kind == "pin":
+            alive, proven = 1.0, NEUTRAL_PROVEN              # explicit memory: held, not earned - it does not decay
+        else:
+            alive = math.exp(-law["rate"] * days)            # no strength of its own: freshness under the claims' rate
+            if kind == "moment":
+                proven = EVIDENCE_LADDER.get(c["evidence"] or "none", EVIDENCE_LADDER["none"])
+            elif kind == "turn":
+                proven = EVIDENCE_LADDER["user"] if c["confirmed"] else (EVIDENCE_LADDER["completion"] if c["outcome"] == "success"
+                                                                          else EVIDENCE_LADDER["none"])
+            else:
+                proven = NEUTRAL_PROVEN
+        if c.get("ghost"):
+            alive = GHOST_STRENGTH
+        c["alive"], c["proven"] = max(ALIVE_FLOOR, min(1.0, alive)), proven
+        self.rerank(c)
+
+    def rerank(self, c: dict) -> None:
+        used = min(1.0, math.log1p(c.get("acts", 0)) / math.log1p(USED_SATURATION))
+        trust = 1.0
+        if c.get("channel") is not None:
+            trust = 0.5 + 0.5 / self.law["channel_mult"](c["channel"])      # untrusted 0.6 ... system 1.0
+        mine = MINE_BOOST if c.get("mine") else 1.0
+        c["strength"] = c["alive"] * (PROVEN_BASE + PROVEN_SPAN * c["proven"]) * (1.0 + USED_WEIGHT * used) * trust * mine
+        c["rank"] = c["match"] * KIND_WEIGHT[c["kind"]] * c["strength"] * (CLEANED_FACTOR if c.get("absorbed") else 1.0)
+
+
+def _search_law() -> dict:
+    """The growth / decay law the memory itself runs (decay.py, landmark.py), imported when a search runs."""
+    from backend.memory.mycelium import decay  # noqa: PLC0415 - lazy: the mycelium package is heavy
+    from backend.memory.mycelium.landmark import _DECAY_NON_PERMANENT, _independent  # noqa: PLC0415
+    return {"credibility": decay.landmark_credibility, "rate": _DECAY_NON_PERMANENT, "independent": _independent,
+            "node_after": decay.node_confidence_after, "node_rate": decay.NODE_DECAY_RATE_DEFAULT,
+            "channel_mult": decay.channel_multiplier, "clock": decay.ActivityClock}
+
+
+def _cleaned_fates(cleaned: list[dict], merges: dict[str, str], by_id: dict[str, dict], clock: Any) -> None:
+    """For each cleaned claim in the answer: the survivor it was merged into (the merge log, followed to its end), or the reason
+    Kyudo wrote. Sets c['survivor'] = {id, title, live} and c['fate'] (the plain words). Reads the prepared corpus only."""
+    final: dict[str, str] = {}
+    for c in cleaned:
+        cur, hops = c["id"], 0
+        while cur in merges and hops < MERGE_HOPS:
+            cur, hops = merges[cur], hops + 1
+        if hops:
+            final[c["id"]] = cur
+    titles = {sid: (by_id[sid]["title"], by_id[sid]["absorbed"]) for sid in set(final.values()) if sid in by_id}
+    for c in cleaned:
+        sid = final.get(c["id"])
+        c["survivor"] = None
+        if sid and sid in titles:
+            c["survivor"] = {"id": sid, "title": _title_of(titles[sid][0]), "live": not titles[sid][1]}
+            c["fate"] = "merged into " + _title_of(titles[sid][0])[:60] + ("" if not titles[sid][1] else " (since cleaned too)")
+            continue
+        reason = (c.get("falsify") or "").replace("dissolved:", "").strip()
+        idle = int(round(clock.days_since(c["touch"]))) if clock is not None and c.get("touch") else None
+        if reason == "no_credibility":
+            c["fate"] = "no use and no evidence" + (f" - last touched {_plural(idle, 'active day', 'active days')} ago" if idle is not None else "")
+        elif reason == "dangling_cluster":
+            c["fate"] = "its places on the map were gone"
+        elif reason == "hub_cluster":
+            c["fate"] = "too many different claims shared its place"
+        else:
+            c["fate"] = "cleaned by the integrity pass"
+
+
+def _why(c: dict) -> str:
+    """ONE plain line: where it ranks and why."""
+    kind = c["kind"]
+    if kind == "claim":
+        if c["absorbed"]:
+            return "cleaned - " + c.get("fate", "cleaned by the integrity pass")
+        parts = ["proven" if c["tier"] == "landmark" else ("learning" if c["tier"] == "candidate" else c["tier"])]
+        if c["acts"]:
+            parts.append("used " + _plural(c["acts"], "time", "times"))
+        if c.get("fading"):
+            parts.append(f"fading - not used or confirmed for {_plural(int(round(c['days'])), 'active day', 'active days')}")
+        if c["contradictions"]:
+            parts.append("contradicted " + _plural(c["contradictions"], "time", "times"))
+        parts.append(EVIDENCE_WORD.get(c["best"], EVIDENCE_WORD["none"]))
+        if c.get("channel") == 0:
+            parts.append("from a source it does not trust")
+        return " · ".join(parts)
+    if kind == "moment":
+        parts = [FAMILY_WORD.get(c["family"] or "", "a moment")]
+        if c["evidence"] and c["evidence"] != "none":
+            parts.append(EVIDENCE_WORD.get(c["evidence"], c["evidence"]))
+        if c["valence"] == "sets_back":
+            parts.append("it set things back")
+        return " · ".join(parts)
+    if kind == "step":
+        return " · ".join([KIND_WORD["step"], "used " + c["tool"].replace("_", " "),
+                           {"success": "it worked", "failure": "it failed"}.get(c["result"] or "", "no verdict")])
+    if kind == "turn":
+        parts = [KIND_WORD["turn"], OUTCOME_WORD.get(c["outcome"], c["outcome"])]
+        if c["confirmed"]:
+            parts.append(EVIDENCE_WORD["user"])
+        if c["reason"]:
+            parts.append("why: " + _squash(c["reason"])[:60])
+        return " · ".join(parts)
+    if kind == "pin":
+        return f"a pin you keep ({c['kindword']}) · held, it does not fade"
+    if kind == "artifact":
+        return f"{KIND_WORD['artifact']} · in {c['folder']}"
+    if kind == "node":
+        parts = [KIND_WORD["node"], SPACE_WORD.get(c["space"], c["space"]), f"sure {int(round(c['conf'] * 100))}%"]
+        if c["acts"]:
+            parts.insert(2, "used " + _plural(c["acts"], "time", "times"))
+        return " · ".join(parts)
+    if c["ghost"]:
+        return "deleted in chat - the memory kept its name"
+    if c["was"]:
+        return f"{'a thread' if c['root'] else 'a strand'} you renamed - it was called \"{_title_of(c['was'])[:60]}\""
+    return "a thread" if c["root"] else "a strand of a thread"
+
+
+def _ref(c: dict) -> dict:
+    kind = c["kind"]
+    if kind == "claim":
+        sv = c.get("survivor")
+        return {"claim": c["id"], "cleaned": c["absorbed"], "survivor": sv["id"] if sv else None, "thread": c["thread"]}
+    if kind == "strand":
+        return {"strand": c["id"], "ghost": c["ghost"], "parent": c["parent"]}
+    if kind == "step":
+        return {"thread": c["thread"], "strand": c["thread"], "chain": c["chain"]}
+    if kind == "moment":
+        return {"thread": c["thread"], "strand": c["thread"], "event": c["id"], "turn": c["turn"]}
+    if kind == "turn":
+        return {"turn": c["id"], "thread": c["thread"], "strand": c["thread"], "episode": c["episode"]}
+    if kind == "artifact":
+        return {"artifact": c["id"], "thread": c["thread"], "strand": c["thread"]}
+    if kind == "node":
+        return {"node": c["id"], "space": c["space"]}
+    return {"pin": c["id"]}
+
+
+def _sort_key(c: dict) -> tuple:
+    """A cleaned claim sorts after every live result, whatever its rank."""
+    return (not c.get("absorbed"), c["rank"], c["ts"] or 0.0)
+
+
+def _window_note(kind: str, word: str, info: dict) -> Optional[str]:
+    if info.get("available") is False:
+        return f"{word} were not searched: {info.get('why', 'the table is missing')}"
+    if "window" not in info:
+        return None
+    n = f"{info['read']:,}"
+    extra = f" ({info['steps']:,} of them steps)" if kind == "step" else ""
+    span = f", back to {time.strftime('%Y-%m-%d', time.gmtime(info['since']))}" if info.get("since") else ""
+    head = f"searched all {n} {word}{extra}" if info["complete"] else f"searched the newest {n} {word}{extra}{span}"
+    if info.get("hidden_eval"):
+        head += f"; {info['hidden_eval']:,} from evaluation runs hidden (add 'eval' to include them)"
+    return head
+
+
+
+def search(q: str, kinds: Optional[str] = None, limit: int = SEARCH_LIMIT_DEFAULT, *, now: Optional[float] = None,
+           db: Optional[Path | str] = None, conv_db: Optional[Path | str] = None) -> dict:
+    """GET /api/memory/search. Text only, built for memory.db: what the memory holds about this, and how much it holds it.
+    rank = match x kind weight x strength; strength = alive x (0.4 + 0.6 x proven) x (1 + 0.25 x used) x trust x mine
+    (see the constants above). A cleaned claim sorts after every live result and carries its fate. Read-only; not a recall.
+    `kinds` = comma-separated kinds; with exactly one kind in play, up to `limit` of it are returned, else SEARCH_PER_KIND
+    per kind (totals say how many more there are). `db` / `conv_db` name other stores (tests, measurements)."""
+    t0 = time.perf_counter()
+    q = str(q or "")
+    if len(q) > SEARCH_QUERY_MAX:
+        raise BadRequest(f"q is longer than {SEARCH_QUERY_MAX} characters")
+    limit = max(1, min(int(limit), SEARCH_LIMIT_MAX))
+    want: Optional[list[str]] = None
+    if kinds:
+        want = [k.strip().lower() for k in kinds.split(",") if k.strip()]
+        bad = [k for k in want if k not in SEARCH_KINDS]
+        if bad:
+            raise BadRequest(f"kinds must be among {list(SEARCH_KINDS)}; got {bad}")
+    now = time.time() if now is None else now
+    parsed = parse_query(q, now)
+    plan = _plan_of(parsed, want)
+    out: dict[str, Any] = {"q": q, "parse": parsed, "kinds": list(plan.kinds), "limit": limit, "per_kind": SEARCH_PER_KIND,
+                           "results": [], "totals": {}, "shown": {}, "searched": {}, "notes": [], "generated": now,
+                           "fresh_within_s": SEARCH_CORPUS_TTL_S}
+    if not (parsed["words"] or parsed["phrases"] or parsed["facets"]) or plan.empty_reason:
+        out["notes"].append(plan.empty_reason or "type a word, a phrase or a filter")
+        out["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        return out
+    law = _search_law()
+    ref = uuid.uuid4().hex[:8]
+    dbp = db or memory_db_path()
+    cpath = conv_db or (Path(db).with_name("conversations.db") if db else None)
+    searched: dict[str, dict] = {}
+    with ExitStack() as stack:
+        # Connections open only when a part must be read: a search answered from the prepared corpus opens none (an open
+        # costs 5-50 ms on the hard disk). A missing store raises StoreUnavailable at the first part that has to be read.
+        opened: dict[str, Any] = {}
+
+        def con() -> sqlite3.Connection:
+            if "mem" not in opened:
+                opened["mem"] = stack.enter_context(read_only(dbp))
+            return opened["mem"]
+
+        def cdb() -> Optional[sqlite3.Connection]:
+            if "chat" not in opened:
+                opened["chat"] = stack.enter_context(_optional_chat_store(cpath))
+            return opened["chat"]
+
+        try:
+            chat = _cached(dbp, ("chat", str(cpath or conversations_db_path())), lambda: _load_chat(con(), cdb()))
+        except sqlite3.Error as exc:   # titles are the one shared input: without them the thread filters read nothing
+            logger.warning("[memory_search] ref=%s chat store failed: %s: %s", ref, type(exc).__name__, exc)
+            chat = {"rows": [], "chat": {}, "titles": {}, "renamed": {}, "info": {"available": False, "why": "the chat store is resting"}}
+        s = _Search(plan, now, law, chat)
+        # The step / moment windows are the newest rows, so an "after" / "last week" bound needs no SQL bound (the newest rows are
+        # the ones after it; the matcher filters). Only a "before" reaches back: its bound is rounded up to the hour, to be cached.
+        lo = 0.0
+        hi = math.ceil(plan.before / 3600.0) * 3600.0 if plan.before is not None else 1e18
+        hide = 0 if "eval" in plan.flags else 1
+        parts = {
+            "claim": lambda: (_cached(dbp, ("claims",), lambda: _load_claims(con(), law)), s.match_claims),
+            "strand": lambda: (chat, s.match_strands),
+            "pin": lambda: (_cached(dbp, ("pins",), lambda: _load_pins(con())), s.match_plain),
+            "turn": lambda: (_cached(dbp, ("turns",), lambda: _load_turns(con())), lambda rows: s.match_plain(rows, "thread")),
+            "artifact": lambda: (_cached(dbp, ("artifacts",), lambda: _load_artifacts(con())), lambda rows: s.match_plain(rows, "thread")),
+            "node": lambda: (_cached(dbp, ("nodes",), lambda: _load_nodes(con())), s.match_plain),
+            "step": lambda: (_cached(dbp, ("steps", hide, lo, hi), lambda: _load_steps(con(), hide, lo, hi)),
+                             lambda rows: s.match_plain(rows, "thread")),
+            "moment": lambda: (_cached(dbp, ("moments", hide, lo, hi), lambda: _load_moments(con(), hide, lo, hi)),
+                               lambda rows: s.match_plain(rows, "thread")),
+        }
+        for kind in plan.kinds:
+            try:
+                part, match = parts[kind]()
+                s._hidden = 0
+                match(part["rows"])
+                info = dict(part["info"])
+                if info.get("available") is not False:
+                    info["hidden_eval"] = info.get("hidden", 0) + s._hidden
+                searched[kind] = info
+            except sqlite3.Error as exc:   # one kind failing leaves the others answering, and says so
+                logger.warning("[memory_search] ref=%s kind=%s failed: %s: %s", ref, kind, type(exc).__name__, exc)
+                searched[kind] = {"available": False, "why": "the memory is resting"}
+        clock = _cached(dbp, ("clock",), lambda: law["clock"](con(), 0.0, now)) if s.cands else None
+        for c in s.cands:
+            s.strengthen(c, clock)
+        single = len(plan.kinds) == 1
+        cap = limit if single else SEARCH_PER_KIND
+        by_kind: dict[str, list[dict]] = {}
+        for c in s.cands:
+            by_kind.setdefault(c["kind"], []).append(c)
+        chosen: list[dict] = []
+        for kind in plan.kinds:
+            chosen += heapq.nlargest(cap, by_kind.get(kind, []), key=_sort_key)
+        chosen = heapq.nlargest(limit, chosen, key=_sort_key)
+        cleaned = [c for c in chosen if c["kind"] == "claim" and c["absorbed"]]
+        if cleaned:
+            merges = _cached(dbp, ("merges",), lambda: _load_merges(con()))
+            claims = _cached(dbp, ("claims",), lambda: _load_claims(con(), law))
+            _cleaned_fates(cleaned, merges, claims["by_id"], clock)
+    out["results"] = [{"kind": c["kind"], "id": c["id"], "title": _title_of(c["title"]), "snippet": _excerpt(c["snip"], c["pos"]),
+                       "why": _why(c), "rank": round(c["rank"], 4), "ts": c["ts"], "ref": _ref(c)} for c in chosen]
+    out["shown"] = {k: sum(1 for r in out["results"] if r["kind"] == k) for k in plan.kinds}
+    out["totals"] = s.totals
+    out["searched"] = searched
+    words = {"step": "rows of the step log", "moment": "moments", "turn": "tasks"}
+    out["notes"] = [n for k in plan.kinds if (n := _window_note(k, words.get(k, k + "s"), searched.get(k, {})))]
+    out["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    return out
