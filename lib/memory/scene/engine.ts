@@ -15,6 +15,8 @@ export interface MemoryEngineOptions {
   data?: unknown;
   /** Called when WebGL2 is missing or the renderer cannot start. */
   onError?: (e: unknown) => void;
+  /** The memory-native search (GET /api/memory/search). Absent: the engine searches its own model (the demo). */
+  search?: (q: string, signal: AbortSignal) => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -2521,7 +2523,8 @@ canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
 addEventListener('keydown',e=>{
   if(!_active)return;
   const _t=e.target;if(_t&&_t!==$('q')&&(_t.tagName==='INPUT'||_t.tagName==='TEXTAREA'||_t.tagName==='SELECT'||_t.isContentEditable))return; // typing elsewhere in the app
-  if(document.activeElement===$('q')){if(e.key==='Escape'){closeSearch();e.preventDefault();e.stopPropagation()}if(e.key==='Enter'){goSearch()}return}
+  if(document.activeElement===$('q')){if(e.key==='Escape'){closeSearch();e.preventDefault();e.stopPropagation()}if(e.key==='Enter'){goSearch()}
+    if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();selSearch(searchSel+(e.key==='ArrowDown'?1:-1))}return}
   const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
   if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
   if(cam.mode==='tunnel'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
@@ -2567,6 +2570,11 @@ function focusRef(ref){
     const go=()=>{dive(LM[k].dom);const w=setInterval(()=>{if(state.inside){clearInterval(w);flyToSoma(k)}},120);setTimeout(()=>clearInterval(w),8000)};
     if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else{setLens('cortex');setTimeout(go,300)}return true}
   if(kind==='strand'||kind==='thread'){const s_=M.sById?.get(id);if(!s_)return false;enterTunnel(s_);return true}
+  const toTop=go=>{if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else go()};
+  if(kind==='artifact'){const a=M.artifacts.find(a=>a.id===id);if(!a)return false;
+    toTop(()=>{setLens('artifacts');setTimeout(()=>{setTissueLevel([FORMAT_OF[a.kind]||'other',a.folder||'unsorted'],null);tissue.focus=tissue.cells.findIndex(c=>c.a===a)},1800)});return true}
+  if(kind==='node'){if(!NDS.some(n=>n.id===id))return false;toTop(()=>{setLens('cortex');state.showSpaces=true});return true}
+  if(kind==='pin'){const p=M.pins.find(p=>p.id===id),t=p?.refs?.find(r=>r.t==='thread'||r.t==='session');return t?focusRef('strand:'+t.id):false}
   // the episode's own strand when the memory knows the episode, else the id's prefix ("<conv>:<turn>")
   if(kind==='turn'){const conv=M.epById?.get(id)?.session||id.split(':')[0],s_=M.sById?.get(conv);if(!s_)return false;enterTunnel(s_);
     // once the corridor stands, travel to the turn's first moment
@@ -2583,22 +2591,60 @@ function scrubFrom(e){const r=scrubEl.getBoundingClientRect();state.scrubT=state
 scrubEl.addEventListener('pointerdown',e=>{scrubEl.setPointerCapture(e.pointerId);scrubFrom(e);scrubEl.onpointermove=scrubFrom});
 scrubEl.addEventListener('pointerup',()=>{scrubEl.onpointermove=null});
 scrubEl.addEventListener('dblclick',()=>{state.scrubT=1});
-// search lights the matching thoughts across the whole mind
-function openSearch(){$('search').classList.add('on');$('q').value='';$('q').focus();runSearch('')}
-function closeSearch(){$('search').classList.remove('on');$('q').blur();state.search='';forestU.uSearch.value=0;for(let j=0;j<NL;j++)somaData[j*8+2]=j===state.focusSoma?1:0;somaTex.needsUpdate=true;$('qres').textContent=''}
-let searchHits={lm:[],s:[],a:[]};
-function runSearch(q){state.search=q.trim().toLowerCase();const words=state.search.split(/\s+/).filter(Boolean);
-  const m=t=>words.length&&words.every(w=>t.toLowerCase().includes(w));
-  searchHits={lm:LM.map((l,i)=>m(l.claim)?i:-1).filter(i=>i>=0),s:sess.filter(s=>m(s.objective)),a:M.artifacts.filter(a=>m(a.name))};
-  for(let j=0;j<NL;j++)somaData[j*8+2]=searchHits.lm.includes(j)?1:0;somaTex.needsUpdate=true;forestU.uSearch.value=words.length?1:0;
-  $('qres').textContent=words.length?`${searchHits.lm.length} thoughts · ${searchHits.s.length} sessions · ${searchHits.a.length} things made${searchHits.lm.length+searchHits.s.length+searchHits.a.length?' · enter to go':' · nothing like that yet'}`:'type to light up what IRIS remembers'}
+// SEARCH (MEMORY-SURFACE-BUILD §3): text only, built for memory.db. On a real memory the backend answers
+// (opts.search -> GET /api/memory/search: ranked by the memory's own law, never counted as a recall); the demo searches
+// its own model. While the user moves through the results the scene previews WITHOUT moving the camera: the claims in
+// the results light, everything else dims. Enter or a click flies to the chosen one; Esc closes.
+let searchSeq=0,searchAbort=null,searchTimer=0,searchRes=[],searchSel=0;
+const RESULT_WORD={claim:'claim',step:'step',moment:'moment',turn:'turn',pin:'pin',artifact:'made',node:'node',strand:'strand'};
+function openSearch(){$('search').classList.add('on');host.classList.add('searching');$('q').value='';$('q').focus();runSearch('')}
+function closeSearch(){$('search').classList.remove('on');host.classList.remove('searching');$('q').blur();state.search='';clearTimeout(searchTimer);searchAbort?.abort();searchSeq++;
+  searchRes=[];forestU.uSearch.value=0;for(let j=0;j<NL;j++)somaData[j*8+2]=j===state.focusSoma?1:0;somaTex.needsUpdate=true;$('qres').innerHTML=''}
+function lightClaims(ids){for(let j=0;j<NL;j++)somaData[j*8+2]=ids.has(j)?1:0;somaTex.needsUpdate=true;forestU.uSearch.value=state.search?1:0}
+// the demo memory: the same answer shape from its own model (words AND, case-insensitive)
+function localSearch(q){const words=q.toLowerCase().split(/\s+/).filter(Boolean),m=t=>words.every(w=>String(t||'').toLowerCase().includes(w));
+  const all=[...LM.filter(l=>m(l.claim)).map(l=>({kind:'claim',id:l.id,title:l.claim,why:l.tier==='candidate'?'learning':'proven',ref:{claim:l.id}})),
+    ...sess.filter(s=>m(s.objective)).map(s=>({kind:'strand',id:s.id,title:s.objective,why:ago(s.started),ref:{strand:s.id}})),
+    ...M.artifacts.filter(a=>m(a.name)).map(a=>({kind:'artifact',id:a.id,title:a.name,why:a.kind,ref:{artifact:a.id}}))];
+  const totals={},per={};all.forEach(x=>totals[x.kind]=(totals[x.kind]||0)+1);
+  return {results:all.filter(x=>(per[x.kind]=(per[x.kind]||0)+1)<=8),totals,notes:[]}}
+function runSearch(q){state.search=q.trim();clearTimeout(searchTimer);searchAbort?.abort();const seq=++searchSeq;
+  if(!state.search){searchRes=[];lightClaims(new Set());renderSearch({notes:['type to find what IRIS remembers · try proven, failed, last week, in:<thread>']});return}
+  if(!opts.search){showSearch(localSearch(state.search));return}
+  $('qres').classList.add('busy');
+  searchTimer=setTimeout(()=>{const ac=new AbortController();searchAbort=ac;
+    opts.search(state.search,ac.signal).then(r=>{if(seq===searchSeq)showSearch(r)})
+      .catch(e=>{if(seq!==searchSeq||ac.signal.aborted)return;searchRes=[];renderSearch({notes:[e?.message||'the memory did not answer']})})},160)}
+function showSearch(r){searchRes=r.results||[];searchSel=0;const ids=new Set();
+  for(const x of searchRes){const k=M.lmIndex.get(x.ref?.survivor||x.ref?.claim);if(k!=null)ids.add(k)}
+  lightClaims(ids);renderSearch(r)}
+function renderSearch(r){const el=$('qres');el.classList.remove('busy');
+  const facets=(r.parse?.facets||[]).map(f=>`<b>${esc(f.text)}</b>`).join(' ');
+  const total=Object.values(r.totals||{}).reduce((a,b)=>a+b,0)||searchRes.length;
+  const head=searchRes.length?`${fmt(total)} found${total>searchRes.length?` · the first ${searchRes.length} · kind:claim (or step, turn …) shows more of one kind`:''} · ↑↓ enter`
+    :(r.notes?.[0]||'nothing like that yet');
+  el.innerHTML=`<span class="qh">${facets?facets+' · ':''}${esc(head)}</span>`+searchRes.map((x,i)=>
+    `<a class="r${i===searchSel?' on':''}${x.ref?.ghost||x.ref?.cleaned?' gone':''}" data-i="${i}"><span class="kw">${RESULT_WORD[x.kind]||esc(x.kind)}</span>`+
+    `<span class="tt">${esc(x.title||'')}</span><span class="why">${esc(x.why||'')}</span></a>`).join('')}
+function selSearch(i){if(!searchRes.length)return;searchSel=(i+searchRes.length)%searchRes.length;
+  $('qres').querySelectorAll('.r').forEach((a,j)=>a.classList.toggle('on',j===searchSel));$('qres').querySelector('.r.on')?.scrollIntoView({block:'nearest'})}
+// a result's places to fly to, the most exact first (a cleaned claim goes to the claim it was merged into)
+function refsOf(x){const r=x.ref||{},out=[];
+  if(r.claim)out.push('claim:'+(r.survivor||r.claim));
+  if(x.kind==='turn'&&(r.episode||r.turn))out.push('turn:'+(r.episode||r.turn));
+  if(x.kind==='moment'&&r.turn)out.push('turn:'+r.turn);
+  if(r.artifact)out.push('artifact:'+r.artifact);
+  if(r.node)out.push('node:'+r.node);
+  if(r.pin)out.push('pin:'+r.pin);
+  if(r.strand)out.push('strand:'+r.strand);
+  return out}
+function goSearch(){const x=searchRes[searchSel];if(!x)return;
+  if(refsOf(x).some(f=>focusRef(f))){closeSearch();return}
+  $('qres').querySelector('.qh').textContent=x.ref?.ghost?'that strand was deleted - its memory remains, but it has no place on the timeline'
+    :'that is in the memory but older than this view holds'}
 $('q').addEventListener('input',e=>runSearch(e.target.value));
-function goSearch(){const h=searchHits;$('search').classList.remove('on');$('q').blur();
-  if(h.lm.length){const k=h.lm[0];const fi=LM[k].dom;const go=()=>{dive(fi);const w=setInterval(()=>{if(state.inside){clearInterval(w);flyToSoma(k)}},120)};
-    if(state.lens!=='cortex'){setLens('cortex');setTimeout(go,1600)}else go()}
-  else if(h.s.length)enterTunnel(h.s[0]);
-  else if(h.a.length){const a=h.a[0];setLens('artifacts');setTimeout(()=>{setTissueLevel([FORMAT_OF[a.kind]||'other',a.folder||'unsorted'],null);
-    tissue.focus=tissue.cells.findIndex(c=>c.a===a)},1800)}}
+$('qres').addEventListener('pointermove',e=>{const a=e.target.closest('.r');if(a&&+a.dataset.i!==searchSel)selSearch(+a.dataset.i)});
+$('qres').addEventListener('click',e=>{const a=e.target.closest('.r');if(a){selSearch(+a.dataset.i);goSearch()}});
 const _onResize=()=>{innerWidth=host.clientWidth||1;innerHeight=host.clientHeight||1;pinH.value=innerHeight*.5;arborRes.value.set(innerWidth,innerHeight);renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;
   camera.updateProjectionMatrix();if(state.lens==='artifacts')layoutTissue(false)};
 const _ro=new ResizeObserver(()=>_onResize());_ro.observe(host);_cleanups.push(()=>_ro.disconnect());
@@ -2783,7 +2829,7 @@ return {
     for (const f of _cleanups.splice(0)) { try { f(); } catch {} }
     scene.traverse((o) => { o.geometry?.dispose?.(); const m = o.material; if (Array.isArray(m)) m.forEach((x) => x.dispose?.()); else m?.dispose?.(); });
     composer.dispose?.(); renderer.dispose(); renderer.forceContextLoss?.();
-    host.innerHTML = ''; host.classList.remove('iris-memory');
+    host.innerHTML = ''; host.classList.remove('iris-memory', 'searching');
   },
   debug: __cortex,
 };

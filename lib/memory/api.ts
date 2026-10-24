@@ -39,6 +39,18 @@ export async function fetchMemorySnapshot(opts: { includeEval?: boolean; signal?
   return res.json()
 }
 
+/** The memory-native search (GET /api/memory/search): ranked by the memory's own law; a search is never a recall. */
+export async function searchMemory(q: string, signal?: AbortSignal): Promise<any> {
+  const s = signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000)
+  const res = await fetch(`/api/memory/search?q=${encodeURIComponent(q)}`, { signal: s })
+  if (!res.ok) {
+    let why = res.status === 404 ? "this backend has no memory search yet - restart it after an update" : "the memory did not answer"
+    if (res.status === 400) why = (await res.json().catch(() => null))?.detail || "the memory did not understand that search"
+    throw new MemoryResting(res.status, why)
+  }
+  return res.json()
+}
+
 /**
  * A deep link into the memory ("claim:<id>", "strand:<id>", "turn:<conv>:<turn>", "lens:<name>"). The card action
  * `open_memory` carries it as `detail.focus`; the dashboard may not be mounted yet, so the link waits here until the

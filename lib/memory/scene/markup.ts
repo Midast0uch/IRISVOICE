@@ -88,11 +88,20 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #scrub .fill{position:absolute;left:0;top:12px;height:1px;background:var(--brand);box-shadow:0 0 8px var(--brand)}
 .iris-memory #scrub .lbl{position:absolute;right:0;top:-4px;font-size:9.5px;color:var(--dim);letter-spacing:.06em}
 .iris-memory #scrub .lbl0{position:absolute;left:0;top:-4px;font-size:9.5px;color:var(--faint)}
-.iris-memory #search{position:absolute;left:50%;top:22px;transform:translateX(-50%);text-align:center;opacity:0;transition:opacity .3s}
+.iris-memory #search{position:absolute;left:0;right:0;top:0;padding:22px 16px 56px;text-align:center;opacity:0;transition:opacity .3s;pointer-events:none;
+  background:linear-gradient(180deg,rgba(2,3,6,.94) 0%,rgba(2,3,6,.86) 62%,rgba(2,3,6,0) 100%)}
+.iris-memory.searching #brand,.iris-memory.searching #stats,.iris-memory.searching #crumb{opacity:.12;transition:opacity .3s}
 .iris-memory #search.on{opacity:1;pointer-events:auto}
 .iris-memory #search input{background:transparent;border:0;border-bottom:1px solid var(--faint);color:var(--white);
   font:300 18px 'Inter Tight',sans-serif;width:min(420px,70vw);text-align:center;outline:none;padding:4px 0}
-.iris-memory #search div{font-size:10px;color:var(--dim);margin-top:6px;letter-spacing:.06em}
+.iris-memory #search #qres{font-size:10px;color:var(--dim);margin:6px auto 0;letter-spacing:.06em;width:min(560px,86%);max-height:min(46vh,420px);overflow-y:auto;scrollbar-width:none}
+.iris-memory #qres .qh{display:block;margin-bottom:8px}.iris-memory #qres .qh b{font-weight:400;color:var(--amber)}.iris-memory #qres.busy .qh{opacity:.45}
+.iris-memory #qres .r{display:block;text-align:left;padding:4px 0 4px 6.2em;text-indent:-6.2em;cursor:pointer;color:var(--dim);font-size:11px;line-height:1.35;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .15s}
+.iris-memory #qres .r .kw{display:inline-block;width:6.2em;text-indent:0;color:var(--faint);letter-spacing:.14em;font-size:9.5px}
+.iris-memory #qres .r .why{display:block;text-indent:0;color:var(--faint);font-size:9.5px;overflow:hidden;text-overflow:ellipsis}
+.iris-memory #qres .r.on{color:var(--white)}.iris-memory #qres .r.on .kw{color:var(--brand)}.iris-memory #qres .r.on .why{color:var(--dim)}
+.iris-memory #qres .r.gone .tt{opacity:.55;font-style:italic}
 .iris-memory #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
 .iris-memory /* thread rail: the session's neurons and tasks laid out in time; click one to travel there */
 #rail{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);width:min(680px,76vw);height:40px;pointer-events:auto;opacity:0;transition:opacity .4s}
