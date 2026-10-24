@@ -727,7 +727,7 @@ owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
 |---|---|---|---|---|---|---|
 | `tool_choice` (scope `tc-decide-v4`, 2026-10-22) | 275 (273/2) | untestable (waiver: 2 wrong in 275 rows excludes a 5% rate, p < 1e-5) | 0.0034 | 0.9524 (275, 0.9927, 0.9739) | meets the bar; ON - the no-error-mass waiver, named in the record | - |
 | `escalate_incomplete` (2026-10-13) | 513 (446/67) | 0.8403 | 0.0335 | 0.4675 (478, 0.9038, 0.874) | meets the bar; ON | - |
-| `review_verdict` (scope `review_verdict/v7`, 2026-10-23) | 136 outcome rows (84/52), integrity 1.0 | 0.6741 | 0.0675 | none (best band 25 rows at 0.80, legacy 0.8077) | sampled: two REAL defects fixed (the outcome-label delivery never landed - `review_outcome_label` keyed `stamp` on the plain step id but `defer` looked up (step, turn) tuples, 5 contract pins red; and 124/314 v5 frames were the literal empty "RECENT RESULTS: ", scored at the prior) - but the consumer itself is WEAK: 48% correct, AUROC 0.6417, no 0.90-precision threshold | a frame/instruction revision with the step's plan, measured offline first |
+| `review_verdict` (scope `review_verdict/v8`, 2026-10-24) | 818 outcome rows (519/299), integrity 1.0 | 0.654 | 0.0204 | 0.8722 (101, 0.9208, 0.8514) | meets the bar; ON (refuse-only) - the OWNER's reading-B label (2026-10-23): on a FAILED step `refine` and `veto` both DETECTED the deficiency and are both correct; on VERIFIED only `pass`. The old map made `refine` unwinnable (all 52 v7 refine rows wrong, accuracy capped at 63%); reading B took the v8 cohort to a full pass of every clause. Three defects fixed on the way: the outcome-label delivery (stamp/defer key mismatch), the empty-frame scoring (124/314 frames), and the frame missing the step's plan (v7: AUROC 0.6417 -> 0.6741) | - |
 | `depth_met` (scope `depth_met/v3`, 2026-10-18) | 303 | 0.7103 | 0.0208 | 0.8963 (90, 0.9333, 0.8621) | meets the bar; ON (tighten-only) | - |
 | `tool_approval` (scope `tool_approval/v6`, 2026-10-21 recompute) | 2143 (1524/619) | 0.6816 | 0.0096 | 0.7908 (474, 0.9008, 0.8706) | meets the bar; ON (the pre-call guard) | - |
 | `needs_action` (scope `needs_action/v7`, 2026-10-21) | 641 (598/43) | 0.8634 | 0.0167 | 0.6244 (614, 0.9479, 0.9274) | meets the bar; ON - ACTING: 101 rows above at 0.9208 (Wilson 0.8514) | - |
@@ -914,20 +914,22 @@ bar must measure the acting side separately. A direction-scoped clause is the
 right fix; it is a bar change and needs the owner's decision, so the consumer
 stays shadow until then. Do not flip on the aggregate number.
 
-Enforcement today (2026-10-22): `tool_choice`, `needs_action`, `escalate_incomplete`,
-`depth_met` and `tool_approval` are ON (`decides()` returns their fitted thresholds;
-`.env` `IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`).
-`review_verdict` is allow-listed but NOT deciding: the 2026-10-21 recompute on its
-GROWN cohort (184 -> 1464 rows) no longer meets the bar (AUROC 0.624 < 0.65) -
-fail-closed by design, and the next offline diagnosis (the 6.1 method). `narration`
-earned on 2026-10-21 and lost the threshold in the 2026-10-22 recompute - the same
-honest recompute at work. `user_feedback` earns (807 rows, AUROC 0.88) but has no
-live decision site. The five deciding consumers each cost one question at their
-site: `tool_choice` before the model call (a confident pick is forced at the API),
-`needs_action` before the tool loop (a confident "no tool needed" moves a REACT
-step to DIRECT), `escalate_incomplete` at step settle, `depth_met` at the run grade
-(tighten-only), and `tool_approval` before each call (refuse-only, bounded at
-`_MAX_GUARD_CORRECTIONS=2` per node). Below each threshold the incumbent decides.
+Enforcement today (2026-10-24): `tool_choice`, `needs_action`, `review_verdict`,
+`escalate_incomplete` and `depth_met` are ON (`decides()` returns their fitted
+thresholds; `.env`
+`IRIS_DECISION_ENFORCE=tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`).
+`review_verdict` re-earned on 2026-10-24 (v8, the owner's reading-B label; see
+7.2) and is ON refuse-only: a confident verdict where the Brain passed can refuse
+the step. `tool_approval` is allow-listed but NOT deciding: the 2026-10-24
+recompute on its grown cohort reads AUROC 0.637 < 0.65 - fail-closed by design,
+the next offline diagnosis. `narration` earned 2026-10-21 and lost the
+threshold in the 2026-10-22 recompute. `user_feedback` earns (807 rows, AUROC
+0.88) but has no live decision site. The five deciding consumers each cost one
+question at their site: `tool_choice` before the model call (a confident pick is
+forced at the API), `needs_action` before the tool loop (a confident "no tool
+needed" moves a REACT step to DIRECT), `review_verdict` at the review gate
+(refuse-only), `escalate_incomplete` at step settle, and `depth_met` at the run
+grade (tighten-only). Below each threshold the incumbent decides.
 
 ### 7.2b tool_choice v4: the label defect, and the bar's error-mass problem (2026-10-21)
 
