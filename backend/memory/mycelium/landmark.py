@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from backend.memory.db import app_flush, app_write
+from backend.utils import memory_live
 
 from .store import CoordinateStore
 from .spaces import (
@@ -96,6 +97,11 @@ def ensure_landmark_policy_columns(conn) -> None:
 
 _EVENT_IDS_MAX = 20     # landmark ids typed per call (a sweep is bounded; the count is kept)
 
+# The typed tier changes -> the live tap's kind and the tier it lands on (dissolved: none, absorbed).
+_LANDMARK_KIND = {"LANDMARK_PROMOTED": "promoted", "LANDMARK_STALE": "stale",
+                  "LANDMARK_DEMOTED": "demoted", "LANDMARK_DISSOLVED": "dissolved"}
+_LANDMARK_TIER = {"promoted": "landmark", "stale": "stale", "demoted": "demoted"}
+
 
 def _emit_landmark_event(conn, label: str, landmark_ids: List[str], *, evidence: str = "none",
                          evidence_kind: str = "", thread_id: Optional[str] = None,
@@ -119,6 +125,14 @@ def _emit_landmark_event(conn, label: str, landmark_ids: List[str], *, evidence:
 
         ids = list(landmark_ids[:_EVENT_IDS_MAX])
         total = len(landmark_ids)
+
+        # Live tap (utils/memory_live): the caller's tier UPDATE is written, so the surface may
+        # hear of it. A merge is tapped where it is written (profile._persist_merge: it knows the
+        # survivor), not here.
+        kind = _LANDMARK_KIND.get(label)
+        if kind:
+            for lid in ids:
+                memory_live.landmark_update(lid, kind, tier=_LANDMARK_TIER.get(kind))
 
         def _write(commit: bool) -> None:
             me.ensure_schema(conn)
@@ -726,6 +740,9 @@ class LandmarkIndex:
             """,
             (now, PERMANENCE_THRESHOLD, landmark_id),
         )
+
+        # Live tap (utils/memory_live): the activation is written. Never raises.
+        memory_live.landmark_update(landmark_id, "activated", activation_count=new_count, tier=_tier)
 
         # Kyudo SHADOW signal (logged, never counted): set by MyceliumInterface.
         if self.activation_observer is not None:
