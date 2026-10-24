@@ -336,6 +336,29 @@ def _step_decisive_call(item) -> Optional[dict]:
     return (failed or calls)[-1]
 
 
+def _mycelium_ingest_step_tools(memory, item, step_success: bool, total_steps: int, session_id: str) -> None:
+    """Tell the toolpath space which tools a settled step ACTUALLY called: one
+    ingest per call, in order, all at the step number. ``item.tool`` is only the
+    PLANNED tool and is empty for a node step (the tool model picks its tools
+    while the step runs) - recording it stored "tool_none" for 73 of 154 live
+    toolpath nodes. A step that made no call still records "none": that is the
+    truth. Module level on purpose (stand-in kernels)."""
+    if not memory:
+        return
+    calls = _step_calls(item)
+    # (name, success) per call; the call's own ok only ever lowers the step's verdict
+    signals = [(str(c.get("tool") or "none"), bool(step_success) and bool(c.get("ok", True)))
+               for c in calls] or [("none", step_success)]
+    for name, ok in signals:
+        memory.mycelium_ingest_tool_call(
+            tool_name=name,
+            success=ok,
+            sequence_position=item.step_number,
+            total_steps=total_steps,
+            session_id=session_id,
+        )
+
+
 def _plan_steps_open(plan, queue) -> int:
     """How many steps of the ORIGINAL plan are still in the queue and not yet
     settled (pending or running). A steering re-plan removes the steps it
@@ -19433,14 +19456,10 @@ Respond with a JSON object:
 
         # â”€â”€ MYCELIUM SIGNAL: tool call â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
-            if self._memory_interface:
-                self._memory_interface.mycelium_ingest_tool_call(
-                    tool_name=item.tool or "none",
-                    success=step_success,
-                    sequence_position=item.step_number,
-                    total_steps=len(queue.items),
-                    session_id=_session,
-                )
+            _mycelium_ingest_step_tools(
+                self._memory_interface, item, step_success,
+                len(queue.items), _session,
+            )
         except Exception as _wm_exc:
             loud_error(_wm_exc, "mycelium_working_memory")
 
