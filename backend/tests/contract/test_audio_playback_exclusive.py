@@ -18,12 +18,50 @@ import numpy as np
 from backend.audio import pipeline as pl
 
 
+class _Stop(Exception):
+    """Fake CallbackStop."""
+
+
+class _Stream:
+    """Fake OutputStream: start() drains the buffer through the callback on
+    the calling thread (the owned-stream pattern, 2026-10-23) and counts the
+    active device use under the lock. The CONTRACT is unchanged: only one
+    utterance on the device at a time."""
+
+    def __init__(self, dev, samplerate=None, channels=1, dtype=None,
+                 device=None, blocksize=None, callback=None):
+        self._dev = dev
+        self._cb = callback
+
+    def start(self):
+        with self._dev.lock:
+            self._dev.active += 1
+            self._dev.calls += 1
+            self._dev.max_active = max(self._dev.max_active, self._dev.active)
+        out = np.zeros((4096, 1), dtype=np.float32)
+        try:
+            while True:
+                self._cb(out, 4096, None, None)
+        except _Stop:
+            pass
+        with self._dev.lock:
+            self._dev.active -= 1
+
+    def stop(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class _Device:
     def __init__(self):
         self.active = 0
         self.max_active = 0
         self.calls = 0
         self.lock = threading.Lock()
+        self.OutputStream = lambda **kw: _Stream(self, **kw)
+        self.CallbackStop = _Stop
 
     def play(self, data, samplerate=None, device=None, blocking=True):
         with self.lock:

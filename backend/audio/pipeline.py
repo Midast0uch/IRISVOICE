@@ -421,10 +421,10 @@ class AudioPipeline:
             playback_started_event.set()
         try:
             out_dev = self.output_device
-            _sd().play(audio_float, samplerate=sr, device=out_dev, blocking=True)
+            self._play_owned_stream(audio_float, sr, out_dev, playback_started_event)
             logger.info(
                 f"[AudioPipeline] play_stream OK: {len(audio_float)} frames @ {sr}Hz "
-                f"({duration_ms}ms) → device={out_dev}"
+                f"({duration_ms}ms)  device={out_dev}"
             )
         except Exception as _play_err:
             logger.error(
@@ -435,7 +435,7 @@ class AudioPipeline:
             # Try the default device as a last resort.
             try:
                 logger.warning("[AudioPipeline] Retrying play_stream with default device")
-                _sd().play(audio_float, samplerate=sr, blocking=True)
+                self._play_owned_stream(audio_float, sr, None, None)
                 logger.info("[AudioPipeline] play_stream OK on default device")
             except Exception as _retry_err:
                 logger.error(
@@ -443,6 +443,61 @@ class AudioPipeline:
                     exc_info=True,
                 )
                 raise
+
+    def _play_owned_stream(self, audio: np.ndarray, sr: int, device,
+                           started_event) -> None:
+        """Play ONE buffer through an EXPLICIT OutputStream this thread owns
+        (2026-10-23). Measured, logs/crash_traceback.log: the module-global
+        sd.play() API killed the process with a Windows ACCESS VIOLATION -
+        its internal stop of the previous GLOBAL stream races that stream's
+        native callback teardown, and PortAudio is not thread-safe there
+        (five backend deaths during eval passes, no Python traceback). An
+        explicit stream has no global state: THIS method creates it, starts
+        it, waits for the callback to drain the buffer, then stops and
+        closes it - all on the one thread that ever touches it. The callback
+        only advances an index and raises CallbackStop at the end, so no
+        other thread ever calls into the stream. A driver hang is bounded by
+        the deadline below; the speech lane must not wedge forever.
+        """
+        sd = _sd()
+        done = threading.Event()
+        state = {"i": 0}
+
+        def _cb(outdata, frames, time_info, status):  # noqa: ANN001
+            i = state["i"]
+            if i >= len(audio):
+                done.set()
+                raise sd.CallbackStop()
+            chunk = audio[i:i + frames]
+            n = len(chunk)
+            if n < frames:
+                outdata[:n, 0] = chunk
+                outdata[n:, 0] = 0.0
+                state["i"] = len(audio)
+                done.set()
+                raise sd.CallbackStop()
+            outdata[:, 0] = chunk
+            state["i"] = i + frames
+
+        stream = sd.OutputStream(samplerate=sr, channels=1, dtype="float32",
+                                  device=device, blocksize=4096, callback=_cb)
+        stream.start()
+        if started_event is not None:
+            started_event.set()
+        try:
+            deadline = time.time() + 600.0  # bounded: a wedged driver must not hold the lane
+            while not done.wait(timeout=0.5):
+                if time.time() > deadline:
+                    logger.error(
+                        "[AudioPipeline] playback deadline exceeded (%.0fs); "
+                        "closing the stream", 600.0)
+                    break
+        finally:
+            for _op in ("stop", "close"):
+                try:
+                    getattr(stream, _op)()
+                except Exception as _e:  # noqa: BLE001 - teardown must never raise
+                    logger.debug("[AudioPipeline] stream %s failed: %r", _op, _e)
 
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
         """Play audio with the audio device held exclusively (see _PLAYBACK_LOCK)."""
