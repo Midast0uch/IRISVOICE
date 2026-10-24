@@ -5,12 +5,16 @@ AudioPipeline - Manages audio input/output streams using sounddevice
 import threading
 import queue
 import logging
+import os
 import sys
 import time
 from typing import Optional, Callable, List
 
 logger = logging.getLogger(__name__)
 import numpy as np
+
+# one-time log for IRIS_TTS_PLAYBACK=0 (measurement runs)
+_PLAYBACK_SKIP_LOGGED = False
 
 
 # sounddevice (PortAudio) is imported lazily inside methods to avoid loading the
@@ -335,7 +339,26 @@ class AudioPipeline:
 
     def play_stream(self, audio_chunks, sample_rate: int = None,
                      playback_started_event: "threading.Event | None" = None):
-        """Play a stream with the audio device held exclusively (see _PLAYBACK_LOCK)."""
+        """Play a stream with the audio device held exclusively (see _PLAYBACK_LOCK).
+
+        IRIS_TTS_PLAYBACK=0 skips the audio device entirely (2026-10-23):
+        measured, logs/crash_traceback.log - sounddevice's play/stop path
+        intermittently raises a Windows ACCESS VIOLATION (a native crash in
+        PortAudio that kills the whole backend process with no Python
+        traceback). Eval passes speak every reply, so the crash fired every
+        30-60 minutes and the harness reported "backend stopped answering"
+        (five aborts). Measurement runs set the flag; the app default ("1")
+        plays normally."""
+        if os.environ.get("IRIS_TTS_PLAYBACK", "1").strip() == "0":
+            global _PLAYBACK_SKIP_LOGGED
+            if not _PLAYBACK_SKIP_LOGGED:
+                _PLAYBACK_SKIP_LOGGED = True
+                logger.info("[AudioPipeline] playback disabled "
+                            "(IRIS_TTS_PLAYBACK=0) - audio device untouched")
+            playback_started_event = playback_started_event
+            if playback_started_event is not None:
+                playback_started_event.set()
+            return
         if not _PLAYBACK_LOCK.acquire(timeout=_PLAYBACK_WAIT_S):
             logger.error("[AudioPipeline] play_stream skipped: the audio device was "
                          "busy for %.0fs (another utterance still playing)", _PLAYBACK_WAIT_S)
