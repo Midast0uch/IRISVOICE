@@ -45,6 +45,7 @@ import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavig
 import { VisionLifecycleChip } from '@/components/iris/browser/VisionLifecycleChip';
 import { TakeoverLiveSurface, type ImageRect } from '@/components/iris/browser/TakeoverLiveSurface';
 import { useLiveBrowser } from '@/lib/liveBrowser';
+import { requestMemoryFocus } from '@/lib/memory/api';
 import { useBrowserNavOverlay, type NavOverlaySeed } from '@/hooks/useBrowserNavOverlay';
 import { useViewProtocol } from '@/hooks/useViewProtocol';
 import { useActiveFrameSrc, useBrowserSurfaceSession } from '@/hooks/useActiveFrameSrc';
@@ -1365,6 +1366,7 @@ export function DarkGlassDashboard({
         }
       } else if (action === 'open_memory') {
         handleSubAppChange('memory');
+        requestMemoryFocus(e.detail?.focus);
       } else if (action === 'open_inference_console') {
         handleSubAppChange('inference_console');
         if (spotlightState !== SpotlightState.DASHBOARD_SPOTLIGHT) {

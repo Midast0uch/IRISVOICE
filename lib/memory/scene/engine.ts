@@ -20,6 +20,8 @@ export interface MemoryEngineOptions {
 export interface MemoryEngine {
   /** Keys act only while the surface is the active one. */
   setActive(active: boolean): void;
+  /** Fly to a thing: "claim:<id>", "strand:<id>", "thread:<id>", "turn:<conv>:<turn>", "lens:<name>". False: not in this memory. */
+  focus(ref: string): boolean;
   /** Memory is what the user looks at: keep full sharpness, give up frames instead. */
   setFocus(focused: boolean): void;
   /** The governor's state (development). */
@@ -2072,7 +2074,7 @@ function placeRegionLabels(show){
     const w=L.el.offsetWidth;const left=clamp(side>0?lx+6:lx-6-w,8,innerWidth-w-8);
     L.el.style.left=left+'px';L.el.style.top=(ly-8)+'px';L.el.style.textAlign=side>0?'left':'right';
     L.p.setAttribute('d',`M${a.x},${a.y}L${side>0?Math.min(lx,left-6):Math.max(lx,left+w+6)},${ly}`);L.p.classList.toggle('hot',state.hoverReg===i)})}
-const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','how iris decides']];
+const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','oracle']];
 LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
   a.onmouseenter=()=>scramble(a,w,14);$('lenses').appendChild(a)});
 function hint(t){$('hint').innerHTML=t}
@@ -2099,7 +2101,10 @@ function setKindFocus(k){keyFocus=k;const kind=k==='learning'?'claim':k;
   // a claim still learning vs proven: the glyph layer shows only that tier
   somaCellMat.uniforms.uTier.value=k==='claim'?1:k==='learning'?0:-1;
   $('key').classList.toggle('iso',!!k);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k))}
-KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;a.append(Object.assign(document.createElement('span'),{textContent:w}),keyIcon(k));
+const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.filter(l=>l.tier==='candidate').length,pin:PINS.length,
+  moment:M.meta?.counts?.events||M.events.length,node:NDS.length};
+KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
+  a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:fmt(KEY_COUNT[k]||0)}),keyIcon(k));
   a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
 const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').querySelector('.rl'),marks:[],pos:null,
   build(T){const NS='http://www.w3.org/2000/svg',svg=this.svg;svg.innerHTML='';this.marks=[];this.el.classList.toggle('on',!!T);if(!T)return;
@@ -2125,7 +2130,7 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
 let crumbKey='';
 function updateCrumb(){const parts=['memory'];
   if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
-  else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'how iris decides'}[state.lens];if(lw)parts.push(lw);
+  else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'oracle'}[state.lens];if(lw)parts.push(lw);
     if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
     if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
     if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
@@ -2510,10 +2515,11 @@ addEventListener('keydown',e=>{
   if(document.activeElement===$('q')){if(e.key==='Escape'){closeSearch();e.preventDefault();e.stopPropagation()}if(e.key==='Enter'){goSearch()}return}
   const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
   if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
-  if(cam.mode==='tunnel'&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
-  // Escape steps out ONE level; only at the top level does it pass through (the dashboard then closes as before)
-  if(k==='escape'&&(cam.mode==='tunnel'||state.inside||state.diving||keyFocus||(state.lens==='artifacts'&&tissue.path.length))){e.preventDefault();e.stopPropagation()}
-  if(k==='escape'){if(cam.mode==='tunnel'&&tunnel?.sel>=0)selectThread(-1);else if(cam.mode==='tunnel')exitTunnel();else if(state.inside)exitInterior();else if(state.lens==='artifacts')tissueUp()}
+  if(cam.mode==='tunnel'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
+  // Escape (and Alt+Left, and the mouse's back button) steps out ONE level; only at the top level does it pass through
+  // (the dashboard then closes as before). Enter goes in, to what the pointer is on.
+  if(k==='escape'||(k==='arrowleft'&&e.altKey)){if(stepOut()){e.preventDefault();e.stopPropagation()}return}
+  if(k==='enter'&&goIn()){e.preventDefault();return}
   if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
   if(k==='/'){e.preventDefault();openSearch()}
   if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
@@ -2521,6 +2527,44 @@ addEventListener('keydown',e=>{
   if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);
     coreHalo.material.color.copy(BRAND)}},true);
 addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
+// one level out, the innermost first: a followed thread, the corridor, a focused claim, the territory, a folder of things
+// made, a kind singled out in the key, the recall arches of a strand. False at the top level (nothing to step out of).
+function stepOut(){
+  if(cam.tween||state.diving)return true;   // a flight is under way: swallow, never let the dashboard close mid-flight
+  if(cam.mode==='tunnel'&&tunnel?.sel>=0){selectThread(-1);return true}
+  if(cam.mode==='tunnel'){exitTunnel();return true}
+  if(state.inside&&state.focusSoma>=0){setFocusSoma(-1);clearAnno('focus');satellites(-1);return true}
+  if(state.inside){exitInterior();return true}
+  if(state.lens==='artifacts'&&tissue.path.length){tissueUp();return true}
+  if(keyFocus){setKindFocus(null);return true}
+  if(state.lens==='timeline'&&sync.sid){disposeSync();clearAnno('hover');return true}
+  return false}
+// one level in, to what the pointer is on
+function goIn(){
+  if(cam.tween||state.diving)return false;
+  if(cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return true}
+  if(state.inside&&state.hoverSoma>=0){flyToSoma(state.hoverSoma);return true}
+  if(state.lens==='cortex'&&!state.inside&&state.hoverReg>=0){dive(state.hoverReg);return true}
+  if(state.lens==='timeline'&&state.hoverBead>=0){enterTunnel(sess[state.hoverBead]);return true}
+  return false}
+// the mouse's back button (button 3) is the same step out
+canvas.addEventListener('mouseup',e=>{if(e.button===3&&_active){e.preventDefault();stepOut()}});
+// FOCUS a thing from outside (a deep link, the chat): "claim:<id>", "strand:<id>" / "thread:<id>", "turn:<conv>:<turn>",
+// "lens:<cortex|timeline|artifacts|oracle>". The view flies there the way a click would. False: not in this memory.
+function focusRef(ref){
+  const [kind,...rest]=String(ref||'').split(':');const id=rest.join(':');
+  if(kind==='lens'&&LENSES.some(l=>l[0]===id)){setLens(id);return true}
+  if(kind==='claim'){const k=M.lmIndex?.get(id);if(k==null)return false;
+    const go=()=>{dive(LM[k].dom);const w=setInterval(()=>{if(state.inside){clearInterval(w);flyToSoma(k)}},120);setTimeout(()=>clearInterval(w),8000)};
+    if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else{setLens('cortex');setTimeout(go,300)}return true}
+  if(kind==='strand'||kind==='thread'){const s_=M.sById?.get(id);if(!s_)return false;enterTunnel(s_);return true}
+  // the episode's own strand when the memory knows the episode, else the id's prefix ("<conv>:<turn>")
+  if(kind==='turn'){const conv=M.epById?.get(id)?.session||id.split(':')[0],s_=M.sById?.get(conv);if(!s_)return false;enterTunnel(s_);
+    // once the corridor stands, travel to the turn's first moment
+    const w=setInterval(()=>{if(cam.mode!=='tunnel'||!tunnel||tunnel.session!==s_)return;clearInterval(w);
+      const it=tunnel.items.find(x=>x.type==='event'&&x.e.episode===id);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);
+    setTimeout(()=>clearInterval(w),8000);return true}
+  return false}
 // time scrubber: memory as it was
 const scrubEl=$('scrub');
 function scrubFrom(e){const r=scrubEl.getBoundingClientRect();state.scrubT=state.scrub=clamp((e.clientX-r.left)/r.width,0,1);state.replay=false}
@@ -2712,6 +2756,8 @@ canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); pause()
 resume();
 return {
   setActive(a) { _active = !!a; },
+  /** Fly to a thing: "claim:<id>", "strand:<id>", "thread:<id>", "turn:<conv>:<turn>", "lens:<name>". False: not in this memory. */
+  focus(ref) { try { return focusRef(ref); } catch (e) { console.warn('[memory] focus failed', ref, e); return false; } },
   /** Memory is what the user looks at (spotlit, detached): never trade its sharpness for frames. */
   setFocus(f) { _minDpr = f ? _BASE_DPR : Math.min(_BASE_DPR, 0.85); },
   /** The governor's state (development): frame cost, frame cap, resolution. */

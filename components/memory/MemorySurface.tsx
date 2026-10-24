@@ -18,7 +18,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { MemoryEngine } from "@/lib/memory/scene/engine"
-import { fetchMemorySnapshot, MemoryResting, type MemoryModel } from "@/lib/memory/api"
+import { fetchMemorySnapshot, MemoryResting, takeMemoryFocus, type MemoryModel } from "@/lib/memory/api"
 
 export interface MemorySurfaceProps {
   /** Memory is the surface on screen (and the dashboard is open). */
@@ -113,6 +113,19 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
     if (on) e.resume()
     else e.pause()
   }, [ready, isActive, hidden, isFlat, failed])
+
+  // Deep links ("claim:<id>", "strand:<id>", "turn:<conv>:<turn>"): one that waited for the scene, then any that
+  // arrive while the surface is on screen. A link to a thing not in this memory leaves the view where it is.
+  useEffect(() => {
+    if (!ready) return
+    const go = (ref: string | null) => {
+      if (ref && engineRef.current && !engineRef.current.focus(ref)) console.info(`[MemorySurface] not in this memory: ${ref}`)
+    }
+    go(takeMemoryFocus())
+    const onFocus = () => go(takeMemoryFocus())
+    window.addEventListener("iris:memory_focus", onFocus)
+    return () => window.removeEventListener("iris:memory_focus", onFocus)
+  }, [ready])
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
   const centre: React.CSSProperties = { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 14 }

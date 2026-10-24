@@ -38,3 +38,21 @@ export async function fetchMemorySnapshot(opts: { includeEval?: boolean; signal?
   }
   return res.json()
 }
+
+/**
+ * A deep link into the memory ("claim:<id>", "strand:<id>", "turn:<conv>:<turn>", "lens:<name>"). The card action
+ * `open_memory` carries it as `detail.focus`; the dashboard may not be mounted yet, so the link waits here until the
+ * surface's scene is ready, and a surface already on screen hears it at once (the "iris:memory_focus" event).
+ */
+let pendingFocus: string | null = null
+export function requestMemoryFocus(ref: unknown): void {
+  if (typeof ref !== "string" || !ref) return
+  pendingFocus = ref
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("iris:memory_focus", { detail: ref }))
+}
+/** The waiting deep link, once: the surface takes it when its scene is ready. */
+export function takeMemoryFocus(): string | null {
+  const r = pendingFocus
+  pendingFocus = null
+  return r
+}

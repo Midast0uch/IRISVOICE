@@ -16,6 +16,7 @@ const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useTailscaleAccess } from "@/hooks/useTailscaleAccess"
 import { useDetachedPane, useWingReattachListener, detachWing, reattachWing, type PaneName } from "@/hooks/useDetachedWing"
+import { requestMemoryFocus } from "@/lib/memory/api"
 import {
   computeFrame,
   frameLeft,
@@ -125,6 +126,7 @@ export default function Home() {
         action === 'open_memory' ? 'memory' :
         action === 'open_inference_console' ? 'inference_console' :
         null;
+      if (subApp === 'memory') requestMemoryFocus(ce.detail?.focus); // a deep link waits until the scene is ready
       if (subApp) {
         pendingSubAppRef.current = subApp;
         setPendingSubApp(subApp);

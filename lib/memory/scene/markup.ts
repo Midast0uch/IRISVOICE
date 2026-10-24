@@ -79,7 +79,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #key{position:absolute;right:22px;bottom:104px;display:flex;flex-direction:column;gap:9px;pointer-events:auto;opacity:0;transition:opacity .5s}
 .iris-memory #key.on{opacity:1}.iris-memory #key:not(.on){pointer-events:none}
 .iris-memory #key a{display:flex;align-items:center;justify-content:flex-end;gap:9px;font-size:10px;letter-spacing:.08em;color:var(--faint);cursor:pointer;user-select:none;transition:color .25s,opacity .25s}
-.iris-memory #key a:hover{color:var(--dim)}.iris-memory #key a.on{color:var(--white)}.iris-memory #key.iso a:not(.on){opacity:.35}.iris-memory #key canvas{width:22px;height:22px}
+.iris-memory #key a:hover{color:var(--dim)}.iris-memory #key a .kn{font-style:normal;color:var(--dim);font-variant-numeric:tabular-nums;min-width:3.4em;text-align:right;opacity:.8}.iris-memory #key a.on{color:var(--white)}.iris-memory #key.iso a:not(.on){opacity:.35}.iris-memory #key canvas{width:22px;height:22px}
 .iris-memory #hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
 .iris-memory #scrub{position:absolute;left:50%;bottom:56px;width:min(520px,60vw);height:24px;transform:translateX(-50%);
   pointer-events:auto;cursor:ew-resize;opacity:0;transition:opacity .4s}
