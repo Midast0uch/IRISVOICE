@@ -1866,6 +1866,7 @@ function drawTissue(dt){
   const W=innerWidth,H=innerHeight;if(tcv.width!==W*DPR){tcv.width=W*DPR;tcv.height=H*DPR}
   tg.setTransform(DPR,0,0,DPR,0,0);tg.clearRect(0,0,W,H);
   if(!tissue.on&&tissue.t<=0)return;
+  const curT=cursorNow()?null:cursorTs();
   tissue.t=clamp(tissue.t+dt*(tissue.on?.75:-1.6),0,1);tissue.lvlT=Math.min(1,tissue.lvlT+dt*1.6);
   const cells=tissue.cells,n=cells.length;if(!n)return;
   const el=clock.elapsedTime;
@@ -1898,7 +1899,8 @@ function drawTissue(dt){
   cells.forEach((c,i)=>{const poly=c.poly;if(!poly)return;
     let x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;poly.forEach(p=>{x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1])});
     const s=Math.max(x1-x0,y1-y0),dim=(tissue.focus>=0&&tissue.focus!==i)||(hotThread&&!hotThread.cells.includes(i));
-    tg.save();tg.globalAlpha=grow*(dim?.45:1);tg.beginPath();poly.forEach((p,k)=>k?tg.lineTo(p[0],p[1]):tg.moveTo(p[0],p[1]));tg.closePath();tg.clip();
+    const later=curT!=null&&c.items.every(a=>(a.ts||0)>curT);   // made after the time cursor
+    tg.save();tg.globalAlpha=grow*(dim?.45:1)*(later?.14:1);tg.beginPath();poly.forEach((p,k)=>k?tg.lineTo(p[0],p[1]):tg.moveTo(p[0],p[1]));tg.closePath();tg.clip();
     if(c.type==='item')tg.drawImage(thumbOf(c.a),(x0+x1)/2-s/2,(y0+y1)/2-s/2,s,s);
     else{const th=c.items.slice(0,4),gw=(x1-x0)/2,gh=(y1-y0)/2;th.forEach((a,k)=>{const tx=x0+(k%2)*gw,ty=y0+Math.floor(k/2)*gh,ts=Math.max(gw,gh);
         tg.drawImage(thumbOf(a),tx+gw/2-ts/2,ty+gh/2-ts/2,ts,ts)});if(th.length===1)tg.drawImage(thumbOf(th[0]),(x0+x1)/2-s/2,(y0+y1)/2-s/2,s,s);
@@ -2134,8 +2136,11 @@ function updateCrumb(){const parts=['memory'];
     if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
     if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
     if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
-  const k=parts.join('|');if(k===crumbKey)return;crumbKey=k;
-  $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')}
+  const when=cursorNow()?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+  const k=parts.join('|')+'|'+when;if(k===crumbKey)return;crumbKey=k;
+  $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
+    (when?`<a class="when" title="return to now">as of ${esc(when)} · now ↻</a>`:'')}
+$('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1}});
 function updateStats(fps){const c=M.meta.counts||{};
   $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands<br>`+
   `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
@@ -2160,6 +2165,10 @@ function tick(e){const col=FAM[FAMI[e.family]]?.color||'#fff';const strong=e.evi
 const state={showSpaces:false,lens:'cortex',inside:false,diving:false,diveReg:-1,hoverReg:-1,hoverSoma:-1,focusSoma:-1,hoverBead:-1,hoverSec:-1,
   hoverNode:-1,morph:{h:0,i:0,c:0},morphT:{h:0,i:0,c:0},vis:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},visT:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},
   scrub:1,scrubT:1,replay:false,search:'',pupil:1,lastDecision:null,from:'cortex'};
+// the time cursor (see "THE TIME CURSOR" below)
+const cursorTs=()=>T0+(nowS()-T0)*state.scrub, cursorNow=()=>state.scrubT>.995;
+const SCRUB_LENS=new Set(['cortex','timeline','artifacts']);
+let scrubSeen=1;   // the cursor value the helix last centred on (only a cursor MOVE moves the helix; the wheel stays free)
 function setLens(l){
   if(state.diving)return;
   if(cam.mode==='tunnel'){exitTunnel(()=>setLens(l));return}
@@ -2171,7 +2180,7 @@ function setLens(l){
   Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx?0:1,
     beads:l==='timeline'?1:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:hx?.12:1});
   tissue.on=l==='artifacts';tcv.classList.toggle('on',tissue.on);if(tissue.on){layoutTissue(true);tissue.t=Math.min(tissue.t,.05)}
-  $('scrub').classList.toggle('on',l==='cortex');
+  $('scrub').classList.toggle('on',SCRUB_LENS.has(l));
   const T=$('title');T.style.opacity=0;
   cam.mode='orbit';
   if(l==='cortex'){cam.targetT.set(0,0,0);cam.distT=58;cam.elT=.16}
@@ -2523,7 +2532,7 @@ addEventListener('keydown',e=>{
   if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
   if(k==='/'){e.preventDefault();openSearch()}
   if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
-  if(k==='g'&&state.lens==='cortex'&&!state.inside){state.scrub=0;state.scrubT=0;state.replay=true}
+  if(k==='g'&&SCRUB_LENS.has(state.lens)&&!state.inside&&cam.mode==='orbit'){state.scrub=0;state.scrubT=0;state.replay=true}
   if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);
     coreHalo.material.color.copy(BRAND)}},true);
 addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
@@ -2565,7 +2574,10 @@ function focusRef(ref){
       const it=tunnel.items.find(x=>x.type==='event'&&x.e.episode===id);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);
     setTimeout(()=>clearInterval(w),8000);return true}
   return false}
-// time scrubber: memory as it was
+// THE TIME CURSOR (MEMORY-UX-PLAN §5.2): one date for every view, default now. The cortex shows the memory as it
+// was (state.scrub feeds uScrub), the helix centres on that day, the artifacts dim what was made later. The
+// breadcrumb says the date in amber while the cursor is in the past; one click on it returns to now.
+// (cursorTs, cursorNow, SCRUB_LENS and scrubSeen live next to "state": the breadcrumb and the artifacts read them.)
 const scrubEl=$('scrub');
 function scrubFrom(e){const r=scrubEl.getBoundingClientRect();state.scrubT=state.scrub=clamp((e.clientX-r.left)/r.width,0,1);state.replay=false}
 scrubEl.addEventListener('pointerdown',e=>{scrubEl.setPointerCapture(e.pointerId);scrubFrom(e);scrubEl.onpointermove=scrubFrom});
@@ -2639,7 +2651,10 @@ const _frame=()=>{
   // time scrub / growth replay
   if(state.replay){state.scrubT=Math.min(1,state.scrubT+dt/14);if(state.scrubT>=1)state.replay=false}
   state.scrub=lerp(state.scrub,state.scrubT,1-Math.pow(.02,dt));forestU.uScrub.value=state.scrub;
-  scrubEl.classList.toggle('on',state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving);
+  scrubEl.classList.toggle('on',SCRUB_LENS.has(state.lens)&&cam.mode==='orbit'&&!state.diving&&!state.inside);
+  // the helix follows the cursor when the cursor moves (a drag, "watch it grow", the return to now)
+  if(state.lens==='timeline'&&cam.mode==='orbit'&&!cam.tween&&Math.abs(state.scrubT-scrubSeen)>.0005){
+    scrubSeen=state.scrubT;cam.targetT.y=clamp(timeY(T0+(nowS()-T0)*state.scrubT),-HELIX_H,HELIX_H)}
   scrubEl.querySelector('.fill').style.width=(state.scrub*100)+'%';
   scrubEl.querySelector('.lbl').textContent=state.scrub>.995?'now':'as of '+new Date((T0+(nowS()-T0)*state.scrub)*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short'});
   // core, pupil, inner XurOrb shells

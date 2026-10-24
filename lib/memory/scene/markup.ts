@@ -60,7 +60,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #brand span{color:var(--dim)}
 .iris-memory #local{position:absolute;left:22px;top:36px;font-size:10px;color:var(--faint);letter-spacing:.06em}
 .iris-memory #crumb{position:absolute;left:22px;top:52px;font-size:10px;letter-spacing:.14em;color:var(--faint);white-space:nowrap;max-width:60vw;overflow:hidden;text-overflow:ellipsis}
-.iris-memory #crumb b{font-weight:400;color:var(--dim)}.iris-memory #crumb i{font-style:normal;margin:0 .7em;opacity:.6}
+.iris-memory #crumb b{font-weight:400;color:var(--dim)}.iris-memory #crumb .when{display:block;width:max-content;margin-top:6px;color:var(--amber);cursor:pointer;pointer-events:auto}.iris-memory #crumb .when:hover{color:var(--white)}.iris-memory #crumb i{font-style:normal;margin:0 .7em;opacity:.6}
 .iris-memory .corner{position:absolute;width:18px;height:18px;border:0 solid rgba(212,236,246,.2)}
 .iris-memory .corner.tl{left:10px;top:10px;border-left-width:1px;border-top-width:1px}.iris-memory .corner.tr{right:10px;top:10px;border-right-width:1px;border-top-width:1px}
 .iris-memory .corner.bl{left:10px;bottom:10px;border-left-width:1px;border-bottom-width:1px}.iris-memory .corner.br{right:10px;bottom:10px;border-right-width:1px;border-bottom-width:1px}
