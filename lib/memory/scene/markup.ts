@@ -25,6 +25,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory .syncr{font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;letter-spacing:.06em;white-space:nowrap}
 .iris-memory .sync{display:inline-block;width:42px;height:3px;margin:0 .5em;vertical-align:middle;background:rgba(212,236,246,.14)}.iris-memory .sync i{display:block;height:100%;background:currentColor}
 .iris-memory .rlabel.hot b{color:var(--white)} .iris-memory .rlabel.hot i{color:var(--dim)}
+.iris-memory .rlabel i.knows{display:none} .iris-memory .rlabel.hot i.knows{display:block;color:var(--ink)}
 .iris-memory .anno{position:absolute;max-width:360px;pointer-events:none;opacity:0;transition:opacity .3s}
 .iris-memory .anno.on{opacity:1}
 .iris-memory .anno .k{font-size:10px;letter-spacing:.14em;text-transform:lowercase;color:#9cb6c3}

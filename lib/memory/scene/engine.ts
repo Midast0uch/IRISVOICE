@@ -139,6 +139,24 @@ const READ={
   PERMISSION_DENIED:'was not allowed',DEPENDENCY_CHANGED:'a dependency changed',RESOURCE_LIMIT:'hit a limit of this machine',WORLD_CHANGED:'the world changed',
 };
 const readEvent=e=>READ[e.label]||((FAM[FAMI[e.family]]||{word:'other'}).word+' · '+String(e.label||'').toLowerCase().replace(/_/g,' '));
+// the store keeps raw prompts, thread ids and node labels; the face says what the thing is (UX-PLAN §1, §6.4)
+// a task-path claim is stored as its task prompt: "The project is in <folder>. <the task>" -> the task, and the folder's name
+const claimParts=c=>{const t=String(c||''),m=t.match(/^The project is in (.+?)\.\s+([\s\S]+)$/);
+  return m?{text:m[2],where:m[1].split(/[\\/]/).pop()}:{text:t,where:null}};
+const THREAD_WORD={voice_headless:'spoken to IRIS, no chat open',session_iris_integration:'the default session, no chat chosen'};
+const threadTitle=t=>{t=String(t||'');if(THREAD_WORD[t])return THREAD_WORD[t];
+  if(t.startsWith('[eval] '))return 'test run · '+t.slice(7).replace(/_/g,' ');
+  return /^[\w-]+$/.test(t)&&/[_-]/.test(t)?t.replace(/[_-]+/g,' '):t};   // an id, not a title: at least make it words
+const NODE_WORD={tool_none:'a step that used no tool',session_pattern:'a habit of your sessions',stated_style:'a style you asked for',
+  stated_conduct:'a way of working you asked for',hardware:'this machine'};
+const nodeWord=lb=>{lb=String(lb||'');return NODE_WORD[lb]||(/^domain_/.test(lb)?'work about '+lb.slice(7).replace(/_/g,' ')
+  :/^tool_/.test(lb)?'the '+lb.slice(5).replace(/_/g,' ')+' tool':lb.replace(/_/g,' '))};
+// the tools of a task-path claim, in order, repeats folded ("read file ×3"); tool_none is a step with no tool
+const claimHow=l=>{const st=(l.steps||[]).filter(s=>s.space==='toolpath');if(!st.length)return '';
+  const tools=st.map(s=>String(s.label||'').replace(/^tool_/,'')).filter(t=>t&&t!=='none').map(t=>t.replace(/_/g,' '));
+  if(!tools.length)return `${st.length} step${st.length===1?'':'s'} · which tools they used was not recorded`;
+  const run=[];for(const t of tools){const r=run[run.length-1];if(r&&r.t===t)r.n++;else run.push({t,n:1})}
+  return 'how: '+run.map(r=>r.n>1?`${r.t} ×${r.n}`:r.t).join(' → ')};
 // evidence ladder = the visual hierarchy (§4.2, §11). user > recurrence/corroboration > test/completion > verifier > claim > none
 const EVID={user:1,recurrence:.86,corroboration:.86,test:.72,completion:.72,verifier:.45,claim:.28,none:.12};
 const EVID_WORD={user:'you confirmed this',test:'a test passed',completion:'the task finished',recurrence:'it held up again',
@@ -152,7 +170,11 @@ const ORACLE_PLAIN={tool_choice:'picking the next tool',escalate_incomplete:'kno
   review_verdict:'judging its own steps',user_feedback:'reading what you meant',narration:'deciding what to say aloud',browser_next:'choosing where to click next',
   tool_approval:'predicting if a tool call will work',depth_met:'knowing when research is deep enough',web_intent:'knowing when to search the web',
   click_safety:'knowing if a click is safe',call_closing:'knowing a call was the last one',recovery_strategy:'choosing how to recover',
-  sufficient:'knowing an answer is enough',event_family:'sorting what happened',event_type:'naming what happened'};
+  sufficient:'knowing an answer is enough',event_family:'sorting what happened',event_type:'naming what happened',
+  depth_route:'choosing whether to dig deeper',done:'knowing a goal is done',presentation:'choosing how to show the answer',
+  mode:'choosing how to work on a step (retired)'};
+// event_type:<family> is one consumer per family: name the family
+const oracleWord=c=>{const [b,f]=String(c).split(':');return (ORACLE_PLAIN[b]||b.replace(/_/g,' '))+(f?' · '+((FAM[FAMI[f]]||{}).word||f):'')};
 
 // ── Kyudo trust channel (nodes.source_channel): 4 system · 3 you · 2 verified · 1 outside · 0 untrusted;
 // null = legacy internal. The membrane carries it as texture (porous + pale when weak), never as glare.
@@ -399,11 +421,12 @@ function normalizeMemory(M){
   else if(M.sectorsOn){const dc={};for(const [k,n] of Object.entries(M.domCounts))dc[mapDom(k)]=(dc[mapDom(k)]||0)+n;M.domCounts=dc}
   if(M.sectorsOn)for(const s of M.sectors)if(!s.parent&&M.domCounts[s.key]==null)M.domCounts[s.key]=s.members||0;
   const sById=new Map(M.sessions.map(s=>[s.id,s]));
-  for(const s of M.sessions){s.events=s.events||[];s.episodes=s.episodes||[];s.traj=s.traj||[]}
+  for(const s of M.sessions){s.events=s.events||[];s.episodes=s.episodes||[];s.traj=s.traj||[];s.objective=threadTitle(s.objective||s.id)}
   if(M.sessions.every(s=>!s.events.length))for(const e of M.events){const s=sById.get(e.session);if(s)s.events.push(e)}
   for(const s of M.sessions)s.events.sort((a,b)=>a.ts-b.ts);
   M.sessions.sort((a,b)=>a.started-b.started);
   for(const l of M.landmarks){l.evidence=l.evidence||[];l.cls=l.cls||'workflow';l.fams=l.fams||[FAMI.knowledge,FAMI.memory];
+    const cp=claimParts(l.claim);l.claim=cp.text;l.where=cp.where;
     l.sector=M.sectorsOn&&l.sector&&secBy.has(l.sector)?childOf(l.sector):null;
     l.domain=mapDom(l.domain);l.channel=l.channel==null?null:clamp(Math.round(l.channel),0,4);
     l.born=l.born||l.last_verified||l.last_activated||nowS()}
@@ -1197,7 +1220,7 @@ const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='t
   return `<div class="k">pin · ${t.word} · ${p.held?'held in context right now':'resting'}${p.permanent?' · permanent':''}</div><div class="t">${esc(p.title)}</div>
     <div class="m">tied to <em>${p.links}</em> thing${p.links===1?'':'s'}${th?` · used in <em>${th}</em> thread${th===1?'':'s'}`:''} · pinned ${ago(p.created)}<br>pins do not fade: they are held, not earned</div>`};
 const nodeHTML=k=>{const n=NDS[k],sp=SPACES[n.si],f=clamp((n.conf-.4)/.6,0,1);
-  return `<div class="k">node · ${esc(SPACE_WORD[sp.id]||sp.id)} · ${esc(chanWord(n.chan))}</div><div class="t">${esc(n.label||sp.id)}</div>
+  return `<div class="k">node · ${esc(SPACE_WORD[sp.id]||sp.id)} · ${esc(chanWord(n.chan))}</div><div class="t">${esc(n.label?nodeWord(n.label):SPACE_WORD[sp.id]||sp.id)}</div>
     <div class="m">how sure IRIS is: <em>${Math.round(n.conf*100)}%</em> · ${f<.02?'on the floor it was given: nothing has earned it more':'earned above the floor'}<br>used <em>${fmt(n.used||0)}</em> times${sp.write_lock!=null?`<br>${esc(LOCK_WORD[sp.write_lock]||'')}`:''}</div>`};
 
 // IMMUNE RESPONSE (Kyudo, mycelium_quorum_log): a live signal = a brief, small tightening + flicker of the territory it
@@ -2074,7 +2097,9 @@ function placeAnnos(){
       s.el.classList.remove('left');s.el.classList.add('right')}}}
 // family region labels around the skin
 const regLabelEls=REG.map((d,i)=>{const el=document.createElement('div');el.className='rlabel';
-  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)} ${regN[i]?syncHTML(regSync[i]):'<span class="syncr">no claims yet</span>'}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
+  const lms=M.landmarks.filter(l=>l.domain===d),pv=lms.filter(l=>l.tier!=='candidate').length;
+  const top=lms.slice().sort((a,b)=>(b.activations||0)-(a.activations||0)).slice(0,2).map(l=>l.claim.length>48?l.claim.slice(0,47)+'…':l.claim);
+  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)} moments ${regN[i]?syncHTML(regSync[i])+` <span class="syncr">${pv} of ${regN[i]} claims proven</span>`:'<span class="syncr">no claims yet</span>'}${top.map(c=>`<i class="knows">knows: ${esc(c)}</i>`).join('')}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
 // the coordinate spaces as layers: press s and each shell names itself, with who may write there
 const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el.className='rlabel';
@@ -2246,10 +2271,11 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
   const counts=l.evidence_counts?{...l.evidence_counts}:{};if(!l.evidence_counts)l.evidence.forEach(e=>counts[e.kind]=(counts[e.kind]||0)+1);
   const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
   const s=M.sById.get(l.session);
-  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':String(l.cls).replace(/_/g,' '));
+  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':/^toolpath_task_/.test(l.cls)?'a way that worked for a task':String(l.cls).replace(/_/g,' '));
+  const how=claimHow(l);
   return `<div class="k">claim · ${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)} · ${syncHTML(syncClaim(l))}</div>
     <div class="t">${esc(l.claim)}</div>
-    <div class="m">${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
+    <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
     ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}`}
@@ -2466,8 +2492,10 @@ function hover(x,y){
   if(state.lens==='timeline'){const k=nearestScreen(sess.map(s=>new V3(0,helixY(sessS(s)),0)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
     if(k>=0){const s=sess[k];canvas.style.cursor='pointer';buildSyncFor(s.id);syncU.uSel.value=-1;const rs=recSummary(s.id);
       const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
+      const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
+      const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${syncHTML(syncSession(s))}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> session${rs.from===1?'':'s'} · ${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
+        <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> session${rs.from===1?'':'s'} · ${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
     else if(!syncHoverStrand(x,y))clearAnno('hover');return}
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
@@ -2476,7 +2504,7 @@ function hover(x,y){
         state.hoverSec=sec;skinMat.uniforms.uHoverSec.value=sec;const o=ORC[sec];const th=(sec+.5)/NSEC*Math.PI*2+Math.PI/2;
         const st=o.state==='enforced'?'trusted':o.state==='sampled'?'trying out':'watching';
         const right=o.precision>=.9?'right about 9 times in 10':o.precision>=.8?'right about 8 times in 10':o.precision>=.65?'right about 2 times in 3':'not reliable yet';
-        setAnno('hover','sec'+sec,()=>project(new V3(Math.cos(th)*R*1.02,Math.sin(th)*R*1.02,0)),`<div class="k">${st}</div><div class="t">${esc(ORACLE_PLAIN[o.consumer]||o.consumer.replace(/_/g,' '))}</div>
+        setAnno('hover','sec'+sec,()=>project(new V3(Math.cos(th)*R*1.02,Math.sin(th)*R*1.02,0)),`<div class="k">${st}</div><div class="t">${esc(oracleWord(o.consumer))}</div>
           <div class="m">learned from <em>${fmt(o.rows)}</em> examples${o.rows<100?` · needs ${100-o.rows} more`:''}<br>${right}<br>${o.ece!=null&&o.ece<=.05?'its confidence is honest':'its confidence is not honest yet'}
           ${o.state==='enforced'?'<br>it now makes this decision itself':o.state==='sampled'?'<br>it decides now and then, while IRIS checks it':'<br>it watches and learns; it does not act yet'}</div>`,{hot:o.state==='enforced'});return}}
     clearAnno('hover')}
@@ -2786,7 +2814,7 @@ const _frame=()=>{
   drawTissue(dt);
   if(state.lens==='oracle'&&state.lastDecision&&cam.mode==='orbit'){const d=state.lastDecision;
     setAnno('decision','dec'+(d.o.consumer+d.conf.toFixed(2)),()=>{const c=project(new V3(0,-R*.22,0));return {x:c.x,y:c.y,front:true}},
-      `<div class="m">${esc(ORACLE_PLAIN[d.o.consumer]||d.o.consumer)} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}</div>`)}
+      `<div class="m">${esc(oracleWord(d.o.consumer))} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}</div>`)}
   else clearAnno('decision');
   bloom.strength=.85-state.insideK*.35+sh*.8;
   // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)
