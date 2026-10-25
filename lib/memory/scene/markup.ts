@@ -78,6 +78,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #follow .dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:.7em;vertical-align:1px;border:1px solid var(--faint)}
 .iris-memory #follow .dot.on{background:var(--brand);border-color:var(--brand);box-shadow:0 0 6px var(--brand);animation:iris-mem-live 2.4s ease-in-out infinite}
 .iris-memory #crumb .when.pulse{animation:iris-mem-live 1.2s ease-in-out infinite}
+.iris-memory #crumb .chat{display:block;width:max-content;margin-top:6px;color:var(--brand);cursor:pointer;pointer-events:auto}.iris-memory #crumb .chat:hover{color:var(--white)}
 @keyframes iris-mem-live{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.iris-memory #follow .dot.on,.iris-memory #crumb .when.pulse{animation:none}}
 .iris-memory #ticker .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:.7em;vertical-align:1px}

@@ -41,7 +41,7 @@ META_KEYS = {"source", "generated", "counts", "eval_share", "warnings", "availab
 COUNT_KEYS = {"events", "chain", "landmarks", "landmarks_absorbed", "edges", "merges", "episodes", "fragments", "artifacts",
               "sessions", "recall_turns"}
 SHAPES = {
-    "sessions": {"id", "objective", "started", "ended", "exit", "traj", "eval", "episodes", "messages", "strands"},
+    "sessions": {"id", "objective", "started", "ended", "exit", "traj", "eval", "episodes", "messages", "strands", "ghost"},
     "events": {"id", "ts", "family", "label", "valence", "actor", "evidence", "episode", "session", "domain", "landmark"},
     "landmarks": {"id", "claim", "cls", "tier", "permanent", "evidence", "evidence_counts", "activations", "contradictions",
                   "last_activated", "last_verified", "born", "session", "fams", "domain", "steps"},
@@ -220,6 +220,20 @@ def test_eval_runs_never_starve_the_window_of_real_threads(snap_env):
     ids = {s["id"] for s in d["sessions"]}
     assert len(ids) == 2 and not ids & {snap_env.ids["eval_root"], pair}    # old: the 3 newest events were all runs
     assert not any(e["session"] in (snap_env.ids["eval_root"], pair) for e in d["events"])
+
+
+def test_a_strand_chat_deleted_is_a_ghost_with_its_name(snap_env):
+    """Phase 3 DONE (MEMORY-SURFACE-BUILD section 7): a deleted strand shows as a ghost with its name. Chat's delete
+    writes a STRAND_DELETED tombstone that keeps the title; the snapshot named such a thread by its raw id."""
+    con = sqlite3.connect(snap_env.mem)
+    _ev(con, "e-gone-goal", NOW - 3300, "GOAL_SET", "conv-gone", episode="TG", family="intent")
+    _ev(con, "e-gone-tomb", NOW - 3200, "STRAND_DELETED", "conv-gone", family="memory",
+        payload={"title": "Plan the trip", "at": NOW - 3200})
+    con.commit()
+    con.close()
+    sess = {s["id"]: s for s in _get(snap_env)["sessions"]}
+    assert sess["conv-gone"]["ghost"] is True and sess["conv-gone"]["objective"] == "Plan the trip"
+    assert sess[snap_env.ids["root"]]["ghost"] is False                      # a live chat strand is no ghost
 
 
 def test_a_claim_carries_its_steps_and_every_territory_has_a_name(snap_env):

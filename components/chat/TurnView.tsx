@@ -3,7 +3,7 @@
 import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { Xur } from "@/components/Xur"
-import { Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, ExternalLink, RefreshCw, Pencil, AlertCircle, Info } from 'lucide-react'
+import { Brain, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, ExternalLink, RefreshCw, Pencil, AlertCircle, Info } from 'lucide-react'
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage"
 import { TurnParts } from "@/components/chat/turn/TurnParts"
 import { ArtifactChip } from "@/components/chat/lens/ArtifactChip"
@@ -191,7 +191,7 @@ export function TurnView({
     )
 
   return (
-  <div key={message.id} id={`msg-${message.id}`}>
+  <div key={message.id} id={`msg-${message.id}`} data-turn-id={message.turn_id || undefined}>
     {/* Horizontal separator */}
     {index > 0 && (
       <div
@@ -762,6 +762,21 @@ export function TurnView({
             >
               <Volume2 size={12} />
             </button>
+
+            {/* The memory of this turn: what IRIS remembered and decided here (MEMORY-UX-PLAN 4.5). The memory's
+                breadcrumb brings you back to this turn. */}
+            {message.turn_id && activeConversationId && (
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('iris:card_action', {
+                  detail: { action: 'open_memory', focus: `turn:${activeConversationId}:${message.turn_id}` },
+                }))}
+                className="p-1.5 rounded transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
+                title="What IRIS remembered here"
+                data-testid="turn-memory"
+              >
+                <Brain size={12} />
+              </button>
+            )}
 
             <div className="flex items-center gap-1 ml-auto">
               <button

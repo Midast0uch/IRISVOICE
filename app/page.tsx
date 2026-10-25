@@ -16,7 +16,7 @@ const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useTailscaleAccess } from "@/hooks/useTailscaleAccess"
 import { useDetachedPane, useWingReattachListener, detachWing, reattachWing, type PaneName } from "@/hooks/useDetachedWing"
-import { requestMemoryFocus } from "@/lib/memory/api"
+import { requestChatTurn, requestMemoryFocus } from "@/lib/memory/api"
 import {
   computeFrame,
   frameLeft,
@@ -134,15 +134,29 @@ export default function Home() {
           // Exit WheelView first — openDashboardSolo fires in the level-watch effect below
           handleCollapseToIdle();
         } else {
-          // Already at level 1: open immediately and consume the ref
+          // Already at level 1: open immediately and consume the ref. From an open chat the memory opens BESIDE it
+          // (a chat turn's memory control), so the way back to the turn stays in view.
           pendingSubAppRef.current = null;
-          openDashboardSolo();
+          if (subApp === 'memory' && isChatOpen) openDashboard();
+          else openDashboardSolo();
         }
       }
     };
     window.addEventListener('iris:card_action', handler);
     return () => window.removeEventListener('iris:card_action', handler);
-  }, [state.level, handleCollapseToIdle, openDashboardSolo]);
+  }, [state.level, handleCollapseToIdle, openDashboardSolo, openDashboard, isChatOpen]);
+
+  // Memory -> chat (MEMORY-UX-PLAN 4.6): the memory asks for a conversation (at a turn). The chat wing opens - beside
+  // the dashboard when it is open - and the chat view takes the request once it is mounted.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      requestChatTurn((e as CustomEvent).detail)
+      if (isDashboardOpen && !isBothOpen) openChatFromDashboard()
+      else if (!isChatOpen && !isBothOpen) openChat()
+    }
+    window.addEventListener('iris:open_conversation', handler)
+    return () => window.removeEventListener('iris:open_conversation', handler)
+  }, [isDashboardOpen, isBothOpen, isChatOpen, openChat, openChatFromDashboard])
 
   // When nav collapses back to level 1 with a pending subapp, open the dashboard
   useEffect(() => {

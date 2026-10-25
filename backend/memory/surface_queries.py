@@ -1236,6 +1236,17 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                                            "ended": ts_of(r[3])})
             else:
                 warnings.append("data/conversations.db not found: session titles fall back to thread ids")
+        # a strand chat deleted is a GHOST: its tombstone (STRAND_DELETED, written by conversation_store.delete) keeps
+        # its name, so the timeline still says what it was (MEMORY-SURFACE-BUILD section 7, phase 3)
+        # PLAN  … FROM memory_events WHERE family = 'memory' AND label = 'STRAND_DELETED' AND thread_id IN (…) LIMIT ?
+        #       -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?)
+        ghosts: dict[str, str] = {}
+        if thread_ids and has_index_on(con, "memory_events", "family"):
+            for part in _chunks([t for t in thread_ids if not title_of(t)]):
+                for r in con.execute(f"SELECT thread_id, payload FROM memory_events WHERE family = 'memory' AND "
+                                     f"label = 'STRAND_DELETED' AND thread_id IN ({_marks(len(part))}) LIMIT 2000", part):
+                    pl = jload(r["payload"], {})
+                    ghosts[r["thread_id"]] = (pl.get("title") if isinstance(pl, dict) else None) or ""
         lap("chat_store")
         sessions = []
         now = time.time()
@@ -1243,13 +1254,14 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             rows = by_thread[t]
             x = exits.get(t)
             chat_title = title_of(t)
-            title = chat_title or pretty_thread(t)
+            title = chat_title or ghosts.get(t) or pretty_thread(t)
             started, ended = rows[-1]["ts"], rows[0]["ts"]
             live = now - ended < 600
             sessions.append({"id": t, "objective": title, "started": started, "ended": None if live else ended,
                              "exit": "live" if live else ("drift" if x and x[2] and not x[1] else "natural"),
                              "traj": traj.get(t, []), "eval": _is_eval_thread(t, chat_title), "episodes": [],
-                             "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, [])})
+                             "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, []),
+                             "ghost": t in ghosts})
 
         lap("sessions")
         # ⑤ episodes (task runs)

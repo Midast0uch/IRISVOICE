@@ -85,3 +85,22 @@ export function takeMemoryFocus(): string | null {
   pendingFocus = null
   return r
 }
+
+/**
+ * Memory -> chat (MEMORY-UX-PLAN 4.6): open a conversation, at a turn when one is named. The memory surface sends
+ * `iris:open_conversation {conversationId, turnId?}`; the page opens the chat wing and leaves the request here, and
+ * the chat view takes it once it is mounted (the chat wing may have been closed), or hears "iris:chat_request".
+ */
+export type ChatRequest = { conversationId: string; turnId?: string }
+let pendingChat: ChatRequest | null = null
+export function requestChatTurn(r: unknown): void {
+  const d = r as Partial<ChatRequest> | null
+  if (!d || typeof d.conversationId !== "string" || !d.conversationId) return
+  pendingChat = { conversationId: d.conversationId, turnId: typeof d.turnId === "string" && d.turnId ? d.turnId : undefined }
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("iris:chat_request"))
+}
+export function takeChatTurn(): ChatRequest | null {
+  const r = pendingChat
+  pendingChat = null
+  return r
+}

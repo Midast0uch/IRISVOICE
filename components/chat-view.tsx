@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
+import { takeChatTurn } from "@/lib/memory/api"
 import { motion, AnimatePresence } from "framer-motion"
 import { X, Copy, Download, Share, FileText, Mail, Video, Image, File, Archive } from 'lucide-react';
 import { Icon } from '@iconify/react';
@@ -2850,6 +2851,37 @@ ${message.text}`;
     }
     handleSelectConversation(conversationId)
   }
+
+  // Memory -> chat (MEMORY-UX-PLAN 4.6): the memory surface asks for a conversation, at a turn when it names one
+  // (lib/memory/api requestChatTurn: one waiting from before this view was mounted, then any that arrive); the turn's
+  // first message comes to the middle and flashes once, like the spine gutter's jump. Its messages render after the
+  // switch, so the turn is looked for briefly.
+  const openStrandRef = useRef(openStrand)
+  openStrandRef.current = openStrand
+  useEffect(() => {
+    let alive = true
+    const onOpen = async () => {
+      const d = takeChatTurn()
+      if (!d) return
+      await openStrandRef.current(d.conversationId)
+      if (!d.turnId) return
+      const sel = `[data-turn-id="${CSS.escape(d.turnId)}"]`
+      for (let i = 0; alive && i < 40; i++) {
+        const el = document.querySelector<HTMLElement>(sel)
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          el.classList.add('chip-highlight')
+          setTimeout(() => el.classList.remove('chip-highlight'), 2000)
+          return
+        }
+        await new Promise((r) => setTimeout(r, 100))
+      }
+      if (alive) console.info(`[chat] the memory asked for turn ${d.turnId}: not in this conversation`)
+    }
+    onOpen()
+    window.addEventListener('iris:chat_request', onOpen)
+    return () => { alive = false; window.removeEventListener('iris:chat_request', onOpen) }
+  }, [])
 
   const closeDropdowns = () => {
     setShowNotifications(false);

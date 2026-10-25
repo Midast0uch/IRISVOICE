@@ -1090,8 +1090,9 @@ const moteObj=new THREE.Points(moteGeo,moteMat);moteObj.frustumCulled=false;cort
 
 // caduceus beads: one per session, on the staff
 const beadGeo=new THREE.BufferGeometry();const bP=new Float32Array(sess.length*3),bA=new Float32Array(sess.length),bS=new Float32Array(sess.length),bC=new Float32Array(sess.length*3);
-sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=2.5+Math.sqrt(s.events.length)*.7;
-  const c=new THREE.Color(s.exit==='live'?THEMES[0][1]:s.exit==='drift'?'#ffb547':'#dfeaf2');bC.set([c.r,c.g,c.b],i*3)});
+sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=(2.5+Math.sqrt(s.events.length)*.7)*(s.ghost?.7:1);
+  // a ghost (chat deleted the strand; its tombstone keeps the name) stays on the helix, small and grey
+  const c=new THREE.Color(s.ghost?'#4f5e68':s.exit==='live'?THEMES[0][1]:s.exit==='drift'?'#ffb547':'#dfeaf2');bC.set([c.r,c.g,c.b],i*3)});
 beadGeo.setAttribute('position',new THREE.BufferAttribute(bP,3));beadGeo.setAttribute('aA',new THREE.BufferAttribute(bA,1));
 beadGeo.setAttribute('aDs',new THREE.BufferAttribute(Float32Array.from(sess,desyncSession),1));   // a session that failed or was set back desyncs
 beadGeo.setAttribute('aS',new THREE.BufferAttribute(bS,1));beadGeo.setAttribute('aC',new THREE.BufferAttribute(bC,3));
@@ -2181,6 +2182,9 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
 // FOLLOW (owner: on by default, a toggle turns it off) - its state; the tap itself is in section 12. unseen = live
 // moments that arrived while the time cursor was in the past (edge case 22: nothing moves, the "now" chip counts them).
 const follow={on:true,q:[],next:0,missed:0,unseen:0};
+// MEMORY -> CHAT (MEMORY-UX-PLAN 4.6): the turn a chat link came from (focus "turn:<conv>:<turn>"), so the corridor's
+// breadcrumb leads back to it; any corridor of a chat strand offers "continue in chat".
+let chatTurn=null;
 try{follow.on=localStorage.getItem('iris.memory.follow')!=='0'}catch(e){}
 let crumbKey='';
 function updateCrumb(){const parts=['memory'];
@@ -2190,10 +2194,14 @@ function updateCrumb(){const parts=['memory'];
     if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
     if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
   const when=cursorNow()?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
-  const k=parts.join('|')+'|'+when+'|'+follow.unseen;if(k===crumbKey)return;crumbKey=k;
+  const s_=cam.mode==='tunnel'&&tunnel?tunnel.session:null,inChat=!!s_&&!!(s_.messages||[]).length;
+  const back=inChat&&chatTurn&&chatTurn.conv===s_.id?chatTurn.turn:'';
+  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back;if(k===crumbKey)return;crumbKey=k;
   $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
+    (inChat?`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`:'')+
     (when?`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`:'')}
-$('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}});
+$('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}
+  const c=e.target.closest('.chat');if(c)window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:c.dataset.conv,turnId:c.dataset.turn||undefined}}))});
 function updateStats(fps){const c=M.meta.counts||{};
   $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands<br>`+
   `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
@@ -2530,7 +2538,7 @@ function hover(x,y){
       const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
-      setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
+      setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${s.ghost?'deleted in chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
         <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> session${rs.from===1?'':'s'} · ${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
     else if(!syncHoverStrand(x,y))clearAnno('hover');return}
   if(state.lens==='oracle'){
@@ -2659,10 +2667,11 @@ function focusRef(ref){
   if(kind==='node'){if(!NDS.some(n=>n.id===id))return false;toTop(()=>{setLens('cortex');state.showSpaces=true});return true}
   if(kind==='pin'){const p=M.pins.find(p=>p.id===id),t=p?.refs?.find(r=>r.t==='thread'||r.t==='session');return t?focusRef('strand:'+t.id):false}
   // the episode's own strand when the memory knows the episode, else the id's prefix ("<conv>:<turn>")
-  if(kind==='turn'){const conv=M.epById?.get(id)?.session||id.split(':')[0],s_=M.sById?.get(conv);if(!s_)return false;enterTunnel(s_);
+  if(kind==='turn'){const ep=M.epById?.has(id)?id:rest.slice(1).join(':')||id;   // "<conv>:<turn>": the moments carry the turn id alone
+    const conv=M.epById?.get(id)?.session||rest[0],s_=M.sById?.get(conv);if(!s_)return false;enterTunnel(s_);chatTurn={conv:s_.id,turn:ep};
     // once the corridor stands, travel to the turn's first moment
     const w=setInterval(()=>{if(cam.mode!=='tunnel'||!tunnel||tunnel.session!==s_)return;clearInterval(w);
-      const it=tunnel.items.find(x=>x.type==='event'&&x.e.episode===id);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);
+      const it=tunnel.items.find(x=>x.type==='event'&&(x.e.episode===ep||x.e.episode===id));if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);
     setTimeout(()=>clearInterval(w),8000);return true}
   return false}
 // THE TIME CURSOR (MEMORY-UX-PLAN §5.2): one date for every view, default now. The cortex shows the memory as it
