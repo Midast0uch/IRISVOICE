@@ -16,19 +16,36 @@ export class MemoryResting extends Error {
 
 /** A cold store on the hard disk can take many seconds on the first read; the surface waits for it. */
 const SNAPSHOT_TIMEOUT_MS = 180_000
+const SNAPSHOT_RETRY_MS = 5_000
 
 export async function fetchMemorySnapshot(opts: { includeEval?: boolean; signal?: AbortSignal } = {}): Promise<MemoryModel> {
   const q = opts.includeEval ? "?include_eval=true" : ""
   const signal = opts.signal
     ? AbortSignal.any([opts.signal, AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS)])
     : AbortSignal.timeout(SNAPSHOT_TIMEOUT_MS)
-  let res: Response
-  try {
-    res = await fetch(`/api/memory/snapshot${q}`, { signal })
-  } catch (e) {
-    if ((e as Error)?.name === "AbortError" && opts.signal?.aborted) throw e
-    throw new MemoryResting(0, "IRIS's backend is not answering")
+  // The app's proxy gives up on a request long before a cold first read ends (2026-10-24: "socket hang up" after
+  // ~30 s, 500 to the page, while the backend went on and cached the snapshot - the next call took 0.03 s). So a 5xx
+  // or a lost connection is asked again until the budget ends; the backend answers from its cache once it is done.
+  const deadline = Date.now() + SNAPSHOT_TIMEOUT_MS
+  let res: Response | null = null
+  for (;;) {
+    try {
+      res = await fetch(`/api/memory/snapshot${q}`, { signal })
+      if (res.ok || res.status < 500) break
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError" || (e as Error)?.name === "TimeoutError") {
+        if (opts.signal?.aborted) throw e
+        throw new MemoryResting(0, "IRIS's backend is not answering")
+      }
+      res = null
+    }
+    if (Date.now() + SNAPSHOT_RETRY_MS >= deadline) break
+    await new Promise<void>((ok, no) => {
+      const t = setTimeout(ok, SNAPSHOT_RETRY_MS)
+      signal.addEventListener("abort", () => { clearTimeout(t); no(signal.reason) }, { once: true })
+    })
   }
+  if (!res) throw new MemoryResting(0, "IRIS's backend is not answering")
   if (!res.ok) {
     // Plain words on the surface; the status stays in the console line of MemorySurface.
     const why = res.status === 404 ? "this backend has no memory reader yet - restart it after an update"
