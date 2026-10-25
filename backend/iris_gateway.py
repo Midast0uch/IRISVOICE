@@ -3452,13 +3452,16 @@ class IRISGateway:
                 if _sttproc_data is None:
                     return
                 try:
-                    import sounddevice as _sd2
+                    from .audio.pipeline import play_exclusive as _play_excl
                     _loop_count = 0
                     _min_played = False  # guarantee >=1 full iteration before stop
                     self._logger.info("[STTPROC] Loop starting...")
                     while True:
                         _loop_count += 1
-                        _sd2.play(_sttproc_data, _sttproc_sr, device=_sttproc_dev, blocking=True)
+                        # Under the playback lock (pipeline.play_exclusive): busy means a reply (or another
+                        # chime) has the device - the chime yields instead of tearing that stream down.
+                        if not _play_excl(_sttproc_data, _sttproc_sr, device=_sttproc_dev, timeout=0.3):
+                            break
                         _min_played = True
                         # Sync: keep the "processing" chime alive UNTIL the real
                         # TTS playback actually starts (first chunk reaches the

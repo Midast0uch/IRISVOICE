@@ -103,6 +103,47 @@ def test_concurrent_plays_never_overlap(monkeypatch):
     assert dev.max_active == 1, "two utterances used the audio device at once"
 
 
+def test_short_sounds_share_the_lock_with_speech(monkeypatch):
+    """2026-10-25: the processing chime, the wake beeps and notifications called sd.play directly, outside the lock;
+    a chime loop beside a speaking reply (and a second chime loop) corrupted the heap at start-up (0xc0000374 in
+    sounddevice.close inside sd.play). They go through pipeline.play_exclusive now."""
+    dev = _Device()
+    monkeypatch.setattr(pl, "_sd", lambda: dev)
+    p = _pipeline()
+    chunk = np.zeros(2400, dtype=np.float32)
+    jobs = [lambda: p.play_stream(iter([chunk, chunk])), lambda: pl.play_exclusive(chunk, 24000, timeout=5),
+            lambda: pl.play_exclusive(chunk, 24000, timeout=5), lambda: p.play_audio(chunk)]
+    threads = [threading.Thread(target=f) for f in jobs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert dev.calls == 4
+    assert dev.max_active == 1, "a short sound used the audio device while another sound held it"
+    # busy: it yields at once and plays nothing
+    assert pl._PLAYBACK_LOCK.acquire(timeout=1)
+    try:
+        assert pl.play_exclusive(chunk, 24000, timeout=0.05) is False and dev.calls == 4
+    finally:
+        pl._PLAYBACK_LOCK.release()
+
+
+def test_no_direct_sd_play_outside_the_pipeline():
+    """The structural guard: outside backend/audio/pipeline.py nothing calls sounddevice's play itself."""
+    import re
+    from pathlib import Path
+
+    root = Path(pl.__file__).resolve().parents[1]
+    hits = []
+    for f in root.rglob("*.py"):
+        if "tests" in f.parts or f.name == "pipeline.py":
+            continue
+        for n, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            if re.search(r"\b(sd|_sd\d?|sounddevice)\.play\(", line) and not line.lstrip().startswith("#"):
+                hits.append(f"{f.relative_to(root)}:{n}")
+    assert not hits, f"direct sd.play outside the playback lock: {hits}"
+
+
 def test_a_busy_device_skips_instead_of_hanging(monkeypatch):
     monkeypatch.setattr(pl, "_PLAYBACK_WAIT_S", 0.1)
     dev = _Device()

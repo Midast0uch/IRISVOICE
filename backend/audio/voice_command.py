@@ -1425,9 +1425,12 @@ class VoiceCommandHandler:
         _dev = content.get("device")
         if sound is None:
             return
-        import sounddevice as _sd
+        from backend.audio.pipeline import play_exclusive
         try:
-            _sd.play(sound, sr, device=_dev, blocking=True)
+            # the device's one lock (pipeline.play_exclusive): a direct sd.play beside a speaking reply
+            # corrupted the heap (2026-10-25)
+            if not play_exclusive(sound, sr, device=_dev, timeout=2.0):
+                logger.info("[VoiceCommand] beep skipped: the audio device stayed busy")
         except Exception as _beep_err:
             logger.warning(
                 f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline"
@@ -1443,7 +1446,7 @@ class VoiceCommandHandler:
         Engages the half-duplex gate around playback so the just-opened mic
         doesn't capture the activation sound (the pre-scheduler behavior).
         """
-        import sounddevice as _sd
+        from backend.audio.pipeline import play_exclusive
         try:
             self.audio_engine.set_tts_active(True)
         except Exception:
@@ -1453,7 +1456,8 @@ class VoiceCommandHandler:
         except Exception:
             pass
         try:
-            _sd.play(sound, sr, device=_dev, blocking=True)
+            if not play_exclusive(sound, sr, device=_dev, timeout=2.0):   # the device's one lock (pipeline)
+                logger.info("[VoiceCommand] beep skipped: the audio device stayed busy")
         except Exception as _beep_err:
             logger.warning(
                 f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline"

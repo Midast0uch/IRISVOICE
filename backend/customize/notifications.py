@@ -34,12 +34,12 @@ def _resolve_sound_path(path_or_name: str) -> Optional[str]:
 def _play_wav(path: str) -> bool:
     """Play a WAV file non-blocking via sounddevice. Returns True if played."""
     try:
-        import sounddevice as sd
         import soundfile as sf
+        from backend.audio.pipeline import play_exclusive
         data, sr = sf.read(path, dtype="float32")
-        # Run in background thread to avoid blocking
+        # Run in background thread to avoid blocking; the device's one lock keeps it off a playing reply
         threading.Thread(
-            target=lambda: sd.play(data, sr, blocking=False),
+            target=lambda: play_exclusive(data, sr, timeout=5.0),
             daemon=True,
         ).start()
         return True

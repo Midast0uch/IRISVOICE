@@ -73,6 +73,24 @@ def release_playback_device() -> None:
     _PLAYBACK_LOCK.release()
 
 
+def play_exclusive(data, samplerate: int, *, device=None, timeout: Optional[float] = None) -> bool:
+    """``sd.play`` for the SHORT sounds (the processing chime, the wake beep, a notification), under the same
+    process-wide lock as speech. Returns False and plays nothing when the device stayed busy for ``timeout``.
+
+    2026-10-25: the backend died twice at start-up, heap corruption (0xc0000374) in ``sounddevice.close`` inside
+    ``sd.play`` on the ``sttproc-loop`` thread, while a speech lane held the device and a SECOND chime loop ran -
+    the chime, the wake beeps and notifications called ``sd.play`` directly, outside the lock speech takes, and
+    ``sd.play`` stops and closes the one process-global stream first.
+    """
+    if not acquire_playback_device(timeout):
+        return False
+    try:
+        _sd().play(data, samplerate, device=device, blocking=True)
+        return True
+    finally:
+        release_playback_device()
+
+
 class AudioPipeline:
     """
     Manages real-time audio I/O:
