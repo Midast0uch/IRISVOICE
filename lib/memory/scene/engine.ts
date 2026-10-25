@@ -891,7 +891,8 @@ const clDir=CL.map((c,i)=>fib(CL.length,i).multiplyScalar(R*.58));
 const somaPos=LM.map(l=>{const fi=l.dom;
   const dir=regC[fi].clone().multiplyScalar(.9).add(clDir[CL.indexOf(l.cls)].clone().normalize().multiplyScalar(.35))
     .add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.5)).normalize();
-  return dir.multiplyScalar(R*(.26+.66*Math.cbrt(rng())))});
+  const depth=lerp(Math.cbrt(rng()),1-syncClaim(l),.55);   // depth = sureness (UX-PLAN 7.2): surer = deeper
+  return dir.multiplyScalar(R*(.26+.66*clamp(depth,0,1)))});
 { // relax: gentle springs on edges (long rest length, so links never pull the mass into the centre),
   // repulsion between all somas, stay inside the skin
   const E=M.edges.filter(e=>e.a<NL&&e.b<NL);const tmp=new V3();
@@ -2363,7 +2364,7 @@ function setLens(l){
   if(state.diving)return;
   if(cam.mode==='tunnel'){exitTunnel(()=>setLens(l));return}
   if(state.inside){exitInterior(()=>setLens(l));return}
-  state.lens=l;state.focusSec=-1;if(l!=='cortex'&&keyFocus)setKindFocus(null);clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
+  state.lens=l;state.focusSec=-1;if(l!=='cortex'&&state.health)setHealth(false);if(l!=='cortex'&&keyFocus)setKindFocus(null);clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
   document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
   const m=state.morphT,v=state.visT;
   const hx=l==='timeline';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
@@ -2425,7 +2426,7 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
     <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times${l.last_activated?' · last used '+ago(l.last_activated):''} · ${l.last_verified?'last confirmed '+ago(l.last_verified):'not confirmed yet'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
-    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep?correctionHTML(k):''}`}
+    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep?correctionHTML(k):''}`}
 // CORRECTIONS v1 (MEMORY-SURFACE-BUILD section 5): on a focused claim, "that's right / that's wrong / forget this".
 // The backend writes each one as YOUR evidence and answers with the claim before and after; the card and the claim's
 // look change only from that answer (never optimistic). Undo for 10 minutes. Real memory only (opts.correct).
@@ -2470,6 +2471,9 @@ mineEl.addEventListener('click',e=>{const u=e.target.closest('[data-undo-id]');i
 drawMine(true);
 annosEl.addEventListener('click',e=>{
   const cr=e.target.closest('[data-correct]');if(cr){runCorrection(+cr.dataset.k,cr.dataset.correct);return}
+  // ask IRIS about a claim (UX-PLAN 4.6): a #claim reference chip in the chat's composer - an address, never the content
+  const ak=e.target.closest('[data-ask]');if(ak){const l=LM[+ak.dataset.ask];if(l)window.dispatchEvent(new CustomEvent('iris:open_conversation',
+    {detail:{ref:{address:'claim:'+l.id,label:'claim · '+(l.claim.length>48?l.claim.slice(0,47)+'…':l.claim)}}}));return}
   const un=e.target.closest('[data-undo]');if(un){runUndo(+un.dataset.undo);return}
   if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(e.target.closest('[data-home]')){exitTunnel();return}
@@ -2756,6 +2760,19 @@ function oracleCard(o,deep){
     <div class="m">${doing}<br>learned from <em>${fmt(o.rows)}</em> examples</div>${measuring?'':ladderHTML(o)}${historyHTML(o)}${deep?curveSVG(o):'<span class="go">click · its ladder and its curve</span>'}`}
 function focusSector(sec){state.focusSec=sec;if(sec<0){clearAnno('focus');return}
   if(slots.focus)slots.focus.key=null;setAnno('focus','secf'+sec,()=>secAnchor(sec),oracleCard(ORC[sec],true),{hot:true});clearAnno('hover')}
+// THE HEALTH VIEW (UX-PLAN 7.5, key k): each territory tinted by how well its claims hold - cyan where they are proven,
+// amber where they are still learning, red where they are contradicted - and one line of counts under the breadcrumb.
+// Off: the territories' own colours come back. It reads only; it changes nothing.
+const healthEl=document.createElement('div');healthEl.id='health';$('hud').appendChild(healthEl);
+const regColOwn=SU.uRegCol.value.map(c=>c.clone());
+function setHealth(on){state.health=on;
+  REG.forEach((d,i)=>{const lms=M.landmarks.filter(l=>l.domain===d);const n=Math.max(1,lms.length);
+    const pv=lms.filter(l=>l.tier!=='candidate').length/n,bad=lms.filter(l=>l.contradictions>0).length/n;
+    if(!on){SU.uRegCol.value[i].copy(regColOwn[i]);return}
+    SU.uRegCol.value[i].copy(new THREE.Color('#ffb547').lerp(new THREE.Color('#7fe8ff'),pv).lerp(new THREE.Color('#ff4a3d'),Math.min(1,bad*2)))});
+  const L=M.landmarks,c=M.meta?.counts||{};
+  healthEl.innerHTML=on?`health · <em>${fmt(L.filter(l=>l.tier!=='candidate').length)}</em> proven · <em>${fmt(L.filter(l=>l.tier==='candidate').length)}</em> still learning · <span class="w">${fmt(L.filter(l=>l.contradictions>0).length)} contradicted</span> · <em>${fmt(c.landmarks_absorbed||0)}</em> cleaned or merged in all<br><span class="dim">cyan holds · amber learning · red contradicted &nbsp; k · back to the territories' colours</span>`:'';
+  healthEl.classList.toggle('on',on)}
 function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
   if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
 canvas.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);mouse.nx=_px(e)/innerWidth*2-1;mouse.ny=-(_py(e)/innerHeight*2-1);
@@ -2833,6 +2850,7 @@ addEventListener('keydown',e=>{
   if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
   if(k==='/'){e.preventDefault();openSearch()}
   if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
+  if(k==='k'&&state.lens==='cortex')setHealth(!state.health);
   if(k==='f'&&USE_REAL)setFollow(!follow.on);
   if(k==='g'&&SCRUB_LENS.has(state.lens)&&!state.inside&&cam.mode==='orbit'){state.scrub=0;state.scrubT=0;state.replay=true}
   if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);

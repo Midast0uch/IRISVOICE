@@ -81,6 +81,8 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #mine .list{margin-bottom:6px;max-height:40vh;overflow:auto}
 .iris-memory #mine .row{padding:4px 0;border-top:1px solid rgba(212,236,246,.06);line-height:1.5}.iris-memory #mine .row.gone{opacity:.45}
 .iris-memory #mine .row .t{color:var(--dim)}.iris-memory #mine a[data-undo-id],.iris-memory #mine a[data-claim]{color:var(--brand);cursor:pointer}
+.iris-memory #health{position:absolute;left:50%;top:64px;transform:translateX(-50%);font-size:10px;letter-spacing:.06em;color:var(--dim);text-align:center;opacity:0;transition:opacity .4s;pointer-events:none}
+.iris-memory #health.on{opacity:1}.iris-memory #health em{font-style:normal;color:var(--ink)}.iris-memory #health .dim{color:var(--faint)}
 .iris-memory .rlabel.tick{font-size:9px;letter-spacing:.14em;color:var(--faint);transition:opacity .3s}
 .iris-memory .rlabel.lod{font-size:10px;color:var(--dim);letter-spacing:.03em;transition:opacity .3s}
 .iris-memory .rlabel.job{font-size:9px;letter-spacing:.18em;text-transform:lowercase;color:var(--faint);transition:opacity .4s}
