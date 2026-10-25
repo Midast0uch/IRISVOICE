@@ -185,7 +185,8 @@ def test_landmark_merge_update_names_the_survivor(lmconn, live):
     idx = LandmarkIndex(lmconn)
     cluster = [{"node_id": "n1", "space_id": "d", "coordinates": [0.1, 0.5, 1.0],
                 "confidence": 0.5, "access_count": 3}]
-    new = Landmark(landmark_id="lm_new", label="new", task_class="tc", coordinate_cluster=cluster,
+    # the same task as the seeded lm1/lm2: only the same task merges (task_key, owner decision 2026-10-24)
+    new = Landmark(landmark_id="lm_new", label="fix a.py", task_class="tc", coordinate_cluster=cluster,
                    traversal_sequence=["n1"], cumulative_score=0.8, micro_abstract=None,
                    micro_abstract_text=None, activation_count=0, is_permanent=False,
                    conversation_ref="s9", created_at=time.time(), last_activated=None)

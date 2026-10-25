@@ -261,11 +261,11 @@ def test_merging_two_unactivated_landmarks_keeps_their_score(mem_conn):
            (landmark_id, label, task_class, coordinate_cluster, traversal_sequence,
             cumulative_score, activation_count, is_permanent, created_at, last_activated)
            VALUES (?,?,?,?,?,0.8,0,0,?,?)""",
-        (lm_old, "old", "code_task", json.dumps(cluster), "[]", now, now),
+        (lm_old, "the same task", "code_task", json.dumps(cluster), "[]", now, now),   # only the same task merges
     )
     mem_conn.commit()
     merged = LandmarkMerger(LandmarkIndex(mem_conn)).try_merge(Landmark(
-        landmark_id=lm_new, label="new", task_class="code_task", coordinate_cluster=cluster,
+        landmark_id=lm_new, label="the same task", task_class="code_task", coordinate_cluster=cluster,
         traversal_sequence=[], cumulative_score=0.6, micro_abstract=None, micro_abstract_text=None,
         activation_count=0, is_permanent=False, conversation_ref=None, created_at=now, last_activated=now,
     ))

@@ -10,6 +10,7 @@ sections that describe the user's working style, preferences, and environment.
 
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -30,6 +31,20 @@ logger = logging.getLogger(__name__)
 # Minimum activation_count for absorbed-only nodes to survive a merge (Req 10.3)
 _ABSORBED_NODE_MIN_ACTIVATIONS: int = 2
 
+# A task-path claim's label is its task prompt, and the eval harness prefixes the run's temp folder.
+_PROJECT_PREFIX = re.compile(r"^The project is in .+?\.\s+", re.S)
+
+
+def task_key(label: Optional[str]) -> tuple:
+    """The task a landmark is about, as words in order: the run's temp folder removed, case and punctuation
+    ignored. Two landmarks are the same claim only for the same task (owner decision 2026-10-24): the node
+    cluster alone said nothing - 154 nodes for thousands of tasks, every toolpath step "tool_none" - and
+    3,336 of 3,742 live merges joined tasks whose words were < 30% alike ("scrape the hockey teams page"
+    into "who created Python"), moving the absorbed claim's evidence onto the survivor. Repeats of one
+    task are word-identical (1,785 of 1,785 measured pairs); near tasks are not the same task ("highest
+    price" vs "lowest price" score 0.8). Empty for no label: an unnamed task never merges."""
+    return tuple(re.findall(r"[a-z0-9_]+", _PROJECT_PREFIX.sub("", label or "", count=1).lower()))
+
 
 # ---------------------------------------------------------------------------
 # LandmarkMerger
@@ -39,7 +54,8 @@ class LandmarkMerger:
     """
     Deduplicates the landmark graph after every crystallisation (Req 10.1–10.5).
 
-    Merges landmarks whose coordinate clusters overlap ≥ MERGE_OVERLAP_THRESHOLD (0.50).
+    Merges landmarks about the SAME task (task_key) whose coordinate clusters overlap
+    ≥ MERGE_OVERLAP_THRESHOLD (0.50). Similar tasks are grouped by the sectors, never merged.
     """
 
     def __init__(self, index: LandmarkIndex) -> None:
@@ -122,7 +138,8 @@ class LandmarkMerger:
         Attempt to merge new_landmark into the best existing landmark (Req 10.1–10.5).
 
         Merge logic:
-          - Candidate: any non-absorbed landmark with cluster overlap ≥ MERGE_OVERLAP_THRESHOLD (0.50).
+          - Candidate: any non-absorbed landmark about the same task (task_key) with cluster
+            overlap ≥ MERGE_OVERLAP_THRESHOLD (0.50).
           - Survivor: higher activation_count; tie → higher cumulative_score.
           - Merged cluster: nodes in both keep higher access_count entry; absorbed-only
             nodes kept only if activation_count ≥ 2; cap at CLUSTER_MAX_NODES (6).
@@ -140,12 +157,15 @@ class LandmarkMerger:
         all_landmarks = self._index.get_all_active()
         ids_new = {d.get("node_id") for d in new_landmark.coordinate_cluster
                    if isinstance(d, dict)}
+        task_new = task_key(new_landmark.label)
+        if not task_new:
+            return None
 
         best_candidate: Optional[Landmark] = None
         best_overlap: float = 0.0
 
         for lm in all_landmarks:
-            if lm.landmark_id == new_landmark.landmark_id:
+            if lm.landmark_id == new_landmark.landmark_id or task_key(lm.label) != task_new:
                 continue
             # A bootstrap landmark holds a dict, not a list of nodes: no overlap.
             ids_other = {d.get("node_id") for d in lm.coordinate_cluster

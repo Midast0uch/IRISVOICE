@@ -44,7 +44,7 @@ SHAPES = {
     "sessions": {"id", "objective", "started", "ended", "exit", "traj", "eval", "episodes", "messages", "strands"},
     "events": {"id", "ts", "family", "label", "valence", "actor", "evidence", "episode", "session", "domain", "landmark"},
     "landmarks": {"id", "claim", "cls", "tier", "permanent", "evidence", "evidence_counts", "activations", "contradictions",
-                  "last_activated", "last_verified", "born", "session", "fams", "domain"},
+                  "last_activated", "last_verified", "born", "session", "fams", "domain", "steps"},
     "edges": {"id", "a", "b", "score", "traversals", "hits", "misses", "last"},
     "episodes": {"id", "session", "summary", "outcome", "score", "failure_reason", "corrected", "confirmed", "duration",
                  "tools", "ts"},
@@ -185,6 +185,56 @@ def test_eval_threads_are_left_out_by_default_and_counted(snap_env):
     d3 = _get(snap_env)
     assert d3["meta"]["eval_share"] == [2, 8] and not any("memory_events(thread_id)" in w for w in d3["meta"]["warnings"])
     assert d3["meta"]["counts"]["sessions"] == 4                             # COUNT(DISTINCT thread_id), eval included
+
+
+def test_a_chat_eval_run_is_left_out_before_the_thread_cut(snap_env):
+    """The eval harness runs its tasks as chat conversations titled "[eval] ..." (ids conv-NNNN): no thread-id prefix
+    names them. 2026-10-24, live: 46 of the 48 sessions of a snapshot were such runs, each with eval=False. The chat
+    TITLE decides, and it decides before the cut to `threads`, so a run never takes a real thread's slot."""
+    ev = snap_env.ids["eval_root"]
+    con = sqlite3.connect(snap_env.mem)
+    _ev(con, "e-chat-eval", NOW - 3400, "GOAL_SET", ev, episode="TC", family="intent")   # the newest thread
+    con.commit()
+    con.close()
+    d = _get(snap_env)
+    assert ev not in {s["id"] for s in d["sessions"]}
+    assert not any(e["session"] == ev for e in d["events"])
+    one = _get(snap_env, "?threads=1")["sessions"]
+    assert len(one) == 1 and one[0]["id"] != ev                              # the slot went to a real thread
+    d2 = _get(snap_env, "?include_eval=true")
+    assert next(s for s in d2["sessions"] if s["id"] == ev)["eval"] is True
+
+
+def test_eval_runs_never_starve_the_window_of_real_threads(snap_env):
+    """Live, 2026-10-24: 5,881 of the newest 6,000 events belonged to eval chat runs, so the ts-ordered window held 4
+    real threads. With memory_events(thread_id) indexed, the newest REAL threads come first. Both harnesses count:
+    "[eval] ..." (run_evals.py) and "[pair] ..." (run_pairs.py)."""
+    pair = snap_env.cs.create_conversation(title="[pair] c2_other")["id"]
+    con = sqlite3.connect(snap_env.mem)
+    con.execute("CREATE INDEX idx_memory_events_thread_ts ON memory_events(thread_id, ts)")
+    for i in range(6):                                                       # all newer than every real event
+        _ev(con, f"e-run-{i}", NOW - 100 + i, "PLAN_MADE", (snap_env.ids["eval_root"], pair)[i % 2], episode="TR")
+    con.commit()
+    con.close()
+    d = _get(snap_env, "?events=3&threads=2")
+    ids = {s["id"] for s in d["sessions"]}
+    assert len(ids) == 2 and not ids & {snap_env.ids["eval_root"], pair}    # old: the 3 newest events were all runs
+    assert not any(e["session"] in (snap_env.ids["eval_root"], pair) for e in d["events"])
+
+
+def test_a_claim_carries_its_steps_and_every_territory_has_a_name(snap_env):
+    """The page says how a claim was done ("how: read file -> write file") from the nodes its traversal walked, and
+    names every territory; the snapshot dropped traversal_sequence and sent label NULL for all 21 live sectors."""
+    con = sqlite3.connect(snap_env.mem)
+    con.execute("UPDATE mycelium_landmarks SET traversal_sequence = ? WHERE landmark_id = 'C_LIVE'",
+                (json.dumps(["n2", "not-a-node", "n1"]),))
+    con.commit()
+    con.close()
+    d = _get(snap_env)
+    live = {x["id"]: x for x in d["landmarks"]}
+    assert live["C_LIVE"]["steps"] == [{"space": "semantic", "label": "beta"}, {"space": "semantic", "label": "alpha"}]
+    assert live["C_CAND"]["steps"] == []
+    assert {s["key"]: s["label"] for s in d["sectors"]} == {"web": "web", "general": "general", "web/search": "search"}
 
 
 # ── bounds ──────────────────────────────────────────────────────────────────────────────────────

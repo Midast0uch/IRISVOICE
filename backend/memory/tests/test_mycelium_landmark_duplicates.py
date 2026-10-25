@@ -53,7 +53,8 @@ def _raw_landmark(conn, node_ids, *, score=0.8, created=None, lid=None):
 
 def _new_landmark(node_ids, score=0.8):
     return Landmark(
-        landmark_id="lm_" + uuid.uuid4().hex[:8], label="a new task", task_class="code_task",
+        # the same task as _raw_landmark's: "identical" includes the task (task_key, owner decision 2026-10-24)
+        landmark_id="lm_" + uuid.uuid4().hex[:8], label="lm", task_class="code_task",
         coordinate_cluster=_cluster(node_ids), traversal_sequence=list(node_ids),
         cumulative_score=score, micro_abstract=None, micro_abstract_text=None,
         activation_count=0, is_permanent=False, conversation_ref="sess_new",
@@ -209,3 +210,32 @@ def test_a_larger_overlap_still_beats_a_more_specific_one(mem_conn):
     _tie_landmark(mem_conn, "big", ["a", "b", "c", "d", "e", "f"], 0.5)   # overlap 3 of 6
     _tie_landmark(mem_conn, "tiny", ["a", "z"], 0.5)                       # overlap 1 of 2
     assert LandmarkIndex(mem_conn).landmarks_in_region({"a", "b", "c"})[0] == "big"
+
+
+def test_only_the_same_task_merges_even_with_identical_clusters(mem_conn):
+    """Live, 2026-10-24: 3,336 of 3,742 merges joined tasks whose words were < 30% alike - "scrape the hockey
+    teams page" absorbed into "who created Python" - because every task walked the same six nodes (the user's
+    conduct node, the domain node, toolpath steps all "tool_none"). The merge moved the absorbed claim's
+    evidence onto a claim about something else. Owner decision: a claim merges only with the SAME task."""
+    hockey, python_q = "Go to scrapethissite.com, open the hockey teams page, and show me a screenshot of it.", \
+        "Who created the Python programming language, and in what year was its first version released?"
+    _raw_landmark(mem_conn, NODES, lid="lm_hockey")
+    mem_conn.execute("UPDATE mycelium_landmarks SET label = ? WHERE landmark_id = 'lm_hockey'", (hockey,))
+    mem_conn.commit()
+    idx = LandmarkIndex(mem_conn)
+    new = _new_landmark(NODES)
+    new.label = python_q
+    idx.save(new)
+    assert LandmarkMerger(idx).try_merge(new) is None                      # old: merged at overlap 1.0
+    assert _live(mem_conn) == 2
+
+    # the same eval task, run from two temp folders: one claim
+    run = r"The project is in C:\Temp\iris-evals\{}\c06_fix_import_error. Running python app.py fails. Fix it."
+    _raw_landmark(mem_conn, ["e1", "e2"], lid="lm_run_a")
+    mem_conn.execute("UPDATE mycelium_landmarks SET label = ? WHERE landmark_id = 'lm_run_a'", (run.format("20261018-235809"),))
+    mem_conn.commit()
+    again = _new_landmark(["e1", "e2"])
+    again.label = run.format("20261024-041811")
+    idx.save(again)
+    assert LandmarkMerger(idx).try_merge(again) is not None
+    assert _live(mem_conn) == 3
