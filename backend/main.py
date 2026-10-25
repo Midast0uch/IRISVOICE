@@ -3373,6 +3373,10 @@ async def _on_wake_word_async(wake_word_name: str):
             # (2026-09-01: 4 of 7 wake triggers hit pre-speech timeout).
             # 8.0s matches the conversation-mode relisten window.
             pre_speech_timeout_sec=8.0,
+            # The head fires on TV speech; the take's transcript reaches the
+            # agent only if the wake clip holds the name (voice_command.py,
+            # wake confirm gate).
+            wake_confirm=True,
         )
         logger.info(f"[WakeWord] _handle_voice returned for session={session_id}")
     except Exception as e:
