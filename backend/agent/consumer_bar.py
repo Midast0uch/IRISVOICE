@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -32,6 +33,13 @@ BAR_PATH = (
     Path(__file__).resolve().parent.parent.parent
     / "benchmarks" / "consumer_bar_record.json"
 )
+
+# The STATE HISTORY (2026-10-25, memory surface Oracle view): one JSON line per
+# consumer per CHANGE of status, appended by save_bar_record next to the record.
+# The record itself holds only the latest state; this file is how a consumer's
+# earned -> demoted -> earned path is told. Bounded: the last HISTORY_MAX lines.
+HISTORY_NAME = "consumer_bar_history.jsonl"
+HISTORY_MAX = 5000
 
 # TG-7's bar (Decision C: the authoritative enforcement gate).
 MIN_ROWS = 100
@@ -332,8 +340,68 @@ def record_bars(
     return record
 
 
+def history_path(record_path: Optional[Path] = None) -> Path:
+    """The history file that sits beside a bar record."""
+    return (Path(record_path) if record_path else BAR_PATH).parent / HISTORY_NAME
+
+
+def read_history_lines(path: Path) -> list:
+    """The parsed lines of a history file, oldest first. Absent/unreadable = [];
+    a malformed line is skipped."""
+    out: list = []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("consumer") and row.get("status"):
+                    out.append(row)
+    except OSError:
+        pass
+    return out
+
+
+def write_history_lines(path: Path, rows: list) -> None:
+    """Replace the history file with the LAST HISTORY_MAX rows (temp file + rename)."""
+    rows = rows[-HISTORY_MAX:]
+    tmp = path.with_name(path.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:     # LF on every OS: the file is committed
+        fh.write("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+    tmp.replace(path)
+
+
+def append_history(record: Dict[str, ConsumerBar], path: Path,
+                   at: Optional[str] = None) -> int:
+    """Append one line per consumer whose status differs from its LAST line in
+    ``path`` (or that has none). Returns the number of lines added. The compare
+    is against the history itself, so a re-save of an unchanged record adds nothing.
+    Best-effort: never raises."""
+    try:
+        existing = read_history_lines(path)
+        last = {r["consumer"]: r["status"] for r in existing}
+        stamp = at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+        added = [
+            {"at": stamp, "consumer": cid, "status": bar.status, "gap": bar.gap}
+            for cid, bar in sorted(record.items()) if last.get(cid) != bar.status
+        ]
+        if not added:
+            return 0
+        if len(existing) + len(added) > HISTORY_MAX:
+            write_history_lines(path, existing + added)
+        else:
+            with open(path, "a", encoding="utf-8", newline="\n") as fh:
+                fh.write("".join(json.dumps(r, sort_keys=True) + "\n" for r in added))
+        return len(added)
+    except Exception as e:  # noqa: BLE001 - history is best-effort
+        logger.warning("consumer_bar: history write failed (%r)", e)
+        return 0
+
+
 def save_bar_record(record: Dict[str, ConsumerBar], path: Optional[Path] = None) -> None:
-    """Persist the record. Best-effort — never raises."""
+    """Persist the record (and append any status change to the history file
+    beside it). Best-effort — never raises."""
     target = Path(path) if path else BAR_PATH
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -346,6 +414,8 @@ def save_bar_record(record: Dict[str, ConsumerBar], path: Optional[Path] = None)
         )
     except Exception as e:  # noqa: BLE001 — recording is best-effort
         logger.warning("consumer_bar: write failed (%r)", e)
+        return
+    append_history(record, history_path(target))
 
 
 def load_bar_record(path: Optional[Path] = None) -> Dict[str, ConsumerBar]:

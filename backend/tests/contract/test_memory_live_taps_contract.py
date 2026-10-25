@@ -8,7 +8,7 @@ Each message is one batch: `{type, payload: {<list key>: [...], "dropped": int}}
                    source, refs
   landmark_update  payload.updates   item keys: landmark_id, kind, activation_count, tier,
                    survivor_id, ts      (kind: activated|promoted|stale|demoted|dissolved|merged)
-  oracle_decision  payload.decisions item keys: consumer, confidence, chosen, acted, ts
+  oracle_decision  payload.decisions item keys: consumer, job, confidence, chosen, acted, options, ts
                                         (acted: enforced|sampled|shadow)
 
 Why these pins. The surface used to invent its activity; it now draws only what a single
@@ -46,7 +46,7 @@ from backend.utils.durability_queue import lane
 EVENT_KEYS = {"event_id", "ts", "family", "label", "valence", "actor", "evidence", "episode_id",
               "thread_id", "topic_domain", "landmark_id", "recall_trace_id", "source", "refs"}
 LANDMARK_KEYS = {"landmark_id", "kind", "activation_count", "tier", "survivor_id", "ts"}
-DECISION_KEYS = {"consumer", "confidence", "chosen", "acted", "ts"}
+DECISION_KEYS = {"consumer", "job", "confidence", "chosen", "acted", "options", "ts"}
 
 
 _REAL_START_DRAIN = memory_live._start_drain
