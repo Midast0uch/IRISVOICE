@@ -81,6 +81,8 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #mine .list{margin-bottom:6px;max-height:40vh;overflow:auto}
 .iris-memory #mine .row{padding:4px 0;border-top:1px solid rgba(212,236,246,.06);line-height:1.5}.iris-memory #mine .row.gone{opacity:.45}
 .iris-memory #mine .row .t{color:var(--dim)}.iris-memory #mine a[data-undo-id],.iris-memory #mine a[data-claim]{color:var(--brand);cursor:pointer}
+.iris-memory .rlabel.tick{font-size:9px;letter-spacing:.14em;color:var(--faint);transition:opacity .3s}
+.iris-memory .rlabel.lod{font-size:10px;color:var(--dim);letter-spacing:.03em;transition:opacity .3s}
 .iris-memory .rlabel.job{font-size:9px;letter-spacing:.18em;text-transform:lowercase;color:var(--faint);transition:opacity .4s}
 .iris-memory .anno .ladder{margin-top:7px;font-size:9.5px;color:var(--faint)}.iris-memory .anno .ladder i{display:inline-block;width:6px;height:6px;margin-right:4px;border-radius:50%;border:1px solid rgba(212,236,246,.35)}
 .iris-memory .anno .ladder i.on{background:var(--brand);border-color:var(--brand)}.iris-memory .anno .ladder i.gap{background:var(--amber);border-color:var(--amber);box-shadow:0 0 6px var(--amber)}.iris-memory .anno .ladder i.na{opacity:.25}

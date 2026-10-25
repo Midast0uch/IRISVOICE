@@ -158,6 +158,8 @@ const THREAD_WORD={voice_headless:'spoken to IRIS, no chat open',session_iris_in
   session_iris:'IRIS chat, strand not recorded'};
 const threadTitle=t=>{t=String(t||'');if(THREAD_WORD[t])return THREAD_WORD[t];
   if(t.startsWith('[eval] '))return 'test run · '+t.slice(7).replace(/_/g,' ');
+  // a thread named by its creation time in ms ("1792864722790-1"): say when, not the number
+  if(/^\d{13}(-\d+)?$/.test(t))return 'a conversation from '+new Date(+t.slice(0,13)).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
   return /^[\w-]+$/.test(t)&&/[_-]/.test(t)?t.replace(/[_-]+/g,' ').replace(/\bsession\b/g,'chat'):t};   // an id, not a title: at least make it words
 const NODE_WORD={tool_none:'a step that used no tool',session_pattern:'a habit of how you work',stated_style:'a style you asked for',
   stated_conduct:'a way of working you asked for',hardware:'this machine'};
@@ -1147,10 +1149,13 @@ const moteMat=new THREE.ShaderMaterial({uniforms:{...U,uBrand:{value:BRAND}},
 const moteObj=new THREE.Points(moteGeo,moteMat);moteObj.frustumCulled=false;cortex.add(moteObj);
 
 // caduceus beads: one per session, on the staff
+// OUTSIDE CHAT (UX-PLAN 11.3): memory written under a thread that never was a chat conversation - voice with no chat
+// open, probes, the system. Not a ghost (chat never had it), not a test run (those are left out of the snapshot).
+const outsideChat=s=>!s.ghost&&!(s.messages||[]).length&&!/^test run/.test(s.objective||'');
 const beadGeo=new THREE.BufferGeometry();const bP=new Float32Array(sess.length*3),bA=new Float32Array(sess.length),bS=new Float32Array(sess.length),bC=new Float32Array(sess.length*3);
 sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=(2.5+Math.sqrt(s.events.length)*.7)*(s.ghost?.7:1);
   // a ghost (chat deleted the strand; its tombstone keeps the name) stays on the helix, small and grey
-  const c=new THREE.Color(s.ghost?'#4f5e68':s.exit==='live'?THEMES[0][1]:s.exit==='drift'?'#ffb547':'#dfeaf2');bC.set([c.r,c.g,c.b],i*3)});
+  const c=new THREE.Color(s.ghost?'#4f5e68':s.exit==='live'?THEMES[0][1]:s.exit==='drift'?'#ffb547':outsideChat(s)?'#b9a98a':'#dfeaf2');bC.set([c.r,c.g,c.b],i*3)});
 beadGeo.setAttribute('position',new THREE.BufferAttribute(bP,3));beadGeo.setAttribute('aA',new THREE.BufferAttribute(bA,1));
 beadGeo.setAttribute('aDs',new THREE.BufferAttribute(Float32Array.from(sess,desyncSession),1));   // a session that failed or was set back desyncs
 beadGeo.setAttribute('aS',new THREE.BufferAttribute(bS,1));beadGeo.setAttribute('aC',new THREE.BufferAttribute(bC,3));
@@ -1164,6 +1169,48 @@ const beadMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0},uHover:{va
     float core=smoothstep(.22,.0,d),halo=smoothstep(.5,.0,d)*.4;gl_FragColor=vec4(vC,(core+halo)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const beads=new THREE.Points(beadGeo,beadMat);beads.frustumCulled=false;cortex.add(beads);
+// THREAD BRAIDS (UX-PLAN 4.3): a strand forked from a conversation hangs from it - a faint curved line from the parent's
+// bead to each of its strands' beads that this memory holds.
+const braidG=new THREE.Group();cortex.add(braidG);
+{const P=[];const byId=new Map(sess.map(s=>[s.id,s]));
+  for(const s of sess)for(const ch of s.strands||[]){const c=byId.get(ch.id);if(!c)continue;
+    const a=new V3(0,helixY(sessS(s)),0),b=new V3(0,helixY(sessS(c)),0),m=a.clone().lerp(b,.5).add(new V3(R*.18,0,R*.18));
+    const crv=new THREE.QuadraticBezierCurve3(a,m,b).getPoints(16);for(let i=0;i<crv.length-1;i++)P.push(crv[i].x,crv[i].y,crv[i].z,crv[i+1].x,crv[i+1].y,crv[i+1].z)}
+  if(P.length){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+    braidG.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0x7fe8ff,transparent:true,opacity:.28,blending:THREE.AdditiveBlending,depthWrite:false})))}}
+// TURN ZOOM (UX-PLAN 8.4): Ctrl+wheel on the helix zooms in; then each conversation's bead opens into its turns - a
+// short column of ticks beside it, one per turn (a user message and the reply after it). Hovering a tick reads that
+// turn; clicking it walks into the conversation at that turn.
+const TURNS=[];sess.forEach((s,si)=>{const ms=(s.messages||[]).slice().sort((a,b)=>a.ts-b.ts);let cur=null;
+  for(const m of ms){if(m.role==='user'){cur={s,si,user:m,reply:null};TURNS.push(cur)}else if(cur&&!cur.reply)cur.reply=m}});
+const turnsOf=new Map();TURNS.forEach(t=>{const a=turnsOf.get(t.si)||[];a.push(t);turnsOf.set(t.si,a)});
+TURNS.forEach(t=>{const a=turnsOf.get(t.si),i=a.indexOf(t);t.world=new V3(R*.07,helixY(sessS(t.s))+(i-(a.length-1)/2)*R*.016,R*.07)});
+const turnGeo=new THREE.BufferGeometry();turnGeo.setAttribute('position',new THREE.Float32BufferAttribute(TURNS.flatMap(t=>[t.world.x,t.world.y,t.world.z]),3));
+const turnPts=new THREE.Points(turnGeo,new THREE.PointsMaterial({color:0xbfe9f6,size:3,sizeAttenuation:false,transparent:true,opacity:.85,depthWrite:false,blending:THREE.AdditiveBlending}));
+turnPts.visible=false;turnPts.frustumCulled=false;cortex.add(turnPts);   // state.turnZoom is set per frame (state is declared below)
+function turnHTML(t){const q=x=>{const v=String(x?.text||'').trim().split(/\n/)[0];return v.length>90?v.slice(0,89)+'…':v};
+  return `<div class="k">turn ${fmt(turnsOf.get(t.si).indexOf(t)+1)} of ${fmt(turnsOf.get(t.si).length)} · ${ago(t.user.ts)}</div><div class="t">${esc(q(t.user)||'you wrote')}</div>
+    <div class="m">${t.reply?`IRIS: <em>${esc(q(t.reply)||'replied')}</em>`:'no reply recorded'}<br>${esc(t.s.objective||'')}</div><span class="go">click · walk into this turn</span>`}
+// DATE TICKS (UX-PLAN 4.3): now at the top, then today, yesterday, this week and the months; they slide with the helix
+// like a clock face. LOD LABELS: the 4 newest conversations are named all the time; the rest on hover.
+const TICKS=(()=>{const out=[],now=nowS(),d=new Date();d.setHours(0,0,0,0);const today=d.getTime()/1000;
+  const add=(ts,w)=>{if(ts>=sT0&&ts<=sT1+60)out.push({ts,w})};add(now,'now');add(today,'today');add(today-86400,'yesterday');add(today-6*86400,'this week');
+  const m=new Date(today*1000);m.setDate(1);for(let i=0;i<14;i++){const t=m.getTime()/1000;if(t<today-6*86400)add(t,m.toLocaleDateString('en-GB',{month:'short'}));m.setMonth(m.getMonth()-1)}
+  return out})();
+const tickEls=TICKS.map(t=>{const el=document.createElement('div');el.className='rlabel tick';el.textContent='— '+t.w;host.querySelector('#labels').appendChild(el);return el});   // labelsEl and $ are declared further down
+const LOD=sess.filter(s=>!/^test run/.test(s.objective||'')).sort((a,b)=>b.started-a.started).slice(0,4);
+const lodEls=LOD.map(s=>{const el=document.createElement('div');el.className='rlabel lod';const t=s.objective||'';el.textContent=t.length>34?t.slice(0,33)+'…':t;host.querySelector('#labels').appendChild(el);return el});
+function placeTimelineLabels(show){
+  braidG.visible=show;
+  const right=new V3(1,0,0).applyQuaternion(camera.quaternion);let lastY=-1e9;
+  TICKS.forEach((t,i)=>{const el=tickEls[i];if(!show){el.style.opacity=0;return}
+    const a=project(new V3(0,timeY(t.ts),0).addScaledVector(right,-R*.62));
+    if(!a.front||Math.abs(a.y-lastY)<16){el.style.opacity=0;return}lastY=a.y;
+    el.style.opacity=.55;el.style.left=(a.x-el.offsetWidth)+'px';el.style.top=(a.y-7)+'px'});
+  const used=[];   // newest conversations sit side by side: a name that would overlap another stays for hover
+  LOD.forEach((s,i)=>{const el=lodEls[i];const k=sess.indexOf(s);if(!show||state.hoverBead===k){el.style.opacity=0;return}
+    const a=project(new V3(0,helixY(sessS(s)),0).addScaledVector(right,R*.32));
+    if(!a.front||used.some(y=>Math.abs(y-a.y)<15)){el.style.opacity=0;return}used.push(a.y);el.style.opacity=.75;el.style.left=(a.x+6)+'px';el.style.top=(a.y-7)+'px'})}
 sess.forEach((s,i)=>{if(s.exit==='live')bA[i]=1});
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2332,7 +2379,7 @@ function setLens(l){
   if(l==='oracle'){cam.targetT.set(0,0,0);cam.distT=44;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0}
   if(l==='artifacts'){cam.targetT.set(-1.0*R,0,0);cam.distT=62;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0;setTimeout(()=>layoutTissue(false),900)}
   hint({cortex:'drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme',
-    timeline:'scroll · move through time &nbsp; hover a strand · what the memory gave it<br>hover its strands · read a recall &nbsp; click · step inside',
+    timeline:'scroll · move through time &nbsp; ctrl + scroll · zoom into the turns &nbsp; hover a strand · what the memory gave it<br>hover its strands · read a recall &nbsp; click · step inside',
     artifacts:'hover · a cell swells &nbsp; click · open it',
     oracle:'hover a sector · what IRIS is learning to decide'}[l]);
 }
@@ -2663,12 +2710,15 @@ function hover(x,y){
     state.hoverCore=false;showMind(false);
     if(hoverThing(x,y))return;
     const r=regionAt(x,y);state.hoverReg=r;skinMat.uniforms.uHoverReg.value=r;if(r>=0)canvas.style.cursor='pointer';return}
+  if(state.lens==='timeline'&&state.turnZoom){const ti=nearestScreen(TURNS.map(t=>t.world),x,y,10);state.hoverTurn=ti;
+    if(ti>=0){canvas.style.cursor='pointer';beadMat.uniforms.uHover.value=-1;state.hoverBead=-1;setAnno('hover','turn'+ti,()=>project(TURNS[ti].world),turnHTML(TURNS[ti]));return}}
+  else state.hoverTurn=-1;
   if(state.lens==='timeline'){const k=nearestScreen(sess.map(s=>new V3(0,helixY(sessS(s)),0)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
     if(k>=0){const s=sess[k];canvas.style.cursor='pointer';buildSyncFor(s.id);syncU.uSel.value=-1;const rs=recSummary(s.id);
       const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
-      setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${s.ghost?'deleted in chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
+      setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
         <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> session${rs.from===1?'':'s'} · ${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
     else if(!syncHoverStrand(x,y))clearAnno('hover');return}
   if(state.lens==='oracle'){
@@ -2757,10 +2807,14 @@ function click(x,y){
       cam.vel.addScaledVector(d,R*.9);cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*.6;cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),.6);cam.idle=0}return}
   if(state.lens==='cortex'&&state.hoverReg>=0)dive(state.hoverReg);
   if(state.lens==='oracle'){focusSector(state.hoverSec>=0&&state.hoverSec!==state.focusSec?state.hoverSec:-1);return}
-  if(state.lens==='timeline'){if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else syncClick()}
+  if(state.lens==='timeline'){if(state.hoverTurn>=0){const t=TURNS[state.hoverTurn];enterTunnel(t.s);
+      const w=setInterval(()=>{if(cam.mode!=='tunnel'||!tunnel||tunnel.session!==t.s)return;clearInterval(w);   // to the turn's own message
+        const it=tunnel.items.find(n=>n.type==='msg'&&n.m.ts===t.user.ts);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);setTimeout(()=>clearInterval(w),8000);return}
+    if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else syncClick()}
 }
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
-  if(cam.mode==='orbit'){if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
+  if(cam.mode==='orbit'){if(state.lens==='timeline'&&e.ctrlKey){cam.distT=clamp(cam.distT*(1+e.deltaY*.0015),R*1.1,R*9)}   // turn zoom
+    else if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
   else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03)}
   else if(cam.mode==='tunnel'){if(tunnel?.stops){const n=performance.now();if(n-(state.lastStep||0)>380){state.lastStep=n;threadStep(Math.sign(e.deltaY))}}
     else{cam.tpT+=e.deltaY*.00012;if(cam.tp>.975&&e.deltaY>0)throughDoor()}}},{passive:false});
@@ -3013,6 +3067,8 @@ const _frame=()=>{
   placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
+  placeTimelineLabels(state.lens==='timeline'&&cam.mode==='orbit'&&!cam.tween&&!sync.sid);
+  state.turnZoom=state.lens==='timeline'&&cam.mode==='orbit'&&camera.position.distanceTo(cam.look)<R*2.6;turnPts.visible=state.turnZoom;
   {const age=clock.elapsedTime-pupilLive.t;   // up in .35 s, held, back to turning by 3 s
     PU.uDec.value=age<.35?age/.35:age<2.2?1:Math.max(0,1-(age-2.2)/.8);
     PU.uVis.value=state.morph.i*(1-(state.insideK||0));PU.uDil.value=lerp(PU.uDil.value,1+.22*PU.uDec.value,1-Math.pow(.02,dt))}
