@@ -429,3 +429,16 @@ def test_a_failing_rule_is_counted_and_does_not_block_the_next(conn, mi, monkeyp
     _maintain(mi)
     assert write_counters.get("kyudo.integrity.rule_failed.references") == n0 + 1
     assert _live(conn) == set()                                       # rule 1 had already run
+
+
+def test_duplicates_merge_even_with_many_live_claims(conn, mi):
+    """2026-10-25: the wrong-merge repair brought 3,426 claims back (3,519 live). The pass skipped the collapse
+    above 500 live landmarks (it compared every live pair), so same-task repeats would never merge again. Only
+    the same task merges, so the collapse compares within one task's group: the bound is the group, not the store."""
+    for i in range(520):                                              # 520 different claims, each on its own place
+        _landmark(conn, [_node(conn, space="domain", label=f"own{i}", confidence=0.9, access=3)], task_class=f"claim_{i}")
+    nodes = [_node(conn, space="domain", label=f"d{i}", confidence=0.9, access=3) for i in range(3)]
+    pair = [_landmark(conn, nodes, task_class="the same claim", age_days=i) for i in range(2)]
+    _maintain(mi)
+    assert len(set(pair) & _live(conn)) == 1                          # old: collapse skipped, both live
+    assert len(_live(conn)) == 521

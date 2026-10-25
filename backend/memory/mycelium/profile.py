@@ -64,7 +64,7 @@ class LandmarkMerger:
         # (the caller moves their evidence to the survivor).
         self.last_absorbed: List[str] = []
 
-    def try_merge(self, new_landmark: Landmark) -> Optional[Landmark]:
+    def try_merge(self, new_landmark: Landmark, pool: Optional[List[str]] = None) -> Optional[Landmark]:
         """
         Merge new_landmark with EVERY live landmark whose cluster overlaps it
         >= MERGE_OVERLAP_THRESHOLD, not only the best one.
@@ -76,20 +76,23 @@ class LandmarkMerger:
         cluster, 24 with another; the backlog came from before merges worked).
         Looping until no candidate is left collapses the whole group.
 
+        ``pool``: the ids that may merge (collapse_duplicates passes one task's group);
+        None reads every live landmark.
+
         Returns the surviving Landmark, or None if no merge occurred.
         """
         self.last_absorbed = []
         current = new_landmark
         merged_any = False
         while True:
-            merged = self._merge_once(current)
+            merged = self._merge_once(current, pool)
             if merged is None:
                 break
             merged_any = True
             current = merged
         return current if merged_any else None
 
-    def collapse_duplicates(self) -> int:
+    def collapse_duplicates(self, max_group: Optional[int] = None) -> int:
         """
         Idempotent cleanup of landmarks that should have merged and never did:
         runs the merge over every live landmark, oldest first. It ABSORBS
@@ -97,21 +100,39 @@ class LandmarkMerger:
         deletes a landmark - and the survivor takes the absorbed landmarks'
         outside evidence (so a promoted landmark is never lost to a candidate).
         Returns the number absorbed; a second pass returns 0.
+
+        Only the same task merges (task_key), so the live landmarks are grouped by
+        task once and each one is compared within its group: the cost is the sum of
+        the squared group sizes, not the square of all live landmarks (2026-10-25:
+        3,519 live after the wrong-merge repair, the largest group 161). A group
+        larger than ``max_group`` is skipped and counted.
         """
         absorbed_all: List[str] = []
         gone: set = set()
-        for lm in sorted(self._index.get_all_active(), key=lambda l: l.created_at):
-            if lm.landmark_id in gone:
+        groups: Dict[tuple, List[Landmark]] = {}
+        for lm in self._index.get_all_active():
+            k = task_key(lm.label)
+            if k:
+                groups.setdefault(k, []).append(lm)
+        for group in groups.values():
+            if len(group) < 2:
                 continue
-            app_flush()
-            fresh = self._index.get_by_id(lm.landmark_id)   # its cluster may have grown
-            if fresh is None:
+            if max_group is not None and len(group) > max_group:
+                logger.info("[profile] counter collapse_group_skipped size=%d > %d", len(group), max_group)
                 continue
-            survivor = self.try_merge(fresh)
-            if survivor is not None:
-                gone.update(self.last_absorbed)
-                absorbed_all.extend(self.last_absorbed)
-                self._move_evidence(survivor.landmark_id, list(self.last_absorbed))
+            ids = [l.landmark_id for l in sorted(group, key=lambda l: l.created_at)]
+            for lid in ids:
+                if lid in gone:
+                    continue
+                app_flush()
+                fresh = self._index.get_by_id(lid)   # its cluster may have grown
+                if fresh is None:
+                    continue
+                survivor = self.try_merge(fresh, [i for i in ids if i not in gone and i != lid])
+                if survivor is not None:
+                    gone.update(self.last_absorbed)
+                    absorbed_all.extend(self.last_absorbed)
+                    self._move_evidence(survivor.landmark_id, list(self.last_absorbed))
         self.last_absorbed = absorbed_all
         if absorbed_all:
             logger.info("[profile] counter duplicate_landmarks_absorbed n=%d", len(absorbed_all))
@@ -133,7 +154,7 @@ class LandmarkMerger:
                 logger.warning("[profile] evidence move failed absorbed=%s survivor=%s: %s",
                                aid, survivor_id, exc)
 
-    def _merge_once(self, new_landmark: Landmark) -> Optional[Landmark]:
+    def _merge_once(self, new_landmark: Landmark, pool: Optional[List[str]] = None) -> Optional[Landmark]:
         """
         Attempt to merge new_landmark into the best existing landmark (Req 10.1–10.5).
 
@@ -154,7 +175,11 @@ class LandmarkMerger:
         """
         # One writer: the landmark just saved (and its edges) may still be queued.
         app_flush()
-        all_landmarks = self._index.get_all_active()
+        if pool is None:
+            all_landmarks = self._index.get_all_active()
+        else:   # one task's group, read fresh (a cluster grows as its group merges); never one already absorbed
+            all_landmarks = [x for x in (self._index.get_by_id(i) for i in pool if i not in self.last_absorbed)
+                             if x is not None]
         ids_new = {d.get("node_id") for d in new_landmark.coordinate_cluster
                    if isinstance(d, dict)}
         task_new = task_key(new_landmark.label)

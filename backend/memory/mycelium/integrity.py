@@ -49,7 +49,7 @@ place the claim was made. Four rules, in this order (every action is counted
 
 Bounds per pass: MAX_LANDMARKS_PER_PASS dissolved, MAX_REFERENCE_LANDMARKS_PER_PASS
 dead landmark ids swept, MAX_NODES_PER_PASS nodes and MAX_NODE_EDGES_PER_PASS
-edges removed, collapse only while at most COLLAPSE_MAX_LIVE landmarks are live.
+edges removed, collapse within one task's group of at most COLLAPSE_MAX_GROUP landmarks.
 Idempotent: a second pass over the same store acts on nothing.
 """
 
@@ -89,7 +89,7 @@ MAX_LANDMARKS_PER_PASS = 100
 MAX_REFERENCE_LANDMARKS_PER_PASS = 500
 MAX_NODES_PER_PASS = 100
 MAX_NODE_EDGES_PER_PASS = 500
-COLLAPSE_MAX_LIVE = 500             # collapse_duplicates is O(n^2) in the live landmarks
+COLLAPSE_MAX_GROUP = 500            # collapse_duplicates compares within one task's group: O(group^2)
 _MERGE_CHAIN_MAX = 10
 _CHUNK = 400                        # SQLite parameter limit is 999
 
@@ -477,12 +477,7 @@ def run_integrity_pass(conn, store, merger, *, now: Optional[float] = None) -> D
             write_counters.bump("kyudo.integrity.collapse_deferred")
             return
         app_flush()
-        live = conn.execute("SELECT COUNT(*) FROM mycelium_landmarks WHERE absorbed IS NULL").fetchone()[0]
-        if live > COLLAPSE_MAX_LIVE:
-            write_counters.bump("kyudo.integrity.collapse_skipped_too_many_live")
-            logger.info("[integrity] collapse skipped: %d live landmarks > %d", live, COLLAPSE_MAX_LIVE)
-            return
-        report["landmarks_merged"] = merger.collapse_duplicates()
+        report["landmarks_merged"] = merger.collapse_duplicates(max_group=COLLAPSE_MAX_GROUP)
         if report["landmarks_merged"]:
             event("LANDMARK_MERGED", list(merger.last_absorbed), payload={"reason": "duplicate"})
 
