@@ -665,6 +665,10 @@ def initialise_mycelium_schema(conn) -> None:
             ON mycelium_landmarks(task_class);
         CREATE INDEX IF NOT EXISTS idx_landmarks_score
             ON mycelium_landmarks(cumulative_score DESC);
+        -- live vs absorbed (COALESCE(absorbed, 0) = 0): the memory surface's claim counts read the index, not every
+        -- landmark row with its cluster and evidence JSON (2026-10-25: 4,022 rows after the wrong-merge repair)
+        CREATE INDEX IF NOT EXISTS idx_landmarks_absorbed
+            ON mycelium_landmarks(absorbed);
         -- ChartRegistry.get_chart_origins (topology.py) runs on the answer path
         -- inside the memory context package. Without this it SCANs every landmark
         -- row: 73 s on the first turn after start (cold pages on a hard disk,

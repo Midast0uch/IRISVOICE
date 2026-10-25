@@ -983,8 +983,9 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         for tbl in ("memory_chain", "memory_events"):
             if tbl in have and "topic_domain" in table_cols(con, tbl):
                 # PLAN  SELECT COALESCE(topic_domain,'general'), COUNT(*) FROM <tbl> GROUP BY 1
-                #       -> SCAN <tbl> + TEMP B-TREE FOR GROUP BY: the one whole-table read of the snapshot (no index on
-                #          topic_domain). It reads one value per row; the cost is measured in the report.
+                #       -> SCAN <tbl> USING COVERING INDEX idx_<tbl>_domain + TEMP B-TREE FOR GROUP BY (the index the app
+                #          schema builds since 2026-10-25). On a store without it, the one whole-table read of the
+                #          snapshot: 40-50 s each cold on the hard disk, measured in the [memory_snapshot] log line.
                 for r in con.execute(f"SELECT COALESCE(topic_domain, 'general'), COUNT(*) FROM {tbl} GROUP BY 1"):
                     dom_counts[r[0]] = dom_counts.get(r[0], 0) + r[1]
                 lap(f"dom_counts_{tbl}")

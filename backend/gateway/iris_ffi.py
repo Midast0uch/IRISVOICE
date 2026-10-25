@@ -709,6 +709,9 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
             "CREATE INDEX IF NOT EXISTS idx_memory_chain_created "
             "ON memory_chain(created_at)"
         )
+        # The memory surface counts steps per territory (GROUP BY topic_domain): a whole-table read without it,
+        # 40-50 s cold on the hard disk (2026-10-25, [memory_snapshot] dom_counts_memory_chain).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_chain_domain ON memory_chain(topic_domain)")
         conn.commit()
     except Exception as _ci_exc:  # noqa: BLE001 — a missing index is slow, not wrong
         logger.warning(

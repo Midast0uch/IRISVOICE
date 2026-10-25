@@ -111,6 +111,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_events_ts ON memory_events(ts);
 -- One strand's events by thread (Memory surface API, MEMORY-SURFACE-BUILD.md). Without it the API reads a
 -- capped ts-window scan and marks the answer "partial". Existing stores get it in ensure_schema below.
 CREATE INDEX IF NOT EXISTS idx_memory_events_thread_ts ON memory_events(thread_id, ts);
+-- The memory surface counts moments per territory (GROUP BY topic_domain): without it a whole-table read, 40-50 s
+-- cold on the hard disk (2026-10-25, [memory_snapshot] dom_counts_memory_events). With it a covering-index read.
+CREATE INDEX IF NOT EXISTS idx_memory_events_domain ON memory_events(topic_domain);
 """
 
 
@@ -175,6 +178,7 @@ def ensure_schema(conn) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_memory_events_thread_ts "
                 "ON memory_events(thread_id, ts)"
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_domain ON memory_events(topic_domain)")
             conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[memory_events] idx_memory_events_thread_ts not created: %s", exc)
