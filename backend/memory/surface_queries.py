@@ -93,7 +93,8 @@ EVAL_SAMPLE_STEPS = 2000
 PREVIEW_MESSAGE = 120
 PREVIEW_INSIGHT = 140
 PREVIEW_CLAIM = 280
-EVAL_TITLE_PREFIX = "[eval]"          # conversations the eval harness creates
+EVAL_TITLE_PREFIXES = ("[eval]", "[pair]")   # conversations the eval harnesses create (evals/run_evals.py, run_pairs.py)
+EVAL_TITLE_SQL = "(" + " OR ".join(f"title LIKE '{p}%'" for p in EVAL_TITLE_PREFIXES) + ")"
 EVAL_THREAD_PREFIX = "eval-"           # memory thread ids of evaluation runs
 
 # landmark evidence is written with its own words; map them onto the closed alphabet (exporter's table)
@@ -227,7 +228,7 @@ def pretty_thread(tid: str) -> str:
 
 
 def _is_eval_thread(tid: str, title: Optional[str] = None) -> bool:
-    return tid.startswith(EVAL_THREAD_PREFIX) or bool(title and title.startswith(EVAL_TITLE_PREFIX))
+    return tid.startswith(EVAL_THREAD_PREFIX) or bool(title and title.startswith(EVAL_TITLE_PREFIXES))
 
 
 # ── sectors / territories ────────────────────────────────────────────────────────────────────────
@@ -358,8 +359,8 @@ def overview() -> dict:
         with _optional_chat_store() as cdb:
             if cdb is not None:
                 # PLAN  … FROM conversations WHERE parent_id IS NULL -> SEARCH … USING INDEX idx_conversations_parent
-                roots, ev_roots = cdb.execute("SELECT COUNT(*), COALESCE(SUM(title LIKE ? || '%'), 0) FROM conversations "
-                                              "WHERE parent_id IS NULL", (EVAL_TITLE_PREFIX,)).fetchone()
+                roots, ev_roots = cdb.execute(f"SELECT COUNT(*), COALESCE(SUM({EVAL_TITLE_SQL}), 0) FROM conversations "
+                                              "WHERE parent_id IS NULL").fetchone()
                 # PLAN  … WHERE parent_id IS NOT NULL -> SEARCH … USING COVERING INDEX idx_conversations_parent (parent_id>?)
                 strands = cdb.execute("SELECT COUNT(*) FROM conversations WHERE parent_id IS NOT NULL").fetchone()[0]
                 counts["threads"], counts["threads_eval"], counts["strands"] = roots, ev_roots, strands
@@ -668,17 +669,17 @@ def threads(limit: int = 30, include_eval: bool = False) -> dict:
         if cdb is not None:
             # PLAN  SELECT COUNT(*), SUM(title LIKE '[eval]%') FROM conversations WHERE parent_id IS NULL
             #       -> SEARCH conversations USING INDEX idx_conversations_parent (parent_id=?)
-            total, hidden_eval = cdb.execute("SELECT COUNT(*), COALESCE(SUM(title LIKE ? || '%'), 0) FROM conversations "
-                                             "WHERE parent_id IS NULL", (EVAL_TITLE_PREFIX,)).fetchone()
+            total, hidden_eval = cdb.execute(f"SELECT COUNT(*), COALESCE(SUM({EVAL_TITLE_SQL}), 0) FROM conversations "
+                                             "WHERE parent_id IS NULL").fetchone()
             # PLAN  SELECT id FROM conversations -> SCAN conversations USING COVERING INDEX sqlite_autoindex_conversations_1 (4.3k)
             conv_ids = {r[0] for r in cdb.execute("SELECT id FROM conversations")}
-            flt = "" if include_eval else "AND title NOT LIKE ? || '%' "
+            flt = "" if include_eval else f"AND NOT {EVAL_TITLE_SQL} "
             # PLAN  SELECT … FROM conversations WHERE parent_id IS NULL [AND title NOT LIKE ?] ORDER BY updated_at DESC LIMIT ?
             #       -> SEARCH conversations USING INDEX idx_conversations_parent (parent_id=?) + TEMP B-TREE FOR ORDER BY
             #          (4.3k rows, small; conversations has no updated_at index - chat's own thread list reads the same way)
             rows = cdb.execute("SELECT id, title, created_at, updated_at, pinned, tags, project_id FROM conversations "
                                f"WHERE parent_id IS NULL {flt}ORDER BY updated_at DESC LIMIT ?",
-                               ((limit,) if include_eval else (EVAL_TITLE_PREFIX, limit))).fetchall()
+                               (limit,)).fetchall()
             kids: dict[str, list] = {}
             ids = [r["id"] for r in rows]
             for part in _chunks(ids):
@@ -893,6 +894,8 @@ SNAPSHOT_EVENTS_PER_THREAD = 400    # the exporter's per-thread bound (EVENTS_CA
 SNAPSHOT_RECALL_ROWS = 8000
 SNAPSHOT_EVAL_SAMPLE = 6000         # events sampled for eval_share while memory_events(thread_id) is not indexed
 SNAPSHOT_LANDMARKS = 400
+SNAPSHOT_CLAIM_STEPS = 12           # nodes of a claim's traversal the page draws (its steps)
+SNAPSHOT_THREAD_CANDIDATES = 4      # x threads: the wider set the eval-title cut draws from
 SNAPSHOT_EDGES = 3000
 SNAPSHOT_TRAJECTORY_ROWS = 6000
 SNAPSHOT_TRAJECTORY_STEPS = 80
@@ -1010,13 +1013,38 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         where = "" if include_eval else "WHERE thread_id NOT LIKE 'eval-%'"
         ev_want = ("event_id", "ts", "family", "label", "valence", "actor", "evidence", "episode_id", "thread_id", "links",
                    "payload", "topic_domain")
-        ev_rows = con.execute(f"SELECT {pick_cols(ev_cols, ev_want)} FROM memory_events {where} ORDER BY ts DESC LIMIT ?",
-                              (events,)).fetchall() if "memory_events" in have else []
+        chat_path = conv_db if conv_db else (Path(db).with_name("conversations.db") if db else None)
+        eval_convs: Optional[set] = None
+        if not include_eval and ev_thread_idx:
+            with _optional_chat_store(chat_path) as cdb:
+                if cdb is not None:
+                    # PLAN  SELECT id FROM conversations WHERE <eval titles> -> SCAN conversations (5.8k rows, the chat store)
+                    eval_convs = {r[0] for r in cdb.execute(f"SELECT id FROM conversations WHERE {EVAL_TITLE_SQL}")}
+        if eval_convs is not None:
+            # The eval harness runs as chat conversations (conv-NNNN, "[eval] ..."): 2026-10-24, 5,881 of the newest 6,000
+            # events were theirs, so a ts-ordered window held 4 real threads. The newest REAL threads come first, then each
+            # thread's own newest events (warm: 14 ms + 3 ms on the live store; cold 1.5 s).
+            # PLAN  SELECT thread_id, MAX(ts) … GROUP BY thread_id -> SCAN memory_events USING COVERING INDEX
+            #       idx_memory_events_thread_ts + TEMP B-TREE FOR ORDER BY (one entry per thread)
+            newest = [r[0] for r in con.execute(
+                "SELECT thread_id, MAX(ts) AS last FROM memory_events WHERE thread_id NOT LIKE 'eval-%' "
+                "GROUP BY thread_id ORDER BY last DESC") if r[0] and r[0] not in eval_convs]
+            ev_rows = []
+            for t in newest[:threads * SNAPSHOT_THREAD_CANDIDATES]:
+                if len(ev_rows) >= events:
+                    break
+                # PLAN  … WHERE thread_id = ? ORDER BY ts DESC LIMIT ? -> SEARCH … USING INDEX idx_memory_events_thread_ts
+                ev_rows += con.execute(f"SELECT {pick_cols(ev_cols, ev_want)} FROM memory_events WHERE thread_id = ? "
+                                       "ORDER BY ts DESC LIMIT ?", (t, SNAPSHOT_EVENTS_PER_THREAD)).fetchall()
+        else:
+            ev_rows = con.execute(f"SELECT {pick_cols(ev_cols, ev_want)} FROM memory_events {where} ORDER BY ts DESC LIMIT ?",
+                                  (events,)).fetchall() if "memory_events" in have else []
         by_thread: dict[str, list] = {}
         for r in ev_rows:
             if r["thread_id"]:
                 by_thread.setdefault(r["thread_id"], []).append(r)
-        thread_ids = sorted(by_thread, key=lambda t: by_thread[t][0]["ts"], reverse=True)[:threads]
+        thread_ids = sorted(by_thread, key=lambda t: by_thread[t][0]["ts"], reverse=True)
+        thread_ids = thread_ids[:threads if include_eval else threads * SNAPSHOT_THREAD_CANDIDATES]
         if ev_thread_idx:
             # PLAN  SELECT COUNT(*) FROM (SELECT DISTINCT thread_id FROM memory_events)
             #       -> SCAN memory_events USING COVERING INDEX <the thread_id index> (42k entries)
@@ -1026,11 +1054,43 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             warnings.append("sessions counts the threads of the newest events: memory_events(thread_id) is not indexed")
         lap("events")
 
+        # ②b the sessions the page lists. The eval harness runs its tasks as chat conversations titled "[eval] ..." with
+        # ids conv-NNNN: no thread-id prefix names them (2026-10-24: 46 of the 48 sessions of a live snapshot were eval
+        # runs). So the chat-store TITLE decides, on the wider candidate set, BEFORE the cut to `threads`. Everything below
+        # (events, trajectories, episodes, recalls) reads `thread_ids` only: a dropped thread leaves no trace in it.
+        exits: dict[str, Any] = {}
+        titles: dict[str, str] = {}
+        if "caducean_session_exits" in have and thread_ids:
+            # PLAN  … FROM caducean_session_exits WHERE session_id IN (…) LIMIT 2000
+            #       -> SEARCH caducean_session_exits USING INDEX idx_se_session (session_id=?)
+            for part in _chunks(thread_ids):
+                exits.update({r[0]: r for r in con.execute(
+                    f"SELECT session_id, natural_exit, drift, conversation_id FROM caducean_session_exits "
+                    f"WHERE session_id IN ({_marks(len(part))}) LIMIT 2000", part)})
+        with _optional_chat_store(chat_path) as cdb:
+            if cdb is not None:
+                ids = list(thread_ids) + [e[3] for e in exits.values() if e[3]]
+                # PLAN  … FROM conversations WHERE id IN (…) LIMIT 4000
+                #       -> SEARCH conversations USING INDEX sqlite_autoindex_conversations_1 (id=?)
+                for part in _chunks(ids):
+                    for r in cdb.execute(f"SELECT id, title FROM conversations WHERE id IN ({_marks(len(part))}) LIMIT 4000", part):
+                        if r[1]:
+                            titles[r[0]] = r[1]
+
+        def title_of(t: str) -> Optional[str]:
+            x = exits.get(t)
+            return titles.get(t) or (titles.get(x[3]) if x and x[3] else None)
+
+        if not include_eval:
+            thread_ids = [t for t in thread_ids if not _is_eval_thread(t, title_of(t))][:threads]
+        lap("session_titles")
+
         # ③ landmarks that are still live (absorbed ones were merged into a survivor)
         # PLAN  SELECT <cols> FROM mycelium_landmarks WHERE COALESCE(absorbed,0)=0 ORDER BY created_at DESC LIMIT 400
         #       -> SCAN mycelium_landmarks + TEMP B-TREE FOR ORDER BY (3.3k rows, small table)
         lm_want = ("landmark_id", "label", "task_class", "micro_abstract_text", "tier", "is_permanent", "evidence",
-                   "activation_count", "contradictions", "last_activated", "last_verified", "created_at", "conversation_ref")
+                   "activation_count", "contradictions", "last_activated", "last_verified", "created_at", "conversation_ref",
+                   "traversal_sequence")
         lm_rows = con.execute(f"SELECT {pick_cols(lm_cols, lm_want)} FROM mycelium_landmarks {live_sql} "
                               f"ORDER BY created_at DESC LIMIT ?", (SNAPSHOT_LANDMARKS,)).fetchall() if lm_cols else []
         lm_ids = [r["landmark_id"] for r in lm_rows]
@@ -1050,6 +1110,17 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                    "valence": r["valence"], "actor": r["actor"], "evidence": r["evidence"],
                                    "episode": r["episode_id"], "session": t, "domain": r["topic_domain"] or "general",
                                    "landmark": lid if lid in lm_index else None})
+        # the steps of a claim: the nodes its traversal walked, in order, as {space, label}. ONE batched read of the
+        # nodes of all claims together; an id the store no longer holds is skipped.
+        # PLAN  SELECT node_id, space_id, label FROM mycelium_nodes WHERE node_id IN (…)
+        #       -> SEARCH mycelium_nodes USING INDEX sqlite_autoindex_mycelium_nodes_1 (node_id=?)  (the primary key)
+        claim_nodes = {r["landmark_id"]: [x for x in jload(r["traversal_sequence"], []) if isinstance(x, str)][:SNAPSHOT_CLAIM_STEPS]
+                       for r in lm_rows}
+        node_of: dict[str, tuple] = {}
+        if "mycelium_nodes" in have:
+            for part in _chunks(sorted({x for seq in claim_nodes.values() for x in seq})):
+                node_of.update({r[0]: (r[1], r[2]) for r in con.execute(
+                    f"SELECT node_id, space_id, label FROM mycelium_nodes WHERE node_id IN ({_marks(len(part))})", part)})
         landmarks = []
         for r in lm_rows:
             ev: list[dict] = []
@@ -1070,6 +1141,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                               "contradictions": r["contradictions"] or 0,
                               "last_activated": ts_of(r["last_activated"]), "last_verified": ts_of(r["last_verified"]),
                               "born": ts_of(r["created_at"]), "session": r["conversation_ref"], "fams": fams,
+                              "steps": [{"space": node_of[x][0], "label": node_of[x][1]}
+                                        for x in claim_nodes[r["landmark_id"]] if x in node_of],
                               "domain": "general"})  # landmarks carry no domain column yet
         if not any(r["micro_abstract_text"] for r in lm_rows):
             warnings.append("no live landmark has micro_abstract_text")
@@ -1110,7 +1183,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             # the live table names its last change updated_at (last_activity was the exporter's guess): either one
             want = ("sector_key", "parent_key", "label", "status", "members", "outside_evidence", "last_activity", "updated_at")
             # PLAN  … FROM mycelium_sectors WHERE COALESCE(status,'proven') != 'dissolved' LIMIT 200 -> SCAN (19 rows)
-            sectors = [{"key": r["sector_key"], "parent": r["parent_key"] or None, "label": clip(r["label"], 60),
+            sectors = [{"key": r["sector_key"], "parent": r["parent_key"] or None,
+                        "label": clip(r["label"], 60) or r["sector_key"].rsplit("/", 1)[-1],
                         "status": r["status"] or "proven", "members": r["members"] or 0,
                         "evidence": r["outside_evidence"] or 0, "last": ts_of(r["last_activity"] or r["updated_at"])}
                        for r in con.execute(f"SELECT {pick_cols(sec_cols, want)} FROM mycelium_sectors "
@@ -1138,26 +1212,12 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                 steps = traj.setdefault(r[0], [])
                 if len(steps) < SNAPSHOT_TRAJECTORY_STEPS:
                     steps.append({"x": r[1] or 0.0, "y": r[2] or 0.0, "xi": r[3] or 0.0, "u": r[4] or 0.0})
-        exits: dict[str, Any] = {}
-        if "caducean_session_exits" in have and thread_ids:
-            # PLAN  … FROM caducean_session_exits WHERE session_id IN (…) LIMIT 2000
-            #       -> SEARCH caducean_session_exits USING INDEX idx_se_session (session_id=?)
-            exits = {r[0]: r for r in con.execute(f"SELECT session_id, natural_exit, drift, conversation_id "
-                                                  f"FROM caducean_session_exits WHERE session_id IN ({tph}) LIMIT 2000",
-                                                  thread_ids)}
         lap("trajectories")
-        titles: dict[str, str] = {}
         conv_of = {t: (exits[t][3] if t in exits and exits[t][3] else t) for t in thread_ids}
         messages: dict[str, list] = {}
         children: dict[str, list] = {}
-        with _optional_chat_store(conv_db if conv_db else (Path(db).with_name("conversations.db") if db else None)) as cdb:
+        with _optional_chat_store(chat_path) as cdb:
             if cdb is not None:
-                ids = list(thread_ids) + [e[3] for e in exits.values() if e[3]]
-                # PLAN  … FROM conversations WHERE id IN (…) LIMIT 4000
-                #       -> SEARCH conversations USING INDEX sqlite_autoindex_conversations_1 (id=?)
-                for r in cdb.execute(f"SELECT id, title FROM conversations WHERE id IN ({_marks(len(ids))}) LIMIT 4000", ids):
-                    if r[1]:
-                        titles[r[0]] = r[1]
                 # the conversation strands of the tunnel: its messages (a short preview, never the whole text) and the
                 # strands forked from it (parent_id)
                 for t in thread_ids:
@@ -1182,12 +1242,13 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         for t in thread_ids:
             rows = by_thread[t]
             x = exits.get(t)
-            title = titles.get(t) or (titles.get(x[3]) if x and x[3] else None) or pretty_thread(t)
+            chat_title = title_of(t)
+            title = chat_title or pretty_thread(t)
             started, ended = rows[-1]["ts"], rows[0]["ts"]
             live = now - ended < 600
             sessions.append({"id": t, "objective": title, "started": started, "ended": None if live else ended,
                              "exit": "live" if live else ("drift" if x and x[2] and not x[1] else "natural"),
-                             "traj": traj.get(t, []), "eval": t.startswith(EVAL_THREAD_PREFIX), "episodes": [],
+                             "traj": traj.get(t, []), "eval": _is_eval_thread(t, chat_title), "episodes": [],
                              "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, [])})
 
         lap("sessions")
