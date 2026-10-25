@@ -17,6 +17,8 @@ export interface MemoryEngineOptions {
   onError?: (e: unknown) => void;
   /** The memory-native search (GET /api/memory/search). Absent: the engine searches its own model (the demo). */
   search?: (q: string, signal: AbortSignal) => Promise<any>;
+  /** Read the model again (follow mode lost live messages: the model on screen is behind the store). */
+  reload?: () => void;
 }
 
 export interface MemoryEngine {
@@ -24,6 +26,8 @@ export interface MemoryEngine {
   setActive(active: boolean): void;
   /** Fly to a thing: "claim:<id>", "strand:<id>", "thread:<id>", "turn:<conv>:<turn>", "lens:<name>". False: not in this memory. */
   focus(ref: string): boolean;
+  /** A live tap message ({type, payload}: memory_event, landmark_update, oracle_decision); follow mode plays it. */
+  live(msg: { type: string; payload?: any }): void;
   /** Memory is what the user looks at: keep full sharpness, give up frames instead. */
   setFocus(focused: boolean): void;
   /** The governor's state (development). */
@@ -2174,6 +2178,10 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
     for(const m of this.marks){const on=tunnel.sel<0||m.st.li===tunnel.sel||tunnel.linked.has(tunnel.sel+'-'+m.st.li)||tunnel.linked.has(m.st.li+'-'+tunnel.sel);
       m.e.setAttribute('opacity',on?1:.25)}}};
 // where you are, as a path: memory > the view > the territory or session you are in > the claim you hold
+// FOLLOW (owner: on by default, a toggle turns it off) - its state; the tap itself is in section 12. unseen = live
+// moments that arrived while the time cursor was in the past (edge case 22: nothing moves, the "now" chip counts them).
+const follow={on:true,q:[],next:0,missed:0,unseen:0};
+try{follow.on=localStorage.getItem('iris.memory.follow')!=='0'}catch(e){}
 let crumbKey='';
 function updateCrumb(){const parts=['memory'];
   if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
@@ -2182,10 +2190,10 @@ function updateCrumb(){const parts=['memory'];
     if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
     if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
   const when=cursorNow()?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
-  const k=parts.join('|')+'|'+when;if(k===crumbKey)return;crumbKey=k;
+  const k=parts.join('|')+'|'+when+'|'+follow.unseen;if(k===crumbKey)return;crumbKey=k;
   $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
-    (when?`<a class="when" title="return to now">as of ${esc(when)} · now ↻</a>`:'')}
-$('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1}});
+    (when?`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`:'')}
+$('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}});
 function updateStats(fps){const c=M.meta.counts||{};
   $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands<br>`+
   `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
@@ -2384,9 +2392,37 @@ function oracleDecision(){if(!ORC.length)return;const w=ORC.map((o,i)=>[i,o.rows
   const conf=clamp(.5+gauss()*.2+(o.state==='enforced'?.25:0),.05,.99);const acted=o.state==='enforced'||(o.state==='sampled'&&rng()<.05);
   state.secPulse[i]=1;state.pupilT=.75+conf*.6;state.lastDecision={o,conf,acted}}
 state.secPulse=new Array(16).fill(0);state.pupilT=1;state.openT=0;state.focusDimT=0;state.warn=0;
+// FOLLOW: the backend's live taps (backend/utils/memory_live: memory_event, landmark_update, oracle_decision, batched
+// per 250 ms) drive the same effects the demo replay does - on the real memory only, and only what happened. Moments
+// play at most FOLLOW_RATE a second from a bounded queue, so a burst never floods the scene. Lost messages
+// (payload.dropped) are said, with a reload: the model on screen is then behind the store.
+const FOLLOW_Q_MAX=40,FOLLOW_RATE=4;
+const followEl=document.createElement('a');followEl.id='follow';$('hud').appendChild(followEl);
+function drawFollow(){followEl.style.display=USE_REAL?'':'none';
+  followEl.innerHTML=`<span class="dot${follow.on?' on':''}"></span>${follow.on?'following IRIS live':'live paused'} · f`+
+    (follow.missed?` <b title="reload the memory">· missed ${fmt(follow.missed)} · reload</b>`:'')}
+function setFollow(on){follow.on=on;follow.q.length=0;try{localStorage.setItem('iris.memory.follow',on?'1':'0')}catch(e){}drawFollow()}
+followEl.addEventListener('click',e=>{if(follow.missed&&e.target.closest('b')){opts.reload?.();return}setFollow(!follow.on)});
+drawFollow();
+function liveMsg(msg){
+  if(!USE_REAL||!msg)return;const p=msg.payload||{};
+  if(p.dropped>0){follow.missed+=p.dropped;drawFollow()}
+  if(!follow.on)return;
+  if(msg.type==='memory_event'){for(const r of p.events||[]){
+    if(!cursorNow()){follow.unseen++;continue}
+    if(follow.q.length>=FOLLOW_Q_MAX)follow.q.shift();   // the newest moments win
+    follow.q.push({family:r.family,label:r.label,valence:r.valence,actor:r.actor,evidence:r.evidence,
+      domain:String(r.topic_domain||'general').split('/')[0],landmark:r.landmark_id&&M.lmIndex.has(r.landmark_id)?M.lmIndex.get(r.landmark_id):null})}}
+  else if(msg.type==='landmark_update'){for(const u of p.updates||[]){const k=M.lmIndex.get(u.landmark_id);if(k==null||!LM[k])continue;const l=LM[k];
+    if(u.tier)l.tier=u.tier;if(u.activation_count!=null)l.activations=u.activation_count;
+    if(u.kind==='activated'){l.last_activated=u.ts;somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}
+    if(u.kind==='promoted'&&cursorNow()&&cortexShown())pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2)}}
+  else if(msg.type==='oracle_decision'){for(const d of p.decisions||[]){const i=ORC.findIndex(o=>o.consumer===d.consumer);if(i<0)continue;
+    const conf=clamp(+d.confidence||0,0,1);state.secPulse[i]=1;state.pupilT=.75+conf*.6;state.lastDecision={o:ORC[i],conf,acted:d.acted==='enforced'}}}}
 function simulate(dt){
   const t=clock.elapsedTime;
   for(let i=queue.length-1;i>=0;i--)if(queue[i].at<=t){const q=queue.splice(i,1)[0];q.fn()}
+  if(follow.q.length&&t>=follow.next){follow.next=t+1/FOLLOW_RATE;emit(follow.q.shift())}
   // A REAL memory shows only what happened. The replay below invents activity (old moments re-emitted as live, recall
   // chains, promotions that change a claim's tier, corrections, Oracle decisions); it is the demo's stand-in for the
   // live tap and must never run on data/memory.db (found 2026-10-22: the surface showed "remembering this helped" and
@@ -2581,6 +2617,7 @@ addEventListener('keydown',e=>{
   if(['1','2','3','4'].includes(k)&&!e.ctrlKey)setLens(LENSES[+k-1][0]);
   if(k==='/'){e.preventDefault();openSearch()}
   if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
+  if(k==='f'&&USE_REAL)setFollow(!follow.on);
   if(k==='g'&&SCRUB_LENS.has(state.lens)&&!state.inside&&cam.mode==='orbit'){state.scrub=0;state.scrubT=0;state.replay=true}
   if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);
     coreHalo.material.color.copy(BRAND)}},true);
@@ -2865,6 +2902,8 @@ return {
   setActive(a) { _active = !!a; },
   /** Fly to a thing: "claim:<id>", "strand:<id>", "thread:<id>", "turn:<conv>:<turn>", "lens:<name>". False: not in this memory. */
   focus(ref) { try { return focusRef(ref); } catch (e) { console.warn('[memory] focus failed', ref, e); return false; } },
+  /** A live tap message from the backend ({type, payload}: memory_event, landmark_update, oracle_decision). */
+  live(msg) { try { liveMsg(msg); } catch (e) { console.warn('[memory] live message failed', msg?.type, e); } },
   /** Memory is what the user looks at (spotlit, detached): never trade its sharpness for frames. */
   setFocus(f) { _minDpr = f ? _BASE_DPR : Math.min(_BASE_DPR, 0.85); },
   /** The governor's state (development): frame cost, frame cap, resolution. */

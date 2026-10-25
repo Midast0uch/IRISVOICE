@@ -32,6 +32,7 @@ export interface MemorySurfaceProps {
 type Load = { kind: "loading" } | { kind: "ready"; model: MemoryModel | null } | { kind: "resting"; why: string }
 
 const INK = "#d4ecf6", DIM = "#6c8796"
+const LIVE_TYPES = new Set(["memory_event", "landmark_update", "oracle_decision"])
 const LINE: React.CSSProperties = { fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: 11, letterSpacing: ".22em", textTransform: "lowercase" }
 
 /** The synthetic memory draws only on request, in development (?memory=demo). */
@@ -75,6 +76,7 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
         engineRef.current = createMemoryEngine(hostRef.current, {
           data: model ?? undefined,
           search: model ? searchMemory : undefined, // the demo searches its own model
+          reload: () => setAttempt((n) => n + 1),   // follow mode lost live messages: read the model again
           onError: (e) => {
             console.warn("[MemorySurface] the scene stopped:", e)
             setFailed("The memory view needs WebGL2, and it is not available here.")
@@ -126,6 +128,18 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
     const onFocus = () => go(takeMemoryFocus())
     window.addEventListener("iris:memory_focus", onFocus)
     return () => window.removeEventListener("iris:memory_focus", onFocus)
+  }, [ready])
+
+  // Follow mode: the backend's live memory taps (memory_event, landmark_update, oracle_decision) reach the engine,
+  // which plays them on the real memory only, and only while follow is on (the engine keeps that toggle).
+  useEffect(() => {
+    if (!ready) return
+    const onWs = (ev: Event) => {
+      const d = (ev as CustomEvent).detail
+      if (d && LIVE_TYPES.has(d.type)) engineRef.current?.live(d)
+    }
+    window.addEventListener("iris:ws_message", onWs)
+    return () => window.removeEventListener("iris:ws_message", onWs)
   }, [ready])
 
   const retry = useCallback(() => setAttempt((n) => n + 1), [])

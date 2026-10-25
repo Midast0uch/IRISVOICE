@@ -1676,6 +1676,10 @@ export function useIRISWebSocket(
       case "hf_models_list":
       // ── Monitor analytics ─────────────────────────────────────────────────
       case "monitor_analytics_data":
+      // ── Memory live taps (backend/utils/memory_live) → the Memory surface's follow mode ──
+      case "memory_event":
+      case "landmark_update":
+      case "oracle_decision":
       // ── Field updates for side panel cards ─────────────────────────────────
       case "update_field": {
         // Forward to any panel that listens on iris:ws_message

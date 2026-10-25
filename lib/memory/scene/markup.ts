@@ -73,6 +73,13 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #ticker{position:absolute;left:22px;bottom:22px;font-size:11px;line-height:1.8;max-width:46vw}
 .iris-memory #ticker .line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .6s}
 .iris-memory #ticker .line.old{opacity:.32}
+.iris-memory #follow{position:absolute;left:22px;bottom:66px;font-size:9.5px;letter-spacing:.08em;color:var(--faint);cursor:pointer;pointer-events:auto;user-select:none}
+.iris-memory #follow:hover{color:var(--dim)} .iris-memory #follow b{font-weight:400;color:var(--amber)}
+.iris-memory #follow .dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:.7em;vertical-align:1px;border:1px solid var(--faint)}
+.iris-memory #follow .dot.on{background:var(--brand);border-color:var(--brand);box-shadow:0 0 6px var(--brand);animation:iris-mem-live 2.4s ease-in-out infinite}
+.iris-memory #crumb .when.pulse{animation:iris-mem-live 1.2s ease-in-out infinite}
+@keyframes iris-mem-live{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.iris-memory #follow .dot.on,.iris-memory #crumb .when.pulse{animation:none}}
 .iris-memory #ticker .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:.7em;vertical-align:1px}
 .iris-memory #lenses{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:26px;pointer-events:auto}
 .iris-memory #lenses a{font-size:11px;letter-spacing:.22em;color:var(--faint);cursor:pointer;text-transform:lowercase;user-select:none;transition:color .25s}
@@ -113,7 +120,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:12px;color:var(--dim)}
 .iris-memory #lenses a{white-space:nowrap}
 @media (max-width:700px){.iris-memory #lenses{gap:14px;bottom:16px}.iris-memory #lenses a{letter-spacing:.1em}.iris-memory #hint,.iris-memory #stats{display:none}
-  .iris-memory #ticker{max-width:calc(100vw - 32px);left:16px;bottom:48px}.iris-memory #scrub{bottom:104px;width:calc(100vw - 32px)}.iris-memory #brand,.iris-memory #local{left:16px}}
+  .iris-memory #ticker{max-width:calc(100vw - 32px);left:16px;bottom:48px}.iris-memory #follow{left:16px;bottom:92px}.iris-memory #scrub{bottom:104px;width:calc(100vw - 32px)}.iris-memory #brand,.iris-memory #local{left:16px}}
 `;
 
 export const MEMORY_HTML = String.raw`<canvas id="gl"></canvas>
