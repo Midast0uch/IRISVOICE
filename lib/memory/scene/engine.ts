@@ -2143,9 +2143,10 @@ function placeJobLabels(show){JOBS.forEach((g,i)=>{const el=jobLabelEls[i];if(!s
 // each offered option as arcs around the pupil's rim (arc length = probability, the chosen one bright). It returns
 // bright when the Oracle acted; when it only watched, the ray fades.
 const liveSvg=document.createElementNS('http://www.w3.org/2000/svg','svg');liveSvg.id='orclive';$('hud').appendChild(liveSvg);
+const liveLine=document.createElement('div');liveLine.id='orcline';$('hud').appendChild(liveLine);
 function drawLiveDecision(){const d=state.lastDecision,age=d?clock.elapsedTime-d.t:9;
-  if(state.lens!=='oracle'||cam.mode!=='orbit'||!d||d.t==null||age>1.6){if(liveSvg.childNodes.length)liveSvg.innerHTML='';return}
-  const c=project(new V3()),rim=Math.hypot(project(new V3(R*.27,0,0)).x-c.x,project(new V3(R*.27,0,0)).y-c.y);
+  if(state.lens!=='oracle'||cam.mode!=='orbit'||!d||d.t==null||age>4){if(liveSvg.childNodes.length)liveSvg.innerHTML='';liveLine.style.opacity=0;return}
+  const c=project(new V3()),rim=Math.hypot(project(new V3(R*.31,0,0)).x-c.x,project(new V3(R*.31,0,0)).y-c.y);   // just outside the XurOrb
   const th=(d.sec+.5)/NSEC*Math.PI*2+Math.PI/2,s0=project(new V3(Math.cos(th)*R,Math.sin(th)*R,0)),fade=Math.max(0,1-age/1.6);
   const ex=c.x+(s0.x-c.x)*rim/Math.max(1,Math.hypot(s0.x-c.x,s0.y-c.y)),ey=c.y+(s0.y-c.y)*rim/Math.max(1,Math.hypot(s0.x-c.x,s0.y-c.y));
   const k=Math.min(1,age/.25);   // the ray travels in, then (acted) the light comes back out
@@ -2155,7 +2156,11 @@ function drawLiveDecision(){const d=state.lastDecision,age=d?clock.elapsedTime-d
     const a1=a0+sweep,large=sweep>Math.PI?1:0,r=rim+4,on=String(o.name)===String(d.chosen);
     h+=`<path d="M${(c.x+Math.cos(a0)*r).toFixed(1)},${(c.y+Math.sin(a0)*r).toFixed(1)}A${r.toFixed(1)},${r.toFixed(1)} 0 ${large} 1 ${(c.x+Math.cos(a1)*r).toFixed(1)},${(c.y+Math.sin(a1)*r).toFixed(1)}" class="arc${on?' on':''}" style="opacity:${fade*(age>.25?1:age/.25)}"/>`;
     a0=a1+gap}
-  liveSvg.innerHTML=h}
+  liveSvg.innerHTML=age<=1.6?h:'';
+  // the line under the ring: what decided, how sure, whether it acted, its top options (stays a little longer)
+  const key=d.o.consumer+d.t;if(liveLine.dataset.k!==key){liveLine.dataset.k=key;
+    liveLine.innerHTML=`${esc(oracleWord(d.o.consumer))} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}${(d.options||[]).length?'<br>'+d.options.slice(0,3).map(o=>`${esc(String(o.name).replace(/_/g,' '))} ${Math.round((+o.p||0)*100)}%`).join(' · '):''}`}
+  liveLine.style.left=c.x+'px';liveLine.style.top=(c.y+rim+22)+'px';liveLine.style.opacity=Math.max(0,Math.min(1,(4-age)/1.2))}
 function placeRegionLabels(show){
   const c=project(new V3()),edge=project(new V3(R,0,0).applyQuaternion(camera.quaternion));const rs=Math.abs(edge.x-c.x)||200;
   regC.forEach((v,i)=>{const L=regLabelEls[i];const camDir=camera.position.clone().normalize();const vis=show&&v.dot(camDir)>.15;
@@ -2277,7 +2282,8 @@ function setLens(l){
   document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
   const m=state.morphT,v=state.visT;
   const hx=l==='timeline';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
-  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx||l==='oracle'?0:1,
+  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx?0:1,   // the XurOrb stays in the Oracle's centre (owner, 2026-10-25: without it the iris felt still)
+    
     beads:l==='timeline'?1:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:hx?.12:1});
   tissue.on=l==='artifacts';tcv.classList.toggle('on',tissue.on);if(tissue.on){layoutTissue(true);tissue.t=Math.min(tissue.t,.05)}
   $('scrub').classList.toggle('on',SCRUB_LENS.has(l));
@@ -2966,11 +2972,7 @@ const _frame=()=>{
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
   drawLiveDecision();
   drawTissue(dt);
-  if(state.lens==='oracle'&&state.lastDecision&&cam.mode==='orbit'){const d=state.lastDecision;
-    setAnno('decision','dec'+(d.o.consumer+d.conf.toFixed(2)),()=>{const c=project(new V3(0,-R*.4,0));   // below the pupil's rim, clear of the arcs
-    return {x:c.x,y:c.y,front:true}},
-      `<div class="m">${esc(oracleWord(d.o.consumer))} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}${(d.options||[]).length?'<br>'+d.options.slice(0,3).map(o=>`${esc(String(o.name).replace(/_/g,' '))} ${Math.round((+o.p||0)*100)}%`).join(' · '):''}</div>`)}
-  else clearAnno('decision');
+  clearAnno('decision');   // the decision line is drawn under the arc ring by drawLiveDecision
   bloom.strength=.85-state.insideK*.35+sh*.8;
   // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)
   if(Math.abs(renderer.domElement.width-Math.floor(innerWidth*DPR))>2||Math.abs(renderer.domElement.height-Math.floor(innerHeight*DPR))>2){

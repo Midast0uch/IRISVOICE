@@ -87,6 +87,8 @@ export const MEMORY_CSS = String.raw`
 .iris-memory .anno .ladder span{margin-left:4px}
 .iris-memory .anno svg.curve{display:block;margin-top:8px}.iris-memory .anno svg.curve path{fill:none}.iris-memory .anno svg.curve .diag{stroke:rgba(212,236,246,.15);stroke-dasharray:2 3}
 .iris-memory .anno svg.curve .fit{stroke:var(--brand);stroke-width:1.2}.iris-memory .anno svg.curve .notch{stroke:var(--amber);stroke-width:1.5}
+.iris-memory #orcline{position:absolute;transform:translateX(-50%);text-align:center;font-size:10.5px;line-height:1.7;letter-spacing:.04em;color:var(--dim);pointer-events:none;white-space:nowrap;opacity:0;text-shadow:0 0 8px #020306}
+.iris-memory #orcline em{font-style:normal;color:var(--ink)}
 .iris-memory #orclive{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.iris-memory #orclive path{fill:none}
 .iris-memory #orclive .ray{stroke:rgba(212,236,246,.5);stroke-width:1}.iris-memory #orclive .ray.acted{stroke:var(--brand);stroke-width:1.6}
 .iris-memory #orclive .arc{stroke:rgba(212,236,246,.35);stroke-width:3}.iris-memory #orclive .arc.on{stroke:var(--white);stroke-width:4}

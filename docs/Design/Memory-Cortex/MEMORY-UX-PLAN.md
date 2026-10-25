@@ -285,7 +285,9 @@ that is true").
 
 ## 9. The Oracle view — rebuilt on docs/architecture/oracle.md
 
-Rename the lens **oracle**. Keep the iris of fibres (the owner likes it); **remove the XurOrb** from the centre.
+Rename the lens **oracle**. Keep the iris of fibres (the owner likes it). ~~Remove the XurOrb from the centre.~~
+**Owner, 2026-10-25: keep the XurOrb in the centre** - without it the iris looked still and not interactive. A live
+decision's option arcs draw just outside it.
 
 1. **The pupil = d1.** The centre becomes a single dark aperture: "one small local model, ONE question per run, zero
    text — it reads the answer from the logits". Each live decision is drawn as exactly that: a ray from the
