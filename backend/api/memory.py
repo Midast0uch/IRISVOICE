@@ -9,7 +9,8 @@
   GET /api/memory/oracle                           per-consumer state from the bar record + calibration files (no DB)
   GET /api/memory/snapshot?threads=&events=&include_eval=  the whole dashboard model (the exporter's IRIS_MEMORY shape)
   GET /api/memory/search?q=&kinds=&limit=          text search built for memory.db: ranked by the memory's own law (not a recall)
-  POST /api/memory/correct {action, target, reason?}   the user's correction of a claim (confirm | wrong | forget)
+  GET  /api/memory/claims/{id}/uses?limit=         every time the claim was used (newest first; see sq.claim_uses)
+  POST /api/memory/correct {action, target, reason?, confirm?}   the user's correction of a claim, pin or strand
   POST /api/memory/correct/undo {correction_id}        undo it, within 10 minutes, once
   GET  /api/memory/corrections?limit=              the corrections, newest first (backend/memory/corrections.py)
 
@@ -22,7 +23,6 @@ backend/memory/surface_queries.py (read-only connections, LIMIT on every query, 
 through the app's one writer (db.app_write) on the memory interface's connection, in backend/memory/corrections.py. The handlers are plain `def`, so FastAPI runs them on its
 worker thread pool: no store read ever blocks the event loop. Nothing here is on the answer path, writes a row,
 counts as a recall, or returns a message body longer than a preview (a correction is the one deliberate write).
-Not built yet (later phases): pin and strand corrections.
 """
 from __future__ import annotations
 
@@ -87,6 +87,11 @@ def memory_claims(territory: Optional[str] = None, tier: Optional[str] = None, l
 @router.get("/claims/{claim_id}")
 def memory_claim(claim_id: str):
     return _serve("claim", sq.claim, claim_id)
+
+
+@router.get("/claims/{claim_id}/uses")
+def memory_claim_uses(claim_id: str, limit: int = sq.OBSERVED_CAP):
+    return _serve("claim_uses", sq.claim_uses, claim_id, limit=limit)
 
 
 @router.get("/threads")
@@ -385,6 +390,7 @@ class CorrectBody(BaseModel):
     action: Optional[str] = None
     target: Optional[str] = None
     reason: Optional[str] = None
+    confirm: Optional[str] = None       # a purge: the strand id typed again
 
 
 class UndoBody(BaseModel):
@@ -404,7 +410,7 @@ def _store_conn():
 
 @router.post("/correct")
 def memory_correct(body: CorrectBody):
-    return _serve("correct", lambda: corrections.correct(_store_conn(), body.action, body.target, body.reason))
+    return _serve("correct", lambda: corrections.correct(_store_conn(), body.action, body.target, body.reason, body.confirm))
 
 
 @router.post("/correct/undo")

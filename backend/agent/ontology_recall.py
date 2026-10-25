@@ -101,6 +101,18 @@ def _chain_columns(conn) -> set:
         return set()
 
 
+def _forgotten_threads(conn) -> frozenset:
+    """Thread ids whose learning the user told IRIS to forget (corrections.forgotten_strands). THE exclusion hook of
+    recall: filtered_chain_recall and chain_timeline read memory_chain through it. Never raises."""
+    try:
+        from backend.memory.corrections import forgotten_strands  # noqa: PLC0415 - lazy: heavy imports
+
+        return forgotten_strands(conn)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ontology_recall] forgotten strands not read (recall is unfiltered): %s", exc)
+        return frozenset()
+
+
 def _resolve_relationship_ids(
     conn, relationship: str, limit: int
 ) -> List[str]:
@@ -148,6 +160,8 @@ def filtered_chain_recall(
             if c in cols
         ]
         base = "SELECT {} FROM memory_chain".format(", ".join(select_cols) or "*")
+        # A strand the user told IRIS to forget stays in the store (history) but not in recall.
+        gone = sorted(_forgotten_threads(conn)) if "thread_id" in cols else []
 
         def _run(
             rel: Optional[str],
@@ -184,6 +198,9 @@ def filtered_chain_recall(
             if edom is not None:
                 where.append("execution_domain = ?")
                 params.append(edom)
+            if gone:
+                where.append("thread_id NOT IN ({})".format(",".join("?" * len(gone))))
+                params.extend(gone)
             sql = base
             if where:
                 sql += " WHERE " + " AND ".join(where)
@@ -491,7 +508,7 @@ def chain_timeline(conn, thread_id: str, limit: int = TIMELINE_ROWS) -> List[dic
     ``created_at`` (S2). Never raises - a failed read returns [].
     """
     try:
-        if not thread_id or limit < 1:
+        if not thread_id or limit < 1 or thread_id in _forgotten_threads(conn):
             return []
         rows = conn.execute(_TIMELINE_SQL, (thread_id, int(limit))).fetchall()
         keys = ("chain_id", "result", "insight", "nbl_outcome", "created_at")
