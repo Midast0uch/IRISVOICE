@@ -9,16 +9,20 @@
   GET /api/memory/oracle                           per-consumer state from the bar record + calibration files (no DB)
   GET /api/memory/snapshot?threads=&events=&include_eval=  the whole dashboard model (the exporter's IRIS_MEMORY shape)
   GET /api/memory/search?q=&kinds=&limit=          text search built for memory.db: ranked by the memory's own law (not a recall)
+  POST /api/memory/correct {action, target, reason?}   the user's correction of a claim (confirm | wrong | forget)
+  POST /api/memory/correct/undo {correction_id}        undo it, within 10 minutes, once
+  GET  /api/memory/corrections?limit=              the corrections, newest first (backend/memory/corrections.py)
 
 The snapshot is single-flight and kept SNAPSHOT_TTL_S: concurrent requests share one computation, and
 start_snapshot_warmup() (called once the app is ready) fills the cache while nobody waits (2026-10-21: the first call
 after a backend start took > 300 s on the cold hard disk, the next 1.0 s). meta.generated tells the age of a result.
 
-Read-only by construction: every SQL statement lives in backend/memory/surface_queries.py (read-only
-connections, LIMIT on every query, index-backed). The handlers are plain `def`, so FastAPI runs them on its
+Read-only by construction, except the corrections: every SQL statement of a read lives in
+backend/memory/surface_queries.py (read-only connections, LIMIT on every query, index-backed); a correction writes
+through the app's one writer (db.app_write) on the memory interface's connection, in backend/memory/corrections.py. The handlers are plain `def`, so FastAPI runs them on its
 worker thread pool: no store read ever blocks the event loop. Nothing here is on the answer path, writes a row,
-counts as a recall, or returns a message body longer than a preview. Not built yet (later phases): corrections,
-live WebSocket taps.
+counts as a recall, or returns a message body longer than a preview (a correction is the one deliberate write).
+Not built yet (later phases): pin and strand corrections.
 """
 from __future__ import annotations
 
@@ -35,7 +39,9 @@ from typing import Any, Callable, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
+from backend.memory import corrections
 from backend.memory import surface_queries as sq
 
 logger = logging.getLogger(__name__)
@@ -55,6 +61,8 @@ def _serve(route: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> JSO
         return JSONResponse({"error": "not found", "id": str(exc)}, status_code=404)
     except sq.BadRequest as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    except corrections.CorrectionError as exc:
+        return JSONResponse({"error": exc.message}, status_code=exc.status)
     except sq.StoreUnavailable as exc:
         logger.warning("[memory_api] ref=%s route=%s store unavailable: %s", ref, route, exc)
         return JSONResponse({"error": "the memory is resting", "ref": ref}, status_code=503)
@@ -240,3 +248,40 @@ def memory_search(q: str = "", kinds: Optional[str] = None, limit: int = sq.SEAR
 @router.get("/oracle")
 def memory_oracle():
     return _serve("oracle", oracle_summary)
+
+
+class CorrectBody(BaseModel):
+    """Every field optional here: a missing or wrong one is the correction's own 400, not a 422."""
+    action: Optional[str] = None
+    target: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class UndoBody(BaseModel):
+    correction_id: Optional[str] = None
+
+
+def _store_conn():
+    """The app memory connection every other writer uses (the memory interface's mycelium connection). Tests replace it."""
+    from backend.agent.ontology_recall import resolve_mycelium_conn  # noqa: PLC0415 - lazy: the agent package is heavy
+    from backend.memory import get_memory_interface  # noqa: PLC0415
+
+    conn = resolve_mycelium_conn(get_memory_interface())
+    if conn is None:
+        raise sq.StoreUnavailable("no memory store is open")
+    return conn
+
+
+@router.post("/correct")
+def memory_correct(body: CorrectBody):
+    return _serve("correct", lambda: corrections.correct(_store_conn(), body.action, body.target, body.reason))
+
+
+@router.post("/correct/undo")
+def memory_correct_undo(body: UndoBody):
+    return _serve("correct_undo", lambda: corrections.undo(_store_conn(), body.correction_id))
+
+
+@router.get("/corrections")
+def memory_corrections(limit: int = corrections.LIST_LIMIT_DEFAULT):
+    return _serve("corrections", lambda: corrections.list_corrections(_store_conn(), limit))

@@ -202,6 +202,34 @@ def add_landmark_evidence(conn, landmark_id: str, kind: str, ref: str = "",
     return new_tier
 
 
+def contradict_landmark(conn, landmark_id: str, reason: str) -> Optional[str]:
+    """ONE contradiction of ONE live landmark (the user says it is wrong). contradictions + 1;
+    a proven ('landmark') or stale claim drops to 'candidate' - it is learning again, and
+    Kyudo (integrity.py) no longer counts it proven. A candidate or demoted claim keeps its
+    tier. The reason joins falsify_if the way demote_landmarks_for_thread writes it. The
+    caller types the event (the correction is the event). Returns the new tier, None when
+    the landmark is unknown or absorbed."""
+    ensure_landmark_policy_columns(conn)
+    app_write(
+        conn,
+        "UPDATE mycelium_landmarks SET contradictions = COALESCE(contradictions, 0) + 1, "
+        "tier = CASE WHEN COALESCE(tier, 'candidate') IN ('landmark', 'stale') THEN 'candidate' "
+        "ELSE COALESCE(tier, 'candidate') END, "
+        "falsify_if = COALESCE(falsify_if, '') || ? WHERE landmark_id = ? AND absorbed IS NULL",
+        (f" | contradicted: {reason[:120]}", landmark_id),
+    )
+    app_flush()
+    row = conn.execute(
+        "SELECT tier FROM mycelium_landmarks WHERE landmark_id = ? AND absorbed IS NULL", (landmark_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    tier = row[0] or "candidate"
+    logger.info("[landmark] user contradiction landmark=%s tier=%s", landmark_id, tier)
+    memory_live.landmark_update(landmark_id, "demoted", tier=tier)
+    return tier
+
+
 def mark_landmarks_stale_by_dependency(conn, path: str) -> int:
     """A changed dependency: a 'landmark' becomes 'stale' (flagged, re-checked)."""
     ensure_landmark_policy_columns(conn)
