@@ -824,6 +824,49 @@ const xurMat=new THREE.ShaderMaterial({uniforms:{...U,uBrand:{value:BRAND},uVis:
     gl_FragColor=vec4(mix(uBrand,vec3(1.),.35),smoothstep(.5,0.,d)*vA*uVis);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const xur=new THREE.Points(xurGeo,xurMat);xur.frustumCulled=false;cortex.add(xur);
+// THE ORACLE'S PUPIL (owner 2026-10-25: the XurOrb looked out of place in the iris; the centre needs its own form).
+// The iris's fibres continue inward as rings of fine particles that turn against each other like the blades of an
+// aperture and breathe. A live decision opens it: the outer band stops turning and its particles gather into one arc
+// per offered option - arc length = probability, the chosen one bright - so the distribution is drawn by the pupil
+// itself (UX-PLAN 9.1: d1 reads the answer from its scores). All motion is in the shader; the CPU sets uniforms only.
+const PUPIL_N=1600;
+const pR=new Float32Array(PUPIL_N),pU=new Float32Array(PUPIL_N),pS=new Float32Array(PUPIL_N),pRnd=new Float32Array(PUPIL_N);
+for(let i=0;i<PUPIL_N;i++){const ring=Math.floor(rng()*7);pR[i]=clamp((ring+.25+rng()*.5)/7,0,1);pU[i]=rng();
+  pS[i]=(ring%2?-1:1)*(.05+.03*ring)*(.85+rng()*.3);pRnd[i]=rng()}
+const pupilGeo=new THREE.BufferGeometry();pupilGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(PUPIL_N*3),3));
+pupilGeo.setAttribute('aR',new THREE.BufferAttribute(pR,1));pupilGeo.setAttribute('aU',new THREE.BufferAttribute(pU,1));
+pupilGeo.setAttribute('aS',new THREE.BufferAttribute(pS,1));pupilGeo.setAttribute('aRnd',new THREE.BufferAttribute(pRnd,1));
+const PU={uVis:{value:0},uDil:{value:1},uDec:{value:0},uRP:{value:R*.26},uArcA:{value:new Array(8).fill(0)},uArcB:{value:new Array(8).fill(0)},
+  uArcOn:{value:new Array(8).fill(0)},uArcN:{value:0},uActed:{value:0}};
+const pupilMat=new THREE.ShaderMaterial({uniforms:{...U,...PU,uBrand:{value:BRAND}},
+  vertexShader:`uniform float uTime,uPix,uVis,uDil,uDec,uRP,uActed;uniform float uArcA[8],uArcB[8],uArcOn[8];uniform int uArcN;
+    attribute float aR,aU,aS,aRnd;varying float vA;varying float vHot;
+    void main(){
+      float outer=step(.72,aR);
+      float breath=1.+.05*sin(uTime*.55+aRnd*6.2832);
+      float rad=(.16+.84*aR)*breath*uDil;
+      float spin=aU*6.2832+uTime*aS;
+      float hot=0.,inArc=0.;
+      for(int i=0;i<8;i++){if(i>=uArcN)break;if(aU>=uArcA[i]&&aU<uArcB[i]){inArc=1.;hot=uArcOn[i];}}
+      float d=uDec*outer;                                  // the outer band answers the decision
+      float ang=mix(spin,aU*6.2832+1.5708,d);              // ... it stops turning and stands in its arc
+      rad+=d*(.06+.08*hot);
+      vec3 pos=vec3(cos(ang)*rad*uRP,sin(ang)*rad*uRP,(aRnd-.5)*uRP*.06);
+      vec4 mv=modelViewMatrix*vec4(pos,1.);
+      float a=mix(.22,.5,aR)*(.75+.25*sin(uTime*1.3+aRnd*9.));
+      a=mix(a,inArc*(.28+.32*hot)+(1.-inArc)*.04,d);   // low glare: the arc reads by shape, not by blaze
+      vA=a*uVis;vHot=d*hot*(.35+.25*uActed);
+      gl_PointSize=min((1.3+.9*vHot)*uPix*(95./-mv.z),4.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`uniform vec3 uBrand;varying float vA;varying float vHot;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    gl_FragColor=vec4(mix(mix(uBrand,vec3(1.),.25),vec3(1.),vHot),smoothstep(.5,0.,d)*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const pupil=new THREE.Points(pupilGeo,pupilMat);pupil.frustumCulled=false;cortex.add(pupil);
+// the pupil's live state: when the last decision came, its arcs, and the recent decisions (for its hover line)
+const pupilLive={t:-9,recent:[]};
+function pupilDecision(d){const ops=(d.options&&d.options.length?d.options:[{name:String(d.chosen??''),p:d.conf}]).slice(0,8);
+  let cum=0;const gap=.012;ops.forEach((o,i)=>{const pv=clamp(+o.p||0,0,1);PU.uArcA.value[i]=cum+gap/2;PU.uArcB.value[i]=cum+Math.max(gap/2,pv-gap/2);
+    PU.uArcOn.value[i]=String(o.name)===String(d.chosen)?1:.35;cum+=pv});PU.uArcN.value=ops.length;PU.uActed.value=d.acted?1:0;
+  pupilLive.t=clock.elapsedTime;pupilLive.recent.push(nowS());if(pupilLive.recent.length>200)pupilLive.recent.shift()}
 const xurPhase=[0,0,0];
 const xurTilt=[new THREE.Euler(.5,.2,0),new THREE.Euler(-.4,.9,.3),new THREE.Euler(1.2,-.3,.5)];
 const xurQ=xurTilt.map(e=>new THREE.Quaternion().setFromEuler(e));
@@ -2146,16 +2189,11 @@ const liveSvg=document.createElementNS('http://www.w3.org/2000/svg','svg');liveS
 const liveLine=document.createElement('div');liveLine.id='orcline';$('hud').appendChild(liveLine);
 function drawLiveDecision(){const d=state.lastDecision,age=d?clock.elapsedTime-d.t:9;
   if(state.lens!=='oracle'||cam.mode!=='orbit'||!d||d.t==null||age>4){if(liveSvg.childNodes.length)liveSvg.innerHTML='';liveLine.style.opacity=0;return}
-  const c=project(new V3()),rim=Math.hypot(project(new V3(R*.31,0,0)).x-c.x,project(new V3(R*.31,0,0)).y-c.y);   // just outside the XurOrb
+  const c=project(new V3()),rim=Math.hypot(project(new V3(R*.4,0,0)).x-c.x,project(new V3(R*.4,0,0)).y-c.y);   // outside the opened pupil
   const th=(d.sec+.5)/NSEC*Math.PI*2+Math.PI/2,s0=project(new V3(Math.cos(th)*R,Math.sin(th)*R,0)),fade=Math.max(0,1-age/1.6);
   const ex=c.x+(s0.x-c.x)*rim/Math.max(1,Math.hypot(s0.x-c.x,s0.y-c.y)),ey=c.y+(s0.y-c.y)*rim/Math.max(1,Math.hypot(s0.x-c.x,s0.y-c.y));
   const k=Math.min(1,age/.25);   // the ray travels in, then (acted) the light comes back out
   let h=`<path d="M${s0.x.toFixed(1)},${s0.y.toFixed(1)}L${(s0.x+(ex-s0.x)*k).toFixed(1)},${(s0.y+(ey-s0.y)*k).toFixed(1)}" class="ray${d.acted?' acted':''}" style="opacity:${(d.acted?1:.55)*fade}"/>`;
-  const opts_=d.options.length?d.options:[{name:String(d.chosen??''),p:d.conf}];let a0=-Math.PI/2;const gap=.03;
-  for(const o of opts_){const sweep=Math.max(0,(+o.p||0)*Math.PI*2-gap);if(sweep<.01){a0+=(+o.p||0)*Math.PI*2;continue}
-    const a1=a0+sweep,large=sweep>Math.PI?1:0,r=rim+4,on=String(o.name)===String(d.chosen);
-    h+=`<path d="M${(c.x+Math.cos(a0)*r).toFixed(1)},${(c.y+Math.sin(a0)*r).toFixed(1)}A${r.toFixed(1)},${r.toFixed(1)} 0 ${large} 1 ${(c.x+Math.cos(a1)*r).toFixed(1)},${(c.y+Math.sin(a1)*r).toFixed(1)}" class="arc${on?' on':''}" style="opacity:${fade*(age>.25?1:age/.25)}"/>`;
-    a0=a1+gap}
   liveSvg.innerHTML=age<=1.6?h:'';
   // the line under the ring: what decided, how sure, whether it acted, its top options (stays a little longer)
   const key=d.o.consumer+d.t;if(liveLine.dataset.k!==key){liveLine.dataset.k=key;
@@ -2282,7 +2320,7 @@ function setLens(l){
   document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
   const m=state.morphT,v=state.visT;
   const hx=l==='timeline';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
-  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx?0:1,   // the XurOrb stays in the Oracle's centre (owner, 2026-10-25: without it the iris felt still)
+  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx||l==='oracle'?0:1,   // the Oracle has its own centre: the pupil (owner, 2026-10-25)
     
     beads:l==='timeline'?1:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:hx?.12:1});
   tissue.on=l==='artifacts';tcv.classList.toggle('on',tissue.on);if(tissue.on){layoutTissue(true);tissue.t=Math.min(tissue.t,.05)}
@@ -2517,7 +2555,8 @@ function liveMsg(msg){
     if(u.kind==='promoted'&&cursorNow()&&cortexShown())pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2)}}
   else if(msg.type==='oracle_decision'){for(const d of p.decisions||[]){const i=ORC.findIndex(o=>o.consumer===d.consumer);if(i<0)continue;
     const conf=clamp(+d.confidence||0,0,1);state.secPulse[i]=1;state.pupilT=.75+conf*.6;
-    state.lastDecision={o:ORC[i],sec:i,conf,acted:d.acted==='enforced',chosen:d.chosen,options:Array.isArray(d.options)?d.options:[],t:clock.elapsedTime}}}}
+    state.lastDecision={o:ORC[i],sec:i,conf,acted:d.acted==='enforced',chosen:d.chosen,options:Array.isArray(d.options)?d.options:[],t:clock.elapsedTime};
+    pupilDecision(state.lastDecision)}}}
 function simulate(dt){
   const t=clock.elapsedTime;
   for(let i=queue.length-1;i>=0;i--)if(queue[i].at<=t){const q=queue.splice(i,1)[0];q.fn()}
@@ -2635,6 +2674,10 @@ function hover(x,y){
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
     if(ray.ray.intersectPlane(new THREE.Plane(new V3(0,0,1),0),p)){const r=p.length();
+      if(r<=R*.28){state.hoverSec=-1;skinMat.uniforms.uHoverSec.value=-1;canvas.style.cursor='help';
+        const n=pupilLive.recent.filter(t=>nowS()-t<60).length;
+        setAnno('hover','pupil'+n,()=>{const c=project(new V3());return {x:c.x,y:c.y,front:true}},`<div class="k">the Oracle</div><div class="t">one small model, on this machine</div>
+          <div class="m">it answers ONE question per decision, and reads its answer from its own scores - no text<br>it opens when it decides: each arc is an option, as long as how likely it found it<br>${n?`<em>${fmt(n)}</em> decision${n===1?'':'s'} in the last minute`:'no decision in the last minute'}</div>`);return}
       if(r>R*.28&&r<R*1.1){let a=Math.atan2(p.y,p.x)-Math.PI/2;a=((a%(Math.PI*2))+Math.PI*2)%(Math.PI*2);const sec=Math.floor(a/(Math.PI*2)*NSEC)%NSEC;
         state.hoverSec=sec;skinMat.uniforms.uHoverSec.value=sec;canvas.style.cursor='pointer';
         if(state.focusSec!==sec)setAnno('hover','sec'+sec,()=>secAnchor(sec),oracleCard(ORC[sec],false),{hot:ORC[sec].state==='enforced'});else clearAnno('hover');return}}
@@ -2970,6 +3013,9 @@ const _frame=()=>{
   placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
+  {const age=clock.elapsedTime-pupilLive.t;   // up in .35 s, held, back to turning by 3 s
+    PU.uDec.value=age<.35?age/.35:age<2.2?1:Math.max(0,1-(age-2.2)/.8);
+    PU.uVis.value=state.morph.i*(1-(state.insideK||0));PU.uDil.value=lerp(PU.uDil.value,1+.22*PU.uDec.value,1-Math.pow(.02,dt))}
   drawLiveDecision();
   drawTissue(dt);
   clearAnno('decision');   // the decision line is drawn under the arc ring by drawLiveDecision
