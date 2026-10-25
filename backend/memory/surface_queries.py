@@ -1568,11 +1568,27 @@ def _squash(v: Any) -> str:
     return " ".join(str(v).split()) if v else ""
 
 
+# a word joined in camelCase is words: "ImportError" -> "Import Error", "HTTPServer" -> "HTTP Server"
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z][a-z])|(?<=[A-Z])(?=[A-Z][a-z])")   # a capital that starts a lowercase run
+
+
 def _fold(s: str) -> str:
-    """Case- and accent-insensitive form; '_' reads as a space (labels, tool names). Keeps the length for ASCII."""
+    """Case- and accent-insensitive form; '_' reads as a space (labels, tool names), and so does a camelCase join
+    (2026-10-25: "import error" found no claim saying "ImportError" - "error" never started a word). Keeps the length
+    for ASCII except one space per camelCase join; _orig_pos maps a position back."""
     if not s.isascii():
         s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
-    return s.lower().replace("_", " ")
+    return _CAMEL_RE.sub(" ", s).lower().replace("_", " ")
+
+
+def _orig_pos(orig: str, pos: int) -> int:
+    """A position in _fold(orig) as a position in orig (the camelCase joins _fold opened up are taken out)."""
+    k = 0
+    for m in _CAMEL_RE.finditer(orig):
+        if m.start() + k >= pos:
+            break
+        k += 1
+    return pos - k
 
 
 def _utc_midnight(date_text: str) -> Optional[float]:
@@ -1735,7 +1751,7 @@ def _score(terms: list[tuple], fields: list[tuple]) -> Optional[tuple[float, str
                 continue
             s = w * (1.0 if phrase or not m.group(1) else 0.85)
             if s > best:
-                best, where = s, (orig, m.start())
+                best, where = s, (orig, _orig_pos(orig, m.start()))
         if best == 0.0:
             return None
         total += best

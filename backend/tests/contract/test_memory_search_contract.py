@@ -240,6 +240,20 @@ def test_words_are_and_prefix_case_and_accent_insensitive(env):
     assert "C_USER" not in _ids(env.find("ploy", kinds="claim"))                           # a word PREFIX, not a substring
 
 
+def test_a_camelcase_word_is_its_words(env):
+    """2026-10-25, live: "import error" found no claim saying "ImportError" ("error" never started a word); the claims
+    of the eval tasks name errors and classes this way. The snippet still shows the original text."""
+    con = sqlite3.connect(env.mem)
+    _claim(con, "C_CAMEL", "Running python app.py fails with an ImportError. Fix the shapes package.")
+    con.commit()
+    con.close()
+    d = env.find("import error", kinds="claim")
+    hit = next(r for r in d["results"] if r["id"] == "C_CAMEL")
+    assert "ImportError" in hit["snippet"] or "ImportError" in hit["title"]
+    assert "C_CAMEL" in _ids(env.find("ImportError", kinds="claim"))               # the query splits the same way
+    assert "C_USER" not in _ids(env.find("ploy", kinds="claim"))                     # still a word PREFIX, not a substring
+
+
 def test_a_quoted_phrase_is_exact(env):
     words = _ids(env.find("blue pipeline", kinds="claim"))
     phrase = _ids(env.find('"blue pipeline"', kinds="claim"))
