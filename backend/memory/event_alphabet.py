@@ -178,6 +178,10 @@ _SEED = [
     ("LANDMARK_MERGED", "memory", "neutral", "agent", "duplicate landmarks were absorbed into a survivor"),
     # the user's own forget (POST /api/memory/correct): absorbed with the reason "forgotten by you", row kept
     ("CLAIM_FORGOTTEN", "memory", "sets_back", "user", "the user told IRIS to forget a claim; it is absorbed, the row is kept"),
+    # the user's own pin / strand corrections (corrections.py): each event holds the prior state, so an undo needs no table
+    ("PIN_CORRECTED", "memory", "neutral", "user", "the user pinned, unpinned, held or released a pin"),
+    ("STRAND_LEARNING_FORGOTTEN", "memory", "sets_back", "user", "the user told IRIS to forget what it learned in a strand; recall leaves the strand out"),
+    ("STRAND_PURGED", "memory", "sets_back", "user", "the user removed the text of a strand's memory rows; ids and links stay"),
     ("MEMORY_PRUNED", "memory", "sets_back", "agent", "orphan or dangling memory rows were removed or re-pointed"),
     ("CHAIN_CREATED", "memory", "advances", "agent", "a node chain crystallized"),
     ("CHAIN_VARIANT", "memory", "advances", "agent", "a proven pivot became a variant"),

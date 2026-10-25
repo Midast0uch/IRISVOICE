@@ -231,6 +231,7 @@ class PinStore:
         """Update an existing pin by ID. Returns True if a row was updated."""
         if not fields:
             return False
+        stamp = fields.pop("updated_at", None)  # an undo puts the prior stamp back; every other caller leaves it None
 
         json_cols = {"tags", "file_refs", "image_refs", "url_refs"}
         allowed = {
@@ -252,7 +253,7 @@ class PinStore:
             return False
 
         sets.append("updated_at = ?")
-        vals.append(time.time())
+        vals.append(time.time() if stamp is None else stamp)
         vals.append(pin_id)
 
         # One writer: rowcount is only truthiness here, so check the row first
@@ -291,6 +292,37 @@ class PinStore:
             self._notify_write()
             return True
         return False
+
+    def restore(self, pin: Dict[str, Any], links: Sequence[Dict[str, Any]] = ()) -> bool:
+        """Put a deleted pin back exactly (the undo of ``delete``): same id, stamps and link rows.
+        ``pin`` is ``Pin.to_dict()``, ``links`` the rows ``delete`` removed. False when the id is taken."""
+        app_flush()
+        if self._conn.execute(
+            f"SELECT 1 FROM {_PIN_TABLE} WHERE pin_id = ?", (pin["pin_id"],)
+        ).fetchone() is not None:
+            return False
+        app_write(
+            self._conn,
+            f"INSERT INTO {_PIN_TABLE} ({_PIN_COLS}) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                pin["pin_id"], pin["title"], pin["pin_type"], pin["content"],
+                json.dumps(list(pin["tags"])), json.dumps(list(pin["file_refs"])),
+                json.dumps(list(pin["image_refs"])), json.dumps(list(pin["url_refs"])),
+                pin["project_id"], pin["origin_id"], pin["created_at"], pin["updated_at"],
+                1 if pin["is_permanent"] else 0,
+            ),
+        )
+        for ln in links:
+            app_write(
+                self._conn,
+                "INSERT INTO mycelium_pin_links (link_id, source_type, source_id, target_type, "
+                "target_id, relationship, weight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ln["link_id"], ln["source_type"], ln["source_id"], ln["target_type"],
+                 ln["target_id"], ln["relationship"], ln["weight"], ln["created_at"]),
+            )
+        self._notify_write()
+        return True
 
     def link(
         self,

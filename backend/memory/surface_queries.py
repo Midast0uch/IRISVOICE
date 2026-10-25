@@ -86,6 +86,7 @@ REFS_PER_RECALL = 5         # the exporter's bound
 WINDOW_SCAN_CAP = 6000      # rows of the ts window a strand-events scan may read
 EVIDENCE_SHOWN = 100        # entries of one claim's evidence in the detail view
 OBSERVED_CAP = 50
+USES_MAX = 100              # "every time it was used": rows one call returns
 EDGES_CAP = 50
 MERGE_HOPS = 8
 OUTSIDE_RECENT_STEPS = 3000
@@ -589,6 +590,47 @@ def claim(landmark_id: str) -> dict:
                                  "at": ts_of(o["created_at"])})
         out["observed_in"] = observed
     return out
+
+
+def claim_uses(landmark_id: str, limit: int = OBSERVED_CAP) -> dict:
+    """Every time a claim was used, newest first: {"uses": [{ts, thread, turn, episode, outcome, step}], "total"}.
+
+    The truest record that names a claim is mycelium_episode_index (episode_id, session_id, landmark_id, created_at):
+    one row per episode stored while the claim was in play (indexed by landmark_id; Kyudo re-points a merged
+    claim's rows to its survivor). It names the THREAD (session_id) and the moment, never the turn or the step: no
+    writer records the turn that was given a claim (RECALL_DELIVERED names chain ids; see NOT DERIVABLE above), so
+    `turn` is read from an episode id of the form "<conversation>:<turn>" and is null otherwise, and `step` is null.
+    `outcome` is the user's own verdict on the episode (episodes.user_confirmed -> helped, user_corrected -> misled);
+    null when the user said nothing - never the episode's success flag, which means only "did not fail"."""
+    limit = max(1, min(int(limit), USES_MAX))
+    with read_only(memory_db_path()) as con:
+        # PLAN  SELECT 1 FROM mycelium_landmarks WHERE landmark_id = ? -> SEARCH … USING COVERING INDEX sqlite_autoindex_…_1
+        if not table_cols(con, "mycelium_landmarks") or con.execute(
+                "SELECT 1 FROM mycelium_landmarks WHERE landmark_id = ?", (landmark_id,)).fetchone() is None:
+            raise NotFound(landmark_id)
+        if not {"landmark_id", "episode_id", "session_id", "created_at"} <= table_cols(con, "mycelium_episode_index"):
+            return {"uses": [], "total": 0}
+        # PLAN  SELECT COUNT(*) … WHERE landmark_id = ? -> SEARCH mycelium_episode_index USING COVERING INDEX idx_epindex_landmark (landmark_id=?)
+        total = con.execute("SELECT COUNT(*) FROM mycelium_episode_index WHERE landmark_id = ?", (landmark_id,)).fetchone()[0]
+        # PLAN  … WHERE landmark_id = ? ORDER BY created_at DESC LIMIT ?
+        #       -> SEARCH mycelium_episode_index USING INDEX idx_epindex_landmark (landmark_id=?) + TEMP B-TREE FOR ORDER BY
+        rows = con.execute("SELECT episode_id, session_id, created_at FROM mycelium_episode_index WHERE landmark_id = ? "
+                           "ORDER BY created_at DESC LIMIT ?", (landmark_id, limit)).fetchall()
+        verdict: dict[str, str] = {}
+        if rows and {"id", "user_confirmed", "user_corrected"} <= table_cols(con, "episodes"):
+            # PLAN  … WHERE id IN (…) -> SEARCH episodes USING INDEX sqlite_autoindex_episodes_1 (id=?)
+            for r in con.execute(f"SELECT id, user_confirmed, user_corrected FROM episodes WHERE id IN "
+                                 f"({_marks(len(rows))})", [r[0] for r in rows]):
+                if r[2]:
+                    verdict[r[0]] = "misled"
+                elif r[1]:
+                    verdict[r[0]] = "helped"
+    uses = []
+    for episode, thread, at in rows:
+        conv, _, turn = (episode or "").partition(":")
+        uses.append({"ts": ts_of(at), "thread": thread, "turn": turn if turn and conv == thread else None,
+                     "episode": episode, "outcome": verdict.get(episode), "step": None})
+    return {"uses": uses, "total": total}
 
 
 # ── shapes shared by strand and turn ─────────────────────────────────────────────────────────────
