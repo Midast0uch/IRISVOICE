@@ -2586,11 +2586,46 @@ state.secPulse=new Array(MAXSEC).fill(0);state.pupilT=1;state.openT=0;state.focu
 const FOLLOW_Q_MAX=40,FOLLOW_RATE=4;
 const followEl=document.createElement('a');followEl.id='follow';$('hud').appendChild(followEl);
 function drawFollow(){followEl.style.display=USE_REAL?'':'none';
-  followEl.innerHTML=`<span class="dot${follow.on?' on':''}"></span>${follow.on?'following IRIS live':'live paused'} · f`+
+  followEl.innerHTML=`<span class="dot${follow.on?' on':''}"></span>${follow.on?'following IRIS live':'live paused'} · f <i data-replay title="play the newest recorded turn again (r)">· replay the last turn</i>`+
     (follow.missed?` <b title="reload the memory">· missed ${fmt(follow.missed)} · reload</b>`:'')}
 function setFollow(on){follow.on=on;follow.q.length=0;try{localStorage.setItem('iris.memory.follow',on?'1':'0')}catch(e){}drawFollow()}
-followEl.addEventListener('click',e=>{if(follow.missed&&e.target.closest('b')){opts.reload?.();return}setFollow(!follow.on)});
+followEl.addEventListener('click',e=>{if(e.target.closest('[data-replay]')){replayTurn();return}if(follow.missed&&e.target.closest('b')){opts.reload?.();return}setFollow(!follow.on)});
 drawFollow();
+// THE LIVE GRAMMAR (UX-PLAN 6.3, phase 6): one direction per kind of act, the same in every view.
+//   memory delivered to a step (RECALL_DELIVERED / USED)  INWARD   a spark from the claim (or its territory) to the core
+//   a step records a moment                             OUTWARD  a spark from the core to its territory (emit)
+//   recall verified (RECALL_HELPED) / misled            a quiet ring on the claim / its desync glitch
+//   a claim promoted / dissolved                        graduation ring / it loosens and fades (landmark_update)
+//   the Oracle decides                                  RAY in the Oracle view; elsewhere a ticker line only
+// At most FX_MAX effects at once: the rest are said in the ticker only, so nothing builds up. Follow mode also moves
+// the camera like an operator: after 20 s without input, the cortex turns toward where IRIS touches memory.
+const FX_MAX=6;const fx={live:0};
+function fxTake(dur){if(fx.live>=FX_MAX)return false;fx.live++;setTimeout(()=>{fx.live=Math.max(0,fx.live-1)},(dur||1.8)*1000);return true}
+function followCamera(e){if(!follow.on||cam.mode!=='orbit'||state.lens!=='cortex'||state.inside||cam.tween||cam.idle<20)return;
+  const v=regC[regOf(e.domain||'general')].clone().normalize();cam.azT=cam.az+angWrap(Math.atan2(v.x,v.z)-cam.az);cam.elT=clamp(Math.asin(clamp(v.y,-1,1))*.8,-1,1)}
+function liveEmit(e){
+  const k=e.landmark!=null&&e.landmark<NL?e.landmark:-1;followCamera(e);
+  if(e.label==='RECALL_DELIVERED'||e.label==='RECALL_USED'){tick(e);   // INWARD: memory -> mind
+    if(!cortexShown()||!fxTake())return;const from=k>=0?somaWorld(k):regionPoint(regOf(e.domain||'general'));
+    if(k>=0){somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}
+    spark(from,from.clone().multiplyScalar(.1),FAM[FAMI.memory].color,{speed:.85,gain:.35+(EVID[e.evidence]??.2)*.6,jit:.008});return}
+  if(e.label==='RECALL_HELPED'||e.label==='RECALL_MISLED'){tick(e);if(k<0)return;
+    if(e.label==='RECALL_HELPED'){if(cortexShown()&&fxTake(1.4))pulseRing(somaWorld(k),'#ffffff',R*.16)}
+    else{somaData[k*8+4]=1;somaTex.needsUpdate=true}return}   // the desync glitch (slot 4) fades in the frame loop; a misled recall is not a contradiction
+  if(!fxTake()){tick(e);return}   // over the cap: the ticker says it, the scene does not
+  emit(e)}                         // OUTWARD (and everything else): core -> territory
+// the Oracle outside its own view: one ticker line, no effect
+function tickOracle(d){const c=d.consumer||'';tickLines[0].innerHTML=tickLines[1].innerHTML;
+  tickLines[1].innerHTML=`<span class="dot" style="background:#7fe8ff"></span><span class="tx" style="color:rgba(212,236,246,.6)">the Oracle · ${esc(oracleWord(c))}</span><span style="color:var(--faint)"> · ${Math.round((+d.confidence||0)*100)}% sure${(d.options||[]).length?' · '+esc(String(d.options[0].name).replace(/_/g,' ')):''}${d.acted==='enforced'?' · it acted':''}</span>`}
+// REPLAY (phase 6 DONE: a recorded turn replays through the same grammar): r plays the newest recorded turn's own
+// events from this memory, in order, at the live pace - nothing is invented.
+function replayTurn(){const by=new Map();for(const e of M.events){if(!e.episode||!e.ts)continue;const a=by.get(e.episode)||[];a.push(e);by.set(e.episode,a)}
+  let best=null;for(const [ep,a] of by)if(a.length>=3&&(!best||a[a.length-1].ts>best.last))best={ep,a,last:Math.max(...a.map(x=>x.ts))};
+  if(!best){hint('no recorded turn with enough moments to replay');return}
+  const evs=best.a.slice().sort((x,y)=>x.ts-y.ts).slice(0,FOLLOW_Q_MAX);follow.q.length=0;
+  for(const e of evs)follow.q.push({family:e.family,label:e.label,valence:e.valence,actor:e.actor,evidence:e.evidence,domain:e.domain,landmark:e.landmark});
+  const ep=M.epById?.get(best.ep);tickLines[0].innerHTML=tickLines[1].innerHTML;
+  tickLines[1].innerHTML=`<span class="dot" style="background:#ffb547"></span><span class="tx">replaying a recorded turn · ${fmt(evs.length)} moments</span><span style="color:var(--faint)"> · ${esc(ep?.summary?String(ep.summary).slice(0,60):ago(best.last))}</span>`}
 function liveMsg(msg){
   if(!USE_REAL||!msg)return;const p=msg.payload||{};
   if(p.dropped>0){follow.missed+=p.dropped;drawFollow()}
@@ -2603,15 +2638,17 @@ function liveMsg(msg){
   else if(msg.type==='landmark_update'){for(const u of p.updates||[]){const k=M.lmIndex.get(u.landmark_id);if(k==null||!LM[k])continue;const l=LM[k];
     if(u.tier)l.tier=u.tier;if(u.activation_count!=null)l.activations=u.activation_count;
     if(u.kind==='activated'){l.last_activated=u.ts;somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}
-    if(u.kind==='promoted'&&cursorNow()&&cortexShown())pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2)}}
+    if(u.kind==='promoted'&&cursorNow()&&cortexShown()&&fxTake(2))pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2);   // graduation
+    if(u.kind==='dissolved'||u.kind==='merged'){somaData[k*8+3]=0;somaTex.needsUpdate=true}}}                             // dissolution
   else if(msg.type==='oracle_decision'){for(const d of p.decisions||[]){const i=ORC.findIndex(o=>o.consumer===d.consumer);if(i<0)continue;
+    if(state.lens!=='oracle')tickOracle(d);
     const conf=clamp(+d.confidence||0,0,1);state.secPulse[i]=1;state.pupilT=.75+conf*.6;
     state.lastDecision={o:ORC[i],sec:i,conf,acted:d.acted==='enforced',chosen:d.chosen,options:Array.isArray(d.options)?d.options:[],t:clock.elapsedTime};
     pupilDecision(state.lastDecision)}}}
 function simulate(dt){
   const t=clock.elapsedTime;
   for(let i=queue.length-1;i>=0;i--)if(queue[i].at<=t){const q=queue.splice(i,1)[0];q.fn()}
-  if(follow.q.length&&t>=follow.next){follow.next=t+1/FOLLOW_RATE;emit(follow.q.shift())}
+  if(follow.q.length&&t>=follow.next){follow.next=t+1/FOLLOW_RATE;liveEmit(follow.q.shift())}
   // A REAL memory shows only what happened. The replay below invents activity (old moments re-emitted as live, recall
   // chains, promotions that change a claim's tier, corrections, Oracle decisions); it is the demo's stand-in for the
   // live tap and must never run on data/memory.db (found 2026-10-22: the surface showed "remembering this helped" and
@@ -2851,6 +2888,7 @@ addEventListener('keydown',e=>{
   if(k==='/'){e.preventDefault();openSearch()}
   if(k==='s'&&state.lens==='cortex'&&cam.mode==='orbit')state.showSpaces=!state.showSpaces;
   if(k==='k'&&state.lens==='cortex')setHealth(!state.health);
+  if(k==='r'&&!e.ctrlKey&&!e.metaKey)replayTurn();
   if(k==='f'&&USE_REAL)setFollow(!follow.on);
   if(k==='g'&&SCRUB_LENS.has(state.lens)&&!state.inside&&cam.mode==='orbit'){state.scrub=0;state.scrubT=0;state.replay=true}
   if(k==='t'){themeIdx=(themeIdx+1)%THEMES.length;BRAND.set(THEMES[themeIdx][1]);document.documentElement.style.setProperty('--brand',THEMES[themeIdx][1]);

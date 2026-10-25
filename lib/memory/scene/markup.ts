@@ -97,7 +97,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #orclive{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.iris-memory #orclive path{fill:none}
 .iris-memory #orclive .ray{stroke:rgba(212,236,246,.5);stroke-width:1}.iris-memory #orclive .ray.acted{stroke:var(--brand);stroke-width:1.6}
 .iris-memory #orclive .arc{stroke:rgba(212,236,246,.35);stroke-width:3}.iris-memory #orclive .arc.on{stroke:var(--white);stroke-width:4}
-.iris-memory #follow:hover{color:var(--dim)} .iris-memory #follow b{font-weight:400;color:var(--amber)}
+.iris-memory #follow:hover{color:var(--dim)} .iris-memory #follow i[data-replay]{font-style:normal;margin-left:.4em}.iris-memory #follow i[data-replay]:hover{color:var(--white)} .iris-memory #follow b{font-weight:400;color:var(--amber)}
 .iris-memory #follow .dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:.7em;vertical-align:1px;border:1px solid var(--faint)}
 .iris-memory #follow .dot.on{background:var(--brand);border-color:var(--brand);box-shadow:0 0 6px var(--brand);animation:iris-mem-live 2.4s ease-in-out infinite}
 .iris-memory #crumb .when.pulse{animation:iris-mem-live 1.2s ease-in-out infinite}
