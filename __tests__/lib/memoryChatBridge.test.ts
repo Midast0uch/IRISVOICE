@@ -26,4 +26,11 @@ describe("the memory's request for a chat turn", () => {
     requestChatTurn(null)
     expect(takeChatTurn()).toBeNull()
   })
+
+  it("carries a composer reference without a conversation (ask IRIS about a claim)", () => {
+    requestChatTurn({ ref: { address: "claim:L1", label: "claim · fix the import" } })
+    expect(takeChatTurn()).toEqual({ ref: { address: "claim:L1", label: "claim · fix the import" } })
+    requestChatTurn({ ref: { address: "" } })                       // an empty address is no reference
+    expect(takeChatTurn()).toBeNull()
+  })
 })

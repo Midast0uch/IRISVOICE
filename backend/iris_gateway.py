@@ -198,6 +198,30 @@ def _referenced_files_block(refs: Any) -> Optional[str]:
     )
 
 
+def _referenced_claims_block(refs: Any) -> Optional[str]:
+    """The "[Referenced claims]" system block for the `claim:<id>` entries of `refs` (at most 8), or None. One
+    read-only PK lookup per claim through the memory surface's reader (surface_queries.read_only)."""
+    if not isinstance(refs, list):
+        return None
+    ids = [r[len("claim:"):].strip() for r in refs if isinstance(r, str) and r.startswith("claim:")][:8]
+    ids = [i for i in dict.fromkeys(ids) if i and len(i) <= 64]
+    if not ids:
+        return None
+    from backend.memory import surface_queries as _sq
+    lines: List[str] = []
+    with _sq.read_only(_sq.memory_db_path()) as con:
+        for lid in ids:
+            r = con.execute("SELECT COALESCE(micro_abstract_text, label), tier, absorbed FROM mycelium_landmarks "
+                            "WHERE landmark_id = ?", (lid,)).fetchone()
+            if r is None:
+                continue
+            state = "forgotten" if r[2] else ("proven" if r[1] == "landmark" else "still learning")
+            lines.append(f"claim:{lid} · {state} · {_sq.clip(r[0], 240) or ''}")
+    if not lines:
+        return None
+    return "[Referenced claims] (the user pointed at these from IRIS's memory)\n" + "\n".join(lines)
+
+
 class IRISGateway:
     """
     Central gateway for routing WebSocket messages to appropriate handlers.
@@ -6115,6 +6139,14 @@ class IRISGateway:
             # gets the addresses as a per-turn system line (same channel as the
             # task-card block), never the file content.
             _files_block = _referenced_files_block(payload.get("refs"))
+            # "#claim:<id>" picks (the memory's "ask IRIS about it"): what the memory holds, as one line each
+            try:
+                _claims_block = await asyncio.to_thread(_referenced_claims_block, payload.get("refs"))
+            except Exception as exc:  # noqa: BLE001 - a missing block never blocks the turn
+                self._logger.warning(f"[Chat] claim refs skipped: {exc}")
+                _claims_block = None
+            if _claims_block:
+                _files_block = f"{_files_block}\n\n{_claims_block}" if _files_block else _claims_block
             if _files_block:
                 card_context_block = (
                     f"{card_context_block}\n\n{_files_block}"

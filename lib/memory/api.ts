@@ -101,12 +101,15 @@ export function takeMemoryFocus(): string | null {
  * `iris:open_conversation {conversationId, turnId?}`; the page opens the chat wing and leaves the request here, and
  * the chat view takes it once it is mounted (the chat wing may have been closed), or hears "iris:chat_request".
  */
-export type ChatRequest = { conversationId: string; turnId?: string }
+export type ChatRequest = { conversationId?: string; turnId?: string; ref?: { address: string; label: string } }
 let pendingChat: ChatRequest | null = null
 export function requestChatTurn(r: unknown): void {
   const d = r as Partial<ChatRequest> | null
-  if (!d || typeof d.conversationId !== "string" || !d.conversationId) return
-  pendingChat = { conversationId: d.conversationId, turnId: typeof d.turnId === "string" && d.turnId ? d.turnId : undefined }
+  // a reference for the composer ("ask IRIS about it": #claim:<id>) needs no conversation: it lands in the open one
+  const ref = d?.ref && typeof d.ref.address === "string" && d.ref.address ? { address: d.ref.address, label: String(d.ref.label || d.ref.address) } : undefined
+  if (!d || ((typeof d.conversationId !== "string" || !d.conversationId) && !ref)) return
+  pendingChat = { conversationId: typeof d.conversationId === "string" && d.conversationId ? d.conversationId : undefined,
+    turnId: typeof d.turnId === "string" && d.turnId ? d.turnId : undefined, ...(ref ? { ref } : {}) }
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("iris:chat_request"))
 }
 export function takeChatTurn(): ChatRequest | null {

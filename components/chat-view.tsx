@@ -2863,6 +2863,8 @@ ${message.text}`;
     const onOpen = async () => {
       const d = takeChatTurn()
       if (!d) return
+      if (d.ref) { const ref = { ...d.ref, kind: "iris" as const }; setComposerRefs((prev) => (prev.some((p) => p.address === ref.address) ? prev : [...prev, ref])) }
+      if (!d.conversationId) return
       await openStrandRef.current(d.conversationId)
       if (!d.turnId) return
       const sel = `[data-turn-id="${CSS.escape(d.turnId)}"]`

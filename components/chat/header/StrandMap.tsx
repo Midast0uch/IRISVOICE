@@ -153,6 +153,9 @@ export function StrandMap({ threadId, palette, activeId, running, onSwitch, onCr
                 <span>{s.tags.join(" · ") || "no tag"}</span>
                 {parent && <span>reports to “{strandLabel(parent, threadId)}”</span>}
                 {running.has(s.id) && <i className="iris-hd-act" role="img" aria-label="working" style={{ background: RUN }} />}
+                {/* ◎ its memory (MEMORY-UX-PLAN 4.5): the strand's corridor; the row itself still switches the chat */}
+                <span role="button" tabIndex={-1} className="iris-hd-mem" title="its memory" data-testid="strand-memory"
+                  onClick={(e) => { e.stopPropagation(); window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `strand:${s.id}` } })) }}>◎</span>
               </button>
             )
           })}

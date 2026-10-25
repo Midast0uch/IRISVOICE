@@ -316,7 +316,12 @@ export function MatrixFrame({
         {madeAtEnd.map((mk) => <MadeRow key={mk.doc.id} made={mk} />)}
         {askActions && asks?.map((a) => <AskPrompt key={a.id} ask={a} variant="row" glowColor={glowColor} actions={askActions} />)}
       </div>
-      {mem && <div className="text-[11px] text-white/40 truncate">◈ {mem}</div>}
+      {mem && (turnId
+        // the memory line opens what the memory gave this turn (MEMORY-UX-PLAN 4.5)
+        ? <button type="button" data-testid="matrix-memory-line" title="Open what IRIS remembered here"
+            className="block w-full text-left text-[11px] text-white/40 hover:text-white/70 truncate"
+            onClick={() => window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `turn:${turnId}` } }))}>◈ {mem}</button>
+        : <div className="text-[11px] text-white/40 truncate">◈ {mem}</div>)}
       {working && (
         <div className="text-[11.5px] text-white/45 truncate tabular-nums" data-matrix-status>
           {m.flat.length === 0 ? "getting ready" : "working"} · {elapsed}
