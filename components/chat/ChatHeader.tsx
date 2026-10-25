@@ -2,7 +2,7 @@
 
 import React, { useCallback, useRef, useState } from "react"
 import { motion } from "framer-motion"
-import { BarChart3, Bell, X, ExternalLink, Maximize2, Minimize2 } from 'lucide-react'
+import { Brain, BarChart3, Bell, X, ExternalLink, Maximize2, Minimize2 } from 'lucide-react'
 import { invoke } from "@tauri-apps/api/core"
 import { Xur } from "@/components/Xur"
 import { WingMenu, type WingMenuItem } from "@/components/chrome/WingMenu"
@@ -120,6 +120,17 @@ export function ChatHeader({
 
   // The ◉ menu: every control the old header had, same handlers.
   const menuItems: WingMenuItem[] = [
+    // The memory of this strand (MEMORY-UX-PLAN 4.5): its corridor; the memory's breadcrumb leads back here.
+    ...(activeConversationId ? [{
+      id: "memory",
+      label: "Memory",
+      title: "What IRIS remembers of this strand",
+      glyph: <Brain size={14} />,
+      run: () => {
+        window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `strand:${activeConversationId}` } }))
+        closeDropdowns()
+      },
+    }] : []),
     {
       id: "dashboard",
       label: "Dashboard",

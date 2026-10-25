@@ -161,11 +161,26 @@ describe("ChatHeader", () => {
   describe("the ◉ menu holds every control the old header had", () => {
     const open = () => fireEvent.click(screen.getByRole("button", { name: "More" }))
 
-    it("lists dashboard, detach, alerts, launcher and close", () => {
+    // Memory leads the menu (MEMORY-UX-PLAN 4.5, the strand's memory); added 2026-10-25.
+    it("lists memory, dashboard, detach, alerts, launcher and close", () => {
       mount()
       open()
       const names = screen.getAllByRole("menuitem").map((m) => m.textContent)
-      expect(names).toEqual([expect.stringContaining("Dashboard"), expect.stringContaining("Detach"), expect.stringContaining("Alerts"), expect.stringContaining("Launcher"), expect.stringContaining("Close")])
+      expect(names).toEqual([expect.stringContaining("Memory"), expect.stringContaining("Dashboard"), expect.stringContaining("Detach"), expect.stringContaining("Alerts"), expect.stringContaining("Launcher"), expect.stringContaining("Close")])
+    })
+
+    it("Memory opens the memory at this strand (and is not offered without one)", () => {
+      const heard = jest.fn()
+      window.addEventListener("iris:card_action", heard)
+      const p = mount(); open()
+      fireEvent.click(screen.getByRole("menuitem", { name: /Memory/ }))
+      window.removeEventListener("iris:card_action", heard)
+      expect(heard).toHaveBeenCalledTimes(1)
+      expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({ action: "open_memory", focus: "strand:s-fix" })
+      expect(p.closeDropdowns).toHaveBeenCalled()
+      cleanup()
+      mount({ activeConversationId: null }); open()
+      expect(screen.queryByRole("menuitem", { name: /Memory/ })).toBeNull()
     })
 
     it("Dashboard opens it, or closes it when open (same handlers as before)", () => {

@@ -95,10 +95,11 @@ describe("the rail: a spine with two views", () => {
     expect(screen.queryByText(/inference console/i)).toBeNull()
   })
 
-  it("Surfaces lists the hub, browser, models and marketplace and opens the hub", async () => {
+  // Memory joined the Surfaces in 907c81bb (MEMORY-SURFACE-BUILD phase 1); this list predated it (changed 2026-10-25).
+  it("Surfaces lists the hub, memory, browser, models and marketplace and opens the hub", async () => {
     mountDashboard()
     fireEvent.click(screen.getByRole("button", { name: "Surfaces" }))
-    expect(settledPlaces()).toEqual(["hub", "browser", "models", "marketplace"])
+    expect(settledPlaces()).toEqual(["hub", "memory", "browser", "models", "marketplace"])
     expect(await screen.findByTestId("hub-surface")).toBeInTheDocument()
     expect(screen.getByTestId("dash-sub").textContent).toBe("surface")
     fireEvent.click(document.querySelector('[data-place="models"]') as HTMLElement)
