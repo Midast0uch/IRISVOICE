@@ -19,6 +19,8 @@ export interface MemoryEngineOptions {
   search?: (q: string, signal: AbortSignal) => Promise<any>;
   /** Read the model again (follow mode lost live messages: the model on screen is behind the store). */
   reload?: () => void;
+  /** The Oracle view's record (GET /api/memory/oracle consumers: job, clauses, history, curve). Absent: the snapshot's. */
+  oracle?: any[];
   /** Corrections v1 (POST /api/memory/correct, /undo, GET /corrections). Absent: no correction actions (the demo). */
   correct?: (action: "confirm" | "wrong" | "forget", target: string) => Promise<any>;
   undo?: (correctionId: string) => Promise<any>;
@@ -467,6 +469,8 @@ function normalizeMemory(M){
 // schema-faithful demo, so the page always opens with the full experience.
 const USE_REAL=!!opts.data;
 const M=normalizeMemory(USE_REAL?opts.data:synthMemory());
+// the Oracle view's richer record (GET /api/memory/oracle: job, the bar as a ladder, history, calibration curve)
+if(Array.isArray(opts.oracle)){const by=new Map(opts.oracle.map(o=>[o.consumer,o]));for(const o of M.oracle){const r=by.get(o.consumer);if(r)Object.assign(o,r)}}
 rng=mulberry32(77);
 const T0=Math.min(...M.landmarks.map(l=>l.born),...M.sessions.map(s=>s.started),nowS()-86400);
 const bestEvidence=l=>{let b='none',bv=0;for(const e of l.evidence){const v=EVID[e.kind]||0;if(v>bv){bv=v;b=e.kind}}return b};
@@ -576,10 +580,15 @@ const helixY=s=>lerp(-HELIX_H,HELIX_H,s);
 
 // oracle ordering: trusted first, then trying out, then watching (the iris reads as a ladder around the pupil)
 const STATE_RANK={enforced:2,sampled:1,shadow:0};
-const ORC=M.oracle.slice().sort((a,b)=>(STATE_RANK[b.state]-STATE_RANK[a.state])||(b.rows-a.rows)).slice(0,16);
+// grouped by job (UX-PLAN 9.2), trusted first inside a job; up to MAXSEC sectors (16 hid 9 of 25 consumers)
+const MAXSEC=32;
+const JOB_ORDER=['route','approve','guard','interpret_step','judge_review','judge_step','judge_goal','judge_depth','shape','interpret','classify_event','judge_call'];
+const jobRank=o=>{const i=JOB_ORDER.indexOf(o.job);return i<0?JOB_ORDER.length:i};
+const ORC=M.oracle.slice().sort((a,b)=>(jobRank(a)-jobRank(b))||(STATE_RANK[b.state]-STATE_RANK[a.state])||(b.rows-a.rows)).slice(0,MAXSEC);
 const NSEC=Math.max(1,ORC.length);
 function barProgress(o){ // share of the bar met (MEMORY-DASHBOARD-DESIGN §8.1): rows, AUROC, precision, ECE
   if(o.state==='enforced')return 1;
+  if(o.clauses){const ap=o.clauses.filter(c=>c.met!==null);return clamp(ap.filter(c=>c.met).length/Math.max(1,ap.length)*.95,.06,.95)}
   const p=[Math.min(1,o.rows/100),clamp((o.auroc-.5)/.15,0,1),clamp((o.precision||0)/.9,0,1),o.ece!=null?clamp((.12-o.ece)/.07,0,1):.5];
   return clamp(p.reduce((a,b)=>a+b,0)/p.length*.92,0.06,.95)}
 
@@ -615,13 +624,13 @@ const skinMat=new THREE.ShaderMaterial({
   uniforms:{...U,uMH:{value:0},uMI:{value:0},uMC:{value:0},uBounce:{value:1},uWarn:{value:0},uShock:{value:0},
     uRegC:{value:regSlots(regC,subC,()=>new V3(0,1,0))},uRegCol:{value:regSlots(REG.map(d=>new THREE.Color(domCol(d))),subCol,()=>new THREE.Color())},uRegRad:{value:regSlots(regRad,subRad,0)},uRegAct:{value:regSlots(regAct,SUB.map(s=>regAct[s.ri]),0)},
     uHoverReg:{value:-1},uOpenReg:{value:-1},uOpen:{value:0},uBrand:{value:BRAND},uR:{value:R},
-    uSecProg:{value:new Array(16).fill(0)},uSecState:{value:new Array(16).fill(0)},uSecPulse:{value:new Array(16).fill(0)},uHoverSec:{value:-1},
+    uSecProg:{value:new Array(MAXSEC).fill(0)},uSecState:{value:new Array(MAXSEC).fill(0)},uSecPulse:{value:new Array(MAXSEC).fill(0)},uHoverSec:{value:-1},
     uScrollY:{value:0},uSkin:{value:1}},
   vertexShader:`
     uniform float uTime,uPix,uMH,uMI,uMC,uBounce,uWarn,uShock,uOpen,uR,uSkin;
     uniform int uHoverReg,uOpenReg,uHoverSec;
     uniform vec3 uRegC[${MAXREG}]; uniform vec3 uRegCol[${MAXREG}]; uniform float uRegRad[${MAXREG}]; uniform float uRegAct[${MAXREG}];
-    uniform float uSecProg[16]; uniform float uSecState[16]; uniform float uSecPulse[16];
+    uniform float uSecProg[32]; uniform float uSecState[32]; uniform float uSecPulse[32];
     uniform vec3 uBrand;
     attribute vec3 aHelix,aIris,aCloud; attribute vec4 aRand; attribute vec3 aInfo;
     varying vec3 vCol; varying float vA;
@@ -2124,6 +2133,29 @@ function placeSpaceLabels(show){
     const a=-.6+i*.19,pt=project(right.clone().multiplyScalar(Math.cos(a)*spR[i]).addScaledVector(up,Math.sin(a)*spR[i]));
     const lx=c.x+rs+50,ly=c.y-130+i*40;L.el.style.opacity=.85;L.el.style.left=(lx+6)+'px';L.el.style.top=(ly-8)+'px';L.el.style.textAlign='left';
     L.p.setAttribute('d',`M${pt.x},${pt.y}L${lx},${ly}`)})}
+// THE JOBS (UX-PLAN 9.2): each job's name on the outer ring, over the sectors of its consumers
+const JOBS=[];ORC.forEach((o,i)=>{const j=o.job||'';if(!j)return;const last=JOBS[JOBS.length-1];if(last&&last.job===j)last.to=i;else JOBS.push({job:j,from:i,to:i})});
+const jobLabelEls=JOBS.map(g=>{const el=document.createElement('div');el.className='rlabel job';el.textContent=g.job.replace(/_/g,' ');labelsEl.appendChild(el);return el});
+function placeJobLabels(show){JOBS.forEach((g,i)=>{const el=jobLabelEls[i];if(!show){el.style.opacity=0;return}
+  const th=((g.from+g.to+1)/2)/NSEC*Math.PI*2+Math.PI/2,a=project(new V3(Math.cos(th)*R*1.16,Math.sin(th)*R*1.16,0));
+  el.style.opacity=.7;el.style.left=(a.x-el.offsetWidth/2)+'px';el.style.top=(a.y-6)+'px'})}
+// A LIVE DECISION (UX-PLAN 9.1): a ray from its consumer's sector into the pupil and, for a moment, the probability of
+// each offered option as arcs around the pupil's rim (arc length = probability, the chosen one bright). It returns
+// bright when the Oracle acted; when it only watched, the ray fades.
+const liveSvg=document.createElementNS('http://www.w3.org/2000/svg','svg');liveSvg.id='orclive';$('hud').appendChild(liveSvg);
+function drawLiveDecision(){const d=state.lastDecision,age=d?clock.elapsedTime-d.t:9;
+  if(state.lens!=='oracle'||cam.mode!=='orbit'||!d||d.t==null||age>1.6){if(liveSvg.childNodes.length)liveSvg.innerHTML='';return}
+  const c=project(new V3()),rim=Math.hypot(project(new V3(R*.27,0,0)).x-c.x,project(new V3(R*.27,0,0)).y-c.y);
+  const th=(d.sec+.5)/NSEC*Math.PI*2+Math.PI/2,s0=project(new V3(Math.cos(th)*R,Math.sin(th)*R,0)),fade=Math.max(0,1-age/1.6);
+  const ex=c.x+(s0.x-c.x)*rim/Math.max(1,Math.hypot(s0.x-c.x,s0.y-c.y)),ey=c.y+(s0.y-c.y)*rim/Math.max(1,Math.hypot(s0.x-c.x,s0.y-c.y));
+  const k=Math.min(1,age/.25);   // the ray travels in, then (acted) the light comes back out
+  let h=`<path d="M${s0.x.toFixed(1)},${s0.y.toFixed(1)}L${(s0.x+(ex-s0.x)*k).toFixed(1)},${(s0.y+(ey-s0.y)*k).toFixed(1)}" class="ray${d.acted?' acted':''}" style="opacity:${(d.acted?1:.55)*fade}"/>`;
+  const opts_=d.options.length?d.options:[{name:String(d.chosen??''),p:d.conf}];let a0=-Math.PI/2;const gap=.03;
+  for(const o of opts_){const sweep=Math.max(0,(+o.p||0)*Math.PI*2-gap);if(sweep<.01){a0+=(+o.p||0)*Math.PI*2;continue}
+    const a1=a0+sweep,large=sweep>Math.PI?1:0,r=rim+4,on=String(o.name)===String(d.chosen);
+    h+=`<path d="M${(c.x+Math.cos(a0)*r).toFixed(1)},${(c.y+Math.sin(a0)*r).toFixed(1)}A${r.toFixed(1)},${r.toFixed(1)} 0 ${large} 1 ${(c.x+Math.cos(a1)*r).toFixed(1)},${(c.y+Math.sin(a1)*r).toFixed(1)}" class="arc${on?' on':''}" style="opacity:${fade*(age>.25?1:age/.25)}"/>`;
+    a0=a1+gap}
+  liveSvg.innerHTML=h}
 function placeRegionLabels(show){
   const c=project(new V3()),edge=project(new V3(R,0,0).applyQuaternion(camera.quaternion));const rs=Math.abs(edge.x-c.x)||200;
   regC.forEach((v,i)=>{const L=regLabelEls[i];const camDir=camera.position.clone().normalize();const vis=show&&v.dot(camDir)>.15;
@@ -2230,7 +2262,7 @@ function tick(e){const col=FAM[FAMI[e.family]]?.color||'#fff';const strong=e.evi
 // ═══════════════════════════════════════════════════════════════════════════
 // 11. state, lenses, transitions
 // ═══════════════════════════════════════════════════════════════════════════
-const state={showSpaces:false,lens:'cortex',inside:false,diving:false,diveReg:-1,hoverReg:-1,hoverSoma:-1,focusSoma:-1,hoverBead:-1,hoverSec:-1,
+const state={showSpaces:false,lens:'cortex',inside:false,diving:false,diveReg:-1,hoverReg:-1,hoverSoma:-1,focusSec:-1,focusSoma:-1,hoverBead:-1,hoverSec:-1,
   hoverNode:-1,morph:{h:0,i:0,c:0},morphT:{h:0,i:0,c:0},vis:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},visT:{forest:1,wire:1,xur:1,beads:0,rings:.7,core:1},
   scrub:1,scrubT:1,replay:false,search:'',pupil:1,lastDecision:null,from:'cortex'};
 // the time cursor (see "THE TIME CURSOR" below)
@@ -2241,11 +2273,11 @@ function setLens(l){
   if(state.diving)return;
   if(cam.mode==='tunnel'){exitTunnel(()=>setLens(l));return}
   if(state.inside){exitInterior(()=>setLens(l));return}
-  state.lens=l;if(l!=='cortex'&&keyFocus)setKindFocus(null);clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
+  state.lens=l;state.focusSec=-1;if(l!=='cortex'&&keyFocus)setKindFocus(null);clearAnno('focus');clearAnno('hover');state.focusSoma=-1;setFocusSoma(-1);tissue.focus=-1;
   document.querySelectorAll('#lenses a').forEach(a=>{a.classList.toggle('on',a.dataset.l===l)});
   const m=state.morphT,v=state.visT;
   const hx=l==='timeline';m.h=hx?1:0;m.i=l==='oracle'?1:0;m.c=l==='artifacts'?1:0;
-  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx?0:1,
+  Object.assign(v,{forest:l==='cortex'?1:l==='artifacts'?.9:l==='timeline'?.12:0,wire:l==='cortex'||l==='artifacts'?1:0,xur:hx||l==='oracle'?0:1,
     beads:l==='timeline'?1:0,rings:l==='cortex'?.7:l==='artifacts'?.35:0,core:hx?.12:1});
   tissue.on=l==='artifacts';tcv.classList.toggle('on',tissue.on);if(tissue.on){layoutTissue(true);tissue.t=Math.min(tissue.t,.05)}
   $('scrub').classList.toggle('on',SCRUB_LENS.has(l));
@@ -2451,7 +2483,7 @@ function userCorrection(){emit({family:'feedback',label:pick(['CORRECTION','CONF
 function oracleDecision(){if(!ORC.length)return;const w=ORC.map((o,i)=>[i,o.rows]);const i=weighted(w);const o=ORC[i];
   const conf=clamp(.5+gauss()*.2+(o.state==='enforced'?.25:0),.05,.99);const acted=o.state==='enforced'||(o.state==='sampled'&&rng()<.05);
   state.secPulse[i]=1;state.pupilT=.75+conf*.6;state.lastDecision={o,conf,acted}}
-state.secPulse=new Array(16).fill(0);state.pupilT=1;state.openT=0;state.focusDimT=0;state.warn=0;
+state.secPulse=new Array(MAXSEC).fill(0);state.pupilT=1;state.openT=0;state.focusDimT=0;state.warn=0;
 // FOLLOW: the backend's live taps (backend/utils/memory_live: memory_event, landmark_update, oracle_decision, batched
 // per 250 ms) drive the same effects the demo replay does - on the real memory only, and only what happened. Moments
 // play at most FOLLOW_RATE a second from a bounded queue, so a burst never floods the scene. Lost messages
@@ -2478,7 +2510,8 @@ function liveMsg(msg){
     if(u.kind==='activated'){l.last_activated=u.ts;somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}
     if(u.kind==='promoted'&&cursorNow()&&cortexShown())pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2)}}
   else if(msg.type==='oracle_decision'){for(const d of p.decisions||[]){const i=ORC.findIndex(o=>o.consumer===d.consumer);if(i<0)continue;
-    const conf=clamp(+d.confidence||0,0,1);state.secPulse[i]=1;state.pupilT=.75+conf*.6;state.lastDecision={o:ORC[i],conf,acted:d.acted==='enforced'}}}}
+    const conf=clamp(+d.confidence||0,0,1);state.secPulse[i]=1;state.pupilT=.75+conf*.6;
+    state.lastDecision={o:ORC[i],sec:i,conf,acted:d.acted==='enforced',chosen:d.chosen,options:Array.isArray(d.options)?d.options:[],t:clock.elapsedTime}}}}
 function simulate(dt){
   const t=clock.elapsedTime;
   for(let i=queue.length-1;i>=0;i--)if(queue[i].at<=t){const q=queue.splice(i,1)[0];q.fn()}
@@ -2597,14 +2630,33 @@ function hover(x,y){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
     if(ray.ray.intersectPlane(new THREE.Plane(new V3(0,0,1),0),p)){const r=p.length();
       if(r>R*.28&&r<R*1.1){let a=Math.atan2(p.y,p.x)-Math.PI/2;a=((a%(Math.PI*2))+Math.PI*2)%(Math.PI*2);const sec=Math.floor(a/(Math.PI*2)*NSEC)%NSEC;
-        state.hoverSec=sec;skinMat.uniforms.uHoverSec.value=sec;const o=ORC[sec];const th=(sec+.5)/NSEC*Math.PI*2+Math.PI/2;
-        const st=o.state==='enforced'?'trusted':o.state==='sampled'?'trying out':'watching';
-        const right=o.precision>=.9?'right about 9 times in 10':o.precision>=.8?'right about 8 times in 10':o.precision>=.65?'right about 2 times in 3':'not reliable yet';
-        setAnno('hover','sec'+sec,()=>project(new V3(Math.cos(th)*R*1.02,Math.sin(th)*R*1.02,0)),`<div class="k">${st}</div><div class="t">${esc(oracleWord(o.consumer))}</div>
-          <div class="m">learned from <em>${fmt(o.rows)}</em> examples${o.rows<100?` · needs ${100-o.rows} more`:''}<br>${right}<br>${o.ece!=null&&o.ece<=.05?'its confidence is honest':'its confidence is not honest yet'}
-          ${o.state==='enforced'?'<br>it now makes this decision itself':o.state==='sampled'?'<br>it decides now and then, while IRIS checks it':'<br>it watches and learns; it does not act yet'}</div>`,{hot:o.state==='enforced'});return}}
+        state.hoverSec=sec;skinMat.uniforms.uHoverSec.value=sec;canvas.style.cursor='pointer';
+        if(state.focusSec!==sec)setAnno('hover','sec'+sec,()=>secAnchor(sec),oracleCard(ORC[sec],false),{hot:ORC[sec].state==='enforced'});else clearAnno('hover');return}}
     clearAnno('hover')}
 }
+// THE ORACLE CARD (UX-PLAN 9.3-9.7): its state, the switch kept apart from what it earned, the bar as a ladder of
+// clauses (met lit, the first missing one amber and said in words), its history (demotions shown), and - focused -
+// its calibration curve. The view never switches anything.
+const STATE_WORD={enforced:'trusted',sampled:'trying out',shadow:'watching'};
+const CLAUSE_WORD={rows:'enough examples',classes:'both right and wrong seen',minority:'enough wrong ones to learn from',auroc:'ranks its own errors',
+  precision:'a sure-enough threshold',wilson:'sure even at worst',rows_above:'enough examples above that threshold',ece:'its confidence is honest',acting:'right when it acts'};
+function secAnchor(sec){const th=(sec+.5)/NSEC*Math.PI*2+Math.PI/2;return project(new V3(Math.cos(th)*R*1.02,Math.sin(th)*R*1.02,0))}
+function ladderHTML(o){if(!o.clauses)return '';const cl=o.clauses.filter(c=>!(c.id==='acting'&&c.met===null));
+  const gap=cl.find(c=>c.id===o.first_missing);
+  return `<div class="ladder">${cl.map(c=>`<i class="${c.met===true?'on':c.met===null?'na':c.id===o.first_missing?'gap':''}" title="${esc((CLAUSE_WORD[c.id]||c.id)+(c.words?' - '+c.words:''))}"></i>`).join('')}
+    <span>${fmt(cl.filter(c=>c.met===true).length)} of ${fmt(cl.filter(c=>c.met!==null).length)} parts of the bar met</span></div>${gap?`<div class="m"><span class="w">${esc(gap.words||CLAUSE_WORD[gap.id]||gap.id)}</span></div>`:''}`}
+function historyHTML(o){const h=(o.history||[]).slice(-4);if(h.length<2&&!(h[0]&&h[0].state!==o.state))return '';
+  return `<div class="m">${h.map(x=>`${STATE_WORD[x.state]||x.state} ${new Date(x.at).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}`).join(' → ')}</div>`}
+function curveSVG(o){const k=o.curve;if(!k||k.length<2)return '';const W=150,H=64,X=v=>4+v*(W-8),Y=v=>H-4-v*(H-8);
+  return `<svg class="curve" width="${W}" height="${H}"><path d="M${X(0)},${Y(0)}L${X(1)},${Y(1)}" class="diag"/><path d="${k.map((p,i)=>(i?'L':'M')+X(p[0]).toFixed(1)+','+Y(p[1]).toFixed(1)).join('')}" class="fit"/>${o.threshold!=null?`<path d="M${X(o.threshold)},${H-2}L${X(o.threshold)},${H-10}" class="notch"/>`:''}</svg><div class="m">how sure it says it is, against how often it is right${o.threshold!=null?` · it acts above ${Math.round(o.threshold*100)}%`:''}</div>`}
+function oracleCard(o,deep){
+  const measuring=o.consumer==='call_closing';
+  const k=measuring?'measurement only':`${STATE_WORD[o.state]||'watching'}${o.job?' · '+esc(String(o.job).replace(/_/g,' ')):''}`;
+  const doing=measuring?'it only measures; it never decides, by design':o.state==='enforced'?'it makes this decision itself now':o.state==='sampled'?'it decides now and then, while IRIS checks it':'it watches and learns; it does not act yet';
+  return `<div class="k">${k}${o.owner_switch?' · <span class="u">switched on by you</span>':''}</div><div class="t">${esc(oracleWord(o.consumer))}</div>
+    <div class="m">${doing}<br>learned from <em>${fmt(o.rows)}</em> examples</div>${measuring?'':ladderHTML(o)}${historyHTML(o)}${deep?curveSVG(o):'<span class="go">click · its ladder and its curve</span>'}`}
+function focusSector(sec){state.focusSec=sec;if(sec<0){clearAnno('focus');return}
+  if(slots.focus)slots.focus.key=null;setAnno('focus','secf'+sec,()=>secAnchor(sec),oracleCard(ORC[sec],true),{hot:true});clearAnno('hover')}
 function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
   if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
 canvas.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);mouse.nx=_px(e)/innerWidth*2-1;mouse.ny=-(_py(e)/innerHeight*2-1);
@@ -2655,6 +2707,7 @@ function click(x,y){
       const d=new V3(x/innerWidth*2-1,-(y/innerHeight*2-1),.5).unproject(camera).sub(camera.position).normalize();
       cam.vel.addScaledVector(d,R*.9);cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*.6;cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),.6);cam.idle=0}return}
   if(state.lens==='cortex'&&state.hoverReg>=0)dive(state.hoverReg);
+  if(state.lens==='oracle'){focusSector(state.hoverSec>=0&&state.hoverSec!==state.focusSec?state.hoverSec:-1);return}
   if(state.lens==='timeline'){if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else syncClick()}
 }
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
@@ -2693,6 +2746,7 @@ function stepOut(){
   if(state.lens==='artifacts'&&tissue.path.length){tissueUp();return true}
   if(keyFocus){setKindFocus(null);return true}
   if(state.lens==='timeline'&&sync.sid){disposeSync();clearAnno('hover');return true}
+  if(state.lens==='oracle'&&state.focusSec>=0){focusSector(-1);return true}
   return false}
 // one level in, to what the pointer is on
 function goIn(){
@@ -2857,7 +2911,7 @@ const _frame=()=>{
   core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55);
   coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85);
   cells.scale.setScalar(b);coreHalo.scale.setScalar(R*(1.0+.1*sx)*pupilS);
-  for(let i=0;i<16;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
+  for(let i=0;i<MAXSEC;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
   {let o=0;const det=.52+.48*(.5+.5*Math.sin(t/4.2*Math.PI*2));const flat=state.morph.i;
     const v=xurV,S=xurS,C=xurC,qt=xurQt;
     for(let i=tendrils.length-1;i>=0;i--)if(t-tendrils[i].t0>4.2)tendrils.splice(i,1);
@@ -2909,10 +2963,13 @@ const _frame=()=>{
   placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
   placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
+  placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
+  drawLiveDecision();
   drawTissue(dt);
   if(state.lens==='oracle'&&state.lastDecision&&cam.mode==='orbit'){const d=state.lastDecision;
-    setAnno('decision','dec'+(d.o.consumer+d.conf.toFixed(2)),()=>{const c=project(new V3(0,-R*.22,0));return {x:c.x,y:c.y,front:true}},
-      `<div class="m">${esc(oracleWord(d.o.consumer))} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}</div>`)}
+    setAnno('decision','dec'+(d.o.consumer+d.conf.toFixed(2)),()=>{const c=project(new V3(0,-R*.4,0));   // below the pupil's rim, clear of the arcs
+    return {x:c.x,y:c.y,front:true}},
+      `<div class="m">${esc(oracleWord(d.o.consumer))} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}${(d.options||[]).length?'<br>'+d.options.slice(0,3).map(o=>`${esc(String(o.name).replace(/_/g,' '))} ${Math.round((+o.p||0)*100)}%`).join(' · '):''}</div>`)}
   else clearAnno('decision');
   bloom.strength=.85-state.insideK*.35+sh*.8;
   // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)

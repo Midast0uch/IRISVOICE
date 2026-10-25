@@ -56,6 +56,16 @@ export async function fetchMemorySnapshot(opts: { includeEval?: boolean; signal?
   return res.json()
 }
 
+/** The Oracle view's record (GET /api/memory/oracle): per consumer its job, state, the bar as a ladder of clauses, its
+ * history and calibration curve. Read-only: the view never switches anything. */
+export async function fetchOracleView(signal?: AbortSignal): Promise<any[]> {
+  const s = signal ? AbortSignal.any([signal, AbortSignal.timeout(20_000)]) : AbortSignal.timeout(20_000)
+  const res = await fetch("/api/memory/oracle", { signal: s })
+  if (!res.ok) throw new MemoryResting(res.status, "the Oracle's record could not be read")
+  const d = await res.json()
+  return Array.isArray(d?.consumers) ? d.consumers : []
+}
+
 /** The memory-native search (GET /api/memory/search): ranked by the memory's own law; a search is never a recall. */
 export async function searchMemory(q: string, signal?: AbortSignal): Promise<any> {
   const s = signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000)

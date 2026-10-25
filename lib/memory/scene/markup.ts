@@ -81,6 +81,15 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #mine .list{margin-bottom:6px;max-height:40vh;overflow:auto}
 .iris-memory #mine .row{padding:4px 0;border-top:1px solid rgba(212,236,246,.06);line-height:1.5}.iris-memory #mine .row.gone{opacity:.45}
 .iris-memory #mine .row .t{color:var(--dim)}.iris-memory #mine a[data-undo-id],.iris-memory #mine a[data-claim]{color:var(--brand);cursor:pointer}
+.iris-memory .rlabel.job{font-size:9px;letter-spacing:.18em;text-transform:lowercase;color:var(--faint);transition:opacity .4s}
+.iris-memory .anno .ladder{margin-top:7px;font-size:9.5px;color:var(--faint)}.iris-memory .anno .ladder i{display:inline-block;width:6px;height:6px;margin-right:4px;border-radius:50%;border:1px solid rgba(212,236,246,.35)}
+.iris-memory .anno .ladder i.on{background:var(--brand);border-color:var(--brand)}.iris-memory .anno .ladder i.gap{background:var(--amber);border-color:var(--amber);box-shadow:0 0 6px var(--amber)}.iris-memory .anno .ladder i.na{opacity:.25}
+.iris-memory .anno .ladder span{margin-left:4px}
+.iris-memory .anno svg.curve{display:block;margin-top:8px}.iris-memory .anno svg.curve path{fill:none}.iris-memory .anno svg.curve .diag{stroke:rgba(212,236,246,.15);stroke-dasharray:2 3}
+.iris-memory .anno svg.curve .fit{stroke:var(--brand);stroke-width:1.2}.iris-memory .anno svg.curve .notch{stroke:var(--amber);stroke-width:1.5}
+.iris-memory #orclive{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.iris-memory #orclive path{fill:none}
+.iris-memory #orclive .ray{stroke:rgba(212,236,246,.5);stroke-width:1}.iris-memory #orclive .ray.acted{stroke:var(--brand);stroke-width:1.6}
+.iris-memory #orclive .arc{stroke:rgba(212,236,246,.35);stroke-width:3}.iris-memory #orclive .arc.on{stroke:var(--white);stroke-width:4}
 .iris-memory #follow:hover{color:var(--dim)} .iris-memory #follow b{font-weight:400;color:var(--amber)}
 .iris-memory #follow .dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:.7em;vertical-align:1px;border:1px solid var(--faint)}
 .iris-memory #follow .dot.on{background:var(--brand);border-color:var(--brand);box-shadow:0 0 6px var(--brand);animation:iris-mem-live 2.4s ease-in-out infinite}

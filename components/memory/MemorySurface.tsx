@@ -18,7 +18,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { MemoryEngine } from "@/lib/memory/scene/engine"
-import { correctMemory, fetchMemorySnapshot, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
+import { correctMemory, fetchMemorySnapshot, fetchOracleView, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
 
 export interface MemorySurfaceProps {
   /** Memory is the surface on screen (and the dashboard is open). */
@@ -53,8 +53,9 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
     if (wantsDemo()) return
     const ac = new AbortController()
     setLoad({ kind: "loading" })
-    fetchMemorySnapshot({ signal: ac.signal })
-      .then((model) => setLoad({ kind: "ready", model }))
+    // the Oracle view's record rides along (small, a file read); without it the Oracle lens draws the snapshot's rows
+    Promise.all([fetchMemorySnapshot({ signal: ac.signal }), fetchOracleView(ac.signal).catch(() => null)])
+      .then(([model, oracle]) => setLoad({ kind: "ready", model: oracle ? { ...model, __oracle: oracle } : model }))
       .catch((e) => {
         if (ac.signal.aborted) return
         console.warn("[MemorySurface] the memory did not answer:", e)
@@ -75,6 +76,7 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
         const t0 = performance.now()
         engineRef.current = createMemoryEngine(hostRef.current, {
           data: model ?? undefined,
+          oracle: (model as any)?.__oracle ?? undefined,
           search: model ? searchMemory : undefined, // the demo searches its own model
           reload: () => setAttempt((n) => n + 1),   // follow mode lost live messages: read the model again
           // corrections v1: the real memory only (the demo has no backend to write to)
