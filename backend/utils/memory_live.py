@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 TICK_S = 0.25          # one batched message per type per tick
 MAX_PER_TICK = 50      # hard cap of items in one message
 BUFFER_CAP = 200       # items waiting per type; beyond it an item is dropped and counted
+DRAIN_IDLE_S = 1.0     # the drain re-reads the buffers at least this often, woken or not
 
 # message type -> the payload key that holds its list
 _LIST_KEY = {"memory_event": "events", "landmark_update": "updates",
@@ -205,7 +206,10 @@ def oracle_decision(decision: dict) -> None:
 
 def _drain_forever() -> None:
     while True:
-        _wake.wait()
+        # Bounded: a wake that never comes (the event object replaced - the contract tests swap `_wake` per test, and a
+        # drain parked on the old object never sent again, 2026-10-25) costs at most one second, then the buffers are
+        # read anyway. An idle pass is one lock and nothing to send.
+        _wake.wait(DRAIN_IDLE_S)
         time.sleep(TICK_S)          # let one tick's worth of rows gather
         _wake.clear()
         try:
