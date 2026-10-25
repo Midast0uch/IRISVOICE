@@ -19,8 +19,10 @@ messages reach the frontend as the window event ``iris:ws_message`` with
   kind = activated | promoted | stale | demoted | dissolved | merged
   (``activation_count`` on activated, ``tier`` on activated/promoted/stale/demoted,
   ``survivor_id`` on merged; null otherwise.)
-``oracle_decision`` item keys: consumer, confidence, chosen, acted, ts
+``oracle_decision`` item keys: consumer, job, confidence, chosen, acted, options, ts
   acted = enforced | sampled | shadow;  chosen = a string, or a bool for a yes/no consumer
+  job = the consumer's Oracle job (null if unknown); options = [{name, p}], the top OPTIONS_MAX of the row's
+  candidate distribution by p ([] when the row carries none - tool_choice's menu is a count of names)
 
 WHERE THE TAPS HOOK (CLAUDE.md: answer path vs side lanes). Each tap is called by an
 EXISTING single writer right AFTER its row is written - ``memory_events.emit_event``
@@ -179,6 +181,34 @@ def landmark_update(landmark_id: str, kind: str, *, activation_count: Optional[i
 
 
 _ACTED = {"enforced": "enforced", "engine": "enforced", "sampled": "sampled"}
+OPTIONS_MAX = 8      # options drawn per decision: the top of the distribution is the picture
+
+
+def _options(candidates: Any) -> List[dict]:
+    """The top OPTIONS_MAX of a row's candidate distribution, [{name, p}] by p descending. The engine's rows carry
+    a list of {name, prob}; a count (tool_choice's menu size) or anything else has no distribution: []."""
+    if not isinstance(candidates, (list, tuple)):
+        return []
+    out = [{"name": _clip(c["name"], 80), "p": round(float(c["prob"]), 4)}
+           for c in candidates
+           if isinstance(c, dict) and _clip(c.get("name"), 80) is not None
+           and isinstance(c.get("prob"), (int, float)) and not isinstance(c.get("prob"), bool)]
+    out.sort(key=lambda o: o["p"], reverse=True)
+    return out[:OPTIONS_MAX]
+
+
+def _job_of(decision: dict) -> Optional[str]:
+    """The consumer's Oracle job: the row's own, else the decision engine's table (event_type:<family> maps like
+    event_type). The ledger's whitelist does not carry "job", so the table is the usual source."""
+    job = decision.get("job")
+    if isinstance(job, str) and job:
+        return job[:40]
+    try:
+        from backend.agent.decision_engine import oracle_job
+
+        return oracle_job(str(decision.get("consumer_id"))).name
+    except Exception:  # noqa: BLE001 - a missing job is null, never a lost decision
+        return None
 
 
 def oracle_decision(decision: dict) -> None:
@@ -196,6 +226,8 @@ def oracle_decision(decision: dict) -> None:
             "confidence": round(float(conf), 4) if isinstance(conf, (int, float)) else None,
             "chosen": chosen,
             "acted": _ACTED.get(str(decision.get("route")), "shadow"),
+            "job": _job_of(decision),
+            "options": _options(decision.get("candidates")),
             "ts": time.time(),
         })
     except Exception as exc:  # noqa: BLE001

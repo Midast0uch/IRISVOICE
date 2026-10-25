@@ -1,0 +1,48 @@
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "depth_met", "gap": "oof AUROC 0.5591 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "depth_route", "gap": "oof AUROC 0.5345 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "done", "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "escalate_incomplete", "gap": "oof AUROC 0.4162 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "event_family", "gap": "distinct rows 14 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "event_type:control", "gap": "distinct rows 4 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "event_type:delivery", "gap": "distinct rows 4 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "event_type:knowledge", "gap": "distinct rows 6 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "event_type:memory", "gap": "distinct rows 6 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "mode", "gap": "oof AUROC 0.4913 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "narration", "gap": "", "status": "enforced"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "needs_action", "gap": "distinct rows 0 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "on_track", "gap": "oof calibrated ECE 0.1177 > 0.05", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "presentation", "gap": "distinct rows 2 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "recovery_strategy", "gap": "distinct rows 72 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "retry_same", "gap": "distinct rows 0 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "review_verdict", "gap": "oof AUROC 0.5498 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "sufficient", "gap": "distinct rows 4 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "tool_choice", "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "use_thinking", "gap": "distinct rows 0 < 100", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "user_feedback", "gap": "minority class 2.4% < 5%", "status": "shadow"}
+{"at": "2026-10-06T01:48:44+00:00", "consumer": "web_intent", "gap": "oof AUROC 0.5349 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-09T06:46:36+00:00", "consumer": "call_closing", "gap": "rows 0 < 100", "status": "shadow"}
+{"at": "2026-10-09T06:46:36+00:00", "consumer": "narration", "gap": "rows 32 < 100", "status": "shadow"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "browser_next", "gap": "distinct rows 76 < 100", "status": "shadow"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "click_safety", "gap": "distinct rows 46 < 100", "status": "shadow"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "escalate_incomplete", "gap": "", "status": "enforced"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "event_type:feedback", "gap": "distinct rows 1 < 100", "status": "shadow"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "narration", "gap": "", "status": "enforced"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "review_verdict", "gap": "enforcement bar unmet (oof AUROC 0.6174 < 0.65 (confidence does not rank errors)); rung live", "status": "sampled"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "tool_approval", "gap": "oof AUROC 0.5754 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-10-12T21:19:29+00:00", "consumer": "tool_choice", "gap": "", "status": "enforced"}
+{"at": "2026-10-13T22:48:57+00:00", "consumer": "narration", "gap": "oof calibrated ECE 0.0539 > 0.05", "status": "shadow"}
+{"at": "2026-10-13T22:48:57+00:00", "consumer": "needs_action", "gap": "", "status": "enforced"}
+{"at": "2026-10-18T21:05:18+00:00", "consumer": "depth_met", "gap": "", "status": "enforced"}
+{"at": "2026-10-18T21:05:18+00:00", "consumer": "needs_action", "gap": "distinct rows 0 < 100", "status": "shadow"}
+{"at": "2026-10-18T21:05:18+00:00", "consumer": "review_verdict", "gap": "", "status": "enforced"}
+{"at": "2026-10-18T21:05:18+00:00", "consumer": "tool_approval", "gap": "", "status": "enforced"}
+{"at": "2026-10-21T08:41:01+00:00", "consumer": "event_type:intent", "gap": "distinct rows 1 < 100", "status": "shadow"}
+{"at": "2026-10-21T08:41:01+00:00", "consumer": "narration", "gap": "", "status": "enforced"}
+{"at": "2026-10-21T08:41:01+00:00", "consumer": "needs_action", "gap": "", "status": "enforced"}
+{"at": "2026-10-21T08:41:01+00:00", "consumer": "review_verdict", "gap": "enforcement bar unmet (no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows); rung live", "status": "sampled"}
+{"at": "2026-10-21T08:41:01+00:00", "consumer": "tool_choice", "gap": "enforcement bar unmet (oof AUROC 0.617 < 0.65 (confidence does not rank errors)); rung live", "status": "sampled"}
+{"at": "2026-10-21T08:41:01+00:00", "consumer": "user_feedback", "gap": "", "status": "enforced"}
+{"at": "2026-10-22T14:42:25+00:00", "consumer": "narration", "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows", "status": "shadow"}
+{"at": "2026-10-22T14:42:25+00:00", "consumer": "tool_choice", "gap": "no-error-mass waiver: 2 wrong in 275 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed", "status": "enforced"}
+{"at": "2026-10-24T16:00:55+00:00", "consumer": "review_verdict", "gap": "", "status": "enforced"}
+{"at": "2026-10-24T16:00:55+00:00", "consumer": "tool_approval", "gap": "oof AUROC 0.6372 < 0.65 (confidence does not rank errors)", "status": "shadow"}

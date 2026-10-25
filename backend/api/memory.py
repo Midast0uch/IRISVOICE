@@ -113,21 +113,151 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+ORACLE_CURVE_MAX = 24      # calibration knots sent per consumer, evenly thinned
+
+
+def _thin(knots: Any, limit: int = ORACLE_CURVE_MAX) -> list:
+    """The calibration knots as [[confidence, right], ...], at most `limit` of them, evenly spaced (first and last kept)."""
+    pts = [[k[0], k[1]] for k in (knots or []) if isinstance(k, (list, tuple)) and len(k) == 2
+           and all(isinstance(x, (int, float)) for x in k)]
+    if len(pts) <= limit:
+        return pts
+    return [pts[round(i * (len(pts) - 1) / (limit - 1))] for i in range(limit)]
+
+
+def _bar_clauses(cid: str, bar_row: dict, entry: dict) -> list[dict]:
+    """The bar as a ladder of nine clauses, in the order a reader asks them. Values come from the ACTIVE engine's
+    calibration entry, the limits from agent/consumer_bar.py (the bar's own constants, never copies). met is true | false |
+    null: null = waived, not applicable, or not reached (an earlier clause already fails and this one has no number)."""
+    from backend.agent import consumer_bar as cb
+
+    oof = entry.get("oof") or {}
+    cls = entry.get("classes") or {}
+    n_raw = entry.get("rows_distinct")
+    n = int(n_raw if n_raw is not None else (bar_row.get("rows") or 0))
+    a, b = cls.get("correct"), cls.get("wrong")
+    have_cls = isinstance(a, int) and isinstance(b, int) and a + b > 0
+    minority = min(a, b) / (a + b) if have_cls else None
+    # The waiver is re-derived from the numbers with the bar's own test, as the bar does on every recompute.
+    waived = bool(have_cls and a > 0 and b > 0 and minority < cb.MIN_MINORITY
+                  and cb._excludes_error_rate(n, b, cb.MIN_MINORITY))
+    out: list[dict] = []
+
+    def clause(id_: str, value: Any, need: Any, passed: bool, ok: str, bad: str, missing: str) -> None:
+        if value is None:     # no number: false when nothing earlier fails (it is a gap), else not reached
+            unreached = any(c["met"] is False for c in out)
+            out.append({"id": id_, "met": None if unreached else False, "value": None, "need": need,
+                        "words": "not reached: an earlier clause fails first" if unreached else missing})
+        else:
+            out.append({"id": id_, "met": bool(passed), "value": value, "need": need,
+                        "words": ok if passed else bad})
+
+    def waived_clause(id_: str, value: Any, need: Any) -> None:
+        out.append({"id": id_, "met": None, "value": value, "need": need,
+                    "words": f"waived: errors are too rare to rank ({b} wrong of {n})"})
+
+    clause("rows", n, cb.MIN_ROWS, n >= cb.MIN_ROWS,
+           f"enough distinct rows - {n}, needs {cb.MIN_ROWS}", f"needs more distinct rows - {n}, needs {cb.MIN_ROWS}", "")
+    clause("classes", min(a, b) if have_cls else None, 1, have_cls and a > 0 and b > 0,
+           f"the reference holds right and wrong answers ({a} right, {b} wrong)",
+           f"the reference holds one kind of answer only ({a} right, {b} wrong) - precision and ranking prove nothing",
+           "the right and wrong answers are not counted yet")
+    if waived:
+        waived_clause("minority", round(minority, 4), cb.MIN_MINORITY)
+    else:
+        clause("minority", None if minority is None else round(minority, 4), cb.MIN_MINORITY,
+               minority is not None and minority >= cb.MIN_MINORITY,
+               f"the rarer answer is {minority or 0:.1%} of rows, needs {cb.MIN_MINORITY:.0%}",
+               f"needs more of the rarer answer to learn from - it is {minority or 0:.1%} of rows, needs {cb.MIN_MINORITY:.0%}",
+               "the share of the rarer answer is not measured yet")
+    auroc = oof.get("auroc")
+    if waived:
+        waived_clause("auroc", auroc, cb.MIN_AUROC)
+    else:
+        clause("auroc", auroc, cb.MIN_AUROC, auroc is not None and auroc >= cb.MIN_AUROC,
+               f"ranks its errors - AUROC {auroc}, needs {cb.MIN_AUROC}",
+               f"needs to rank its errors better - AUROC {auroc}, needs {cb.MIN_AUROC}",
+               "its error ranking (AUROC) is not measured yet")
+    t, prec = entry.get("threshold"), oof.get("precision_at_t")
+    clause("precision", prec if t is not None else None, cb.MIN_PRECISION, prec is not None and prec >= cb.MIN_PRECISION,
+           f"precision {prec} above its cut-off, needs {cb.MIN_PRECISION:.2f}",
+           f"too many wrong answers above its cut-off - precision {prec}, needs {cb.MIN_PRECISION:.2f}",
+           f"no confidence cut-off reaches precision {cb.MIN_PRECISION:.2f} yet")
+    wlb = oof.get("wilson_lb")
+    clause("wilson", wlb if t is not None else None, cb.MIN_WILSON_LB, wlb is not None and wlb >= cb.MIN_WILSON_LB,
+           f"the worst case (Wilson lower bound) holds - {wlb}, needs {cb.MIN_WILSON_LB}",
+           f"the worst case (Wilson lower bound) is too low - {wlb}, needs {cb.MIN_WILSON_LB}",
+           "the worst case (Wilson lower bound) is not measured yet")
+    above = entry.get("rows_above")
+    clause("rows_above", above if t is not None else None, cb.MIN_ROWS_ABOVE,
+           above is not None and above >= cb.MIN_ROWS_ABOVE,
+           f"{above} distinct rows above the cut-off, needs {cb.MIN_ROWS_ABOVE}",
+           f"too few rows above the cut-off - {above}, needs {cb.MIN_ROWS_ABOVE}",
+           "the rows above the cut-off are not counted yet")
+    ece = oof.get("ece")
+    clause("ece", ece, cb.MAX_ECE, ece is not None and ece <= cb.MAX_ECE,
+           f"its confidence is honest - ECE {ece}, needs at most {cb.MAX_ECE}",
+           f"its confidence is not honest enough - ECE {ece}, needs at most {cb.MAX_ECE}",
+           "its calibration error (ECE) is not measured yet")
+    if cid in cb.ACTING_ENFORCED:     # the acting side's own bar, for a consumer that acts on one answer
+        ans, a_above = oof.get("acting_answer"), oof.get("acting_rows_above")
+        a_prec, a_wlb = oof.get("acting_precision"), oof.get("acting_wilson_lb")
+        known = a_above is not None and a_prec is not None and a_wlb is not None
+        clause("acting", a_prec if known else None, cb.MIN_PRECISION,
+               known and a_above >= cb.MIN_ACTING_ROWS_ABOVE and a_prec >= cb.MIN_PRECISION and a_wlb >= cb.MIN_WILSON_LB,
+               f"its '{ans}' answer holds - precision {a_prec} on {a_above} rows",
+               f"its '{ans}' answer is not safe to act on - precision {a_prec} (needs {cb.MIN_PRECISION:.2f}), "
+               f"Wilson lower bound {a_wlb} (needs {cb.MIN_WILSON_LB}), {a_above} rows (needs {cb.MIN_ACTING_ROWS_ABOVE})",
+               "the acting answer is not measured yet")
+    else:
+        out.append({"id": "acting", "met": None, "value": None, "need": None,
+                    "words": "not applicable: this consumer has no acting answer under the bar"})
+    return out
+
+
+def _bar_history() -> dict[str, list[dict]]:
+    """consumer -> [{"at", "state"}], oldest first, only the CHANGES of state (benchmarks/consumer_bar_history.jsonl)."""
+    from backend.agent.consumer_bar import HISTORY_NAME, read_history_lines
+
+    rows = sorted(read_history_lines(_BENCH / HISTORY_NAME), key=lambda r: str(r.get("at") or ""))
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        h = out.setdefault(r["consumer"], [])
+        if not h or h[-1]["state"] != r["status"]:
+            h.append({"at": r.get("at"), "state": r["status"]})
+    return out
+
+
 def oracle_summary() -> dict:
     """One row per consumer: the bar record (state, rows, precision, ECE on the active engine, the gap in words)
-    joined to its calibration entry (oof AUROC, threshold) by the engine id the record names."""
+    joined to its calibration entry (oof AUROC, threshold) by the engine id the record names, plus what the Oracle view
+    draws: the job, whether the owner switched it on (IRIS_DECISION_ENFORCE), the bar as nine clauses, the calibration
+    curve and the history of its state. Read-only: nothing here switches anything."""
+    from backend.agent import decision_engine as de
+
     bar = _read_json(_BENCH / "consumer_bar_record.json")
     cal = _read_json(_BENCH / "oracle_calibration.json")
+    history = _bar_history()
+    owner = de._owner_allow_list()
     consumers = []
     for cid, v in sorted(bar.items()):
         if not isinstance(v, dict):
             continue
         entry = ((cal.get((v.get("config") or {}).get("backend_id")) or {}).get(cid)) or {}
         oof = entry.get("oof") or {}
+        clauses = _bar_clauses(cid, v, entry)
+        cls = entry.get("classes")
         consumers.append({"consumer": cid, "state": v.get("status", "shadow"), "rows": v.get("rows") or 0,
                           "auroc": oof.get("auroc"), "ece": v.get("ece"), "ece_oof": oof.get("ece"),
                           "precision": v.get("precision"), "threshold": entry.get("threshold"),
-                          "gap": v.get("gap") or "", "fitted_at": entry.get("fitted_at")})
+                          "gap": v.get("gap") or "", "fitted_at": entry.get("fitted_at"),
+                          "job": de.oracle_job(cid).name, "owner_switch": cid in owner,
+                          "clauses": clauses,
+                          "first_missing": next((c["id"] for c in clauses if c["met"] is False), None),
+                          "curve": _thin(entry.get("knots")),
+                          "classes": ({"correct": cls["correct"], "wrong": cls["wrong"]}
+                                      if isinstance(cls, dict) and "correct" in cls and "wrong" in cls else None),
+                          "history": history.get(cid, [])})
     states: dict[str, int] = {}
     for c in consumers:
         states[c["state"]] = states.get(c["state"], 0) + 1
