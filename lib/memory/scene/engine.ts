@@ -2467,6 +2467,15 @@ function strandAction(act,id,el){if(!opts.correctTarget)return;
   el.textContent='working…';opts.correctTarget(act==='purge'?'purge':'forget_learned','strand:'+id,act==='purge'?{confirm:id}:{})
     .then(r=>{const a=r.after||{};el.textContent=act==='purge'?`purged · ${fmt(Object.values(a.rows_changed||{}).reduce((x,y)=>x+y,0))} rows`:`forgot ${fmt(a.claims_absorbed||0)} claim${a.claims_absorbed===1?'':'s'} · undo it in your corrections`;drawMine(true)})
     .catch(err=>{el.textContent=err?.message||'it did not take'})}
+// A PIN'S CARD (MEMORY-SURFACE-BUILD 5): click a pin - its card, with unpin and hold in context / release (the pin
+// store's own methods, through /api/memory/correct; undo in your corrections).
+function focusPin(pk){const p=PINS[pk];if(!p)return;if(slots.focus)slots.focus.key=null;
+  const acts=opts.correctTarget?`<div class="acts"><a data-pinact="${p.held?'release':'hold'}" data-pk="${pk}">${p.held?'release it from context':'hold it in context'}</a> · <a data-pinact="unpin" data-pk="${pk}">unpin</a></div>`:'';
+  setAnno('focus','pinf'+pk,()=>project(pinInfo[pk].tip),pinHTML(pk)+acts,{cell:true,col:pinType(p.type).col});clearAnno('hover')}
+function pinAction(pk,act,el){const p=PINS[pk];if(!p||!opts.correctTarget)return;el.textContent='working…';
+  opts.correctTarget(act,'pin:'+p.id).then(r=>{const a=r.after||{};if(a.held!=null)p.held=!!a.held;
+    el.textContent=act==='unpin'?'unpinned · undo it in your corrections':(p.held?'held in context':'released');drawMine(true)})
+   .catch(err=>{el.textContent=err?.message||'it did not take'})}
 // CORRECTIONS v1 (MEMORY-SURFACE-BUILD section 5): on a focused claim, "that's right / that's wrong / forget this".
 // The backend writes each one as YOUR evidence and answers with the claim before and after; the card and the claim's
 // look change only from that answer (never optimistic). Undo for 10 minutes. Real memory only (opts.correct).
@@ -2512,6 +2521,7 @@ drawMine(true);
 annosEl.addEventListener('click',e=>{
   const cr=e.target.closest('[data-correct]');if(cr){runCorrection(+cr.dataset.k,cr.dataset.correct);return}
   const us=e.target.closest('[data-uses]');if(us){showUses(+us.dataset.uses);return}
+  const pa=e.target.closest('[data-pinact]');if(pa){pinAction(+pa.dataset.pk,pa.dataset.pinact,pa);return}
   const pn=e.target.closest('[data-pin]');if(pn){const l=LM[+pn.dataset.pin];if(l&&opts.correctTarget)opts.correctTarget('pin','claim:'+l.id)
     .then(()=>{pn.textContent='pinned · undo it in your corrections';drawMine(true)}).catch(err=>{pn.textContent=err?.message||'the pin did not take'});return}
   // ask IRIS about a claim (UX-PLAN 4.6): a #claim reference chip in the chat's composer - an address, never the content
@@ -2898,6 +2908,7 @@ function click(x,y){
   hover(x,y);
   if(cam.mode==='tunnel'&&tunnel){if(state.hoverStar>=0)selectThread(tunnel.stars[state.hoverStar].li);
     else if(state.hoverDoor==='door')throughDoor();else if(state.hoverDoor==='back'){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
+  if(state.lens==='cortex'&&slots.hover?.on&&/^pin\d+$/.test(slots.hover.key||'')){focusPin(+slots.hover.key.slice(3));return}   // a pin: its card
   if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1);
       // click into open space: glide that way and turn toward it
       const d=new V3(x/innerWidth*2-1,-(y/innerHeight*2-1),.5).unproject(camera).sub(camera.position).normalize();
