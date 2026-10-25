@@ -25,6 +25,10 @@ export interface MemoryEngineOptions {
   correct?: (action: "confirm" | "wrong" | "forget", target: string) => Promise<any>;
   undo?: (correctionId: string) => Promise<any>;
   corrections?: () => Promise<any>;
+  /** Every turn a claim was given to IRIS (GET /api/memory/claims/<id>/uses). */
+  uses?: (landmarkId: string) => Promise<any>;
+  /** Corrections on pins and strands (pin / unpin / hold / release, forget_learned, purge). */
+  correctTarget?: (action: string, target: string, extra?: Record<string, unknown>) => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -2247,6 +2251,19 @@ function drawLiveDecision(){const d=state.lastDecision,age=d?clock.elapsedTime-d
   const key=d.o.consumer+d.t;if(liveLine.dataset.k!==key){liveLine.dataset.k=key;
     liveLine.innerHTML=`${esc(oracleWord(d.o.consumer))} · <em>${Math.round(d.conf*100)}%</em> sure · ${d.acted?'<span class="u">it acted</span>':'it watched'}${(d.options||[]).length?'<br>'+d.options.slice(0,3).map(o=>`${esc(String(o.name).replace(/_/g,' '))} ${Math.round((+o.p||0)*100)}%`).join(' · '):''}`}
   liveLine.style.left=c.x+'px';liveLine.style.top=(c.y+rim+22)+'px';liveLine.style.opacity=Math.max(0,Math.min(1,(4-age)/1.2))}
+// INSIDE A TERRITORY (UX-PLAN 7.2): its sub-sectors are named where they sit, and the 5 claims nearest the camera
+// carry their words - labels by distance, so the inside reads without hovering every crystal.
+const subEls=SUB.map(sb=>{const el=document.createElement('div');el.className='rlabel sub';el.textContent=sb.label+(sb.status==='candidate'?' (still forming)':'');labelsEl.appendChild(el);return el});
+const nearEls=[0,1,2,3,4].map(()=>{const el=document.createElement('div');el.className='rlabel near';labelsEl.appendChild(el);return el});
+function placeInsideLabels(show){const ri=state.diveReg;
+  SUB.forEach((sb,j)=>{const el=subEls[j];if(!show||sb.ri!==ri){el.style.opacity=0;return}
+    const a=project(subC[j].clone().multiplyScalar(R*.9));if(!a.front){el.style.opacity=0;return}
+    el.style.opacity=.6;el.style.left=(a.x-el.offsetWidth/2)+'px';el.style.top=(a.y-7)+'px'});
+  const near=show?LM.map((l,k)=>({k,d:somaPos[k].distanceTo(camera.position)})).filter(o=>LM[o.k].dom===ri&&somaData[o.k*8+3]>0&&o.k!==state.focusSoma&&o.k!==state.hoverSoma)
+    .sort((a,b)=>a.d-b.d).slice(0,5):[];
+  nearEls.forEach((el,i)=>{const o=near[i];if(!o){el.style.opacity=0;return}const a=project(somaWorld(o.k));if(!a.front){el.style.opacity=0;return}
+    const t=LM[o.k].claim;if(el.dataset.k!==String(o.k)){el.dataset.k=o.k;el.textContent=t.length>40?t.slice(0,39)+'…':t}
+    el.style.opacity=clamp(1.2-o.d/(R*.9),.25,.8);el.style.left=(a.x+10)+'px';el.style.top=(a.y-6)+'px'})}
 function placeRegionLabels(show){
   const c=project(new V3()),edge=project(new V3(R,0,0).applyQuaternion(camera.quaternion));const rs=Math.abs(edge.x-c.x)||200;
   regC.forEach((v,i)=>{const L=regLabelEls[i];const camDir=camera.position.clone().normalize();const vis=show&&v.dot(camDir)>.15;
@@ -2329,8 +2346,11 @@ function updateCrumb(){const parts=['memory'];
   const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back;if(k===crumbKey)return;crumbKey=k;
   $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
     (inChat?`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`:'')+
+    (s_&&opts.correctTarget?`<a class="strandact" data-sact="forget" data-sid="${esc(s_.id)}">forget what IRIS learned here</a><a class="strandact" data-sact="purge" data-sid="${esc(s_.id)}">purge its words</a>`:'')+
+    (uses.k>=0&&state.lens==='timeline'?`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`:'')+
     (when?`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`:'')}
 $('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}
+  const sa=e.target.closest('[data-sact]');if(sa){strandAction(sa.dataset.sact,sa.dataset.sid,sa);return}
   const c=e.target.closest('.chat');if(c)window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:c.dataset.conv,turnId:c.dataset.turn||undefined}}))});
 function updateStats(fps){const c=M.meta.counts||{};
   $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands<br>`+
@@ -2426,7 +2446,27 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
     <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times${l.last_activated?' · last used '+ago(l.last_activated):''} · ${l.last_verified?'last confirmed '+ago(l.last_verified):'not confirmed yet'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
-    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep?correctionHTML(k):''}`}
+    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep&&opts.uses?`<span class="go" data-uses="${k}">→ every time it was used</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep&&opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${deep?correctionHTML(k):''}`}
+// EVERY TIME IT WAS USED (UX-PLAN 7.4): the turns that were given this claim - the timeline lights the beads of their
+// conversations (the others dim) and the breadcrumb counts them; Esc returns. The most direct answer to "is this claim
+// worth anything?".
+const uses={k:-1,ids:new Set(),n:0,helped:0,misled:0};
+function setBeadLight(ids){sess.forEach((s,i)=>{bA[i]=ids?(ids.has(s.id)?1:0):(s.exit==='live'?1:0)});beadGeo.attributes.aA.needsUpdate=true}
+function showUses(k){const l=LM[k];if(!l||!opts.uses)return;
+  opts.uses(l.id).then(r=>{const list=r.uses||[];uses.k=k;uses.n=r.total??list.length;uses.ids=new Set(list.map(u=>u.thread));
+    uses.helped=list.filter(u=>u.outcome==='helped').length;uses.misled=list.filter(u=>u.outcome==='misled').length;
+    setBeadLight(uses.ids);setLens('timeline');crumbKey='';
+    hint(`every time IRIS was given this claim: <em>${fmt(uses.n)}</em> turn${uses.n===1?'':'s'}${uses.helped?` · ${fmt(uses.helped)} helped`:''}${uses.misled?` · <span class="w">${fmt(uses.misled)} misled</span>`:''} &nbsp; esc · back`)})
+   .catch(err=>hint(esc(err?.message||'the uses could not be read')))}
+function clearUses(){if(uses.k<0)return false;uses.k=-1;uses.ids=new Set();setBeadLight(null);crumbKey='';return true}
+// A STRAND'S OWN CORRECTIONS (MEMORY-SURFACE-BUILD 5): in its corridor, "forget what IRIS learned here" (claims whose
+// only evidence is this strand are absorbed, undoable 10 min) and "purge" (its text is removed for good: two clicks).
+let purgeArm=0;
+function strandAction(act,id,el){if(!opts.correctTarget)return;
+  if(act==='purge'&&nowS()-purgeArm>4){purgeArm=nowS();el.textContent='click again to purge for good - it cannot be undone';return}
+  el.textContent='working…';opts.correctTarget(act==='purge'?'purge':'forget_learned','strand:'+id,act==='purge'?{confirm:id}:{})
+    .then(r=>{const a=r.after||{};el.textContent=act==='purge'?`purged · ${fmt(Object.values(a.rows_changed||{}).reduce((x,y)=>x+y,0))} rows`:`forgot ${fmt(a.claims_absorbed||0)} claim${a.claims_absorbed===1?'':'s'} · undo it in your corrections`;drawMine(true)})
+    .catch(err=>{el.textContent=err?.message||'it did not take'})}
 // CORRECTIONS v1 (MEMORY-SURFACE-BUILD section 5): on a focused claim, "that's right / that's wrong / forget this".
 // The backend writes each one as YOUR evidence and answers with the claim before and after; the card and the claim's
 // look change only from that answer (never optimistic). Undo for 10 minutes. Real memory only (opts.correct).
@@ -2471,6 +2511,9 @@ mineEl.addEventListener('click',e=>{const u=e.target.closest('[data-undo-id]');i
 drawMine(true);
 annosEl.addEventListener('click',e=>{
   const cr=e.target.closest('[data-correct]');if(cr){runCorrection(+cr.dataset.k,cr.dataset.correct);return}
+  const us=e.target.closest('[data-uses]');if(us){showUses(+us.dataset.uses);return}
+  const pn=e.target.closest('[data-pin]');if(pn){const l=LM[+pn.dataset.pin];if(l&&opts.correctTarget)opts.correctTarget('pin','claim:'+l.id)
+    .then(()=>{pn.textContent='pinned · undo it in your corrections';drawMine(true)}).catch(err=>{pn.textContent=err?.message||'the pin did not take'});return}
   // ask IRIS about a claim (UX-PLAN 4.6): a #claim reference chip in the chat's composer - an address, never the content
   const ak=e.target.closest('[data-ask]');if(ak){const l=LM[+ak.dataset.ask];if(l)window.dispatchEvent(new CustomEvent('iris:open_conversation',
     {detail:{ref:{address:'claim:'+l.id,label:'claim · '+(l.claim.length>48?l.claim.slice(0,47)+'…':l.claim)}}}));return}
@@ -2906,6 +2949,7 @@ function stepOut(){
   if(keyFocus){setKindFocus(null);return true}
   if(state.lens==='timeline'&&sync.sid){disposeSync();clearAnno('hover');return true}
   if(state.lens==='oracle'&&state.focusSec>=0){focusSector(-1);return true}
+  if(clearUses()){hint('');return true}
   return false}
 // one level in, to what the pointer is on
 function goIn(){
@@ -3123,6 +3167,7 @@ const _frame=()=>{
   placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
+  placeInsideLabels(state.inside&&!state.diving&&cam.mode==='fly');
   placeTimelineLabels(state.lens==='timeline'&&cam.mode==='orbit'&&!cam.tween&&!sync.sid);
   state.turnZoom=state.lens==='timeline'&&cam.mode==='orbit'&&camera.position.distanceTo(cam.look)<R*2.6;turnPts.visible=state.turnZoom;
   {const age=clock.elapsedTime-pupilLive.t;   // up in .35 s, held, back to turning by 3 s

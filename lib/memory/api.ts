@@ -142,6 +142,18 @@ export function undoCorrection(correctionId: string): Promise<{ undone: boolean;
   return postJson("/api/memory/correct/undo", { correction_id: correctionId })
 }
 
+/** Every turn a claim was given to IRIS (GET /api/memory/claims/<id>/uses): {uses: [{ts, thread, turn, episode, outcome}], total}. */
+export async function claimUses(landmarkId: string): Promise<{ uses: Array<{ ts: number; thread: string; turn?: string; episode?: string; outcome?: string | null }>; total: number }> {
+  const res = await fetch(`/api/memory/claims/${encodeURIComponent(landmarkId)}/uses?limit=50`, { signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) throw new MemoryResting(res.status, "the claim's uses could not be read")
+  return res.json()
+}
+
+/** A correction on a pin or a strand (same endpoint): pin / unpin / hold / release, forget_learned, purge (confirm = the strand id). */
+export function correctTarget(action: string, target: string, extra: Record<string, unknown> = {}): Promise<any> {
+  return postJson("/api/memory/correct", { action, target, ...extra })
+}
+
 export async function listCorrections(limit = 20): Promise<{ corrections: Array<{ correction_id: string; ts: number; action: CorrectionAction; target: string; landmark_id: string; claim: string; undone: boolean; undo_until: number }> }> {
   const res = await fetch(`/api/memory/corrections?limit=${limit}`, { signal: AbortSignal.timeout(10_000) })
   if (!res.ok) throw new MemoryResting(res.status, "your corrections could not be read")
