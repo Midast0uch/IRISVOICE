@@ -104,3 +104,33 @@ export function takeChatTurn(): ChatRequest | null {
   pendingChat = null
   return r
 }
+
+/**
+ * Corrections v1 (MEMORY-SURFACE-BUILD.md section 5): the backend writes each one as USER evidence and answers with the
+ * claim's state before and after; the surface shows only what the backend answered (never optimistic). Undo within
+ * 10 minutes. Claims only for now.
+ */
+export type CorrectionAction = "confirm" | "wrong" | "forget"
+export type ClaimState = { tier: string; contradictions: number; absorbed: boolean; evidence_count: number }
+export type Correction = { correction_id: string; action: CorrectionAction; target: string; landmark_id: string; before: ClaimState; after: ClaimState; undo_until: number }
+
+async function postJson(path: string, body: unknown): Promise<any> {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new MemoryResting(res.status, (data && (data.detail || data.error)) || "the memory did not take the correction")
+  return data
+}
+
+export function correctMemory(action: CorrectionAction, target: string, reason?: string): Promise<Correction> {
+  return postJson("/api/memory/correct", { action, target, ...(reason ? { reason } : {}) })
+}
+
+export function undoCorrection(correctionId: string): Promise<{ undone: boolean; landmark_id: string; after: ClaimState }> {
+  return postJson("/api/memory/correct/undo", { correction_id: correctionId })
+}
+
+export async function listCorrections(limit = 20): Promise<{ corrections: Array<{ correction_id: string; ts: number; action: CorrectionAction; target: string; landmark_id: string; claim: string; undone: boolean; undo_until: number }> }> {
+  const res = await fetch(`/api/memory/corrections?limit=${limit}`, { signal: AbortSignal.timeout(10_000) })
+  if (!res.ok) throw new MemoryResting(res.status, "your corrections could not be read")
+  return res.json()
+}

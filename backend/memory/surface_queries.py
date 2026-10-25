@@ -893,7 +893,8 @@ SNAPSHOT_EVENTS_MAX = 12000         # API bound; the exporter's default is 6000
 SNAPSHOT_EVENTS_PER_THREAD = 400    # the exporter's per-thread bound (EVENTS_CAP)
 SNAPSHOT_RECALL_ROWS = 8000
 SNAPSHOT_EVAL_SAMPLE = 6000         # events sampled for eval_share while memory_events(thread_id) is not indexed
-SNAPSHOT_LANDMARKS = 400
+SNAPSHOT_LANDMARKS = 1000            # 516 live after the 2026-10-25 repair (400 cut territories short); the scene keeps
+                                     # 2 texels per claim in one row: 1000 x 2 <= 2048, WebGL2's guaranteed width
 SNAPSHOT_CLAIM_STEPS = 12           # nodes of a claim's traversal the page draws (its steps)
 SNAPSHOT_THREAD_CANDIDATES = 4      # x threads: the wider set the eval-title cut draws from
 SNAPSHOT_EDGES = 3000
@@ -931,7 +932,7 @@ def _snap_oracle(warnings: list[str]) -> list[dict]:
 def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, *,
              db: Optional[Path | str] = None, conv_db: Optional[Path | str] = None) -> dict:
     """The dashboard's memory model, bounded and read-only. `threads` newest threads with their `events` newest
-    events (at most 400 each), 400 live landmarks, 300 episodes, 80 artifacts, 600 nodes, ... include_eval=False
+    events (at most 400 each), 1000 live landmarks, 300 episodes, 80 artifacts, 600 nodes, ... include_eval=False
     drops eval-* threads. `db` / `conv_db` name another store (the exporter's --db; a git worktree has no data/).
     Optional tables a newer build adds read as "none" (meta.available says which were found).
 

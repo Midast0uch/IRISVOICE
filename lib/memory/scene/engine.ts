@@ -19,6 +19,10 @@ export interface MemoryEngineOptions {
   search?: (q: string, signal: AbortSignal) => Promise<any>;
   /** Read the model again (follow mode lost live messages: the model on screen is behind the store). */
   reload?: () => void;
+  /** Corrections v1 (POST /api/memory/correct, /undo, GET /corrections). Absent: no correction actions (the demo). */
+  correct?: (action: "confirm" | "wrong" | "forget", target: string) => Promise<any>;
+  undo?: (correctionId: string) => Promise<any>;
+  corrections?: () => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -147,11 +151,13 @@ const readEvent=e=>READ[e.label]||((FAM[FAMI[e.family]]||{word:'other'}).word+' 
 // a task-path claim is stored as its task prompt: "The project is in <folder>. <the task>" -> the task, and the folder's name
 const claimParts=c=>{const t=String(c||''),m=t.match(/^The project is in (.+?)\.\s+([\s\S]+)$/);
   return m?{text:m[2],where:m[1].split(/[\\/]/).pop()}:{text:t,where:null}};
-const THREAD_WORD={voice_headless:'spoken to IRIS, no chat open',session_iris_integration:'the default session, no chat chosen'};
+// ids of the chat's own connection: memory written under them did not record its conversation ("session" is retired)
+const THREAD_WORD={voice_headless:'spoken to IRIS, no chat open',session_iris_integration:'IRIS chat, no strand chosen',
+  session_iris:'IRIS chat, strand not recorded'};
 const threadTitle=t=>{t=String(t||'');if(THREAD_WORD[t])return THREAD_WORD[t];
   if(t.startsWith('[eval] '))return 'test run · '+t.slice(7).replace(/_/g,' ');
-  return /^[\w-]+$/.test(t)&&/[_-]/.test(t)?t.replace(/[_-]+/g,' '):t};   // an id, not a title: at least make it words
-const NODE_WORD={tool_none:'a step that used no tool',session_pattern:'a habit of your sessions',stated_style:'a style you asked for',
+  return /^[\w-]+$/.test(t)&&/[_-]/.test(t)?t.replace(/[_-]+/g,' ').replace(/\bsession\b/g,'chat'):t};   // an id, not a title: at least make it words
+const NODE_WORD={tool_none:'a step that used no tool',session_pattern:'a habit of how you work',stated_style:'a style you asked for',
   stated_conduct:'a way of working you asked for',hardware:'this machine'};
 const nodeWord=lb=>{lb=String(lb||'');return NODE_WORD[lb]||(/^domain_/.test(lb)?'work about '+lb.slice(7).replace(/_/g,' ')
   :/^tool_/.test(lb)?'the '+lb.slice(5).replace(/_/g,' ')+' tool':lb.replace(/_/g,' '))};
@@ -2103,8 +2109,9 @@ function placeAnnos(){
 // family region labels around the skin
 const regLabelEls=REG.map((d,i)=>{const el=document.createElement('div');el.className='rlabel';
   const lms=M.landmarks.filter(l=>l.domain===d),pv=lms.filter(l=>l.tier!=='candidate').length;
+  const fresh=lms.filter(l=>l.born&&nowS()-l.born<7*86400).length,against=lms.filter(l=>l.contradictions>0).length;   // UX-PLAN 7.1
   const top=lms.slice().sort((a,b)=>(b.activations||0)-(a.activations||0)).slice(0,2).map(l=>l.claim.length>48?l.claim.slice(0,47)+'…':l.claim);
-  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)} moments ${regN[i]?syncHTML(regSync[i])+` <span class="syncr">${pv} of ${regN[i]} claims proven</span>`:'<span class="syncr">no claims yet</span>'}${top.map(c=>`<i class="knows">knows: ${esc(c)}</i>`).join('')}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
+  el.innerHTML=`<b style="color:${domCol(d)}">${esc(domWord(d))}</b>${fmt(M.domCounts[d]||0)} moments ${regN[i]?syncHTML(regSync[i])+` <span class="syncr">${pv} of ${regN[i]} claims proven</span>`:'<span class="syncr">no claims yet</span>'}${fresh||against?`<i>${fresh?`+${fmt(fresh)} new this week`:''}${fresh&&against?' · ':''}${against?`<span class="w">${fmt(against)} contradicted</span>`:''}</i>`:''}${top.map(c=>`<i class="knows">knows: ${esc(c)}</i>`).join('')}${(domTop[i]||[]).map(x=>`<i>${esc(x)}</i>`).join('')}`;labelsEl.appendChild(el);
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
 // the coordinate spaces as layers: press s and each shell names itself, with who may write there
 const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el.className='rlabel';
@@ -2287,15 +2294,60 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
   const counts=l.evidence_counts?{...l.evidence_counts}:{};if(!l.evidence_counts)l.evidence.forEach(e=>counts[e.kind]=(counts[e.kind]||0)+1);
   const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
   const s=M.sById.get(l.session);
-  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':/^toolpath_task_/.test(l.cls)?'a way that worked for a task':String(l.cls).replace(/_/g,' '));
+  // a short task's class is the task's own words (landmark._make_task_class): then the kind says nothing - leave it out
+  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':/^toolpath_task_/.test(l.cls)?'a way that worked for a task':'');
   const how=claimHow(l);
-  return `<div class="k">claim · ${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''} · ${esc(cw)} · ${syncHTML(syncClaim(l))}</div>
+  return `<div class="k">claim · ${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''}${cw?' · '+esc(cw):''} · ${syncHTML(syncClaim(l))}</div>
     <div class="t">${esc(l.claim)}</div>
-    <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times · last used ${ago(l.last_activated)} · last confirmed ${ago(l.last_verified)}
+    <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times${l.last_activated?' · last used '+ago(l.last_activated):''} · ${l.last_verified?'last confirmed '+ago(l.last_verified):'not confirmed yet'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
-    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}`}
+    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep?correctionHTML(k):''}`}
+// CORRECTIONS v1 (MEMORY-SURFACE-BUILD section 5): on a focused claim, "that's right / that's wrong / forget this".
+// The backend writes each one as YOUR evidence and answers with the claim before and after; the card and the claim's
+// look change only from that answer (never optimistic). Undo for 10 minutes. Real memory only (opts.correct).
+const corr={};   // claim index -> {id, action, until} | {busy} | {error}
+const CORR_WORD={confirm:'you marked this right',wrong:'you marked this wrong',forget:'you asked IRIS to forget this'};
+function correctionHTML(k){if(!opts.correct)return '';const c=corr[k];
+  if(c?.busy)return `<div class="acts">saving…</div>`;
+  if(c?.id&&c.until>nowS())return `<div class="acts"><span class="u">${CORR_WORD[c.action]}</span> · <a data-undo="${k}">undo (${Math.max(1,Math.ceil((c.until-nowS())/60))} min)</a>${c.error?`<br><span class="w">${esc(c.error)}</span>`:''}</div>`;
+  return `<div class="acts"><a data-correct="confirm" data-k="${k}">that's right</a> · <a data-correct="wrong" data-k="${k}">that's wrong</a> · <a data-correct="forget" data-k="${k}">forget this</a>${c?.error?`<br><span class="w">${esc(c.error)}</span>`:''}</div>`}
+function showClaimCard(k){if(state.focusSoma!==k||!slots.focus)return;slots.focus.key=null;
+  setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)})}
+function applyClaimState(k,st,userDelta){const l=LM[k];if(!l||!st)return;
+  l.tier=st.tier||l.tier;l.contradictions=st.contradictions||0;
+  if(userDelta>0)l.evidence.push({kind:'user',at:nowS()});
+  else if(userDelta<0){const i=l.evidence.map(e=>e.kind).lastIndexOf('user');if(i>=0)l.evidence.splice(i,1)}
+  if(userDelta&&l.evidence_counts)l.evidence_counts.user=Math.max(0,(l.evidence_counts.user||0)+userDelta);
+  lmBest[k]=bestEvidence(l);
+  somaData[k*8+3]=st.absorbed?0:(l.tier==='candidate'?.42:1);somaData[k*8+5]=l.tier==='candidate'?1:0;somaData[k*8+7]=l.contradictions>0?1:0;
+  somaTex.needsUpdate=true}
+function runCorrection(k,action){const l=LM[k];if(!l||!opts.correct||corr[k]?.busy)return;corr[k]={busy:true};showClaimCard(k);
+  opts.correct(action,'claim:'+l.id).then(r=>{const kk=M.lmIndex.get(r.landmark_id)??k;
+    applyClaimState(kk,r.after,action==='confirm'?1:0);if(action==='confirm'&&LM[kk])LM[kk].last_verified=nowS();   // the backend wrote it
+    corr[kk]={id:r.correction_id,action,until:r.undo_until};if(kk!==k)delete corr[k];
+    showClaimCard(kk);drawMine(true)})
+   .catch(err=>{corr[k]={error:err?.message||'the memory did not take it'};showClaimCard(k)})}
+function runUndo(k,id){const c=corr[k];id=id||c?.id;if(!id||!opts.undo)return;if(c)corr[k]={...c,busy:true};showClaimCard(k);
+  opts.undo(id).then(r=>{const kk=M.lmIndex.get(r.landmark_id)??k;const was=corr[kk]?.action||mine.list.find(x=>x.correction_id===id)?.action;
+    applyClaimState(kk,r.after,was==='confirm'?-1:0);delete corr[kk];showClaimCard(kk);drawMine(true)})
+   .catch(err=>{if(c)corr[k]={...c,busy:false,error:err?.message||'undo failed'};showClaimCard(k)})}
+// "your corrections": a line above the live line; it opens the recent ones (newest first), each undoable while it can be
+const mine={open:false,list:[]};
+const mineEl=document.createElement('div');mineEl.id='mine';$('hud').appendChild(mineEl);
+function drawMine(reload){if(!opts.corrections){mineEl.style.display='none';return}
+  if(reload)opts.corrections().then(r=>{mine.list=r.corrections||[];drawMine(false)}).catch(()=>{});
+  const live=mine.list.filter(c=>!c.undone);
+  mineEl.innerHTML=(mine.open?`<div class="list">${mine.list.length?mine.list.slice(0,12).map(c=>{
+    const k=M.lmIndex.get(c.landmark_id),can=!c.undone&&c.undo_until>nowS();
+    return `<div class="row${c.undone?' gone':''}"><span class="u">${esc(CORR_WORD[c.action]||c.action)}</span> · ${ago(c.ts)}${c.undone?' · undone':''}<br><span class="t">${esc(c.claim||'')}</span>${can?` <a data-undo-id="${esc(c.correction_id)}" data-k="${k??-1}">undo</a>`:''}${k!=null?` <a data-claim="${k}">show</a>`:''}</div>`}).join(''):'<div class="row">none yet</div>'}</div>`:'')+`<a class="head">your corrections · ${fmt(live.length)}${mine.open?' ▾':''}</a>`}
+mineEl.addEventListener('click',e=>{const u=e.target.closest('[data-undo-id]');if(u){runUndo(+u.dataset.k,u.dataset.undoId);return}
+  const c=e.target.closest('[data-claim]');if(c){focusRef('claim:'+LM[+c.dataset.claim].id);return}
+  if(e.target.closest('.head')){mine.open=!mine.open;drawMine(mine.open)}});
+drawMine(true);
 annosEl.addEventListener('click',e=>{
+  const cr=e.target.closest('[data-correct]');if(cr){runCorrection(+cr.dataset.k,cr.dataset.correct);return}
+  const un=e.target.closest('[data-undo]');if(un){runUndo(+un.dataset.undo);return}
   if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(e.target.closest('[data-home]')){exitTunnel();return}
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});

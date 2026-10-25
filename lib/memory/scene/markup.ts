@@ -74,6 +74,13 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #ticker .line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .6s}
 .iris-memory #ticker .line.old{opacity:.32}
 .iris-memory #follow{position:absolute;left:22px;bottom:66px;font-size:9.5px;letter-spacing:.08em;color:var(--faint);cursor:pointer;pointer-events:auto;user-select:none}
+.iris-memory .anno .acts{margin-top:8px;font-size:10px;letter-spacing:.06em;color:var(--faint);pointer-events:auto}
+.iris-memory .anno .acts a{color:var(--dim);cursor:pointer}.iris-memory .anno .acts a:hover{color:var(--white)}
+.iris-memory #mine{position:absolute;left:22px;bottom:84px;font-size:9.5px;letter-spacing:.08em;color:var(--faint);max-width:min(420px,46vw);pointer-events:auto}
+.iris-memory #mine .head{cursor:pointer}.iris-memory #mine .head:hover{color:var(--dim)}
+.iris-memory #mine .list{margin-bottom:6px;max-height:40vh;overflow:auto}
+.iris-memory #mine .row{padding:4px 0;border-top:1px solid rgba(212,236,246,.06);line-height:1.5}.iris-memory #mine .row.gone{opacity:.45}
+.iris-memory #mine .row .t{color:var(--dim)}.iris-memory #mine a[data-undo-id],.iris-memory #mine a[data-claim]{color:var(--brand);cursor:pointer}
 .iris-memory #follow:hover{color:var(--dim)} .iris-memory #follow b{font-weight:400;color:var(--amber)}
 .iris-memory #follow .dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:.7em;vertical-align:1px;border:1px solid var(--faint)}
 .iris-memory #follow .dot.on{background:var(--brand);border-color:var(--brand);box-shadow:0 0 6px var(--brand);animation:iris-mem-live 2.4s ease-in-out infinite}
@@ -121,7 +128,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:12px;color:var(--dim)}
 .iris-memory #lenses a{white-space:nowrap}
 @media (max-width:700px){.iris-memory #lenses{gap:14px;bottom:16px}.iris-memory #lenses a{letter-spacing:.1em}.iris-memory #hint,.iris-memory #stats{display:none}
-  .iris-memory #ticker{max-width:calc(100vw - 32px);left:16px;bottom:48px}.iris-memory #follow{left:16px;bottom:92px}.iris-memory #scrub{bottom:104px;width:calc(100vw - 32px)}.iris-memory #brand,.iris-memory #local{left:16px}}
+  .iris-memory #ticker{max-width:calc(100vw - 32px);left:16px;bottom:48px}.iris-memory #follow{left:16px;bottom:92px}.iris-memory #mine{left:16px;bottom:110px;max-width:calc(100vw - 32px)}.iris-memory #scrub{bottom:104px;width:calc(100vw - 32px)}.iris-memory #brand,.iris-memory #local{left:16px}}
 `;
 
 export const MEMORY_HTML = String.raw`<canvas id="gl"></canvas>

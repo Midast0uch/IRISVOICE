@@ -18,7 +18,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { MemoryEngine } from "@/lib/memory/scene/engine"
-import { fetchMemorySnapshot, MemoryResting, searchMemory, takeMemoryFocus, type MemoryModel } from "@/lib/memory/api"
+import { correctMemory, fetchMemorySnapshot, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
 
 export interface MemorySurfaceProps {
   /** Memory is the surface on screen (and the dashboard is open). */
@@ -77,6 +77,10 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
           data: model ?? undefined,
           search: model ? searchMemory : undefined, // the demo searches its own model
           reload: () => setAttempt((n) => n + 1),   // follow mode lost live messages: read the model again
+          // corrections v1: the real memory only (the demo has no backend to write to)
+          correct: model ? correctMemory : undefined,
+          undo: model ? undoCorrection : undefined,
+          corrections: model ? () => listCorrections() : undefined,
           onError: (e) => {
             console.warn("[MemorySurface] the scene stopped:", e)
             setFailed("The memory view needs WebGL2, and it is not available here.")
