@@ -150,6 +150,7 @@ _SEED = [
     # feedback
     ("CONFIRMATION", "feedback", "advances", "user", "the user confirms a result"),
     ("CORRECTION", "feedback", "sets_back", "user", "the user corrects the agent"),
+    ("CORRECTION_UNDONE", "feedback", "neutral", "user", "the user undid one of their memory corrections"),
     ("APPROVAL", "feedback", "advances", "user", "the user approves an action"),
     ("DENIAL", "feedback", "sets_back", "user", "the user refuses an action"),
     ("NO_RESPONSE", "feedback", "neutral", "user", "a question timed out"),
@@ -175,6 +176,8 @@ _SEED = [
     # Kyudo integrity pass (integrity.py): the memory cleans itself; evidence stays "none"
     ("LANDMARK_DISSOLVED", "memory", "sets_back", "agent", "a landmark lost its credibility or its coordinates and was absorbed (row kept)"),
     ("LANDMARK_MERGED", "memory", "neutral", "agent", "duplicate landmarks were absorbed into a survivor"),
+    # the user's own forget (POST /api/memory/correct): absorbed with the reason "forgotten by you", row kept
+    ("CLAIM_FORGOTTEN", "memory", "sets_back", "user", "the user told IRIS to forget a claim; it is absorbed, the row is kept"),
     ("MEMORY_PRUNED", "memory", "sets_back", "agent", "orphan or dangling memory rows were removed or re-pointed"),
     ("CHAIN_CREATED", "memory", "advances", "agent", "a node chain crystallized"),
     ("CHAIN_VARIANT", "memory", "advances", "agent", "a proven pivot became a variant"),
