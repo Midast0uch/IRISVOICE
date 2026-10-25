@@ -872,3 +872,13 @@ def test_every_select_the_pin_and_strand_corrections_run_on_a_big_table_is_a_sea
                 bad.append((" ".join(sql.split())[:150], plan))
     con.close()
     assert not bad, bad[:3]
+
+
+def test_forget_and_purge_refuse_a_thread_that_is_not_one_conversation(env):
+    """A shared thread id ("session_iris": the chat connection's own; "voice_headless") carries many conversations'
+    rows. Taken literally, forget / purge would hit all of them (2026-10-25). Only a chat conversation qualifies."""
+    n = _count(env)
+    for action, extra in (("forget_learned", {}), ("purge", {"confirm": "session_iris"})):
+        r = env.client.post("/api/memory/correct", json={"action": action, "target": "strand:session_iris", **extra})
+        assert r.status_code == 409, (action, r.text)
+    assert _count(env) == n

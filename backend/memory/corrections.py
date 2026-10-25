@@ -239,6 +239,13 @@ def correct(conn, action: Any, target: Any, reason: Any = None, confirm: Any = N
         return _on_lane(lambda: _pin_create_job(conn, target, kind, ref))
     if action in _PIN_ACTIONS:
         return _on_lane(lambda: _pin_edit_job(conn, action, target, ref))
+    # Forget and purge act on ONE conversation. A shared thread id (the chat connection's "session_iris", the voice
+    # pipeline's "voice_headless", an eval run) carries many conversations' rows: taken literally it would forget or
+    # purge all of them (2026-10-25, the builder's finding) - so only a chat conversation, live or deleted, qualifies.
+    from backend.memory.strand_ids import _is_conversation, _is_ghost
+    if not (_is_conversation(ref) or _is_ghost(conn, ref)):
+        raise CorrectionError(409, "this thread is not one conversation (it may hold many): forget and purge "
+                                   "work on a chat conversation only")
     if action == "forget_learned":
         return _on_lane(lambda: _strand_forget_job(conn, target, ref))
     return _on_lane(lambda: _strand_purge_job(conn, target, ref))
