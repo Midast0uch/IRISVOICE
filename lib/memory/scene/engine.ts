@@ -2693,7 +2693,7 @@ function secAnchor(sec){const th=(sec+.5)/NSEC*Math.PI*2+Math.PI/2;return projec
 function ladderHTML(o){if(!o.clauses)return '';const cl=o.clauses.filter(c=>!(c.id==='acting'&&c.met===null));
   const gap=cl.find(c=>c.id===o.first_missing);
   return `<div class="ladder">${cl.map(c=>`<i class="${c.met===true?'on':c.met===null?'na':c.id===o.first_missing?'gap':''}" title="${esc((CLAUSE_WORD[c.id]||c.id)+(c.words?' - '+c.words:''))}"></i>`).join('')}
-    <span>${fmt(cl.filter(c=>c.met===true).length)} of ${fmt(cl.filter(c=>c.met!==null).length)} parts of the bar met</span></div>${gap?`<div class="m"><span class="w">${esc(gap.words||CLAUSE_WORD[gap.id]||gap.id)}</span></div>`:''}`}
+    <span>${fmt(cl.filter(c=>c.met===true).length)} of ${fmt(cl.filter(c=>c.met!==null).length)} parts of the bar met</span></div>${gap?`<div class="m"><span class="gapw">${esc(gap.words||CLAUSE_WORD[gap.id]||gap.id)}</span></div>`:''}`}
 function historyHTML(o){const h=(o.history||[]).slice(-4);if(h.length<2&&!(h[0]&&h[0].state!==o.state))return '';
   return `<div class="m">${h.map(x=>`${STATE_WORD[x.state]||x.state} ${new Date(x.at).toLocaleDateString('en-GB',{day:'numeric',month:'short'})}`).join(' → ')}</div>`}
 function curveSVG(o){const k=o.curve;if(!k||k.length<2)return '';const W=150,H=64,X=v=>4+v*(W-8),Y=v=>H-4-v*(H-8);

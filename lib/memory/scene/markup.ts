@@ -85,6 +85,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory .anno .ladder{margin-top:7px;font-size:9.5px;color:var(--faint)}.iris-memory .anno .ladder i{display:inline-block;width:6px;height:6px;margin-right:4px;border-radius:50%;border:1px solid rgba(212,236,246,.35)}
 .iris-memory .anno .ladder i.on{background:var(--brand);border-color:var(--brand)}.iris-memory .anno .ladder i.gap{background:var(--amber);border-color:var(--amber);box-shadow:0 0 6px var(--amber)}.iris-memory .anno .ladder i.na{opacity:.25}
 .iris-memory .anno .ladder span{margin-left:4px}
+.iris-memory .anno .gapw{color:var(--amber)}   /* the missing step: amber, not the red of a failure */
 .iris-memory .anno svg.curve{display:block;margin-top:8px}.iris-memory .anno svg.curve path{fill:none}.iris-memory .anno svg.curve .diag{stroke:rgba(212,236,246,.15);stroke-dasharray:2 3}
 .iris-memory .anno svg.curve .fit{stroke:var(--brand);stroke-width:1.2}.iris-memory .anno svg.curve .notch{stroke:var(--amber);stroke-width:1.5}
 .iris-memory #orcline{position:absolute;transform:translateX(-50%);text-align:center;font-size:10.5px;line-height:1.7;letter-spacing:.04em;color:var(--dim);pointer-events:none;white-space:nowrap;opacity:0;text-shadow:0 0 8px #020306}

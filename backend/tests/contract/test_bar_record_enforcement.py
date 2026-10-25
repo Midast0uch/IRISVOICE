@@ -22,10 +22,14 @@ pins - the record path).
 CHANGED (2026-10-05, Oracle Stage B, owner-approved): a record alone no longer
 enforces. `enforced_consumers()` is the INTERSECTION of the owner's switch
 (IRIS_DECISION_ENFORCE, default empty), the earned bar and a fitted threshold.
-Each test below therefore provides the OTHER keys (the owner switch on `mode`
+Each test below therefore provides the OTHER keys (the owner switch on `presentation`
 and a fitted threshold) through `_write_record`, so the one thing that varies is
 what the test is about; the assertions are unchanged except
 `test_the_manual_list_still_works_beside_the_record`, which pinned the old union.
+
+CHANGED (2026-10-25): the example consumer was `mode`, removed from decision_engine.CONSUMERS on 2026-10-10, so
+it could never be enforced and two tests failed on every run; `presentation` (a current, plain consumer) takes its
+place. Inputs only - no assertion changed.
 """
 from __future__ import annotations
 
@@ -83,50 +87,50 @@ def _write_record(tmp_path, monkeypatch, *, consumer_id, status, measured_on):
 
 
 def test_a_flip_measured_on_the_active_engine_is_enforced(tmp_path, monkeypatch):
-    _write_record(tmp_path, monkeypatch, consumer_id="mode",
+    _write_record(tmp_path, monkeypatch, consumer_id="presentation",
                   status="enforced", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity",
                         lambda *a, **k: "gliner25-decide-onnx-int8")
-    assert "mode" in de.enforced_consumers()
+    assert "presentation" in de.enforced_consumers()
 
 
 def test_a_flip_measured_on_a_RETIRED_engine_is_refused(tmp_path, monkeypatch):
     """The point of the guard: the flip must be re-earned on the deployed model."""
-    _write_record(tmp_path, monkeypatch, consumer_id="mode",
+    _write_record(tmp_path, monkeypatch, consumer_id="presentation",
                   status="enforced", measured_on="LFM2-350M-Extract")
     monkeypatch.setattr(de, "_current_backend_identity",
                         lambda *a, **k: "gliner25-decide-onnx-int8")
-    assert "mode" not in de.enforced_consumers()
+    assert "presentation" not in de.enforced_consumers()
 
 
 def test_a_shadow_record_enforces_nothing(tmp_path, monkeypatch):
-    _write_record(tmp_path, monkeypatch, consumer_id="mode",
+    _write_record(tmp_path, monkeypatch, consumer_id="presentation",
                   status="shadow", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity",
                         lambda *a, **k: "gliner25-decide-onnx-int8")
-    assert "mode" not in de.enforced_consumers()
+    assert "presentation" not in de.enforced_consumers()
 
 
 def test_an_unknown_engine_identity_cannot_unlock_a_flip(tmp_path, monkeypatch):
     """An identity we cannot resolve must never be treated as a match."""
-    _write_record(tmp_path, monkeypatch, consumer_id="mode",
+    _write_record(tmp_path, monkeypatch, consumer_id="presentation",
                   status="enforced", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity", lambda *a, **k: "")
-    assert "mode" not in de.enforced_consumers()
+    assert "presentation" not in de.enforced_consumers()
 
 
 def test_a_record_with_no_engine_recorded_cannot_unlock_a_flip(tmp_path, monkeypatch):
-    _write_record(tmp_path, monkeypatch, consumer_id="mode",
+    _write_record(tmp_path, monkeypatch, consumer_id="presentation",
                   status="enforced", measured_on="")
     monkeypatch.setattr(de, "_current_backend_identity",
                         lambda *a, **k: "gliner25-decide-onnx-int8")
-    assert "mode" not in de.enforced_consumers()
+    assert "presentation" not in de.enforced_consumers()
 
 
 def test_no_record_is_the_safe_default(tmp_path, monkeypatch):
     monkeypatch.setattr(cb, "BAR_PATH", tmp_path / "absent.json")
     # Switched on by the owner, but there is no record: nothing decides.
-    monkeypatch.setenv("IRIS_DECISION_ENFORCE", "mode")
+    monkeypatch.setenv("IRIS_DECISION_ENFORCE", "presentation")
     assert de.enforced_consumers() == frozenset()
 
 
@@ -136,11 +140,11 @@ def test_the_manual_list_alone_enforces_nothing(tmp_path, monkeypatch):
     not earned). The owner's switch is now ONE of four keys: a consumer on the
     list that has not earned its bar is not enforced, and an earned consumer
     that is not on the list is not either."""
-    _write_record(tmp_path, monkeypatch, consumer_id="mode",
+    _write_record(tmp_path, monkeypatch, consumer_id="presentation",
                   status="enforced", measured_on="gliner25-decide-onnx-int8")
     monkeypatch.setattr(de, "_current_backend_identity",
                         lambda *a, **k: "gliner25-decide-onnx-int8")
     monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice")
     assert de.enforced_consumers() == frozenset()
-    monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,mode")
-    assert de.enforced_consumers() == frozenset({"mode"})
+    monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,presentation")
+    assert de.enforced_consumers() == frozenset({"presentation"})

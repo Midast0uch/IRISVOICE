@@ -1239,6 +1239,10 @@ class ToolDecisionBox:
                 # until the menu could be reconstructed. The composed menu
                 # already carries both control labels (AC21.8).
                 "candidate_names": list(names),
+                # the distribution itself (top 8 by probability): the memory surface's Oracle draws a live
+                # decision's options from it (2026-10-25: tool_choice rows carried only the count and the names)
+                "candidate_probs": [{"name": c.name, "prob": round(float(c.prob), 4)}
+                                    for c in sorted(ds.distribution or (), key=lambda c: c.prob, reverse=True)[:8]],
                 "threshold": self._decision_threshold,
                 "engine_latency_ms": ds.engine_latency_ms,
                 "previous_chosen": _prev.get("chosen"),

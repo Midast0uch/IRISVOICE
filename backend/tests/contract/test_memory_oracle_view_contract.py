@@ -300,6 +300,18 @@ def test_a_row_without_a_distribution_has_no_options_and_the_row_job_wins(live):
     assert c["job"] == "row_job"
 
 
+def test_a_tool_choice_row_draws_its_options_from_candidate_probs(live):
+    """2026-10-25: tool_choice - the commonest live decision - drew no arcs: its row kept a count in "candidates".
+    tool_decision now records the top of its distribution in "candidate_probs" (the ledger passes the key through)."""
+    from backend.agent import tool_bridge
+    assert "candidate_probs" in tool_bridge._DECISION_META_KEYS
+    memory_live.oracle_decision({"consumer_id": "tool_choice", "route": "engine", "chosen": "read_file", "confidence": 0.62,
+                                 "candidates": 12, "candidate_probs": [{"name": "write_file", "prob": 0.21},
+                                                                       {"name": "read_file", "prob": 0.62}]})
+    (d,) = _decisions(live)
+    assert d["options"] == [{"name": "read_file", "p": 0.62}, {"name": "write_file", "p": 0.21}]
+
+
 # ── the history source: save_bar_record ────────────────────────────────────────────────────────────
 
 def _rec(**statuses):

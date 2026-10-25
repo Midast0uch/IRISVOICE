@@ -85,7 +85,7 @@ def turn_used_web(turn_id: str) -> bool:
 
 
 _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
-    "confidence", "candidates", "candidate_names", "threshold",
+    "confidence", "candidates", "candidate_names", "candidate_probs", "threshold",
     "args_valid", "retried", "escalated",
     "engine_latency_ms", "decision_latency_ms",
     "dag_node_id",

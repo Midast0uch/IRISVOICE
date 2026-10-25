@@ -227,7 +227,9 @@ def oracle_decision(decision: dict) -> None:
             "chosen": chosen,
             "acted": _ACTED.get(str(decision.get("route")), "shadow"),
             "job": _job_of(decision),
-            "options": _options(decision.get("candidates")),
+            # the engine rows carry the distribution in "candidates"; tool_choice keeps a count there and its
+            # distribution in "candidate_probs"
+            "options": _options(decision.get("candidates")) or _options(decision.get("candidate_probs")),
             "ts": time.time(),
         })
     except Exception as exc:  # noqa: BLE001
