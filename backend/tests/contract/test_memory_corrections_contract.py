@@ -187,6 +187,17 @@ def test_wrong_is_one_contradiction_and_a_proven_claim_drops_to_candidate(env):
     assert c["before"]["tier"] == c["after"]["tier"] == "candidate" and c["after"]["contradictions"] == 1
 
 
+def test_wrong_ends_permanence_and_undo_brings_it_back(env):
+    """A permanent claim you call wrong stayed permanent until its next activation, and Kyudo skips permanent claims,
+    so it could never dissolve it (found 2026-10-25 by the corrections builder). Undo restores the flag."""
+    env.conn.execute("UPDATE mycelium_landmarks SET is_permanent = 1 WHERE landmark_id = 'L_PROV'")
+    env.conn.commit()
+    d = _correct(env, "wrong", "L_PROV").json()
+    assert _landmark(env, "L_PROV")["is_permanent"] == 0
+    r = env.client.post("/api/memory/correct/undo", json={"correction_id": d["correction_id"]})
+    assert r.status_code == 200 and _landmark(env, "L_PROV")["is_permanent"] == 1
+
+
 # -- forget -----------------------------------------------------------------------------------------
 def test_forget_absorbs_with_the_reason_and_never_deletes(env):
     n = _count(env)

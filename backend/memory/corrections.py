@@ -90,7 +90,7 @@ def _on_lane(fn):
 
 
 # -- the row ----------------------------------------------------------------------------------------
-_ROW_SQL = ("SELECT tier, contradictions, absorbed, falsify_if, evidence, last_verified "
+_ROW_SQL = ("SELECT tier, contradictions, absorbed, falsify_if, evidence, last_verified, is_permanent "
             "FROM mycelium_landmarks WHERE landmark_id = ?")
 
 
@@ -103,7 +103,7 @@ def _row(conn, landmark_id: str) -> Optional[dict]:
     except (ValueError, TypeError):
         evidence = []
     return {"tier": r[0] or "candidate", "contradictions": r[1] or 0, "absorbed": bool(r[2]),
-            "falsify_if": r[3], "evidence": evidence, "last_verified": r[5]}
+            "falsify_if": r[3], "evidence": evidence, "last_verified": r[5], "permanent": int(r[6] or 0)}
 
 
 def _shown(row: dict) -> dict:
@@ -194,6 +194,7 @@ def _correct_job(conn, action: str, target: str, why: str) -> dict:
     before_full = {                        # what undo restores; the first four are the API's `before`
         **_shown(prior),
         "last_verified": prior["last_verified"],
+        "is_permanent": prior["permanent"],
         "falsify_if": None if falsify is None else falsify[:_FALSIFY_KEEP],
         "falsify_len": None if falsify is None else len(falsify),
         # confirm appends one entry and the list keeps the newest 50: the oldest may fall off
@@ -204,6 +205,8 @@ def _correct_job(conn, action: str, target: str, why: str) -> dict:
         lm.add_landmark_evidence(conn, lid, "user_confirm", ref=cid, session="user")
     elif action == "wrong":
         lm.contradict_landmark(conn, lid, why or "marked wrong by you")
+        # a claim you call wrong is no longer permanent: Kyudo skips permanent claims, so it would never dissolve it
+        app_write(conn, "UPDATE mycelium_landmarks SET is_permanent = 0 WHERE landmark_id = ?", (lid,))
     else:
         app_write(conn, "UPDATE mycelium_landmarks SET absorbed = 1, falsify_if = COALESCE(falsify_if, '') || ? "
                   "WHERE landmark_id = ? AND absorbed IS NULL", (f" | dissolved: {FORGET_REASON}", lid))
@@ -240,9 +243,9 @@ def _restore(conn, lid: str, cid: str, before: dict, action: str) -> dict:
         if before.get("evidence_dropped"):
             evidence = [before["evidence_dropped"]] + evidence
     app_write(conn, "UPDATE mycelium_landmarks SET tier = ?, contradictions = ?, absorbed = ?, falsify_if = ?, "
-              "evidence = ?, last_verified = ? WHERE landmark_id = ?",
+              "evidence = ?, last_verified = ?, is_permanent = ? WHERE landmark_id = ?",
               (before["tier"], before["contradictions"], 1 if before["absorbed"] else None, falsify,
-               json.dumps(evidence), before.get("last_verified"), lid))
+               json.dumps(evidence), before.get("last_verified"), before.get("is_permanent", now["permanent"]), lid))
     app_flush()
     restored = _row(conn, lid)
     if restored is not None:
