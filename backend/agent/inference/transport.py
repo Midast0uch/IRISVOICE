@@ -650,6 +650,14 @@ def _post_hedged(client, url, headers, body, hedge_after: float, on_hedge) -> An
         raise results[0][1]
 
 
+# Stream usage (2026-10-26): a streamed reply carried no token counts (Inception sends them only when asked), so
+# every streamed call fell to a char/4 estimate of the REPLY alone - a direct reply over a long conversation counted
+# ~40 tokens and the context pill could not show how full the window was. The API stream now asks for usage
+# (stream_options.include_usage, OpenAI-compatible); a base URL that refuses it is remembered here and streams
+# without it.
+_STREAM_USAGE_REFUSED: set = set()
+
+
 class ApiHttpxTransport:
     """Remote API provider via direct httpx streaming.
 
@@ -872,11 +880,13 @@ class ApiHttpxTransport:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
                 ) as _client:
+                    _ask_usage = url not in _STREAM_USAGE_REFUSED
                     with _client.stream(
                         "POST",
                         url,
                         headers=headers,
-                        json={**body, "stream": True},
+                        json={**body, "stream": True,
+                              **({"stream_options": {"include_usage": True}} if _ask_usage else {})},
                     ) as _resp:
                         # ── 429 rate-limit → retry with backoff ─────
                         if _resp.status_code == 429:
@@ -915,6 +925,15 @@ class ApiHttpxTransport:
                                 )
                             except Exception:
                                 _err_detail = "(could not read error body)"
+                            if _ask_usage and _resp.status_code in (400, 422):
+                                # A provider that refuses stream_options streams without it from now on.
+                                _STREAM_USAGE_REFUSED.add(url)
+                                logger.warning(
+                                    "[ApiHttpx] %s refused stream_options.include_usage (%d) - streaming "
+                                    "without usage; the context pill estimates for this provider",
+                                    url, _resp.status_code,
+                                )
+                                continue
                             raise RuntimeError(
                                 f"API returned {_resp.status_code}: "
                                 f"{_err_detail}"
