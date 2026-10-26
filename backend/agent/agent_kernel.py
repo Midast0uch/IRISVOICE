@@ -2213,8 +2213,14 @@ class AgentKernel:
         try:
             from backend.memory import Episode
 
+            # The episode belongs to the CONVERSATION; the claim graph keeps the session the turn ran on. Live
+            # 2026-10-26: every chat turn's episode was filed under the WS session ("session_iris", 185 rows) while
+            # its chain rows and events were under "thread:...", so the chat's uses, a forget of the chat and the
+            # memory surface could not see its episodes.
+            _graph_sid = session_id or self.session_id
             episode = Episode(
-                session_id=session_id or self.session_id,
+                session_id=getattr(self, "conversation_id", None) or _graph_sid,
+                graph_session_id=_graph_sid,
                 task_summary=task_summary,
                 full_content=full_content,
                 tool_sequence=tool_sequence or [],

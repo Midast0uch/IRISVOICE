@@ -387,8 +387,10 @@ class MemoryInterface:
                 myc_outcome = (
                     "hit" if score >= 0.8 else "partial" if score >= 0.5 else "miss"
                 )
+                # The claim graph's session (a chat turn: the WS session), not the episode's thread.
+                _graph_sid = getattr(episode, "graph_session_id", None) or episode.session_id
                 self._mycelium.record_outcome(
-                    empty_path, myc_outcome, episode.session_id, episode.task_summary
+                    empty_path, myc_outcome, _graph_sid, episode.task_summary
                 )
                 # Landmark policy (spec D9): only OUTSIDE evidence promotes. A
                 # successful task and a user confirmation are evidence; the
@@ -401,9 +403,9 @@ class MemoryInterface:
                 # The landmarks this session used: activate them and grow the
                 # edges among them (before crystallize: the new landmark is
                 # not "used" by the session that made it).
-                self._mycelium.observe_landmark_use(episode.session_id, myc_outcome)
+                self._mycelium.observe_landmark_use(_graph_sid, myc_outcome)
                 self._mycelium.crystallize_landmark(
-                    session_id=episode.session_id,
+                    session_id=_graph_sid,
                     cumulative_score=score,
                     outcome=myc_outcome,
                     task_entry_label=episode.task_summary,

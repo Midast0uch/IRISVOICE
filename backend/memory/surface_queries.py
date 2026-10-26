@@ -620,14 +620,20 @@ def claim_uses(landmark_id: str, limit: int = OBSERVED_CAP) -> dict:
         rows = con.execute("SELECT episode_id, session_id, created_at FROM mycelium_episode_index WHERE landmark_id = ? "
                            "ORDER BY created_at DESC LIMIT ?", (landmark_id, limit)).fetchall()
         verdict: dict[str, str] = {}
-        if rows and {"id", "user_confirmed", "user_corrected"} <= table_cols(con, "episodes"):
+        # The episode row names the CONVERSATION; the index row names the claim graph's session (a chat turn ran on
+        # the WS session - Episode.graph_session_id, 2026-10-26). A use belongs to the conversation when it is known.
+        conv_of: dict[str, str] = {}
+        if rows and {"id", "session_id", "user_confirmed", "user_corrected"} <= table_cols(con, "episodes"):
             # PLAN  … WHERE id IN (…) -> SEARCH episodes USING INDEX sqlite_autoindex_episodes_1 (id=?)
-            for r in con.execute(f"SELECT id, user_confirmed, user_corrected FROM episodes WHERE id IN "
+            for r in con.execute(f"SELECT id, user_confirmed, user_corrected, session_id FROM episodes WHERE id IN "
                                  f"({_marks(len(rows))})", [r[0] for r in rows]):
                 if r[2]:
                     verdict[r[0]] = "misled"
                 elif r[1]:
                     verdict[r[0]] = "helped"
+                if r[3]:
+                    conv_of[r[0]] = r[3]
+        rows = [(episode, conv_of.get(episode) or thread, at) for episode, thread, at in rows]
         # The TURN of a use (2026-10-26): no writer records it on the index row, and episode ids are uuids shared by
         # turns (store() updates a near-duplicate episode), so "<conversation>:<turn>" ids are 0 of 4,460 live rows.
         # Every turn's events carry episode_id "<conversation>:<turn>" and the episode is stored at the turn's END,

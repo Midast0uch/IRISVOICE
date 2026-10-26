@@ -86,6 +86,11 @@ class Episode:
     source_channel: str = "websocket"
     node_id: str = "local"  # TORUS: Dilithium3 pubkey at Phase 6
     origin: str = "local"   # TORUS: 'local' | 'torus_task'
+    # The claim graph's session key when it is not the episode's thread. A chat turn runs its DER on the WS
+    # session ("session_iris") while the turn belongs to the chat conversation ("thread:..."): the episode row is
+    # filed under the conversation (session_id) and the Mycelium wiring (outcome, landmark use, crystallize,
+    # episode index) keeps the session it ingested the turn under. None = the same as session_id.
+    graph_session_id: Optional[str] = None
 
 
 def _shadow_trust_rank(scored: list, zone_of: dict, limit: int) -> None:
@@ -551,7 +556,7 @@ class EpisodicStore:
                 # channel weight never applied.
                 self._mycelium.episode_indexer.index_episode(
                     episode_id=episode_id,
-                    session_id=episode.session_id,
+                    session_id=episode.graph_session_id or episode.session_id,
                     source_channel=3,
                 )
             except Exception:
