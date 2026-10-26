@@ -117,6 +117,20 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #key a{display:flex;align-items:center;justify-content:flex-end;gap:9px;font-size:10px;letter-spacing:.08em;color:var(--faint);cursor:pointer;user-select:none;transition:color .25s,opacity .25s}
 .iris-memory #key a:hover{color:var(--dim)}.iris-memory #key a .kn{font-style:normal;color:var(--dim);font-variant-numeric:tabular-nums;min-width:3.4em;text-align:right;opacity:.8}.iris-memory #key a.on{color:var(--white)}.iris-memory #key.iso a:not(.on){opacity:.35}.iris-memory #key canvas{width:22px;height:22px}
 .iris-memory #hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
+.iris-memory #key a.helpk{margin-top:4px;color:var(--dim)}.iris-memory #key a.helpk:hover{color:#cfe3ee}
+/* the control sheet (UX-PLAN 3.3): thin-line HUD, never a modal; the keys of the view you are in */
+.iris-memory #help{position:absolute;right:22px;top:96px;min-width:260px;max-width:340px;padding:12px 14px 10px;border:1px solid rgba(160,200,220,.22);background:rgba(4,8,12,.72);
+  font-size:10.5px;line-height:1.75;color:var(--dim);pointer-events:auto;opacity:0;transform:translateY(6px);transition:opacity .25s,transform .25s;visibility:hidden}
+.iris-memory #help.on{opacity:1;transform:none;visibility:visible}
+.iris-memory #help h4{margin:0 0 6px;font-size:9.5px;letter-spacing:.16em;font-weight:500;color:#cfe3ee;text-transform:uppercase;display:flex;justify-content:space-between}
+.iris-memory #help h4 a{cursor:pointer;color:var(--faint)}.iris-memory #help h4 a:hover{color:#cfe3ee}
+.iris-memory #help .row{display:flex;gap:12px}.iris-memory #help .row b{flex:0 0 112px;font-weight:500;color:#cfe3ee;text-align:right;white-space:nowrap}
+/* first-open coach marks (UX-PLAN 3.3): three gestures, shown once per viewer, dismissible */
+.iris-memory #coach{position:absolute;left:50%;top:64px;transform:translateX(-50%);display:flex;gap:22px;align-items:center;padding:9px 16px;border:1px solid rgba(160,200,220,.22);
+  background:rgba(4,8,12,.66);font-size:10.5px;letter-spacing:.06em;color:var(--dim);pointer-events:auto;opacity:0;transition:opacity .5s;visibility:hidden}
+.iris-memory #coach.on{opacity:1;visibility:visible}.iris-memory #coach b{color:#cfe3ee;font-weight:500;margin-right:6px}
+.iris-memory #coach a{cursor:pointer;color:var(--faint)}.iris-memory #coach a:hover{color:#cfe3ee}
+@media (prefers-reduced-motion:reduce){.iris-memory #help,.iris-memory #coach{transition:none}}
 .iris-memory #scrub{position:absolute;left:50%;bottom:56px;width:min(520px,60vw);height:24px;transform:translateX(-50%);
   pointer-events:auto;cursor:ew-resize;opacity:0;transition:opacity .4s}
 .iris-memory #scrub.on{opacity:1}
@@ -170,6 +184,8 @@ export const MEMORY_HTML = String.raw`<canvas id="gl"></canvas>
   <div id="rail"><svg></svg><div class="rl"></div></div>
   <div id="search"><input id="q" placeholder="search what IRIS remembers" autocomplete="off"><div id="qres"></div></div>
   <div id="key"></div>
+  <div id="help" role="dialog" aria-label="keys for this view"></div>
+  <div id="coach" role="note"></div>
   <div id="hint"></div>
 </div>
 <div id="flash"></div>

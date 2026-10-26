@@ -2305,6 +2305,32 @@ const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.fil
 KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
   a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:fmt(KEY_COUNT[k]||0)}),keyIcon(k));
   a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
+// THE CONTROL SHEET (UX-PLAN 3.3): `?` (or "? keys" at the foot of the key) lists the gestures of the view you are in.
+// Only bindings that exist (the keydown handler, click(), the wheel): a sheet that promises a key is worse than none.
+const HELP={
+  cortex:[['hover','name a territory, a claim, a pin'],['click','dive into a territory · focus a claim'],['Enter','go in where the pointer is'],
+    ['Esc · Alt+← · back','one level out'],['k','health view (Kyudo)'],['s','show the spaces'],['wheel','nearer · further']],
+  timeline:[['hover a bead','its strand and what memory gave it'],['click a bead','its recall arches'],['Enter','walk into the strand'],
+    ['wheel','move through time'],['Ctrl + wheel','zoom in to the turns'],['g','watch it grow'],['Esc','clear the focus']],
+  corridor:[['← →','claim to claim along the strand'],['wheel','step through the strand'],['click a claim','the thread it belongs to'],
+    ['Enter','that claim in the cortex'],['the far door','walk into the next strand'],['Esc','back to the helix']],
+  artifacts:[['click','open a folder · a thing'],['Esc','up one folder']],
+  oracle:[['hover a sector','a consumer and its job'],['click','its ladder, history and curve'],['Esc','back to the ring']]};
+const HELP_ALL=[['1 – 4','cortex · timeline · artifacts · oracle'],['/','search what IRIS remembers'],['f','follow IRIS live'],['r','replay the last turn'],['?','this sheet']];
+const help={on:false,view:''};
+const helpView=()=>cam.mode==='tunnel'?'corridor':state.lens;
+function renderHelp(){help.view=helpView();const rows=[...(HELP[help.view]||[]),...HELP_ALL];
+  $('help').innerHTML=`<h4><span>keys · ${esc(help.view)}</span><a data-helpx>close ✕</a></h4>`+rows.map(([k,w])=>`<div class="row"><b>${esc(k)}</b><span>${esc(w)}</span></div>`).join('')}
+function toggleHelp(on=!help.on){help.on=on;if(on)renderHelp();$('help').classList.toggle('on',on)}
+$('help').addEventListener('click',e=>{if(e.target.closest('[data-helpx]'))toggleHelp(false)});
+{const q=document.createElement('a');q.className='helpk';q.textContent='? keys';q.title='the keys of this view';q.onclick=()=>toggleHelp();$('key').appendChild(q)}
+// FIRST-OPEN COACH MARKS (UX-PLAN 3.3): the three gestures, once per viewer; any gesture or ✕ dismisses them.
+const COACH_KEY='iris.memory.coach.v1';
+function coachSeen(){try{return localStorage.getItem(COACH_KEY)==='1'}catch{return true}}
+function dismissCoach(){const c=$('coach');if(!c.classList.contains('on'))return;c.classList.remove('on');try{localStorage.setItem(COACH_KEY,'1')}catch{}}
+if(!coachSeen()){$('coach').innerHTML='<span><b>hover</b>look</span><span><b>click</b>focus</span><span><b>Esc</b>back</span><span><b>?</b>all keys</span><a data-coachx>✕</a>';
+  setTimeout(()=>$('coach').classList.add('on'),1600);setTimeout(dismissCoach,16000);
+  $('coach').addEventListener('click',e=>{if(e.target.closest('[data-coachx]'))dismissCoach()})}
 const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').querySelector('.rl'),marks:[],pos:null,
   build(T){const NS='http://www.w3.org/2000/svg',svg=this.svg;svg.innerHTML='';this.marks=[];this.el.classList.toggle('on',!!T);if(!T)return;
     const W=svg.clientWidth||600,X=u=>8+u*(W-16),mk=(tag,at)=>{const e=document.createElementNS(NS,tag);for(const k in at)e.setAttribute(k,at[k]);svg.appendChild(e);return e};
@@ -2334,7 +2360,8 @@ const follow={on:true,q:[],next:0,missed:0,unseen:0};
 let chatTurn=null;
 try{follow.on=localStorage.getItem('iris.memory.follow')!=='0'}catch(e){}
 let crumbKey='';
-function updateCrumb(){const parts=['memory'];
+function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the sheet follows the view
+  const parts=['memory'];
   if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
   else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'oracle'}[state.lens];if(lw)parts.push(lw);
     if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
@@ -2934,6 +2961,9 @@ addEventListener('keydown',e=>{
   const _t=e.target;if(_t&&_t!==$('q')&&(_t.tagName==='INPUT'||_t.tagName==='TEXTAREA'||_t.tagName==='SELECT'||_t.isContentEditable))return; // typing elsewhere in the app
   if(document.activeElement===$('q')){if(e.key==='Escape'){closeSearch();e.preventDefault();e.stopPropagation()}if(e.key==='Enter'){goSearch()}
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();selSearch(searchSel+(e.key==='ArrowDown'?1:-1))}return}
+  dismissCoach();
+  if(e.key==='?'){toggleHelp();e.preventDefault();return}
+  if(e.key==='Escape'&&help.on){toggleHelp(false);e.preventDefault();e.stopPropagation();return}   // the sheet closes before anything steps out
   const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
   if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
   if(cam.mode==='tunnel'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
