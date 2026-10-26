@@ -4,7 +4,7 @@
  * The composer's two signs (docs/design/chatview-2026-10-06, "Composer").
  *
  *   @  = who hears this      (a "to" chip; only IRIS exists today)
- *   #  = what you point at   (ONE list, two groups: "IRIS made" and "This project")
+ *   #  = what you point at   (ONE list: "IRIS made", "IRIS knows" (claims), "This project")
  *
  * A reference is an ADDRESS (a card id, an artifact id, a strand id, a file
  * path), never the content it points at. The chip shows the address; the send
@@ -13,6 +13,7 @@
 
 import React from "react"
 import { fetchStrands } from "@/lib/strands/api"
+import { searchMemory } from "@/lib/memory/api"
 import type { TaskCard } from "@/hooks/useTaskProgress"
 import type { WorkspaceTab } from "@/stores/workspaceStore"
 
@@ -21,8 +22,8 @@ export interface ComposerRef {
   address: string
   /** "task card · router window test": what the picker shows. */
   label: string
-  /** "project" refs are files and folders (path chip); the rest are IRIS made. */
-  kind?: "iris" | "project"
+  /** "project" refs are files and folders (path chip); "knows" are claims from the memory; the rest are IRIS made. */
+  kind?: "iris" | "knows" | "project"
   /** Project refs: the path the chip shows. */
   path?: string
   /** Task-card refs: the card to resolve in the gateway (referenced_cards). */
@@ -156,14 +157,16 @@ export function useRefCandidates(opts: {
 
 export interface RefMatches {
   iris: ComposerRef[]
+  /** IRIS knows: claims from the memory search (MEMORY-UX-PLAN 4.6). */
+  knows: ComposerRef[]
   project: ComposerRef[]
-  /** The two groups as the one list the keys walk: IRIS made first. */
+  /** The groups as the one list the keys walk: IRIS made, IRIS knows, this project. */
   flat: ComposerRef[]
 }
 
 /** The candidates the list shows for the typed query, minus the ones already picked. */
 export function matchRefs(
-  all: { iris: ComposerRef[]; project: ComposerRef[] },
+  all: { iris: ComposerRef[]; project: ComposerRef[]; knows?: ComposerRef[] },
   picked: ComposerRef[],
   query: string,
 ): RefMatches {
@@ -175,7 +178,49 @@ export function matchRefs(
       .slice(0, MAX_PER_GROUP)
   const iris = pick(all.iris)
   const project = pick(all.project)
-  return { iris, project, flat: [...iris, ...project] }
+  // IRIS knows: the memory search already matched the query (its own ranking, word forms) - only drop the picked ones
+  const knows = (all.knows ?? []).filter((r) => !picked.some((p) => p.address === r.address)).slice(0, MAX_PER_GROUP)
+  return { iris, knows, project, flat: [...iris, ...knows, ...project] }
+}
+
+/**
+ * IRIS knows (MEMORY-UX-PLAN 4.6): the claims the memory holds that match what is typed after "#", as `claim:<id>`
+ * (the agent resolves claim refs to one line each). The memory search ranks them; it is read-only and never counts
+ * as a recall. Debounced, two letters at least, cancelled when the query moves on. Pins have no agent-side
+ * resolver yet, so they are not listed.
+ */
+export function useKnowsRefs(query: string, wanted: boolean): ComposerRef[] {
+  const [found, setFound] = React.useState<{ q: string; refs: ComposerRef[] }>({ q: "", refs: [] })
+  const q = query.trim()
+  React.useEffect(() => {
+    if (!wanted || q.length < 2) return
+    let live = true
+    const ctl = new AbortController()
+    const t = setTimeout(() => {
+      searchMemory(q, ctl.signal)
+        .then((d) => {
+          if (!live) return
+          const rows = Array.isArray(d?.results) ? d.results : []
+          setFound({
+            q,
+            refs: rows
+              .filter((r: { kind?: string; id?: string }) => r.kind === "claim" && r.id)
+              .slice(0, MAX_PER_GROUP)
+              // "claim:<id>" exactly as the memory's "ask IRIS about it" sends it: the gateway resolves that prefix
+              .map((r: { id: string; title?: string }) => ({ address: `claim:${r.id}`, label: `claim · ${r.title || r.id}`, kind: "knows" as const })),
+          })
+        })
+        .catch(() => {
+          if (live) setFound({ q, refs: [] })   // the memory resting: the other groups still list
+        })
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(t)
+      ctl.abort()
+    }
+  }, [q, wanted])
+  return found.q === q ? found.refs : []
 }
 
 /** The people and agents the "@" list shows for the typed query. */
@@ -278,12 +323,18 @@ export function RefPicker({
         </div>
       )}
       {matches.iris.map((r, i) => row(r, i))}
+      {matches.knows.length > 0 && (
+        <div className="iris-ph" role="presentation" data-testid="ref-group-knows">
+          IRIS knows<small>claims in its memory</small>
+        </div>
+      )}
+      {matches.knows.map((r, i) => row(r, matches.iris.length + i))}
       {matches.project.length > 0 && (
         <div className="iris-ph" role="presentation" data-testid="ref-group-project">
           This project<small>{folder}</small>
         </div>
       )}
-      {matches.project.map((r, i) => row(r, matches.iris.length + i))}
+      {matches.project.map((r, i) => row(r, matches.iris.length + matches.knows.length + i))}
     </div>
   )
 }

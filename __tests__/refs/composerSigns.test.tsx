@@ -277,3 +277,28 @@ describe("refTriggerOf (the rules, alone)", () => {
     expect(refTriggerOf("a\n# x", 3)).toBeNull()
   })
 })
+
+describe("# lists what IRIS knows (MEMORY-UX-PLAN 4.6)", () => {
+  it("a claim the memory search finds is a third group, and the payload carries claim:<id>", async () => {
+    const base = (global.fetch as jest.Mock).getMockImplementation()!
+    ;(global.fetch as jest.Mock).mockImplementation((url: string, init?: unknown) => {
+      if (typeof url === "string" && url.startsWith("/api/memory/search?q=pyt")) {
+        return Promise.resolve({ ok: true, json: async () => ({ results: [
+          { kind: "claim", id: "c1", title: "Python projects here use pytest" },
+          { kind: "pin", id: "p9", title: "a pin is not listed (no agent-side resolver yet)" },
+        ] }) } as Response)
+      }
+      return base(url, init)
+    })
+    const send = await mount()
+    await type("see #pyt")
+    const list = await screen.findByTestId("ref-picker")
+    const knows = await within(list).findByTestId("ref-group-knows")
+    expect(knows).toHaveTextContent("IRIS knows")
+    expect(within(list).queryByRole("option", { name: /p9/ })).toBeNull()
+    await act(async () => { fireEvent.mouseDown(await within(list).findByRole("option", { name: /claim:c1/ })) })
+    await type("is this right?")
+    await key("Enter")
+    expect(send).toHaveBeenCalledWith("text_message", expect.objectContaining({ refs: ["claim:c1"] }))
+  })
+})

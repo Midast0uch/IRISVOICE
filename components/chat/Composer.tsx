@@ -14,6 +14,7 @@ import {
   RefPicker,
   WhoPicker,
   useRefCandidates,
+  useKnowsRefs,
   refTriggerOf,
   withoutTrigger,
   matchRefs,
@@ -163,7 +164,8 @@ export function Composer({
     cardsAskedFor.current = conversationId
     loadRefCards()
   }, [hashOpen, conversationId, loadRefCards])
-  const refMatches = hashOpen ? matchRefs(refCandidates, composerRefs, open!.query) : null
+  const knowsRefs = useKnowsRefs(hashOpen ? open!.query : '', hashOpen)
+  const refMatches = hashOpen ? matchRefs({ ...refCandidates, knows: knowsRefs }, composerRefs, open!.query) : null
   const whoMatches = open?.sign === '@' ? matchHearers(open.query) : []
   const listSize = open?.sign === '@' ? whoMatches.length : (refMatches?.flat.length ?? 0)
   const [refSel, setRefSel] = React.useState(0)
