@@ -2022,6 +2022,7 @@ class AgentKernel:
                             content=getattr(_m, "content", "") or "",
                             timestamp=getattr(_m, "timestamp", time.time()),
                             turn_id=getattr(_m, "task_id", None),
+                            sources=list(getattr(_m, "sources", None) or []),
                         )
                     )
             ctx = ConversationContext(

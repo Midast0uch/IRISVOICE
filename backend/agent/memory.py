@@ -32,6 +32,7 @@ class Message:
     text_tokens: int = 0
     tool_results: Optional[List[Dict[str, Any]]] = None
     task_id: Optional[str] = None  # Links message to a TaskContext
+    sources: Optional[List[str]] = None  # the turn's cited sources (assistant replies)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -134,10 +135,18 @@ class ConversationMemory:
         audio_tokens: int = 0,
         text_tokens: int = 0,
         tool_results: Optional[List[Dict[str, Any]]] = None,
-        task_id: Optional[str] = None
+        task_id: Optional[str] = None,
+        sources: Optional[List[str]] = None,
     ) -> None:
         """
         Add a message to the rolling conversation window.
+
+        ``sources``: the kernel passes the turn's cited sources with every reply
+        (agent_kernel direct + DER paths). This method did not accept them, so the
+        call raised, its caller swallowed the error at DEBUG, and NO assistant
+        reply ever entered the window (live 2026-10-20..26: hundreds of
+        "unexpected keyword argument 'sources'") - the next turn never saw what
+        IRIS had answered.
 
         tool_results are attached to the message for context but do NOT count
         toward the rolling window limit — only conversation turns do.
@@ -149,7 +158,8 @@ class ConversationMemory:
             audio_tokens=audio_tokens,
             text_tokens=text_tokens or len(content),
             tool_results=tool_results,
-            task_id=task_id
+            task_id=task_id,
+            sources=list(sources) if sources else None,
         )
         self.messages.append(message)
 
