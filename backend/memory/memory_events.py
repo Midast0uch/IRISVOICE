@@ -114,6 +114,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_events_thread_ts ON memory_events(thread_i
 -- The memory surface counts moments per territory (GROUP BY topic_domain): without it a whole-table read, 40-50 s
 -- cold on the hard disk (2026-10-25, [memory_snapshot] dom_counts_memory_events). With it a covering-index read.
 CREATE INDEX IF NOT EXISTS idx_memory_events_domain ON memory_events(topic_domain);
+-- The newest rows of one label in time order (the memory snapshot's recall arches: the newest RECALL_DELIVERED
+-- turns). On (family, label) alone the read took every row of the label and sorted it - 12.4k recall rows, 156 s
+-- cold on the hard disk (2026-10-26, [memory_snapshot] recall_events). With ts it reads only what it keeps.
+CREATE INDEX IF NOT EXISTS idx_memory_events_label_ts ON memory_events(family, label, ts);
 """
 
 
@@ -179,6 +183,7 @@ def ensure_schema(conn) -> None:
                 "ON memory_events(thread_id, ts)"
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_domain ON memory_events(topic_domain)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_label_ts ON memory_events(family, label, ts)")
             conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[memory_events] idx_memory_events_thread_ts not created: %s", exc)

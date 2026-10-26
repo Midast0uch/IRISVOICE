@@ -1470,23 +1470,40 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         traces: dict[str, dict] = {}
         if "memory_events" in have:
             rec_where = "" if include_eval else "AND thread_id NOT LIKE 'eval-%'"
-            # PLAN  … FROM memory_events WHERE family = 'memory' AND label IN (…) [AND …] ORDER BY ts DESC LIMIT 8000
-            #       -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?) + TEMP B-TREE FOR
-            #          ORDER BY. The RECALL_* labels all live in family 'memory' (closed alphabet, EVENT_TAXONOMY); naming
-            #          it lets the label index answer, where label alone would SCAN the table in ts order.
+            # 2026-10-26: this read took EVERY recall row (12.4k) and sorted it to keep 60 turns - 156 s cold on the hard
+            # disk after a restart. Now the newest deliveries stream in time order and the read stops once the
+            # SNAPSHOT_RECALL_TURNS newest turns are complete; the outcomes are read for those turns only.
+            # PLAN  … WHERE family = 'memory' AND label IN ('RECALL_DELIVERED') [AND …] ORDER BY ts DESC LIMIT ?
+            #       -> SEARCH memory_events USING INDEX idx_memory_events_label_ts (family=? AND label=?) - no temp sort
+            #       (a one-value IN plans as equality)
+            seen_turns: set = set()
             for r in con.execute("SELECT ts, label, episode_id, step_index, thread_id, links, payload FROM memory_events "
-                                 f"WHERE family = 'memory' AND label IN ({_marks(len(RECALL_LABELS))}) {rec_where} "
-                                 "ORDER BY ts DESC LIMIT ?", RECALL_LABELS + (SNAPSHOT_RECALL_ROWS,)):
+                                 f"WHERE family = 'memory' AND label IN ('RECALL_DELIVERED') {rec_where} "
+                                 "ORDER BY ts DESC LIMIT ?", (SNAPSHOT_RECALL_ROWS,)):
+                ep = r["episode_id"]
+                if ep and ep not in seen_turns:
+                    if len(seen_turns) >= SNAPSHOT_RECALL_TURNS:
+                        break
+                    seen_turns.add(ep)
                 tid = (jload(r["links"], {}) or {}).get("recall_trace_id")
                 if not tid:
                     continue
-                t = traces.setdefault(tid, {"outcome": None})
-                if r["label"] == "RECALL_DELIVERED":
-                    p = jload(r["payload"], {}) or {}
-                    t.update(turn=r["episode_id"], session=r["thread_id"], step=r["step_index"], ts=r["ts"],
-                             source=p.get("source") or "neighbors", refs=[x for x in (p.get("refs") or []) if x][:5])
-                else:
-                    t["outcome"] = "helped" if r["label"] == "RECALL_HELPED" else "misled"
+                p = jload(r["payload"], {}) or {}
+                traces.setdefault(tid, {"outcome": None}).update(
+                    turn=ep, session=r["thread_id"], step=r["step_index"], ts=r["ts"],
+                    source=p.get("source") or "neighbors", refs=[x for x in (p.get("refs") or []) if x][:5])
+            # An outcome row carries its delivery's turn (checked live: 1,473 of 1,473 traces).
+            # PLAN  … WHERE episode_id IN (…) AND family = 'memory' AND label IN (…)
+            #       -> SEARCH memory_events USING INDEX idx_memory_events_episode (episode_id=?)
+            turns = sorted(t for t in seen_turns if t)
+            for i in range(0, len(turns), 500):
+                part = turns[i:i + 500]
+                for r in con.execute(f"SELECT label, links FROM memory_events WHERE episode_id IN ({_marks(len(part))}) "
+                                     f"AND family = 'memory' AND label IN ({_marks(len(RECALL_LABELS) - 1)})",
+                                     part + list(RECALL_LABELS[1:])):
+                    tid = (jload(r["links"], {}) or {}).get("recall_trace_id")
+                    if tid in traces:
+                        traces[tid]["outcome"] = "helped" if r["label"] == "RECALL_HELPED" else "misled"
         by_turn: dict[str, list] = {}
         for t in traces.values():
             if t.get("turn"):

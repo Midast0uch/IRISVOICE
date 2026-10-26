@@ -422,6 +422,24 @@ def test_the_statements_that_would_scan_run_only_when_their_index_exists(snap_en
     assert "idx_memory_events_label" in plans["recall"]                     # family + label: not a ts-order scan of the table
 
 
+def test_the_recall_read_streams_the_newest_turns_without_a_sort(snap_env, monkeypatch):
+    """2026-10-26: the recall read took every RECALL_* row (12.4k live) and sorted it to keep 60 turns - 156 s cold on
+    the hard disk after a restart. With idx_memory_events_label_ts it reads the newest deliveries in time order and
+    stops at SNAPSHOT_RECALL_TURNS turns; outcomes are read by turn."""
+    from backend.memory.memory_events import _SCHEMA
+
+    assert "idx_memory_events_label_ts ON memory_events(family, label, ts)" in _SCHEMA   # new stores get the index
+    con = sqlite3.connect(snap_env.mem)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_label_ts ON memory_events(family, label, ts)")
+    con.commit()
+    present = _run_snapshot_traced(snap_env, monkeypatch)
+    delivered = next(s for _, s in present if "label IN (" in s and "RECALL_DELIVERED" in s)
+    plan = " | ".join(_plan_lines(con, delivered))
+    con.close()
+    assert "idx_memory_events_label_ts" in plan and "TEMP B-TREE" not in plan, plan
+    assert "RECALL_HELPED" not in delivered                                # outcomes come from a per-turn read
+
+
 # ── the exporter is the same function ───────────────────────────────────────────────────────────
 def test_exporter_cli_writes_the_same_json_as_the_endpoint(snap_env, tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location("export_snapshot_under_test", REPO / "docs/Design/Memory-Cortex/export_snapshot.py")
