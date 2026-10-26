@@ -399,7 +399,7 @@ conversations carry one).
 | 3.2 paths | claim → where it was learned (corridor); turn → the claim it touched; thread → fan the braid; thread rename / pin; artifact → the strand it was made in | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
 | 4.3 helix | forked strand leaves / reports to the thread line; hover a braid → fan; click → beads open | braid joins only parent → child; hover labels for the rest |
 | 4.4 corridor | sibling strands as doorways at the fork; helper report-back arch; rail tags; "continue in chat" end marker | breadcrumb (the far door now walks the strands of one thread) |
-| 4.5 chat → memory | thread orbit Alt+click / `◎`; lens "In memory" | the turn's memory button is a button, not a `⋯` menu with "decided here" |
+| 4.5 chat → memory | thread orbit Alt+click / `◎` (the lens "In memory" is built) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
 | 4.6 memory → chat | drag a thing onto the chat wing (the `#` group "IRIS knows" is built: claims from the memory search; pins wait for an agent-side resolver) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
 | 5 | copy link / deep-link serialisation | the back stack is structural (one level out), not a recorded stack |
 | 6.1 | input interrupts a flight; long jumps through a fragment tunnel | the object does not travel (camera flights only); tweenPath 2.4–2.8 s (> 1.2 s); reduced motion is instant, not a 200 ms fade |

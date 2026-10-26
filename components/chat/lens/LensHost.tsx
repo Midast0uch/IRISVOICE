@@ -103,6 +103,10 @@ export function LensHost({ documents, conversationId, sendMessage, glowColor, on
         addLensToWorkspace({ v: 1, kind: "artifact", id: doc.id, title, format: doc.format, content: doc.content || "" })
         setStatus("Opened in the dashboard workspace.")
       }}
+      // the memory knows an artifact by its store id (document_data), the chat by its card id
+      onInMemory={() => {
+        window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `artifact:${doc.documentId || doc.id}` } }))
+      }}
     >
       {needsBody ? (
         <p className="text-[12px]" style={{ color: "rgba(230,233,242,.55)" }}>Loading the document…</p>

@@ -29,12 +29,14 @@ export interface LensProps {
   /** Present for an artifact: opens it the way it opens outside the wing. */
   onPopOut?: () => void
   onToDashboard: () => void
+  /** Open this thing in the memory surface (MEMORY-UX-PLAN 4.5: "In memory", beside "To dashboard"). */
+  onInMemory?: () => void
   /** Short status ("Opened in the dashboard workspace."). */
   status?: string | null
   children: React.ReactNode
 }
 
-export function Lens({ title, onClose, onPopOut, onToDashboard, status, children }: LensProps) {
+export function Lens({ title, onClose, onPopOut, onToDashboard, onInMemory, status, children }: LensProps) {
   return (
     <div
       className="iris-lens absolute flex flex-col"
@@ -50,6 +52,7 @@ export function Lens({ title, onClose, onPopOut, onToDashboard, status, children
           <span role="status" className="text-[11px]" style={{ color: "#5fcf98" }}>{status}</span>
         )}
         {onPopOut && <LensButton onClick={onPopOut} label="Pop out">Pop out</LensButton>}
+        {onInMemory && <LensButton onClick={onInMemory} label="In memory">In memory</LensButton>}
         <LensButton onClick={onToDashboard} label="To dashboard">To dashboard</LensButton>
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3.5" data-lens-body>
