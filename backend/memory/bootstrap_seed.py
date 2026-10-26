@@ -47,19 +47,13 @@ def _find_bootstrap_db() -> Optional[str]:
 
 
 def _find_memory_db() -> Optional[str]:
-    """
-    Find data/memory.db relative to the project root.
-    """
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "..", "..", "data", "memory.db"),
-        os.path.join("IRISVOICE", "data", "memory.db"),
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "memory.db"),
-    ]
-    for p in candidates:
-        norm = os.path.normpath(p)
-        if os.path.isfile(norm):
-            return norm
-    return None
+    """The application memory store, through the ONE resolver (memory_config.json db_path). It used to guess
+    data/memory.db next to the code, which bypassed the resolver: with the store moved (2026-10-26, to the SSD)
+    a seed would have written into the stale copy."""
+    from backend.memory.config import resolve_memory_store_path  # noqa: PLC0415 - config imports nothing heavy
+
+    p = resolve_memory_store_path()
+    return str(p) if p.is_file() else None
 
 
 # ── Seeding logic ──────────────────────────────────────────────────────────────

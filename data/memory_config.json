@@ -1,5 +1,5 @@
 {
-  "db_path": "data/memory.db",
+  "db_path": "D:/IRIS/store/memory.db",
   "encryption_enabled": false,
   "embedding": {
     "backend": "lfm25-emb-350m",
