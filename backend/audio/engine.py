@@ -538,6 +538,19 @@ class AudioEngine:
                 self._push_wake_ring(pcm_int16)
             except Exception:  # noqa: BLE001
                 pass
+            if not detected and getattr(self, "_wake_judge", None) is not None:
+                _near = getattr(self._wake_detector, "take_near_miss", None)
+                if _near is not None and _near():
+                    self._judge_wake_then_open(getattr(self._wake_detector, "wake_phrase", "Hey Iris"), fired=False)
+                return
+            if detected and getattr(self, "_wake_judge", None) is not None:
+                logger.info(f"[AudioEngine] Wake word detected: '{word}' - asking the judge before the pipeline opens")
+                try:
+                    self._capture_wake_trigger(word)
+                except Exception:  # noqa: BLE001 - a diagnostic never breaks audio
+                    pass
+                self._judge_wake_then_open(word, fired=True)
+                return
             if detected:
                 logger.info(f"[AudioEngine] Wake word detected: '{word}'")
                 # WAKE TRIGGER CAPTURE (diagnostic, 2026-10-07): keep a rolling
@@ -603,6 +616,73 @@ class AudioEngine:
         if not ring:
             return
         self._last_wake_clip = (time.monotonic(), np.concatenate(ring).astype(np.int16))
+
+    # ── PRE-OPEN WAKE JUDGE (2026-10-25) ──
+    # Live 2026-10-25 21:58-22:30 the owner needed "heyyyy iris" and several tries,
+    # and background noise still opened the pipeline (chime + recording) before
+    # the in-take confirm rejected it. Both came from the detector being the gate:
+    # its streak rule (4 chunks above the bar) passed a drawn-out phrase and
+    # failed the owner's normal one (attempts at peak 0.70-0.75 scored runs of
+    # 1-3), while TV and taps reached it anyway. The detector cannot tell the
+    # phrase from other sound (violawake_detector header); STT can. So with a
+    # judge set, a fire - or a near miss (an utterance above the bar that did not
+    # fire) - sends the ring to the judge on a daemon thread, and the pipeline
+    # opens only when the clip holds the name. One judgement at a time; the
+    # in-take confirm reuses the verdict (take_wake_verdict).
+    _WAKE_VERDICT_MAX_AGE_SEC: float = 15.0
+
+    def set_wake_judge(self, judge) -> None:
+        """judge(clip_float32_16k) -> (ok, heard). Set by VoiceCommandHandler."""
+        self._wake_judge = judge
+
+    def _judge_wake_then_open(self, word: str, fired: bool) -> None:
+        if getattr(self, "_wake_judging", False):
+            return
+        judge = self._wake_judge
+        self._wake_judging = True
+        # A near miss closes at the first dip of the score, often mid-phrase
+        # ("Hey Ir-"); a fire closes at the release. Wait for the tail, then copy.
+        tail_s = 0.15 if fired else 0.6
+
+        def _run() -> None:
+            time.sleep(tail_s)
+            t0 = time.monotonic()
+            pcm = None
+            try:
+                ring = list(getattr(self, "_wake_ring", []) or [])
+                if not ring:
+                    raise ValueError("no audio in the wake ring")
+                pcm = np.concatenate(ring).astype(np.int16)
+                ok, heard = judge(pcm.astype(np.float32) / 32768.0)
+            except Exception as exc:  # noqa: BLE001 - a failed judgement opens nothing
+                ok, heard = False, f"<error: {exc}>"
+            finally:
+                self._wake_judging = False
+            logger.info(
+                "[WakeConfirm] pre-open %s (%s) in %.2fs - heard %r",
+                "CONFIRMED" if ok else "REJECTED", "fire" if fired else "near miss",
+                time.monotonic() - t0, heard,
+            )
+            if not ok:
+                return
+            now = time.monotonic()
+            self._last_wake_clip = (now, pcm)
+            self._last_wake_verdict = (now, heard)
+            if self._on_wake_word_detected:
+                try:
+                    self._on_wake_word_detected(word)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(f"[AudioEngine] wake callback failed: {exc}", exc_info=True)
+
+        threading.Thread(target=_run, daemon=True, name="iris-wake-judge").start()
+
+    def take_wake_verdict(self) -> Optional[str]:
+        """What the pre-open judge heard for the last opened wake, once; None if none or stale."""
+        held = getattr(self, "_last_wake_verdict", None)
+        self._last_wake_verdict = None
+        if held is None or time.monotonic() - held[0] > self._WAKE_VERDICT_MAX_AGE_SEC:
+            return None
+        return held[1]
 
     def take_wake_clip(self) -> Optional[np.ndarray]:
         """Return the audio of the last wake fire as float32 16 kHz, once.

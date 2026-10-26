@@ -258,6 +258,13 @@ class VoiceCommandHandler:
             threading.Lock()
         )  # prevents concurrent start_recording() calls
 
+        # The wake word opens the pipeline only when STT hears the name (see
+        # AudioEngine._judge_wake_then_open). Off switch: IRIS_WAKE_PREOPEN_JUDGE=0
+        # (the in-take confirm alone, as before 2026-10-25).
+        _set_judge = getattr(audio_engine, "set_wake_judge", None)
+        if _set_judge is not None and os.environ.get("IRIS_WAKE_PREOPEN_JUDGE", "1") != "0":
+            _set_judge(self._judge_wake_clip)
+
         # REQ-1 AC1.2 / REQ-6 AC6.1: NO eager warm-up at construction.
         # Previously this called self.warm_up() (pre-loading faster-whisper)
         # and the Parakeet warm-up (spawning the GPU subprocess), which
@@ -509,6 +516,14 @@ class VoiceCommandHandler:
         no latency. On a cold boot the final STT needs the same whisper load.
         """
         verdict: Dict[str, Any] = {"done": threading.Event(), "ok": False, "heard": ""}
+        # The pre-open judge (AudioEngine.set_wake_judge -> _judge_wake_clip) already
+        # heard the name before this take opened: reuse its verdict, no second STT.
+        _take_verdict = getattr(self.audio_engine, "take_wake_verdict", None)
+        heard_before = _take_verdict() if _take_verdict is not None else None
+        if heard_before is not None:
+            verdict.update(ok=True, heard=heard_before)
+            verdict["done"].set()
+            return verdict
         clip = None
         try:
             clip = self.audio_engine.take_wake_clip()
@@ -542,6 +557,43 @@ class VoiceCommandHandler:
 
         threading.Thread(target=_confirm, daemon=True, name="iris-wake-confirm").start()
         return verdict
+
+    def _judge_wake_clip(self, clip) -> tuple:
+        """The pre-open wake judge: does this clip hold the wake name? -> (ok, heard).
+
+        Whisper tiny when loaded (warmed at boot, main.py): ~0.1-0.5 s for the
+        3 s ring. Phonon-2 only until whisper is loaded - MEASURED 2026-10-25 on
+        38 recorded wake clips fed whole to the warm server: median 4.9 s, max
+        6.3 s, 19 of 38 timed out empty. It streams a take well (final 374 ms
+        after speech ends, decoded while the user speaks) but a whole clip at
+        once is too slow to sit before the chime. (Live 2026-10-25 22:14 the
+        in-take confirm waited on a cold whisper load and rejected a real
+        "Hey Iris" after 20 s - hence the boot warm.) Runs on the engine's judge
+        thread, never on the audio callback; refuses while a take records (the
+        detector keeps scoring the user's own request).
+        """
+        if self.is_recording:
+            return False, "<busy: a take is recording>"
+        whisper = self._whisper
+        if whisper is None:
+            stream = Phonon2StreamClient()
+            if stream.begin_utterance(None):
+                for i in range(0, len(clip), 512):
+                    stream.feed_frame(clip[i:i + 512])
+                # Trailing silence so the stream closes the last word.
+                stream.feed_frame(np.zeros(8000, dtype=np.float32))
+                heard = stream.finish(timeout=6.0)
+                if heard:
+                    return wake_phrase_heard(heard), heard
+            whisper = self._get_whisper(timeout=_WAKE_CONFIRM_TIMEOUT_SEC)
+        if whisper is None:
+            return False, "<no STT: phonon-2 gave nothing, whisper still loading>"
+        segments, _ = whisper.transcribe(
+            clip, language="en", beam_size=1, best_of=1,
+            condition_on_previous_text=False, vad_filter=False,
+        )
+        heard = " ".join(s.text.strip() for s in segments).strip()
+        return wake_phrase_heard(heard), heard
 
     def _wake_confirmed(self) -> bool:
         """True unless this take was wake-opened and the clip did not hold the name."""

@@ -709,9 +709,18 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
             "CREATE INDEX IF NOT EXISTS idx_memory_chain_created "
             "ON memory_chain(created_at)"
         )
-        # The memory surface counts steps per territory (GROUP BY topic_domain): a whole-table read without it,
-        # 40-50 s cold on the hard disk (2026-10-25, [memory_snapshot] dom_counts_memory_chain).
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_chain_domain ON memory_chain(topic_domain)")
+        # The memory surface counts steps per territory (GROUP BY topic_domain): a whole-table read without an
+        # index, 40-50 s cold on the hard disk (2026-10-25, [memory_snapshot] dom_counts_memory_chain). The first
+        # fix, an index on topic_domain alone, broke S2: the planner took it for the domain-filtered recall
+        # (WHERE topic_domain = ? ORDER BY created_at DESC) and sorted every 'general' row in a temp b-tree -
+        # 12.7k rows, a 14 s turn-start stall cold (live 2026-10-25 22:15, stack dumps 253-255). One index on
+        # (topic_domain, created_at) serves both: the count reads it alone, the recall reads LIMIT entries in
+        # order. It is the S2 recency index per domain, hence the idx_memory_chain_created_* name.
+        conn.execute("DROP INDEX IF EXISTS idx_memory_chain_domain")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_chain_created_by_domain "
+            "ON memory_chain(topic_domain, created_at)"
+        )
         conn.commit()
     except Exception as _ci_exc:  # noqa: BLE001 — a missing index is slow, not wrong
         logger.warning(

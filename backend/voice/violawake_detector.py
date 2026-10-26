@@ -125,6 +125,10 @@ def threshold_for_sensitivity(sensitivity: float) -> float:
 # is MIN_INPUT_RMS, which gates scores computed from silence.
 CONSECUTIVE_CHUNKS: int = 4
 COOLDOWN_SEC: float = 2.0
+# A near miss needs 2 chunks above the bar: of 53 run=1 utterances in the
+# 2026-10-25 21:58 log most were room/TV blips at peaks 0.55-0.62; the owner's
+# short attempts reached runs of 2-3.
+NEAR_MISS_MIN_RUN: int = 2
 # ── The score does not discriminate; ENERGY and SHAPE must (2026-10-07) ────
 #
 # Captured trigger clips (logs/wake_triggers/) proved the peak score carries no
@@ -331,6 +335,13 @@ class ViolawakeWakeWordDetector:
         # for long enough".
         self._utterance_above_run = 0
         self._utterance_above_best = 0
+        # NEAR MISS (2026-10-25): an utterance that closed ABOVE the bar with a
+        # run of at least NEAR_MISS_MIN_RUN chunks and did not fire. The owner's
+        # normal "Hey Iris" scored peaks 0.70-0.75 with runs of 1-3 (live
+        # 2026-10-25 22:13-22:14) and only a drawn-out phrase reached 4. With a
+        # pre-open judge (AudioEngine.set_wake_judge) the engine asks STT about
+        # these; without one nothing reads the flag.
+        self._near_miss = False
         # Silero VAD, loaded LAZILY and optionally (a missing dependency must
         # not disable the wake word - the gate is simply skipped). Fed one
         # frame per above-bar chunk; the deque holds exactly the frames that
@@ -487,6 +498,13 @@ class ViolawakeWakeWordDetector:
     # Public API (matches PorcupineWakeWordDetector interface)
     # ------------------------------------------------------------------
 
+    wake_phrase: str = WAKE_PHRASE
+
+    def take_near_miss(self) -> bool:
+        """True once per near miss (see _near_miss in __init__)."""
+        hit, self._near_miss = self._near_miss, False
+        return hit
+
     def is_enabled(self) -> bool:
         """Return True if the detector is ready to process frames."""
         return not self._disabled and self._detector is not None
@@ -608,6 +626,12 @@ class ViolawakeWakeWordDetector:
                         f"(need {CONSECUTIVE_CHUNKS}) "
                         f"{'ABOVE' if self._utterance_peak > thr else 'BELOW'}"
                     )
+                    if (
+                        self._utterance_peak > thr
+                        and self._utterance_above_best >= NEAR_MISS_MIN_RUN
+                        and now - self._last_detection_at >= COOLDOWN_SEC
+                    ):
+                        self._near_miss = True
                     self._utterance_peak = 0.0
                     self._utterance_above_run = 0
                     self._utterance_above_best = 0
@@ -654,6 +678,7 @@ class ViolawakeWakeWordDetector:
                             continue
                         self._last_detection_at = now
                         detected = True
+                        self._near_miss = False  # the trace above closed this utterance first
                         self._detection_count += 1
                         logger.info(
                             f"[ViolawakeDetector] Wake word detected: '{WAKE_PHRASE}' "

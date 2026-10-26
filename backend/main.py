@@ -387,6 +387,15 @@ async def lifespan(app: FastAPI):
                 voice_handler._phonon2_warm_up()
             except Exception as _w_exc:
                 logger.warning(f"    [x] [PHONON2] Boot warm failed (non-fatal): {_w_exc}")
+            # Whisper tiny is no longer only the final fallback: it judges every
+            # wake clip before the pipeline opens (voice_command._judge_wake_clip).
+            # Live 2026-10-25 22:14 the first real "Hey Iris" waited on its cold
+            # import + load (~35 s) and was rejected at 20 s. Same idle-gated
+            # slot as Phonon-2 (no disk work while a turn runs); ~75 MB int8.
+            try:
+                voice_handler.warm_up()
+            except Exception as _w_exc:
+                logger.warning(f"    [x] [WHISPER] Boot warm failed (non-fatal): {_w_exc}")
 
         import threading as _threading
         _threading.Thread(

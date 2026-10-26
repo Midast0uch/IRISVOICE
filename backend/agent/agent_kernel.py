@@ -488,6 +488,20 @@ def _turn_end_submit(owner, session_id: str, job) -> None:
         _run()
 
 
+# A spoken turn reaches the agent as text, so nothing told the planner or a step that IRIS heard it. Live
+# 2026-10-25 22:15: "Okay. Can you hear me?" planned "Verify audio input", every step answered "I cannot
+# process audio", the goal contract never covered and the Explorer added 7 steps - 99 s to the first word.
+# Module level on purpose: stand-in kernels bind only some methods.
+_VOICE_TURN_NOTE = (
+    "CHANNEL: the user said this aloud. IRIS heard it through the microphone and speech recognition, "
+    "and IRIS's reply is spoken aloud. You can hear the user."
+)
+
+
+def _voice_turn_note(owner) -> str:
+    return _VOICE_TURN_NOTE if getattr(owner, "_turn_from_voice", False) else ""
+
+
 def _turn_end_settle(owner) -> None:
     """Fold-back of _turn_end_submit: wait until this kernel's last turn-end
     bookkeeping landed (the episode the planner may recall). Bounded: past
@@ -6980,6 +6994,9 @@ class AgentKernel:
             sections.append(f"PERMISSIONS:\n{permissions_list}")
 
         sections.append(f"TASK:\n{task}")
+        _voice = _voice_turn_note(self)
+        if _voice:
+            sections.append(_voice)
 
         # â”€â”€ Phase 2.1: full conversation history (no index slicing) â”€â”€
         # The active thread is passed in its entirety so the planner can resolve
@@ -8865,6 +8882,7 @@ class AgentKernel:
           - Planning caps at 1 step for fast first-token response
         """
         _t_start = time.perf_counter()
+        self._turn_from_voice = bool(from_voice)
 
         # T6.4: mark the call class as USER_TURN at the real turn entry so the
         # phase gate admits it immediately (high-priority lane).
@@ -16833,7 +16851,8 @@ Respond with a JSON object:
                 + (f"SESSION FINDINGS SO FAR:\n{wm_str}\n\n" if wm_str else "")
                 + (f"{evidence_str}\n\n" if evidence_str else "")
                 + f"OBJECTIVE: {item.objective_anchor}\n"
-                f"STEP {item.step_number}: {item.description}\n\n"
+                + (f"{_voice_turn_note(self)}\n" if _voice_turn_note(self) else "")
+                + f"STEP {item.step_number}: {item.description}\n\n"
                 "Complete this step. Respond with the result only."
             ).strip()
             # THINKING RUNS ON THE BRAIN (2026-08-16). This is the tool-less
