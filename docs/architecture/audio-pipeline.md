@@ -1,6 +1,6 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-09-30 (execution audit: TTS now loads WITH the backend — /health + /ready are 503 until the worker is ready; warm-up sentence before "ready"; idle unload off by default, growth recycle + immediate reload; concurrent-spawn 300 s hang fixed; set_voice local-shadow fixed; the cold start is bounded by the C: hard disk — see Known Issues). Previous: 2026-09-07 (session-306: AC28.2 TTS worker leak fixed via MKL fast-MM off; REQ-28 lifecycle).
+> **DEFINITIVE REFERENCE** — Last updated 2026-10-26 (wake confirm: the pipeline opens only when whisper tiny hears "Iris" in the wake clip — fires AND near misses are judged before the chime; whisper is warmed at boot for that one job; Phonon-2 stays the ears for every request — see [Wake confirm](#wake-confirm--the-name-check-before-the-pipeline-opens)). Previous: 2026-09-30 (execution audit: TTS now loads WITH the backend — /health + /ready are 503 until the worker is ready; warm-up sentence before "ready"; idle unload off by default, growth recycle + immediate reload; concurrent-spawn 300 s hang fixed; set_voice local-shadow fixed; the cold start is bounded by the C: hard disk — see Known Issues). Previous: 2026-09-07 (session-306: AC28.2 TTS worker leak fixed via MKL fast-MM off; REQ-28 lifecycle).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
 > All values below are verified against `backend/audio/voice_command.py`,
@@ -61,7 +61,7 @@ WebSocket broadcasts.
 
 | Component | File | Role | Threading |
 |-----------|------|------|-----------|
-| **AudioEngine** | `backend/audio/engine.py` | Manages mic input stream, frame listeners, half-duplex gate (`_tts_active`) | Single-threaded callback |
+| **AudioEngine** | `backend/audio/engine.py` | Manages mic input stream, frame listeners, half-duplex gate (`_tts_active`), the 3 s wake ring, and the pre-open wake judge (`set_wake_judge`, `_judge_wake_then_open`, `take_wake_verdict`) | Single-threaded callback + one `iris-wake-judge` daemon thread per judgement |
 | **AudioPipeline** | `backend/audio/pipeline.py` | PortAudio I/O streams, native C++ player, device enumeration | Callback + main |
 | **ViolawakeWakeWordDetector** | `backend/voice/violawake_detector.py` | Custom ONNX wake head + OpenWakeWord backbone, 320-sample frames, CPU-first | Audio callback |
 | **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; loads at backend startup (`main.py` lifespan → `prewarm()` → `_load_until_ready`), backend not ready until TTS is (`readiness()` gates /health + /ready); idle unload OFF by default (`IRIS_TTS_IDLE_TIMEOUT_S=0`), growth recycle (`IRIS_TTS_MAX_GROWTH_MB`, 500) then immediate reload; respawns on demand (singleflight); sends JSONL, yields audio | Proxy (main) + reaper daemon |
@@ -69,7 +69,7 @@ WebSocket broadcasts.
 | **VoiceCommandHandler** | `backend/audio/voice_command.py` | VAD, recording, STT orchestration, cadence detection, activation beep | Multi-threaded (VAD + STT + beep) |
 | **Phonon2StreamClient** | `backend/audio/phonon2_stream.py` | Live streaming STT client: opens the fermion server's WS `/v1/audio/stream` per utterance, feeds 16 kHz mono frames from the capture callback, surfaces interim hypotheses (~0.35 s first, ~2/s) and the final segment at end-of-speech; `finish()` returns the transcript, `abort()` drops the stream on cancel/no-speech. Hotwords (≤25) bias the vocabulary. Word timestamps on finals. | Reader thread per utterance |
 | **Phonon2 server manager** | `backend/audio/phonon2_stream.py` | Spawns the fermion server (`fermion serve phonon-2`, port 8766, CPU/AVX2) at backend boot; health-polled, sticky-failure, 20-min idle exit with respawn on the next utterance. The engine is a SUBPROCESS — torch never loads in the backend process. Also serves `POST /v1/audio/transcriptions` (the Whisper API shape) for `transcribe_media`. | Boot warm thread |
-| **faster-whisper (fallback)** | `backend/audio/voice_command.py` | tiny/int8 CPU — the FINAL-segment fallback when the stream is cold, dead or empty; interim hypotheses are best-effort and never routed here | STT thread |
+| **faster-whisper (wake judge + fallback)** | `backend/audio/voice_command.py` | tiny/int8 CPU, two jobs: (1) the WAKE JUDGE — `_judge_wake_clip` reads the 3 s wake clip, one pass, 24 tokens (`_WAKE_JUDGE_STT`), and the pipeline opens only if it holds "Iris"; warmed at boot (`main.py` idle-gated slot after Phonon-2) because of this job; (2) the FINAL-segment fallback when the Phonon-2 stream is cold, dead or empty. It never transcribes a request while Phonon-2 is up. | Judge thread / STT thread |
 | **CadenceDetector** | `backend/audio/cadence_detector.py` | Spectral flux → 0-1 cadence envelope | Inline |
 | **iris_gateway** | `backend/iris_gateway.py` | TTS orchestration, WS events, word timing, state management, stop-listening sleep state (`_sleeping_sessions`) | Multi-threaded (producer + consumer + word monitor + cadence) |
 | **WS Manager** | `backend/ws_manager.py` | WebSocket broadcast/send with session tracking | Async |
@@ -129,14 +129,76 @@ WebSocket broadcasts.
 "activation_sound": "liquid-bubble-3000.wav",  # activation chime
 ```
 
-#### Wake Word → Session Routing
+#### Wake confirm — the name check before the pipeline opens
 
-When Violawake detects "Hey Iris", the audio thread fires the registered callback
-(`engine.set_wake_word_callback`, wired in `main.py:372`). The routing is:
+Violawake is a cheap EAR, not the judge: its score does not separate the
+phrase from other sound (a click, TV speech and the owner all score ~0.59 —
+header of `violawake_detector.py`). A speech-to-text pass does. So since
+2026-10-25 the detector only nominates, and STT decides:
 
 ```
-Violawake detects "Hey Iris"
-  → engine._on_wake_word_detected(word)        [audio thread]
+audio callback (AudioEngine._process_audio_frame)
+  ├─ detector FIRES ("Wake word detected")            ─┐
+  └─ detector NEAR MISS: an utterance closed ABOVE the ├─▶ _judge_wake_then_open(word, fired)
+     bar with a run >= NEAR_MISS_MIN_RUN (2) chunks,   │     [iris-wake-judge daemon thread,
+     no fire, outside the 2 s cooldown                ─┘      one judgement at a time]
+                                                               wait for the tail (0.15 s fire,
+                                                               0.6 s near miss), copy the 3 s ring
+                                                               → VoiceCommandHandler._judge_wake_clip
+                                                               → whisper tiny, one pass, 24 tokens
+                                                               → wake_phrase_heard(text)?
+                                    REJECTED ◀── no ──────────┤  log "[WakeConfirm] pre-open REJECTED"
+                                    (no chime, no recording)  │
+                                                              └── yes → hold clip + verdict,
+                                                                        _on_wake_word_detected(word)
+                                                                        → routing below → the take's
+                                                                          _begin_wake_confirm reuses
+                                                                          the verdict (no second STT)
+```
+
+- **Why near misses:** the owner's normal "Hey Iris" scored peaks 0.70–0.75
+  but stayed above the bar for only 1–3 chunks; the streak gate needs 4
+  (`CONSECUTIVE_CHUNKS`), so only a drawn-out "heyyyy iris" fired (live
+  2026-10-25 22:13–22:14; the fire that worked had a run of 14).
+- **Why before the chime:** the earlier gate (2026-10-24) ran INSIDE the take,
+  so TV and taps still opened the pipeline — chime + recording — before the
+  confirm rejected them.
+- **Busy rule:** the judge refuses while a take records (the detector keeps
+  scoring the user's own request).
+- **Off switch:** `IRIS_WAKE_PREOPEN_JUDGE=0` → the in-take confirm alone.
+- **Guards:** `backend/tests/contract/test_wake_preopen_judge_contract.py`
+  (noise fire opens nothing; a near miss the judge confirms opens; the take
+  reuses the verdict; busy while recording; one short decode).
+
+**Phonon-2 is the ears; whisper is only the gate.** Every request after the
+chime streams through Phonon-2 (Phase 3). The judge uses whisper because the
+two jobs differ: Phonon-2 decodes WHILE the user speaks (final ~0.4 s after
+speech ends), but the wake clip is already finished when the judge gets it.
+Measured 2026-10-25/26 on the recorded clips in `logs/wake_triggers/`:
+
+| Judge candidate | Names heard (14 real "Hey Iris") | False opens (379 noise clips) | Time |
+|---|---|---|---|
+| Phonon-2, whole clip sent at once | — | — | median 4.9 s, 19/38 empty |
+| Phonon-2, fed at real speed (an always-on stand-in) | hears "Hey Iris." in its partials | not measured | the "Iris" partial 6–9 s after the phrase |
+| whisper tiny, full decode (temperature fallback) | 14 (the labels) | 0 | live median 3.7 s, max 67 s |
+| **whisper tiny, one pass, 24 tokens (in use)** | **13** | **1** | **median 1.43 s, p90 1.80 s** |
+| whisper tiny + `hotwords="Iris"` | 13 | 8 | median 0.46 s |
+| sherpa-onnx KWS 3.3M, "HEY IRIS" (best thr 0.05) | 7 | 0 | always on, ~8 % of one core |
+
+Open: ~1.4 s before the chime is still slow. The strongest next step is a
+better wake head (an openWakeWord "Hey Iris" model trained with the recorded
+clips as negatives), so fewer clips reach the judge and the phrase fires
+cleanly.
+
+#### Wake Word → Session Routing
+
+When the judge confirms "Hey Iris" (or, with the judge off, when Violawake
+fires), the registered callback runs (`engine.set_wake_word_callback`, wired in
+`main.py`). The routing is:
+
+```
+Judge confirms "Hey Iris"
+  → engine._on_wake_word_detected(word)        [judge thread; audio thread when the judge is off]
   → main.py _on_wake_word_sync(word)           [debounce + cooldown]
   → asyncio.run_coroutine_threadsafe(
         _on_wake_word_async(word), _main_event_loop)
@@ -657,7 +719,7 @@ live over 0.5 → 0.6 → **0.8**; see history below).
 VAD_ENERGY_THRESHOLD: float = 0.006  # fallback floor when no frames yet
 VAD_MIN_SPEECH_SEC: float = 0.3      # ignore blips shorter than this
 VAD_SILENCE_SEC: float = 0.8         # base end-of-speech silence (live 2026-09-04: 0.5 cut mid-sentence pauses, 0.8 covers breaths)
-VAD_SILENCE_SEC_MAX: float = 1.2     # hard cap on adaptive silence (long utterances)
+VAD_SILENCE_SEC_MAX: float = 1.8     # hard cap on adaptive silence (long utterances; raised 1.2 -> 1.8 in dc7139bc, 2026-10-07)
 VAD_MAX_DURATION_SEC: float = 30.0   # hard cap on recording length
 VAD_POLL_INTERVAL_SEC: float = 0.015 # how often VAD loop checks for new frames
 ```
@@ -666,8 +728,10 @@ VAD_POLL_INTERVAL_SEC: float = 0.015 # how often VAD loop checks for new frames
 
 Session 155 set 1.2 for natural pauses; a later session moved 0.5 → 0.6;
 commit `230ce06f` (live 2026-09-04) moved 0.5 → **0.8** because 0.5 cut
-mid-sentence pauses, with 0.8 covering breaths. 1.2 survives as the adaptive
-cap, not the base. Tests pin 0.8 / 0.3 / 1.2-max (`TestVADSilenceThreshold`).
+mid-sentence pauses, with 0.8 covering breaths. The adaptive cap is **1.8**,
+not the base — raised from 1.2 in `dc7139bc` (2026-10-07) because the 1.2 cap
+binned against the ramp's ×1.5, so long utterances never exceeded ~1.18s.
+Tests pin 0.8 / 0.3 / 1.8-max (`TestVADSilenceThreshold`).
 
 ### State Transitions
 
@@ -683,7 +747,7 @@ PRE_SPEECH
   ▼
 IN_SPEECH
   │ rms < 1.5x floor sustained for VAD_SILENCE_SEC (0.8s)
-  │ (long utterances > 5s speech stretch the allowance up to 1.2s cap)
+  │ (long utterances stretch the allowance along a ramp up to the 1.8s cap)
   ▼
 DONE → return True (speech detected and ended naturally)
 ```
@@ -1119,6 +1183,29 @@ The `_monitor_words` function has a contract comment:
 ---
 
 ## Known Issues & Recent Fixes
+
+### The wake word needed "heyyyy iris", noise opened the pipeline, the first open failed (fixed 2026-10-25/26)
+
+**Symptom (owner, live 2026-10-25 21:58–22:30).** Several tries per wake, only
+a drawn-out "heyyyy iris" worked; background noise still opened the pipeline;
+on the first open the request was dropped ("Buffer had 0 frames"); the second
+reply took 99 s to its first word.
+
+**Causes (logs + `logs/stackdump.log`).**
+1. The streak gate (4 chunks) failed the owner's normal phrase (runs 1–3).
+2. The 2026-10-24 confirm ran inside the take, so noise got a chime and a
+   recording first.
+3. The confirm used whisper, which was not loaded: import + load ~35 s, the
+   confirm gave up at 20 s and rejected a real "Hey Iris". Phonon-2 had been
+   warm since 22:07 and did transcribe the request.
+4. The 99 s reply: a 14 s stall in the turn-start chain recall (an index added
+   for the memory surface stole the planner — S119) and 7 extra DER steps,
+   because no prompt told the agent the turn was spoken ("I cannot process
+   audio").
+
+**Fixes.** The pre-open judge (above, S120); whisper warmed at boot; the judge
+decodes one short pass; `idx_memory_chain_created_by_domain`; a CHANNEL line in
+the planning and step prompts of spoken turns (`_voice_turn_note`).
 
 ### TTS cold start landed inside turns; concurrent-spawn hang; set_voice always failed (fixed 2026-09-30)
 
