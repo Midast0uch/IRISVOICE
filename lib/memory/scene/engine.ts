@@ -1206,6 +1206,12 @@ const TICKS=(()=>{const out=[],now=nowS(),d=new Date();d.setHours(0,0,0,0);const
   const m=new Date(today*1000);m.setDate(1);for(let i=0;i<14;i++){const t=m.getTime()/1000;if(t<today-6*86400)add(t,m.toLocaleDateString('en-GB',{month:'short'}));m.setMonth(m.getMonth()-1)}
   return out})();
 const tickEls=TICKS.map(t=>{const el=document.createElement('div');el.className='rlabel tick';el.textContent='— '+t.w;host.querySelector('#labels').appendChild(el);return el});   // labelsEl and $ are declared further down
+// THREADS (UX-PLAN 4.1/4.4): a strand forked from another (chat parent_id, listed in the parent's `strands`) belongs to
+// its parent's thread; the corridor's far door walks the strands of one thread in time.
+const PARENT_OF=new Map();for(const s of sess)for(const c of s.strands||[])PARENT_OF.set(c.id,s.id);
+const threadRoot=s=>{let id=s.id;for(let n=0;n<8&&PARENT_OF.has(id);n++)id=PARENT_OF.get(id);return id};
+function nextInThread(s){const root=threadRoot(s);const mem=sess.filter(x=>threadRoot(x)===root).sort((a,b)=>a.started-b.started);
+  const i=mem.indexOf(s);return i>=0&&i<mem.length-1?mem[i+1]:null}
 const LOD=sess.filter(s=>!/^test run/.test(s.objective||'')).sort((a,b)=>b.started-a.started).slice(0,4);
 const lodEls=LOD.map(s=>{const el=document.createElement('div');el.className='rlabel lod';const t=s.objective||'';el.textContent=t.length>34?t.slice(0,33)+'…':t;host.querySelector('#labels').appendChild(el);return el});
 function placeTimelineLabels(show){
@@ -1832,7 +1838,7 @@ function buildTunnel(s){
   hs.scale.setScalar(26);hs.position.copy(home);g.add(hs);
   // the doorways: a tall arch at the far end (the strands climb onto it) that opens onto the NEXT thread, and a small side
   // arch on the wall that takes you back to this thread's beginning
-  const si=sess.indexOf(s),next=si>=0&&si<sess.length-1?sess[si+1]:null;
+  const next=nextInThread(s);   // UX-PLAN 4.4: the far door leads on within the THREAD, not to any next strand
   const door=new THREE.Mesh(archGeo,doorMat(THREAD_COL,new THREE.Color(next?'#7fe8ff':'#f4fbff'),1));
   door.scale.setScalar(rad1);door.position.copy(P1);door.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(Rd,Ud,T1.clone().negate()));g.add(door);
   const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(archGeo,doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
@@ -2813,7 +2819,7 @@ function hover(x,y){
         state.hoverDoor=nm;canvas.style.cursor='pointer';tunnelHighlight(null);
         const nx=tunnel.door.next;
         setAnno('hover','door-'+nm,()=>project(d.world),nm==='door'
-          ?`<div class="k">doorway</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><div class="m">${nx?`the next thread · ${ago(nx.started)}`:'this is the newest thread'}</div><span class="go">click · step through</span>`
+          ?`<div class="k">doorway</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><div class="m">${nx?`the next strand of this thread · ${ago(nx.started)}`:'the last strand of its thread'}</div><span class="go">click · step through</span>`
           :`<div class="k">doorway</div><div class="t">back to the beginning of this thread</div><span class="go">click · return to its first moment</span>`,{hot:true});return}}}
     const pk=nearestScreen(tunnel.pins.map(b=>near(b.world,70)),x,y,16);
     if(pk>=0&&st<0&&k<0){const b=tunnel.pins[pk],p=b.p,t=pinType(p.type),later=p.refs.filter(r=>(r.t==='thread'||r.t==='session')&&r.id!==tunnel.session.id).length;
@@ -3243,7 +3249,7 @@ const _frame=()=>{
     // near the end the two doorways name themselves: the next thread ahead, the way back on the side
     if(cam.tp>.86){const nx=tunnel.door.next;
       setAnno('doorA','dA'+(nx?nx.id:'home'),()=>project(tunnel.door.world.clone().add(new V3(0,4,0))),
-        `<div class="k">doorway · ahead</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><span class="go" ${nx?`data-go="${nx.id}"`:'data-home="1"'}>${nx?'step through to the next thread':'this is the newest thread · return'}</span>`);
+        `<div class="k">doorway · ahead</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><span class="go" ${nx?`data-go="${nx.id}"`:'data-home="1"'}>${nx?'step through to the next strand of this thread':'the last strand of its thread · return'}</span>`);
       setAnno('doorB','dB',()=>project(tunnel.back.world),`<div class="k">doorway · beside you</div><span class="go" data-rewind="1">↺ back to the beginning of this thread</span>`)}
     else{clearAnno('doorA');clearAnno('doorB')}}
   else{clearAnno('arrive');clearAnno('doorA');clearAnno('doorB')}

@@ -406,7 +406,7 @@ conversations carry one).
 | 6.3 | the live dot; crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | territory health line; ghost outlines of dissolved claims | territory labels (name only: no counts, no "this week"); arbor lights end to end; uses bloom as arches; tether lit on focus |
 | 8 timeline | the live strand's pulse | strand card has no tags; per-turn arches |
-| 9 oracle | live `oracle_decision` drives the ray; the acting-side split; the reliability curve | rings + amber first gap |
+| 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
 | 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
 | 13 details | hover intent 80 ms / card linger 250 ms; card never covers its object; scrambled titles; one live dot; the empty-state sentence | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
 
