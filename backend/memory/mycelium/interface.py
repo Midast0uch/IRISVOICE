@@ -1238,8 +1238,14 @@ class MyceliumInterface:
         task_entry_label: Optional[str] = None,
         source_channel: Optional[str] = None,
         evidence_kinds: Optional[List[str]] = None,
+        thread_id: Optional[str] = None,
     ) -> Optional[Landmark]:
         """
+        ``thread_id``: the conversation the claim was learned in, when it is not the graph session (a chat turn runs
+        on the WS session "session_iris"). It is the claim's ``conversation_ref`` and the ``session`` of the evidence
+        this crystallization adds, so a forget of that chat can absorb what only it taught and a repeat in another
+        chat counts as independent recurrence. The region, backfill and topology stay on ``session_id``.
+
         ``evidence_kinds``: OUTSIDE evidence this session produced (task_complete,
         test_pass, user_confirm). A crystallized landmark starts as a CANDIDATE and
         is promoted only by evidence (landmark policy, spec D9); a merge with
@@ -1290,13 +1296,15 @@ class MyceliumInterface:
         )
         if landmark is None:
             return None
+        thread = thread_id or session_id
+        landmark.conversation_ref = thread
 
         self._lm_index.save(landmark)
         merged = self._merger.try_merge(landmark)
         surviving = merged or landmark
 
         self._apply_landmark_policy(session_id, landmark, surviving, evidence_kinds,
-                                    absorbed_ids=list(self._merger.last_absorbed))
+                                    absorbed_ids=list(self._merger.last_absorbed), thread_id=thread)
 
         self._ep_indexer.backfill_landmark(session_id, surviving.landmark_id)
 
@@ -1312,8 +1320,12 @@ class MyceliumInterface:
         return surviving
 
     def _apply_landmark_policy(self, session_id, new_lm, surviving, evidence_kinds,
-                               absorbed_ids=None) -> None:
-        """Spec D9: event-level route + dependencies, evidence, recurrence. Never raises."""
+                               absorbed_ids=None, thread_id=None) -> None:
+        """Spec D9: event-level route + dependencies, evidence, recurrence. Never raises.
+
+        The evidence this adds names ``thread_id`` (the conversation; default the session). session_evidence still
+        reads the graph session: a chat turn's DER chain rows are filed under it (2026-10-26)."""
+        thread = thread_id or session_id
         try:
             from backend.memory.memory_events import session_evidence
             from backend.memory.mycelium.landmark import (
@@ -1354,9 +1366,9 @@ class MyceliumInterface:
                     if len({r for r in refs if r}) > 1:
                         recurrence = True
                         add_landmark_evidence(conn, surviving.landmark_id, "recurrence",
-                                              f"merged {absorbed_id}", session_id)
+                                              f"merged {absorbed_id}", thread)
             for kind in dict.fromkeys(list(evidence_kinds or []) + ev["kinds"]):
-                add_landmark_evidence(conn, surviving.landmark_id, kind, "episode", session_id)
+                add_landmark_evidence(conn, surviving.landmark_id, kind, "episode", thread)
             logger.debug("[interface] landmark policy applied lm=%s recurrence=%s",
                          surviving.landmark_id, recurrence)
         except Exception as exc:  # noqa: BLE001 — policy never blocks crystallization

@@ -410,6 +410,7 @@ class MemoryInterface:
                     outcome=myc_outcome,
                     task_entry_label=episode.task_summary,
                     evidence_kinds=_evidence,
+                    thread_id=episode.session_id,  # the conversation the claim was learned in
                 )
             except Exception as _myc_err:
                 logger.debug(
