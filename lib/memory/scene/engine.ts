@@ -2210,17 +2210,31 @@ function project(v){const p=v.clone().project(camera);return {x:(p.x*.5+.5)*inne
 const slots={};
 function anno(name){if(slots[name])return slots[name];const el=document.createElement('div');el.className='anno';annosEl.appendChild(el);
   const path=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(path);
+  // the pointer on the card keeps it (UX-PLAN 13: moving onto its paths never loses it); leaving it lets it go
+  el.addEventListener('mouseenter',()=>{const s=slots[name];s.over=true;if(s.lingerT){clearTimeout(s.lingerT);s.lingerT=null}});
+  el.addEventListener('mouseleave',()=>{const s=slots[name];s.over=false;if(name==='hover')lingerClear(name)});
   return slots[name]={el,path,anchor:null,on:false,key:null}}
+// HOVER TIMING (UX-PLAN 13): a hover card appears once the pointer has rested HOVER_INTENT_MS on a thing (a sweep across
+// the scene shows nothing), swaps at once while one is showing, and lingers CARD_LINGER_MS after the pointer leaves.
+const HOVER_INTENT_MS=80,CARD_LINGER_MS=250;
+function lingerClear(name){const s=slots[name];if(!s)return;if(s.pend){clearTimeout(s.intentT);s.intentT=null;s.pend=null}
+  if(!s.on||s.lingerT||s.over)return;s.lingerT=setTimeout(()=>{s.lingerT=null;if(!s.over)clearAnno(name)},CARD_LINGER_MS)}
 // cell=true: the point itself swells into an organic cell with the text INSIDE (like an artifact
 // cell on hover), centred on the anchor and grown from it; otherwise a leader-line label.
 const lmCell=k=>({cell:true,col:CELL_COL[lmBest[k]]||'#7fe8ff'});
-function setAnno(name,key,anchorFn,html,{hot=false,cell=false,col=null}={}){const s=anno(name);
+function setAnno(name,key,anchorFn,html,o={}){const s=anno(name);if(s.lingerT){clearTimeout(s.lingerT);s.lingerT=null}
+  if(name==='hover'&&!s.on){   // nothing showing yet: wait for the pointer to rest on this thing
+    if(s.pend?.key!==key){clearTimeout(s.intentT);s.intentT=setTimeout(()=>{s.intentT=null;const p=s.pend;s.pend=null;if(p)showAnno(...p)},HOVER_INTENT_MS)}
+    s.pend=Object.assign([name,key,anchorFn,html,o],{key});return}
+  showAnno(name,key,anchorFn,html,o)}
+function showAnno(name,key,anchorFn,html,{hot=false,cell=false,col=null}={}){const s=anno(name);
   if(s.cell!==cell){s.cell=cell;s.el.classList.toggle('cell',cell);s.key=null}
   if(col)s.el.style.setProperty('--cell',col);
   if(s.key!==key){s.el.innerHTML=html;s.key=key;const t=s.el.querySelector('.t');if(t)scramble(t,t.textContent,18);
     if(cell){s.el.classList.remove('on');void s.el.offsetWidth}} // a new cell grows again from its own point
   s.anchor=anchorFn;s.on=true;s.el.classList.add('on');s.path.classList.toggle('hot',hot)}
-function clearAnno(name){const s=slots[name];if(!s)return;s.on=false;s.key=null;s.el.classList.remove('on');s.path.setAttribute('d','')}
+function clearAnno(name){const s=slots[name];if(!s)return;clearTimeout(s.intentT);clearTimeout(s.lingerT);s.intentT=s.lingerT=null;s.pend=null;
+  s.on=false;s.key=null;s.el.classList.remove('on');s.path.setAttribute('d','')}
 function placeAnnos(){
   for(const s of Object.values(slots)){if(!s.on||!s.anchor){continue}
     const a=s.anchor();if(!a||!a.front){s.el.style.opacity=0;s.path.setAttribute('d','');continue}s.el.style.opacity='';
@@ -2400,8 +2414,10 @@ function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the
   const when=cursorNow()?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
   const s_=cam.mode==='tunnel'&&tunnel?tunnel.session:null,inChat=!!s_&&!!(s_.messages||[]).length;
   const back=inChat&&chatTurn&&chatTurn.conv===s_.id?chatTurn.turn:'';
-  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back;if(k===crumbKey)return;crumbKey=k;
-  $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
+  const working=performance.now()-liveAt<LIVE_DOT_S*1000;
+  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back+'|'+working;if(k===crumbKey)return;crumbKey=k;
+  $('crumb').innerHTML=(working?'<span class="livedot" title="IRIS is working on a turn now"></span>':'')+
+    parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
     (inChat?`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`:'')+
     ((inChat||s_?.ghost)&&opts.correctTarget?`<a class="strandact" data-sact="forget" data-sid="${esc(s_.id)}">forget what IRIS learned here</a><a class="strandact" data-sact="purge" data-sid="${esc(s_.id)}">purge its words</a>`:'')+
     (uses.k>=0&&state.lens==='timeline'?`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`+
@@ -2739,8 +2755,12 @@ function replayTurn(){const by=new Map();for(const e of M.events){if(!e.episode|
   for(const e of evs)follow.q.push({family:e.family,label:e.label,valence:e.valence,actor:e.actor,evidence:e.evidence,domain:e.domain,landmark:e.landmark});
   const ep=M.epById?.get(best.ep);tickLines[0].innerHTML=tickLines[1].innerHTML;
   tickLines[1].innerHTML=`<span class="dot" style="background:#ffb547"></span><span class="tx">replaying a recorded turn · ${fmt(evs.length)} moments</span><span style="color:var(--faint)"> · ${esc(ep?.summary?String(ep.summary).slice(0,60):ago(best.last))}</span>`}
+// THE LIVE DOT (UX-PLAN 6.3 / 13): one meaning everywhere - IRIS is working on a turn right now. The memory hears it as
+// live taps; the dot stays while they keep coming (LIVE_DOT_S after the last), whether or not follow mode is on.
+const LIVE_DOT_S=12;let liveAt=-1e9;
 function liveMsg(msg){
   if(!USE_REAL||!msg)return;const p=msg.payload||{};
+  if(msg.type==='memory_event'||msg.type==='oracle_decision')liveAt=performance.now();
   if(p.dropped>0){follow.missed+=p.dropped;drawFollow()}
   if(!follow.on)return;
   if(msg.type==='memory_event'){for(const r of p.events||[]){
@@ -2847,20 +2867,20 @@ function hover(x,y){
         <div class="t">${esc(ep.summary)}</div><div class="m">went well <em>${Math.round(ep.score*100)}</em> / 100 · took ${span(ep.duration/1)}
         ${ep.corrected?'<br><span class="u">you corrected IRIS here</span>':ep.confirmed?'<br>you confirmed this':''}
         ${ep.failure_reason?`<br><span class="w">${esc(ep.failure_reason)}</span>`:''}<br>what IRIS did: ${(ep.tools||[]).map(t=>t.replace(/_/g,' ')).join(' → ')}</div>`,{hot:ep.corrected});return}
-    clearAnno('hover');return}
+    lingerClear('hover');return}
   if(state.lens==='artifacts'&&tissue.t>.5&&!state.inside){const i=tissueHit(x,y),th=i<0?threadHit(x,y):-1,cr=crumbHit(x,y);
     tissue.hover=i;tissue.hoverThread=th;const pt=i>=0||th>=0||!!cr;canvas.style.cursor=tcv.style.cursor=pt?'pointer':'default';
     if(i>=0&&tissue.focus<0&&tissue.cells[i].type==='item'){const c=tissue.cells[i];
       setAnno('hover','art'+i,()=>({x:c.cx,y:c.cy,front:true}),`<div class="k">${KIND_WORD[c.a.kind]||c.a.kind} · ${esc(c.a.folder||'unsorted')} · ${ago(c.a.ts)}</div><div class="t">${esc(c.a.name)}</div>`)}
-    else clearAnno('hover');return}
+    else lingerClear('hover');return}
   if(state.inside){
     const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaPos[i].distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
     if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,false),lmCell(k));
       for(let j=0;j<NL;j++)if(j!==state.focusSoma)somaData[j*8+2]=j===k?1:0;somaTex.needsUpdate=true}
-    else{if(k<0){if(!hoverThing(x,y))clearAnno('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
+    else{if(k<0){if(!hoverThing(x,y))lingerClear('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
     return}
   if(state.lens==='cortex'){
-    if(coreHit(x,y)){state.hoverCore=true;canvas.style.cursor='help';showMind(true);clearAnno('hover');return}
+    if(coreHit(x,y)){state.hoverCore=true;canvas.style.cursor='help';showMind(true);lingerClear('hover');return}
     state.hoverCore=false;showMind(false);
     if(hoverThing(x,y))return;
     const r=regionAt(x,y);state.hoverReg=r;skinMat.uniforms.uHoverReg.value=r;if(r>=0)canvas.style.cursor='pointer';return}
@@ -2874,7 +2894,7 @@ function hover(x,y){
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
         <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
-    else if(!syncHoverStrand(x,y))clearAnno('hover');return}
+    else if(!syncHoverStrand(x,y))lingerClear('hover');return}
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
     if(ray.ray.intersectPlane(new THREE.Plane(new V3(0,0,1),0),p)){const r=p.length();
@@ -2884,8 +2904,8 @@ function hover(x,y){
           <div class="m">it answers ONE question per decision, and reads its answer from its own scores - no text<br>it opens when it decides: each arc is an option, as long as how likely it found it<br>${n?`<em>${fmt(n)}</em> decision${n===1?'':'s'} in the last minute`:'no decision in the last minute'}</div>`);return}
       if(r>R*.28&&r<R*1.1){let a=Math.atan2(p.y,p.x)-Math.PI/2;a=((a%(Math.PI*2))+Math.PI*2)%(Math.PI*2);const sec=Math.floor(a/(Math.PI*2)*NSEC)%NSEC;
         state.hoverSec=sec;skinMat.uniforms.uHoverSec.value=sec;canvas.style.cursor='pointer';
-        if(state.focusSec!==sec)setAnno('hover','sec'+sec,()=>secAnchor(sec),oracleCard(ORC[sec],false),{hot:ORC[sec].state==='enforced'});else clearAnno('hover');return}}
-    clearAnno('hover')}
+        if(state.focusSec!==sec)setAnno('hover','sec'+sec,()=>secAnchor(sec),oracleCard(ORC[sec],false),{hot:ORC[sec].state==='enforced'});else lingerClear('hover');return}}
+    lingerClear('hover')}
 }
 // THE ORACLE CARD (UX-PLAN 9.3-9.7): its state, the switch kept apart from what it earned, the bar as a ladder of
 // clauses (met lit, the first missing one amber and said in words), its history (demotions shown), and - focused -

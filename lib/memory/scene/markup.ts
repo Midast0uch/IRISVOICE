@@ -131,6 +131,11 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #coach.on{opacity:1;visibility:visible}.iris-memory #coach b{color:#cfe3ee;font-weight:500;margin-right:6px}
 .iris-memory #coach a{cursor:pointer;color:var(--faint)}.iris-memory #coach a:hover{color:#cfe3ee}
 @media (prefers-reduced-motion:reduce){.iris-memory #help,.iris-memory #coach{transition:none}}
+/* the live dot (UX-PLAN 6.3 / 13): IRIS is working on a turn now - one meaning everywhere */
+.iris-memory #crumb .livedot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--brand,#7fe8ff);margin-right:8px;vertical-align:1px;
+  box-shadow:0 0 6px var(--brand,#7fe8ff);animation:iris-live 1.4s ease-in-out infinite}
+@keyframes iris-live{0%,100%{opacity:.35}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.iris-memory #crumb .livedot{animation:none}}
 /* timeline filter chips (UX-PLAN 8.3): the key's style, above the helix; they dim, never remove */
 .iris-memory #chips{position:absolute;left:50%;top:22px;transform:translateX(-50%);display:flex;flex-wrap:wrap;justify-content:center;gap:4px 12px;
   max-width:min(760px,70vw);font-size:10px;letter-spacing:.06em;color:var(--faint);pointer-events:auto;opacity:0;visibility:hidden;transition:opacity .4s}
