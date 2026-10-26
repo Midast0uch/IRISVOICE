@@ -35,6 +35,19 @@ def _pack_embedding(vec: List[float]) -> bytes:
     return struct.pack(f"<{len(vec)}f", *vec)
 
 
+def _forget_filter(db) -> tuple:
+    """The forget hook for episode recall: (sql, params) that leave out the strands the user told IRIS to forget
+    (corrections.forgotten_clause). Until 2026-10-26 only the chain recall honoured a forget; episodes of a
+    forgotten conversation still reached every plan as similar episodes and past failures. Never raises."""
+    try:
+        from backend.memory.corrections import forgotten_clause  # noqa: PLC0415 - lazy: corrections imports the store
+
+        return forgotten_clause(db)
+    except Exception as exc:  # noqa: BLE001 - recall must still answer
+        logger.warning("[EpisodicStore] forgotten strands not read (episode recall is unfiltered): %s", exc)
+        return "", []
+
+
 def _unpack_embedding(blob: bytes) -> List[float]:
     """
     Unpack embedding from binary format.
@@ -585,7 +598,8 @@ class EpisodicStore:
         query_embedding = meta.vector
         query_backend = meta.backend
 
-        # Get all successful episodes with embeddings
+        # Get all successful episodes with embeddings (never a forgotten strand's)
+        _gone_sql, _gone = _forget_filter(self.db)
         if session_id is not None:
             rows = self.db.execute("""
                 SELECT id, task_summary, tool_sequence, outcome_score,
@@ -593,14 +607,14 @@ class EpisodicStore:
                 FROM episodes
                 WHERE outcome_score >= ? AND outcome_type = 'success'
                   AND session_id = ?
-            """, (min_score, session_id)).fetchall()
+            """ + _gone_sql, (min_score, session_id, *_gone)).fetchall()
         else:
             rows = self.db.execute("""
                 SELECT id, task_summary, tool_sequence, outcome_score,
                        embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_score >= ? AND outcome_type = 'success'
-            """, (min_score,)).fetchall()
+            """ + _gone_sql, (min_score, *_gone)).fetchall()
 
         # Calculate similarity for each episode
         scored_episodes = []
@@ -692,19 +706,20 @@ class EpisodicStore:
         query_embedding = meta.vector
         query_backend = meta.backend
 
-        # Get all failures with embeddings
+        # Get all failures with embeddings (never a forgotten strand's)
+        _gone_sql, _gone = _forget_filter(self.db)
         if session_id is not None:
             rows = self.db.execute("""
                 SELECT id, task_summary, failure_reason, embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_type = 'failure' AND session_id = ?
-            """, (session_id,)).fetchall()
+            """ + _gone_sql, (session_id, *_gone)).fetchall()
         else:
             rows = self.db.execute("""
                 SELECT id, task_summary, failure_reason, embedding, embedding_backend
                 FROM episodes
                 WHERE outcome_type = 'failure'
-            """).fetchall()
+            """ + _gone_sql, tuple(_gone)).fetchall()
 
         # Calculate similarity for each failure
         scored_failures = []

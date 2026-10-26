@@ -452,6 +452,19 @@ def list_records(*, conversation_id: str = "", limit: int = 50, mi: Any = None) 
         return []
 
 
+def _forgotten(episodic) -> frozenset:
+    """Conversations whose learning the user told IRIS to forget (corrections.forgotten_strands). Until 2026-10-26 a
+    forgotten conversation's research still came back as "prior research" in every later search. Never raises."""
+    try:
+        from backend.memory.corrections import forgotten_strands  # noqa: PLC0415 - lazy: corrections imports the store
+
+        db = getattr(episodic, "db", None)
+        return forgotten_strands(db) if db is not None else frozenset()
+    except Exception as exc:  # noqa: BLE001 - recall must still answer
+        logger.warning("[research_memory] forgotten strands not read (prior research is unfiltered): %s", exc)
+        return frozenset()
+
+
 def recall_prior_research(
     query: str, *, limit: int = 3, min_similarity: float = PRIOR_MIN_SIMILARITY,
     exclude_job_id: Optional[str] = None, mi: Any = None,
@@ -473,6 +486,7 @@ def recall_prior_research(
         out: List[dict] = []
         seen: set = set()
         bodies: set = set()
+        gone = _forgotten(episodic)
         for chunk in chunks:
             m = _HEADER_RE.search(chunk)
             if not m or m.group(2) in seen:
@@ -481,6 +495,8 @@ def recall_prior_research(
             rec = load_record(m.group(2), mi=mi)
             if rec is None or (exclude_job_id and rec.get("job_id") == exclude_job_id):
                 continue
+            if gone and ({rec.get("conversation_id"), rec.get("session_id")} & gone):
+                continue  # the user told IRIS to forget that conversation's learning
             # Every quick search lands a new record (fresh id), so the same
             # search run three times came back as three priors with the same
             # text: the section printed one line 3x above the new results

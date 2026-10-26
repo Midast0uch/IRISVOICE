@@ -882,3 +882,54 @@ def test_forget_and_purge_refuse_a_thread_that_is_not_one_conversation(env):
         r = env.client.post("/api/memory/correct", json={"action": action, "target": "strand:session_iris", **extra})
         assert r.status_code == 409, (action, r.text)
     assert _count(env) == n
+
+
+def test_every_recall_path_leaves_a_forgotten_strand_out(rich, monkeypatch):
+    """Until 2026-10-26 a forget reached the chain recall only: the forgotten conversation's episodes still came back
+    as "similar episodes" / "past failures" in every plan, and its research as "prior research"."""
+    from backend.agent import research_memory
+    from backend.memory import episodic
+
+    c = rich.conn
+    try:
+        c.execute("ALTER TABLE episodes ADD COLUMN embedding_backend TEXT")
+    except sqlite3.OperationalError:
+        pass
+    for sid in ("conv-a", "conv-b"):
+        for kind, score in (("success", 0.9), ("failure", 0.1)):
+            c.execute("INSERT INTO episodes (id, session_id, task_summary, outcome_score, outcome_type, failure_reason,"
+                      " embedding, embedding_backend) VALUES (?, ?, ?, ?, ?, ?, ?, 'bge-m3')",
+                      (f"ep-{sid}-{kind}", sid, f"task of {sid}", score, kind, "boom" if kind == "failure" else None,
+                       b"[1.0, 0.0, 0.0]"))
+    c.commit()
+
+    class _Meta:
+        vector, backend = [1.0, 0.0, 0.0], "bge-m3"
+
+    store = object.__new__(episodic.EpisodicStore)
+    store._db = c
+    store._embed = type("E", (), {"encode_with_meta": lambda self, _t: _Meta()})()
+    store._mycelium = None
+    monkeypatch.setattr(episodic, "get_reindex_manager", lambda: None)
+
+    def _sessions(rows):
+        return {r["task_summary"].rsplit(" ", 1)[-1] for r in rows}
+
+    assert _sessions(store.retrieve_similar("task", limit=10, min_score=0.0)) == {"conv-a", "conv-b"}
+    d = _post(rich, "forget_learned", "strand:conv-a").json()
+    assert _sessions(store.retrieve_similar("task", limit=10, min_score=0.0)) == {"conv-b"}
+    assert _sessions(store.retrieve_failures("task", limit=10)) == {"conv-b"}
+
+    recs = {"r-a": {"job_id": "j-a", "conversation_id": "conv-a", "session_id": "conv-a", "text": "a"},
+            "r-b": {"job_id": "j-b", "conversation_id": "conv-b", "session_id": "conv-b", "text": "b"}}
+    store.retrieve_context_chunks = lambda *_a, **_k: [f"[research r-a]", f"[research r-b]"]
+    monkeypatch.setattr(research_memory, "_HEADER_RE", re.compile(r"\[(research) ([\w-]+)\]"))
+    monkeypatch.setattr(research_memory, "load_record", lambda rid, mi=None: recs.get(rid))
+    monkeypatch.setattr(research_memory, "_record_body", lambda rec: rec["text"])
+    mi = type("MI", (), {"episodic": store})()
+    got = research_memory.recall_prior_research("q", limit=5, mi=mi)
+    assert [r["job_id"] for r in got] == ["j-b"]
+
+    assert _undo(rich, d).status_code == 200
+    assert _sessions(store.retrieve_similar("task", limit=10, min_score=0.0)) == {"conv-a", "conv-b"}
+    assert [r["job_id"] for r in research_memory.recall_prior_research("q", limit=5, mi=mi)] == ["j-a", "j-b"]

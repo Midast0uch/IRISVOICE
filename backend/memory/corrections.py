@@ -592,10 +592,21 @@ def _events_of(conn, ids: list[str]) -> int:
     return sum(conn.execute("SELECT COUNT(*) FROM memory_events WHERE thread_id = ?", (i,)).fetchone()[0] for i in ids)
 
 
+def forgotten_clause(conn, column: str = "session_id") -> tuple:
+    """(" AND <column> NOT IN (?, ...)", ids) for the forgotten strands, or ("", []) when there are none: the SQL form
+    of the forget hook for the recall paths that read `episodes` (episodic.retrieve_similar / retrieve_failures,
+    reindex.search_episodes / search_failures). Never raises (forgotten_strands does not)."""
+    gone = sorted(forgotten_strands(conn))
+    if not gone:
+        return "", []
+    return f" AND {column} NOT IN ({','.join('?' * len(gone))})", gone
+
+
 def forgotten_strands(conn) -> frozenset:
     """The thread ids whose learning the user told IRIS to forget and did not undo. Recall leaves their memory
-    out (ontology_recall.filtered_chain_recall / chain_timeline). Two bounded searches on the label index; never
-    raises: a failed read leaves recall as it was, and says so."""
+    out: ontology_recall.filtered_chain_recall / chain_timeline, the episode recall (forgotten_clause) and
+    research_memory.recall_prior_research. Two bounded searches on the label index; never raises: a failed read
+    leaves recall as it was, and says so."""
     try:
         # PLAN -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?)
         marks = [json.loads(p) for (p,) in conn.execute(

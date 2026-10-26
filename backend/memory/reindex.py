@@ -223,6 +223,10 @@ class ReindexManager:
                 if session_id:
                     sql += " AND session_id = ?"
                     params.append(session_id)
+                from backend.memory.episodic import _forget_filter  # noqa: PLC0415 - episodic imports this module
+                _gone_sql, _gone = _forget_filter(db)
+                sql += _gone_sql
+                params.extend(_gone)
 
                 for row in db.execute(sql, params).fetchall():
                     stored_vec = _unpack_embedding(row[4])
@@ -273,6 +277,10 @@ class ReindexManager:
                 if session_id:
                     sql += " AND session_id = ?"
                     params.append(session_id)
+                from backend.memory.episodic import _forget_filter  # noqa: PLC0415 - episodic imports this module
+                _gone_sql, _gone = _forget_filter(db)
+                sql += _gone_sql
+                params.extend(_gone)
 
                 for row in db.execute(sql, params).fetchall():
                     stored_vec = _unpack_embedding(row[3])
