@@ -2502,6 +2502,8 @@ class AgentKernel:
         # default and the chat's context pill went red after one prompt. Evidence,
         # not a guess; case 2b still wins whenever the provider lists the model.
         ("inceptionlabs", "mercury-2.5", 260_000),
+        # mercury-3: Inception's /models published context_length 1000000 (2026-10-26).
+        ("inceptionlabs", "mercury-3", 1_000_000),
         # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
         # bare-substring provider-wide fallback â€” it matched EVERY model from
         # OpenRouter, which fronts models from 4k to 2M windows. A blanket

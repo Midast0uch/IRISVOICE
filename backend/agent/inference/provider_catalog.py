@@ -186,7 +186,10 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "google/gemma-4-31b-it", "name": "Gemma 4 31B IT"},
     ],
     "inceptionlabs": [
-        # docs.inceptionlabs.ai/get-started/models (2026-10-02); both support tool calling
+        # docs.inceptionlabs.ai/get-started/models (2026-10-02); both support tool calling.
+        # mercury-3: Inception's /models lists it with context_length 1000000 (2026-10-26) - the
+        # window the kernel and the context pill take from that list (api_context_window).
+        {"id": "mercury-3", "name": "Mercury 3"},
         {"id": "mercury-2.5", "name": "Mercury 2.5"},
         {"id": "mercury-2", "name": "Mercury 2"},
     ],
