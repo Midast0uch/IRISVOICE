@@ -58,6 +58,63 @@ _VAD_RAMP_START_SEC: float = 1.5
 _VAD_RAMP_SPAN_SEC: float = 2.5
 _VAD_RAMP_MAX_SCALE: float = 2.25
 
+# ── Wake confirm gate (2026-10-24) ─────────────────────────────────────────
+# The wake head cannot tell "Hey Iris" from other speech (violawake_detector:
+# a click, the owner's voice and near-silence all score ~0.59). Live
+# 2026-10-24 it fired on TV speech 3 s after boot (peak 0.614 vs bar 0.555)
+# and the recording it opened sent "Now, Miss, Miss, Miss, Miss, I'll just get
+# Tommy not settled in..." to the agent as a task, with real tool runs, into
+# memory.db. Nothing downstream asked whether the phrase was said.
+#
+# So a wake-opened recording now transcribes the clip that made the detector
+# fire (AudioEngine.take_wake_clip, ~3 s before the fire) in parallel with the
+# user's speech, and its transcript only reaches the agent when that clip
+# holds the wake name. Fail-closed: no clip, no STT, or no verdict in time =
+# reject. A missed wake costs a retry; a false wake costs a task and a memory.
+#
+# MEASURED 2026-10-24, whisper tiny/int8 + wake_phrase_heard on every clip in
+# logs/wake_triggers/ (316 real fires): 12 accepted, all the owner saying the
+# name ("Hey, Iris." / "Hey, Aris."); 0 of the ~304 TV/room fires accepted.
+# 36 synthetic "Hey Iris" clips (2 SAPI voices x 3 rates x 6 phrasings): 34
+# accepted; the 2 misses ran the name into the next word ("Hey, I resopened").
+# Clip STT cost: median 517 ms, p90 1982 ms on a loaded CPU, in parallel with
+# the user's speech.
+_WAKE_CONFIRM_TIMEOUT_SEC: float = 20.0
+_WAKE_NAME: str = "iris"
+# Whisper spellings of the name. One edit from "iris" also passes ("aris").
+_WAKE_NAME_FORMS = frozenset({"iris", "irish", "irises"})
+
+
+def _edit_distance_le1(a: str, b: str) -> bool:
+    """True when a and b differ by at most one insert, delete or substitute."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) > len(b):
+        a, b = b, a
+    i = j = 0
+    edited = False
+    while i < len(a) and j < len(b):
+        if a[i] != b[j]:
+            if edited:
+                return False
+            edited = True
+            if len(a) == len(b):
+                i += 1
+            j += 1
+            continue
+        i += 1
+        j += 1
+    return True
+
+
+def wake_phrase_heard(text: str) -> bool:
+    """Does an STT transcript of the wake clip contain the wake name?"""
+    words = "".join(c if c.isalpha() else " " for c in (text or "").lower()).split()
+    return any(w in _WAKE_NAME_FORMS or _edit_distance_le1(w, _WAKE_NAME) for w in words)
+
+
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -260,10 +317,14 @@ class VoiceCommandHandler:
 
     def start_recording(
         self, auto_stop: bool = False, pre_speech_timeout_sec: float = 0.0,
-        play_beep: bool = True, flush_ms: int = 0,
+        play_beep: bool = True, flush_ms: int = 0, wake_confirm: bool = False,
     ) -> bool:
         """
         Begin recording user speech.
+
+        wake_confirm: True for a recording a wake-word fire opened. The
+            transcript is dropped unless the wake clip holds the wake name
+            (see _WAKE_CONFIRM_TIMEOUT_SEC above).
 
         Args:
             auto_stop: True → energy-based VAD ends recording automatically (wake word path).
@@ -284,12 +345,15 @@ class VoiceCommandHandler:
             return False
 
         try:
-            return self._start_recording_locked(auto_stop, pre_speech_timeout_sec, play_beep, flush_ms)
+            return self._start_recording_locked(
+                auto_stop, pre_speech_timeout_sec, play_beep, flush_ms, wake_confirm
+            )
         finally:
             self._start_lock.release()
 
     def _start_recording_locked(
         self, auto_stop: bool, pre_speech_timeout_sec: float, play_beep: bool = True, flush_ms: int = 0,
+        wake_confirm: bool = False,
     ) -> bool:
         """Inner implementation of start_recording — called only when _start_lock is held."""
         self._auto_stop_mode = auto_stop
@@ -333,6 +397,9 @@ class VoiceCommandHandler:
             self._recording_started_at = time.monotonic()
             self.audio_buffer = []
             self._raw_frames = []
+            # Set on EVERY start: a relisten or double-click take carries no
+            # verdict from an earlier wake.
+            self._wake_verdict = self._begin_wake_confirm() if wake_confirm else None
             # Warm the Phonon-2 server on the FIRST wake word trigger (not at
             # end-of-speech): the fermion server cold boot (~64 s first run,
             # ~6 s warm) overlaps with VAD recording, so by the time VAD
@@ -430,6 +497,69 @@ class VoiceCommandHandler:
         )
         self._cancel_event.set()
         self._stop_event.set()
+
+    # -------------------------------------------------------------------------
+    # Internal — wake confirm gate
+    # -------------------------------------------------------------------------
+
+    def _begin_wake_confirm(self) -> Dict[str, Any]:
+        """Start transcribing the wake clip on a daemon thread; return the verdict slot.
+
+        Runs while the user speaks, so a warm whisper (~80 ms for 3 s) adds
+        no latency. On a cold boot the final STT needs the same whisper load.
+        """
+        verdict: Dict[str, Any] = {"done": threading.Event(), "ok": False, "heard": ""}
+        clip = None
+        try:
+            clip = self.audio_engine.take_wake_clip()
+        except Exception as e:
+            logger.warning(f"[WakeConfirm] take_wake_clip failed: {e}")
+
+        def _confirm() -> None:
+            try:
+                if clip is None or len(clip) == 0:
+                    verdict["heard"] = "<no wake clip>"
+                    return
+                whisper = self._get_whisper(timeout=_WAKE_CONFIRM_TIMEOUT_SEC)
+                if whisper is None:
+                    verdict["heard"] = "<whisper unavailable>"
+                    return
+                segments, _ = whisper.transcribe(
+                    clip,
+                    language="en",
+                    beam_size=1,
+                    best_of=1,
+                    condition_on_previous_text=False,
+                    vad_filter=False,
+                )
+                heard = " ".join(s.text.strip() for s in segments).strip()
+                verdict["heard"] = heard
+                verdict["ok"] = wake_phrase_heard(heard)
+            except Exception as e:
+                verdict["heard"] = f"<error: {e}>"
+            finally:
+                verdict["done"].set()
+
+        threading.Thread(target=_confirm, daemon=True, name="iris-wake-confirm").start()
+        return verdict
+
+    def _wake_confirmed(self) -> bool:
+        """True unless this take was wake-opened and the clip did not hold the name."""
+        verdict = getattr(self, "_wake_verdict", None)
+        if verdict is None:
+            return True
+        self._wake_verdict = None
+        if not verdict["done"].wait(_WAKE_CONFIRM_TIMEOUT_SEC):
+            logger.warning(
+                f"[WakeConfirm] session={self._active_session_id} no verdict in "
+                f"{_WAKE_CONFIRM_TIMEOUT_SEC:.0f}s — rejecting"
+            )
+            return False
+        logger.info(
+            f"[WakeConfirm] session={self._active_session_id} "
+            f"{'CONFIRMED' if verdict['ok'] else 'REJECTED'} — clip heard {verdict['heard']!r}"
+        )
+        return bool(verdict["ok"])
 
     # -------------------------------------------------------------------------
     # Internal — whisper
@@ -789,6 +919,16 @@ class VoiceCommandHandler:
 
             if not self._raw_frames:
                 logger.info("[VoiceCommand] No audio captured — ignoring")
+                self._on_transcription_complete("")
+                return
+
+            # ── Guard: a wake-opened take needs the wake name in its clip ──
+            # Before any STT of the request, so ambient speech after a false
+            # fire never becomes a transcript, a task, or a memory.
+            if not self._wake_confirmed():
+                self._phonon2.abort()
+                self._raw_frames = []
+                self.audio_buffer = []
                 self._on_transcription_complete("")
                 return
 

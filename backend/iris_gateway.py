@@ -2792,7 +2792,8 @@ class IRISGateway:
         client_id: str,
         message: dict,
         auto_stop: bool = True,
-        pre_speech_timeout_sec: float | None = None
+        pre_speech_timeout_sec: float | None = None,
+        wake_confirm: bool = False,
     ) -> None:
         """
         Handle voice_command_start / voice_command_end from double-click or wake word.
@@ -2801,6 +2802,9 @@ class IRISGateway:
 
         pre_speech_timeout_sec: For auto_stop mode, give up if speech doesn't start
             within this many seconds. None = use VoiceCommandHandler default (0 = 30s max).
+
+        wake_confirm: True only from the wake-word entry (main._on_wake_word_async).
+            The take's transcript is dropped unless the wake clip holds the name.
 
         auto_stop is True by default (VAD-driven). When True:
           - Recording auto-stops after `silence_timeout_sec` seconds of silence
@@ -2883,6 +2887,8 @@ class IRISGateway:
                     kw = {"auto_stop": auto_stop}
                     if pre_speech_timeout_sec is not None:
                         kw["pre_speech_timeout_sec"] = pre_speech_timeout_sec
+                    if wake_confirm:
+                        kw["wake_confirm"] = True
                     success = self._voice_handler.start_recording(**kw)
                     if not success:
                         self._logger.warning(

@@ -557,6 +557,10 @@ class AudioEngine:
                     self._capture_wake_trigger(word)
                 except Exception:  # noqa: BLE001 - a diagnostic never breaks audio
                     pass
+                try:
+                    self._hold_wake_clip()
+                except Exception:  # noqa: BLE001 - the confirm gate then rejects
+                    pass
                 if self._on_wake_word_detected:
                     self._on_wake_word_detected(word)
 
@@ -585,6 +589,35 @@ class AudioEngine:
         ring.append(pcm_int16)
         if len(ring) > self._wake_ring_max:
             del ring[: len(ring) - self._wake_ring_max]
+
+    # ── WAKE CLIP for the confirm gate (2026-10-24) ──
+    # The same ring, held in memory for VoiceCommandHandler's wake confirm:
+    # the head scores TV speech at phrase level (live 2026-10-24: peak 0.614
+    # vs bar 0.555, 3 s after boot, headless), so the recording it opens must
+    # prove the phrase was said before its transcript becomes a task. One
+    # clip (~3 s, ~96 KB int16), replaced on every fire, taken once.
+    _WAKE_CLIP_MAX_AGE_SEC: float = 15.0
+
+    def _hold_wake_clip(self) -> None:
+        ring = list(getattr(self, "_wake_ring", []) or [])
+        if not ring:
+            return
+        self._last_wake_clip = (time.monotonic(), np.concatenate(ring).astype(np.int16))
+
+    def take_wake_clip(self) -> Optional[np.ndarray]:
+        """Return the audio of the last wake fire as float32 16 kHz, once.
+
+        None when no fire is held or it is older than _WAKE_CLIP_MAX_AGE_SEC
+        (the boot-time event loop delayed the wake handler 2.4 s live).
+        """
+        held = getattr(self, "_last_wake_clip", None)
+        self._last_wake_clip = None
+        if held is None:
+            return None
+        fired_at, pcm = held
+        if time.monotonic() - fired_at > self._WAKE_CLIP_MAX_AGE_SEC:
+            return None
+        return pcm.astype(np.float32) / 32768.0
 
     def _capture_wake_trigger(self, word: str) -> None:
         """Copy the ring and write it off-thread. Never raises."""
