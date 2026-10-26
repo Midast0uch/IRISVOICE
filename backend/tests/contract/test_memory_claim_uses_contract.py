@@ -183,3 +183,33 @@ def test_every_statement_on_the_episode_index_and_episodes_is_a_search(env, monk
                 bad.append((" ".join(sql.split())[:140], plan))
     con.close()
     assert not bad, bad
+
+
+def test_a_use_names_the_turn_whose_events_came_just_before_it(env):
+    """No writer puts the turn on the index row and live episode ids are uuids (0 of 4,460 named a turn, 2026-10-26).
+    Each turn's events carry "<conversation>:<turn>" and the episode is stored at the turn's end, so the use names
+    the turn whose last event in the SAME thread precedes it within USE_TURN_WINDOW_S - and nothing else."""
+    from backend.tests.contract.test_memory_api_contract import _ev
+
+    con = sqlite3.connect(env.mem)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_thread_ts ON memory_events(thread_id, ts)")
+    at = {ep: T0 + 1000 - age for ep, _t, age, _v in USED}
+    _ev(con, "e1", at["ep-1"] - 30, "STEP_DONE", "conv-a", episode="conv-a:t1")       # ep-1's turn
+    _ev(con, "e0", at["ep-1"] - 90, "STEP_DONE", "conv-a", episode="conv-a:t0")       # an older turn: not it
+    _ev(con, "e2", at["ep-3"] - env.sq.USE_TURN_WINDOW_S - 5, "STEP_DONE", "conv-b", episode="conv-b:t2")  # too old
+    _ev(con, "e3", at["ep-0"] - 5, "STEP_DONE", "conv-x", episode="conv-x:t3")        # another thread
+    _ev(con, "e4", at["ep-6"] - 5, "STEP_DONE", "session_iris", episode="plain-episode")  # no turn in the id
+    con.commit()
+    plan = " ".join(str(r) for r in con.execute(
+        "EXPLAIN QUERY PLAN SELECT episode_id FROM memory_events WHERE thread_id = ? AND ts <= ? AND ts >= ? "
+        "AND instr(episode_id, ':') > 0 ORDER BY ts DESC LIMIT 1", ("conv-a", 1.0, 0.0)))
+    con.close()
+    assert "idx_memory_events_thread_ts" in plan and "TEMP B-TREE" not in plan, plan
+
+    by = {u["episode"]: u for u in _uses(env).json()["uses"]}
+    assert by["ep-1"]["turn"] == "t1"
+    assert by["conv-a:t9"]["turn"] == "t9"              # an episode id that names its turn still wins
+    assert by["ep-3"]["turn"] is None                   # its only event is outside the window
+    assert by["ep-0"]["turn"] is None                   # an event of another thread never counts
+    assert by["ep-6"]["turn"] is None                   # an event whose episode id names no turn
+    assert all(u["step"] is None for u in by.values())

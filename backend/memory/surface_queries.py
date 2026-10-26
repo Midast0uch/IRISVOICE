@@ -45,9 +45,10 @@ SEARCH (end of file): search() answers GET /api/memory/search - text only, built
 artifacts, nodes and strands, ranked by the memory's own law (rank = match x kind x strength). It reads whole the small tables and a
 newest-N WINDOW of the two big ones (memory_chain, memory_events), and says so in the answer. It adds no index and writes nothing.
 
-NOT DERIVABLE (said once, here): which TURN received a claim. RECALL_* events name chain ids, not landmark
+NOT RECORDED (said once, here): which TURN received a claim. RECALL_* events name chain ids, not landmark
 ids (export_snapshot.py says the same). What is derivable is the episodes that observed the claim
-(mycelium_episode_index.landmark_id, indexed): claim detail returns them as observed_in.
+(mycelium_episode_index.landmark_id, indexed): claim detail returns them as observed_in, and claim_uses joins each
+to the turn whose last event came just before it (USE_TURN_WINDOW_S).
 """
 from __future__ import annotations
 
@@ -87,6 +88,7 @@ WINDOW_SCAN_CAP = 6000      # rows of the ts window a strand-events scan may rea
 EVIDENCE_SHOWN = 100        # entries of one claim's evidence in the detail view
 OBSERVED_CAP = 50
 USES_MAX = 100              # "every time it was used": rows one call returns
+USE_TURN_WINDOW_S = 600.0   # a use names the turn whose last event precedes it by at most this (live gaps 20-144 s)
 EDGES_CAP = 50
 MERGE_HOPS = 8
 OUTSIDE_RECENT_STEPS = 3000
@@ -597,9 +599,10 @@ def claim_uses(landmark_id: str, limit: int = OBSERVED_CAP) -> dict:
 
     The truest record that names a claim is mycelium_episode_index (episode_id, session_id, landmark_id, created_at):
     one row per episode stored while the claim was in play (indexed by landmark_id; Kyudo re-points a merged
-    claim's rows to its survivor). It names the THREAD (session_id) and the moment, never the turn or the step: no
-    writer records the turn that was given a claim (RECALL_DELIVERED names chain ids; see NOT DERIVABLE above), so
-    `turn` is read from an episode id of the form "<conversation>:<turn>" and is null otherwise, and `step` is null.
+    claim's rows to its survivor). It names the THREAD (session_id) and the moment; the TURN is the one whose last
+    event (memory_events episode_id "<conversation>:<turn>") in that thread came just before the row, within
+    USE_TURN_WINDOW_S (episodes are stored at the turn's end; an episode id of that form wins when present), null
+    when none is that close. `step` is null: nothing records which step was given the claim.
     `outcome` is the user's own verdict on the episode (episodes.user_confirmed -> helped, user_corrected -> misled);
     null when the user said nothing - never the episode's success flag, which means only "did not fail"."""
     limit = max(1, min(int(limit), USES_MAX))
@@ -625,10 +628,29 @@ def claim_uses(landmark_id: str, limit: int = OBSERVED_CAP) -> dict:
                     verdict[r[0]] = "misled"
                 elif r[1]:
                     verdict[r[0]] = "helped"
+        # The TURN of a use (2026-10-26): no writer records it on the index row, and episode ids are uuids shared by
+        # turns (store() updates a near-duplicate episode), so "<conversation>:<turn>" ids are 0 of 4,460 live rows.
+        # Every turn's events carry episode_id "<conversation>:<turn>" and the episode is stored at the turn's END,
+        # so the turn is the one whose last event in the same thread precedes the row, within USE_TURN_WINDOW_S.
+        # Live: the newest use -> the turn it came from, 20-54 s after that turn's last event, 0.1 ms per lookup.
+        turn_of: dict[int, str] = {}
+        if rows and {"thread_id", "ts", "episode_id"} <= table_cols(con, "memory_events"):
+            for i, (_episode, thread, at) in enumerate(rows):
+                if not thread or at is None:
+                    continue
+                # PLAN  … WHERE thread_id = ? AND ts <= ? AND ts >= ? … ORDER BY ts DESC LIMIT 1
+                #       -> SEARCH memory_events USING INDEX idx_memory_events_thread_ts (thread_id=? AND ts>? AND ts<?)
+                r = con.execute("SELECT episode_id FROM memory_events WHERE thread_id = ? AND ts <= ? AND ts >= ? "
+                                "AND instr(episode_id, ':') > 0 ORDER BY ts DESC LIMIT 1",
+                                (thread, float(at), float(at) - USE_TURN_WINDOW_S)).fetchone()
+                conv, _, turn = (r[0] if r else "").partition(":")
+                if turn and conv == thread:
+                    turn_of[i] = turn
     uses = []
-    for episode, thread, at in rows:
+    for i, (episode, thread, at) in enumerate(rows):
         conv, _, turn = (episode or "").partition(":")
-        uses.append({"ts": ts_of(at), "thread": thread, "turn": turn if turn and conv == thread else None,
+        uses.append({"ts": ts_of(at), "thread": thread,
+                     "turn": turn if turn and conv == thread else turn_of.get(i),
                      "episode": episode, "outcome": verdict.get(episode), "step": None})
     return {"uses": uses, "total": total}
 

@@ -2347,7 +2347,8 @@ function updateCrumb(){const parts=['memory'];
   $('crumb').innerHTML=parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
     (inChat?`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`:'')+
     ((inChat||s_?.ghost)&&opts.correctTarget?`<a class="strandact" data-sact="forget" data-sid="${esc(s_.id)}">forget what IRIS learned here</a><a class="strandact" data-sact="purge" data-sid="${esc(s_.id)}">purge its words</a>`:'')+
-    (uses.k>=0&&state.lens==='timeline'?`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`:'')+
+    (uses.k>=0&&state.lens==='timeline'?`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`+
+      (uses.chat?`<a class="chat" data-conv="${esc(uses.chat.conv)}" data-turn="${esc(uses.chat.turn)}" title="open the newest turn that was given this claim">↗ newest use in chat</a>`:''):'')+
     (when?`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`:'')}
 $('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}
   const sa=e.target.closest('[data-sact]');if(sa){strandAction(sa.dataset.sact,sa.dataset.sid,sa);return}
@@ -2450,15 +2451,17 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
 // EVERY TIME IT WAS USED (UX-PLAN 7.4): the turns that were given this claim - the timeline lights the beads of their
 // conversations (the others dim) and the breadcrumb counts them; Esc returns. The most direct answer to "is this claim
 // worth anything?".
-const uses={k:-1,ids:new Set(),n:0,helped:0,misled:0};
+const uses={k:-1,ids:new Set(),n:0,helped:0,misled:0,chat:null};
 function setBeadLight(ids){sess.forEach((s,i)=>{bA[i]=ids?(ids.has(s.id)?1:0):(s.exit==='live'?1:0)});beadGeo.attributes.aA.needsUpdate=true}
 function showUses(k){const l=LM[k];if(!l||!opts.uses)return;
   opts.uses(l.id).then(r=>{const list=r.uses||[];uses.k=k;uses.n=r.total??list.length;uses.ids=new Set(list.map(u=>u.thread));
     uses.helped=list.filter(u=>u.outcome==='helped').length;uses.misled=list.filter(u=>u.outcome==='misled').length;
+    // the newest use the backend could tie to a turn of a chat conversation: the crumb offers it in the chat
+    const nu=list.find(u=>u.turn&&(M.sessions.find(s=>s.id===u.thread)?.messages||[]).length);uses.chat=nu?{conv:nu.thread,turn:nu.turn}:null;
     setBeadLight(uses.ids);setLens('timeline');crumbKey='';
     hint(`every time IRIS was given this claim: <em>${fmt(uses.n)}</em> turn${uses.n===1?'':'s'}${uses.helped?` · ${fmt(uses.helped)} helped`:''}${uses.misled?` · <span class="w">${fmt(uses.misled)} misled</span>`:''} &nbsp; esc · back`)})
    .catch(err=>hint(esc(err?.message||'the uses could not be read')))}
-function clearUses(){if(uses.k<0)return false;uses.k=-1;uses.ids=new Set();setBeadLight(null);crumbKey='';return true}
+function clearUses(){if(uses.k<0)return false;uses.k=-1;uses.ids=new Set();uses.chat=null;setBeadLight(null);crumbKey='';return true}
 // A STRAND'S OWN CORRECTIONS (MEMORY-SURFACE-BUILD 5): in its corridor, "forget what IRIS learned here" (claims whose
 // only evidence is this strand are absorbed, undoable 10 min) and "purge" (its text is removed for good: two clicks).
 let purgeArm=0;
