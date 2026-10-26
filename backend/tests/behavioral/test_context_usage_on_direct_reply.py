@@ -51,7 +51,7 @@ def _make_direct_path_kernel(tokens_used: int, max_tokens: int) -> AgentKernel:
     k._conversation_memory = _FakeConversationMemory()
     k._mcm_orch = None
     k._memory_interface = None
-    k._tokens_used = tokens_used
+    k._context_fill = tokens_used
     k.resolve_context_window = lambda: max_tokens
 
     # Route straight to the direct path (this is what REQ-6 is testing —

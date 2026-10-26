@@ -27,7 +27,7 @@ AGENT_KERNEL_PATH = ROOT / "backend" / "agent" / "agent_kernel.py"
 
 def _make_kernel(tokens_used: int, max_tokens: int) -> AgentKernel:
     k = AgentKernel.__new__(AgentKernel)
-    k._tokens_used = tokens_used
+    k._context_fill = tokens_used
     k.conversation_id = "conv_ct_s3"
     k.session_id = "sess_ct_s3"
     k._current_turn_id = "turn_ct_s3"
@@ -93,7 +93,7 @@ class TestCTS3ContextUsageShapeParity:
         # Same denominator either way — REQ-6 AC2's core guarantee.
         assert direct_event["max_tokens"] == 64_000
         assert der_event["max_tokens"] == 64_000
-        # Same numerator source (self._tokens_used) either way.
+        # Same numerator source (self._context_fill) either way.
         assert direct_event["used_tokens"] == 9_001
         assert der_event["used_tokens"] == 9_001
         # Same base shape — DER only ADDS step metadata, never changes the

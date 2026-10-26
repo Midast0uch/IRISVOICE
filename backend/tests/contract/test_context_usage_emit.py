@@ -7,7 +7,7 @@ memory spike — mirrors test_agent_kernel_turn_zone.py.
 
 Covers:
   T29: helper emits IRISStreamEvent.CONTEXT_USAGE with
-       used_tokens = self._tokens_used (real per-thread) and
+       used_tokens = self._context_fill (real per-thread) and
        max_tokens = resolve_context_window().
   T31 (AC3 "never 0"): an ACTIVE / SWITCHED thread (self._tokens_used
        restored to a real count) emits that non-zero count; only a fresh
@@ -34,7 +34,7 @@ def check(name, cond, detail=""):
 def make_kernel():
     """Build an AgentKernel without running __init__ (avoids heavy setup)."""
     k = AgentKernel.__new__(AgentKernel)
-    k._tokens_used = 0
+    k._context_fill = 0
     k.conversation_id = "conv_test"
     k.session_id = "sess_test"
     k._current_turn_id = "turn_1"
@@ -57,13 +57,13 @@ def main():
 
     # ── T29: helper emits with real used + resolved max ───────────────
     k = make_kernel()
-    k._tokens_used = 12_400
+    k._context_fill = 12_400
     captured.clear()
     k._emit_context_usage()
     check("T29 emits CONTEXT_USAGE", len(captured) == 1, str(captured))
     if captured:
         d = captured[0]
-        check("T29 used_tokens = self._tokens_used (12400)",
+        check("T29 used_tokens = self._context_fill (12400)",
               d.get("used_tokens") == 12_400, str(d.get("used_tokens")))
         check("T29 max_tokens = resolve_context_window (200000)",
               d.get("max_tokens") == 200_000, str(d.get("max_tokens")))
@@ -73,7 +73,7 @@ def main():
     # ── T31 AC3: active/switched thread NEVER emits 0 ──────────────
     # Simulate a thread SWITCH: restore_context_from_store set a real count.
     k2 = make_kernel()
-    k2._tokens_used = 53_210  # restored from store for an active thread
+    k2._context_fill = 53_210  # restored from store for an active thread
     captured.clear()
     k2._emit_context_usage()
     check("T31 active/switched thread emits real non-zero used_tokens",
@@ -82,7 +82,7 @@ def main():
 
     # ── T31 AC3: only a FRESH thread (no history) may emit 0 ────────
     k3 = make_kernel()
-    k3._tokens_used = 0  # genuinely brand-new, nothing happened
+    k3._context_fill = 0  # genuinely brand-new, nothing happened
     captured.clear()
     k3._emit_context_usage()
     check("T31 fresh thread may emit 0 (honest)",
@@ -91,7 +91,7 @@ def main():
 
     # ── T32 AC4: DER-style call (step_number/total_steps) same shape ──
     k4 = make_kernel()
-    k4._tokens_used = 8_000
+    k4._context_fill = 8_000
     captured.clear()
     k4._emit_context_usage(step_number=3, total_steps=5)
     check("T32 DER call emits same shape with step metadata",

@@ -502,6 +502,10 @@ def _voice_turn_note(owner) -> str:
     return _VOICE_TURN_NOTE if getattr(owner, "_turn_from_voice", False) else ""
 
 
+# Sentinel for "no turn has filled the window yet" (a turn id may itself be None).
+_FILL_NO_TURN = object()
+
+
 def _turn_end_settle(owner) -> None:
     """Fold-back of _turn_end_submit: wait until this kernel's last turn-end
     bookkeeping landed (the episode the planner may recall). Bounded: past
@@ -2024,6 +2028,7 @@ class AgentKernel:
                 conversation_id=self.conversation_id,
                 messages=_msgs,
                 tokens_used=getattr(self, "_tokens_used", 0),
+                context_fill=getattr(self, "_context_fill", 0),
             )
             store.save(self.conversation_id, ctx)
         except Exception as exc:
@@ -2043,6 +2048,7 @@ class AgentKernel:
             ctx = store.get_or_restore(self.conversation_id)
             if ctx:
                 self._tokens_used = ctx.tokens_used
+                self._context_fill = int(getattr(ctx, "context_fill", 0) or 0)
                 if ctx.messages and self._conversation_memory is not None:
                     self._conversation_memory.clear()
                     for _m in ctx.messages:
@@ -2096,6 +2102,14 @@ class AgentKernel:
                 _add = max(1, len(response_text or "") // 4)
                 _kind = "estimate"
             self._tokens_used = int(getattr(self, "_tokens_used", 0) or 0) + _add
+            # Fullness (the pill): the largest single call of the latest turn. The first call of a new turn
+            # replaces it; a real call counts prompt + answer, i.e. what that call put in the window.
+            _turn = getattr(self, "_current_turn_id", None)
+            if getattr(self, "_context_fill_turn", _FILL_NO_TURN) != _turn:
+                self._context_fill_turn = _turn
+                self._context_fill = _add
+            else:
+                self._context_fill = max(int(getattr(self, "_context_fill", 0) or 0), _add)
             logger.info(
                 "[AgentKernel._accrue_tokens] +%d (%s, source=%s) tokens_used=%d",
                 _add, _kind, source or "?", self._tokens_used,
@@ -2894,16 +2908,16 @@ class AgentKernel:
         REQ-12 (Wave 9): makes the ContextPill live on EVERY model response,
         not just inside the DER loop. Single emitter so DER and non-DER paths
         share the SAME event contract (same shape, same `resolve_context_window()`
-        denominator, same `self._tokens_used` numerator) â€” they intertwine via
+        denominator, same `self._context_fill` numerator) â€” they intertwine via
         the contract, not duplicated logic.
 
         - `max_tokens` = resolve_context_window() (the model in use) â€” never a
           hardcoded 128k.
-        - `used_tokens` = self._tokens_used, the kernel's real per-thread count,
-          restored from the context store per conversation_id (agent_kernel.py:547).
-          An ACTIVE or SWITCHED thread therefore shows its real usage and NEVER 0.
-          Only a genuinely brand-new thread (no history) may report 0, which is
-          honest.
+        - `used_tokens` = self._context_fill: how FULL the window got in the thread's latest
+          turn (its largest single call, prompt + answer, from real usage), restored per
+          conversation_id like the spend. An ACTIVE or SWITCHED thread shows its own fill and
+          NEVER 0; only a brand-new thread (no call yet) may report 0, which is honest.
+        - `spent_tokens` = self._tokens_used, the thread's running spend (never reset).
 
         Fire-and-forget: EventBus failure must never crash the response path.
         """
@@ -2913,7 +2927,11 @@ class AgentKernel:
             get_event_bus().emit(
                 IRISStreamEvent.CONTEXT_USAGE,
                 data={
-                    "used_tokens": int(getattr(self, "_tokens_used", 0) or 0),
+                    # How FULL the window is (owner 2026-10-26): the largest call of the thread's latest turn.
+                    # It was the running spend (_tokens_used, never reset, ~20k per DER turn), so a long thread
+                    # went red with nothing near the limit. The spend still travels as spent_tokens.
+                    "used_tokens": int(getattr(self, "_context_fill", 0) or 0),
+                    "spent_tokens": int(getattr(self, "_tokens_used", 0) or 0),
                     "max_tokens": int(self.resolve_context_window()),
                     "step_number": step_number,
                     "total_steps": total_steps,
@@ -9203,7 +9221,7 @@ class AgentKernel:
             logger.info(metrics.to_log_line())
             # REQ-12 (Wave 9): emit live context usage on every non-DER
             # response so the pill is live from the first reply. Uses the real
-            # per-thread self._tokens_used (never 0 for an active thread).
+            # per-thread self._context_fill (never 0 for an active thread).
             self._emit_context_usage()
             return response
 
@@ -11937,7 +11955,7 @@ Respond with a JSON object:
         # REQ-12 (Wave 9): emit final context usage for the DER task.
         # Covers the "zero steps executed" case (plan rejected before any
         # step ran) where the per-step emit never fired. Uses the real
-        # per-thread self._tokens_used â€” never 0 for an active thread.
+        # per-thread self._context_fill (how full the window is) â€” never 0 for an active thread.
         # All return paths below are preceded by this single emit.
         self._emit_context_usage(
             step_number=len(completed_items),

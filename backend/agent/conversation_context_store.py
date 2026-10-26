@@ -160,6 +160,9 @@ class ConversationContext:
     conversation_id: str
     messages: List[ConversationMessage] = field(default_factory=list)
     tokens_used: int = 0
+    # How full the window got in the thread's latest turn (the largest single call, prompt + answer): what the
+    # ContextPill shows. tokens_used is the thread's running spend and only grows.
+    context_fill: int = 0
     current_mode: Optional[str] = None  # "quick" | "agentic" | "full"
     paused_state: Optional[PausedDERState] = None
     created_at: float = field(default_factory=time.time)

@@ -6,7 +6,7 @@ that thread's usage, not the previous thread's."
 `get_agent_kernel(conversation_id)` (agent_kernel.py:8857) keys ONE kernel
 instance PER conversation thread, and each kernel's `_tokens_used` is
 restored per-thread by `restore_context_from_store()` (agent_kernel.py:597-
-607: "self._tokens_used = ctx.tokens_used"). `_emit_context_usage()` always
+607: "self._context_fill = ctx.tokens_used"). `_emit_context_usage()` always
 reads `self._tokens_used` off whichever kernel calls it. This test proves
 those two facts compose correctly: switching from thread A's kernel to
 thread B's kernel and emitting from each does NOT leak thread A's numbers
@@ -26,7 +26,7 @@ def _make_kernel_for_thread(conversation_id: str, tokens_used: int, max_tokens: 
     k.conversation_id = conversation_id
     k.session_id = conversation_id
     k._current_turn_id = f"turn_{conversation_id}"
-    k._tokens_used = tokens_used
+    k._context_fill = tokens_used
     k.resolve_context_window = lambda: max_tokens
     return k
 
