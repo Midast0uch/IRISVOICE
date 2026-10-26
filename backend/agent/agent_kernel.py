@@ -498,6 +498,26 @@ _VOICE_TURN_NOTE = (
 )
 
 
+_STUB_STOPWORDS = frozenset(
+    "the and but for with are was were this that you your our they them their its has have had not "
+    "can will would should could let lets just now here there what which who how".split()
+)
+
+
+def _short_reply_carries_results(text: str, step_results) -> bool:
+    """A short synthesis is an ANSWER, not a stub, when it repeats what the steps found: at least two of its
+    content words (3+ letters, not stopwords), and at least half of them, appear in the step results. A stub
+    ("Let's attempt that.") says nothing the steps found. Live 2026-10-26: the correct one-sentence reply
+    "My test word is a blue pelican." (31 chars) fell under the 40-char floor twice and the user got the
+    deterministic "I've completed the task." close instead - the usual source of that reply."""
+    words = {w for w in re.findall(r"[a-z]{3,}", (text or "").lower()) if w not in _STUB_STOPWORDS}
+    if len(words) < 2:
+        return False
+    found = " ".join(str((r or {}).get("result") or "") for r in (step_results or [])).lower()
+    hits = sum(1 for w in words if w in found)
+    return hits >= 2 and hits * 2 >= len(words)
+
+
 def _voice_turn_note(owner) -> str:
     return _VOICE_TURN_NOTE if getattr(owner, "_turn_from_voice", False) else ""
 
@@ -15771,7 +15791,8 @@ Respond with a JSON object:
                 # elevation of 5,895 metres, and the first recorded ascent took
                 # place in 1889."). A short reply carrying a number is an answer.
                 _syn_floor = 40
-                if len(_syn_text) < _syn_floor and not re.search(r"\d", _syn_text):
+                if (len(_syn_text) < _syn_floor and not re.search(r"\d", _syn_text)
+                        and not _short_reply_carries_results(_syn_text, _step_results)):
                     # Spec A6 (AC3.5): a stub is often a one-off (measured: a
                     # 14-token turn on r02). Retry ONCE with the same inputs
                     # before giving up; only a stub that persists falls to the
@@ -15783,7 +15804,8 @@ Respond with a JSON object:
                     )
                     _retry = self._synthesize_response(_task, _step_results)
                     _retry_text = (_retry or "").strip()
-                    if len(_retry_text) >= _syn_floor or re.search(r"\d", _retry_text):
+                    if (len(_retry_text) >= _syn_floor or re.search(r"\d", _retry_text)
+                            or _short_reply_carries_results(_retry_text, _step_results)):
                         _syn_text = _retry_text
                     else:
                         logger.warning(

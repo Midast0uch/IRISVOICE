@@ -390,3 +390,25 @@ def test_a_short_factual_answer_is_an_answer_not_a_stub():
     out = _run(kernel)
     assert out.startswith("5,895 m; first ascent 1889."), out
     assert len(calls) == 1  # no stub retry for an answer
+
+
+def test_a_short_reply_that_repeats_the_step_result_is_an_answer_not_a_stub():
+    """Live 2026-10-26: 'My test word is a blue pelican.' (31 chars, the correct one-sentence reply) fell under
+    the 40-char floor twice and the user got the deterministic 'I've completed the task.' close. A short reply
+    that repeats what the steps found is the answer; a stub that says nothing they found is still a stub."""
+    kernel = _build_kernel()
+    calls = []
+
+    def _syn(task, results):
+        calls.append(1)
+        return "Quantum pricing found."
+
+    kernel._synthesize_response = _syn
+    out = _run(kernel)
+    assert out.startswith("Quantum pricing found."), out
+    assert len(calls) == 1  # no stub retry for an answer
+
+    kernel2 = _build_kernel()
+    kernel2._synthesize_response = lambda task, results: "Let's attempt that."
+    out2 = _run(kernel2)
+    assert not out2.startswith("Let's attempt that."), out2   # a real stub still gets the deterministic close
