@@ -19,6 +19,11 @@ describe("ContextPill", () => {
     expect(screen.getByText("50.0k / 200.0k")).toBeInTheDocument()
   })
 
+  it("shows a 1M window as 1.0M, not 1000.0k (mercury-3, 2026-10-26)", () => {
+    render(<ContextPill usedTokens={2600} maxTokens={1000000} phase="idle" />)
+    expect(screen.getByText("2.6k / 1.0M")).toBeInTheDocument()
+  })
+
   it("shows a 2-3 letter phase code, not a full word (REQ-11 AC2)", () => {
     render(<ContextPill usedTokens={1000} maxTokens={128000} phase="listening" />)
     expect(screen.getByText("LSN")).toBeInTheDocument()

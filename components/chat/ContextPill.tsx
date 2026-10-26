@@ -11,6 +11,8 @@ export interface ContextPillProps {
 }
 
 function formatTokens(n: number): string {
+  // A 1M window (mercury-3) read "1000.0k"; millions get their own unit.
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return `${n}`
 }
