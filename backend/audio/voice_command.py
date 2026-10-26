@@ -80,6 +80,14 @@ _VAD_RAMP_MAX_SCALE: float = 2.25
 # Clip STT cost: median 517 ms, p90 1982 ms on a loaded CPU, in parallel with
 # the user's speech.
 _WAKE_CONFIRM_TIMEOUT_SEC: float = 20.0
+# The pre-open judge decodes ONE pass, short. Live 2026-10-25 23:04-23:30 its
+# whisper call took median 3.7 s, p90 18 s, max 67 s: on room/TV audio whisper
+# retried every temperature 0.0-1.0 and rambled ("I'm done. I'm done. ...").
+# MEASURED 2026-10-26 on the 393 recorded wake clips (14 hold the name, labels
+# from the full decode), warm: one pass + 24 tokens -> 13/14 names, 1/379 false,
+# median 1.43 s, p90 1.80 s, max 3.20 s. hotwords="Iris" was faster (0.46 s)
+# but accepted 8/379 noise clips - not used.
+_WAKE_JUDGE_STT: dict = {"temperature": 0.0, "max_new_tokens": 24, "without_timestamps": True}
 _WAKE_NAME: str = "iris"
 # Whisper spellings of the name. One edit from "iris" also passes ("aris").
 _WAKE_NAME_FORMS = frozenset({"iris", "irish", "irises"})
@@ -591,6 +599,7 @@ class VoiceCommandHandler:
         segments, _ = whisper.transcribe(
             clip, language="en", beam_size=1, best_of=1,
             condition_on_previous_text=False, vad_filter=False,
+            **_WAKE_JUDGE_STT,
         )
         heard = " ".join(s.text.strip() for s in segments).strip()
         return wake_phrase_heard(heard), heard

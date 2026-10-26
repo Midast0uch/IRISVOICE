@@ -98,3 +98,25 @@ def test_the_judge_refuses_while_a_take_records():
     h.is_recording = True
     ok, heard = h._judge_wake_clip(np.zeros(16000, dtype=np.float32))
     assert not ok and "busy" in heard
+
+
+def test_the_judge_decodes_one_short_pass():
+    """Live 2026-10-25: the full decode retried every temperature on noise - median 3.7 s, max 67 s before a chime."""
+    class _Eng:
+        pipeline = object()
+
+        def register_frame_listener(self, _fn):
+            pass
+
+    seen = {}
+
+    class _W:
+        def transcribe(self, _clip, **kw):
+            seen.update(kw)
+            return [], None
+
+    h = VoiceCommandHandler(_Eng())
+    h._whisper = _W()
+    h._judge_wake_clip(np.zeros(16000, dtype=np.float32))
+    assert seen.get("temperature") == 0.0, seen
+    assert 0 < seen.get("max_new_tokens", 0) <= 32, seen
