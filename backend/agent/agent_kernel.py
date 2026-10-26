@@ -2480,6 +2480,14 @@ class AgentKernel:
         # ctx-budget contract tests. ClinePass models stay unlisted on
         # purpose (windows unverified) and take the safe 8k default.
         ("cerebras", "qwen-3.8-27b", 64_000),
+        # Inception mercury-2.5: 260_000 is the window Inception itself published in
+        # its /models list (logged 2026-10-02 and 2026-10-25, "budget=26000 from
+        # window=260000"). On 2026-10-26 /models listed only mercury-3 and
+        # mercury-decide - mercury-2.5 still answers but is no longer listed - so
+        # the API lookup (case 2b) found nothing, every thread fell to the 8_192
+        # default and the chat's context pill went red after one prompt. Evidence,
+        # not a guess; case 2b still wins whenever the provider lists the model.
+        ("inceptionlabs", "mercury-2.5", 260_000),
         # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
         # bare-substring provider-wide fallback â€” it matched EVERY model from
         # OpenRouter, which fronts models from 4k to 2M windows. A blanket
