@@ -132,6 +132,8 @@ export function TaskCardEntry({
           made={made}
           asks={asks}
           askActions={askActions}
+          turnId={card.turnId}
+          conversationId={card.conversationId}
         />
       </div>
     ) : (

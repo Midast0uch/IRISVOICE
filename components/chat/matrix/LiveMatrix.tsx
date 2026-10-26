@@ -228,6 +228,9 @@ export interface MatrixFrameProps {
   /** IRIS asks of this turn: ASK rows at the end of the rows; settled ones stay as receipts. */
   asks?: AskItem[]
   askActions?: AskActions
+  /** The card's turn and conversation: the memory line opens `turn:<conversation>:<turn>` in the memory. */
+  turnId?: string
+  conversationId?: string | null
 }
 
 export function MatrixFrame({
@@ -244,6 +247,8 @@ export function MatrixFrame({
   made,
   asks,
   askActions,
+  turnId,
+  conversationId,
 }: MatrixFrameProps) {
   const m = useMemo(() => buildMatrix(matrix, details), [matrix, details])
   const [unfolded, setUnfolded] = useState(false)
@@ -316,11 +321,12 @@ export function MatrixFrame({
         {madeAtEnd.map((mk) => <MadeRow key={mk.doc.id} made={mk} />)}
         {askActions && asks?.map((a) => <AskPrompt key={a.id} ask={a} variant="row" glowColor={glowColor} actions={askActions} />)}
       </div>
-      {mem && (turnId
-        // the memory line opens what the memory gave this turn (MEMORY-UX-PLAN 4.5)
+      {mem && (turnId && conversationId
+        // the memory line opens what the memory gave this turn (MEMORY-UX-PLAN 4.5). The memory resolves a turn as
+        // "<conversation>:<turn>"; until 2026-10-26 this read an undefined `turnId` and threw on every memory line.
         ? <button type="button" data-testid="matrix-memory-line" title="Open what IRIS remembered here"
             className="block w-full text-left text-[11px] text-white/40 hover:text-white/70 truncate"
-            onClick={() => window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `turn:${turnId}` } }))}>◈ {mem}</button>
+            onClick={() => window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `turn:${conversationId}:${turnId}` } }))}>◈ {mem}</button>
         : <div className="text-[11px] text-white/40 truncate">◈ {mem}</div>)}
       {working && (
         <div className="text-[11.5px] text-white/45 truncate tabular-nums" data-matrix-status>

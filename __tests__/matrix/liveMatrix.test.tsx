@@ -194,3 +194,29 @@ describe("TaskCardEntry: developer mode draws the live matrix (guard: fails on t
     expect(container.querySelectorAll("[data-row-id]").length).toBe(4)
   })
 })
+
+describe("the memory line (MEMORY-UX-PLAN 4.5)", () => {
+  // 2026-10-26: MatrixFrame read an undefined `turnId`, so every card with a memory line threw on render.
+  const withMemory = card([{ id: "n1", description: "read router.py", status: "done", toolName: "read_file" }],
+    { isWorking: false, turnId: "t-7", memoryEvents: [{ direction: "retrieve", engine: "episodic", detail: "a past fix" }] } as Partial<TaskCard>)
+
+  it("renders and opens the turn as <conversation>:<turn> in the memory", () => {
+    const seen: unknown[] = []
+    const on = (e: Event) => seen.push((e as CustomEvent).detail)
+    window.addEventListener("iris:card_action", on)
+    try {
+      render(<MatrixFrame matrix={taskCardToMatrixProps(withMemory)} glowColor={GLOW} working={false} elapsedSec={3}
+        foldWhenDone={false} turnId="t-7" conversationId="conv-dev" />)
+      fireEvent.click(screen.getByTestId("matrix-memory-line"))
+    } finally {
+      window.removeEventListener("iris:card_action", on)
+    }
+    expect(seen).toEqual([{ action: "open_memory", focus: "turn:conv-dev:t-7" }])
+  })
+
+  it("without a conversation the line is plain text, not a dead link", () => {
+    render(<MatrixFrame matrix={taskCardToMatrixProps(withMemory)} glowColor={GLOW} working={false} elapsedSec={3} foldWhenDone={false} />)
+    expect(screen.queryByTestId("matrix-memory-line")).toBeNull()
+    expect(screen.getByText(/◈ remembered:/)).toBeInTheDocument()   // taskCardToMatrixProps words the detail itself
+  })
+})
