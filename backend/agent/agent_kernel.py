@@ -16127,17 +16127,10 @@ Respond with a JSON object:
                         break
                 _failed.append(f"- {_desc}" + (f": {_reason}" if _reason else ""))
             _failed_txt = "\n".join(_failed) or "(unknown step)"
-            _done = len(completed_items)
-            # Same graft-aware denominator as the success summary â€” a run that
-            # extended itself must not report "7/4 steps".
-            _total = max(
-                len(getattr(plan, "steps", []) or []),
-                len(getattr(queue, "items", []) or []),
-                _done,
-            )
+            # No step count in the reply (owner 2026-10-26): "1/1 steps finished" is
+            # bookkeeping, not an answer, in personal and developer mode alike.
             return (
-                f"I couldn't complete that task. {_done}/{_total} steps finished, "
-                f"but the following step(s) failed:\n{_failed_txt}\n\n"
+                f"I couldn't complete that task. The following step(s) failed:\n{_failed_txt}\n\n"
                 f"If a search or source failed, try rephrasing the request or "
                 f"pasting the information directly â€” I can continue from where it stopped."
             )
@@ -16168,16 +16161,6 @@ Respond with a JSON object:
                     + (f": {_res}" if _res else "")
                 )
             _done_txt = "\n".join(_done_lines) or "(no step output)"
-            _done = len(completed_items)
-            # Grafted steps extend the run beyond the plan, so the plan's step
-            # count is not the whole story: "7/4 steps finished" is what a user
-            # saw when two artifact grafts completed. Count what the run
-            # actually held.
-            _total = max(
-                len(getattr(plan, "steps", []) or []),
-                len(getattr(queue, "items", []) or []),
-                _done,
-            )
             # AC5.6: report done + grade â€” recomputed statelessly from the
             # envelopes (this is a @staticmethod; no instance state, no
             # shared mutable state). A load-bearing mismatch caps the run
@@ -16212,13 +16195,12 @@ Respond with a JSON object:
             # claim. The narration MUST agree with the grade it just computed.
             if _capped:
                 return (
-                    f"I couldn't fully complete the task â€” {_done}/{_total} steps "
-                    f"finished, but required work remains open.\n"
+                    f"I couldn't fully complete the task - required work remains open.\n"
                     f"{_done_txt}\n{_grade_line}\n"
                     f"What would you like me to do next?"
                 )
             return (
-                f"I've completed the task. {_done}/{_total} steps finished.\n"
+                f"I've completed the task.\n"
                 f"{_done_txt}\n{_grade_line}\n"
                 f"What would you like to do next?"
             )

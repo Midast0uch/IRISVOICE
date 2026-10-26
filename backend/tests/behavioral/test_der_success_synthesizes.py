@@ -228,7 +228,8 @@ def test_success_path_deterministic_fallback_when_synthesis_unavailable():
 
     out = _run(kernel)
 
-    assert "1/1 steps finished" in out, out
+    # Owner 2026-10-26: the reply never states a step count ("1/1 steps finished").
+    assert "steps finished" not in out and "1/1" not in out, out
     assert "search the web for quantum pricing" in out, out
     # REQ-8 AC1 (T26): the deterministic summary shows the COMPRESSED node
     # record (done-when from expected_output), never the raw result marker.
@@ -273,7 +274,7 @@ def test_synthesis_unavailable_returns_empty_and_summary_is_safe():
     summary = agent_kernel.AgentKernel._der_deterministic_success_summary(
         plan, [item], MagicMock()
     )
-    assert "1/1 steps finished" in summary, summary
+    assert "steps finished" not in summary and "1/1" not in summary, summary
     assert "search the web" in summary and "RESULT_EVIDENCE_OK" in summary, summary
 
     empty = agent_kernel.AgentKernel._der_deterministic_success_summary(
