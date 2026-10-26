@@ -131,6 +131,13 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #coach.on{opacity:1;visibility:visible}.iris-memory #coach b{color:#cfe3ee;font-weight:500;margin-right:6px}
 .iris-memory #coach a{cursor:pointer;color:var(--faint)}.iris-memory #coach a:hover{color:#cfe3ee}
 @media (prefers-reduced-motion:reduce){.iris-memory #help,.iris-memory #coach{transition:none}}
+/* timeline filter chips (UX-PLAN 8.3): the key's style, above the helix; they dim, never remove */
+.iris-memory #chips{position:absolute;left:50%;top:22px;transform:translateX(-50%);display:flex;flex-wrap:wrap;justify-content:center;gap:4px 12px;
+  max-width:min(760px,70vw);font-size:10px;letter-spacing:.06em;color:var(--faint);pointer-events:auto;opacity:0;visibility:hidden;transition:opacity .4s}
+.iris-memory #chips.on{opacity:1;visibility:visible}.iris-memory.searching #chips{opacity:0;visibility:hidden}
+.iris-memory #chips a{cursor:pointer;white-space:nowrap}.iris-memory #chips a:hover{color:var(--dim)}
+.iris-memory #chips a.on{color:#cfe3ee;text-decoration:underline;text-underline-offset:3px}
+.iris-memory #chips i{font-style:normal;color:var(--faint);font-variant-numeric:tabular-nums}.iris-memory #chips b{font-weight:400;color:rgba(160,200,220,.25)}
 .iris-memory #scrub{position:absolute;left:50%;bottom:56px;width:min(520px,60vw);height:24px;transform:translateX(-50%);
   pointer-events:auto;cursor:ew-resize;opacity:0;transition:opacity .4s}
 .iris-memory #scrub.on{opacity:1}
@@ -183,6 +190,7 @@ export const MEMORY_HTML = String.raw`<canvas id="gl"></canvas>
   <div id="scrub"><span class="lbl0"></span><span class="lbl"></span><div class="track"></div><div class="fill"></div></div>
   <div id="rail"><svg></svg><div class="rl"></div></div>
   <div id="search"><input id="q" placeholder="search what IRIS remembers" autocomplete="off"><div id="qres"></div></div>
+  <div id="chips" aria-label="filter the strands"></div>
   <div id="key"></div>
   <div id="help" role="dialog" aria-label="keys for this view"></div>
   <div id="coach" role="note"></div>

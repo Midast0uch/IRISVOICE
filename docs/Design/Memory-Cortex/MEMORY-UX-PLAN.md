@@ -381,3 +381,36 @@ the black-screen bug proved that the in-app browser can hide a GPU-specific fail
 - Keyboard: every action reachable without a mouse; focus is visible; `?` lists the keys for the current view.
 - Reduced motion and reduced transparency honoured everywhere; the white void on entry becomes a quick fade.
 - Privacy: the memory never leaves the machine; a copied deep link holds ids, never content.
+
+## 14. Status against this plan (audit 2026-10-26)
+
+The phase DONE lines of §12 were met, but the plan itself is NOT complete. An item-by-item audit of the code (engine,
+markup, MemorySurface, the API and the chat side) found the gaps below. Fixed the same day: the `?` control sheet and
+first-open coach marks (§3.3); the task card's memory line threw on render (an undefined `turnId`) and now opens
+`turn:<conversation>:<turn>` (§4.5); the snapshot's recall read (156 s cold) stops at the newest 60 turns; walking
+(§6.2: Shift+← → turn to turn, Tab to the far doorway, ← → strand to strand and ↑ ↓ a day on the helix); the
+timeline filter chips (§8.3, outcome + territory). The chips hide themselves while a group has one value: on the live
+store all 48 listed strands read `finished` and territory `general` (40 of 48 have no episode; 111k of ~114k chain
+rows are `general`), so they filter nothing yet - a data gap, not a UI one. Chat tags are not a group (5 of 5,836
+conversations carry one).
+
+| § | MISSING | PARTIAL |
+|---|---|---|
+| 3.2 paths | claim → where it was learned (corridor); turn → the claim it touched; thread → fan the braid; thread rename / pin; artifact → the strand it was made in | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
+| 4.3 helix | forked strand leaves / reports to the thread line; hover a braid → fan; click → beads open | braid joins only parent → child; hover labels for the rest |
+| 4.4 corridor | sibling strands as doorways at the fork; helper report-back arch; rail tags; "continue in chat" end marker | far door opens the next THREAD, not the next strand of the same thread; breadcrumb |
+| 4.5 chat → memory | thread orbit Alt+click / `◎`; lens "In memory" | the turn's memory button is a button, not a `⋯` menu with "decided here" |
+| 4.6 memory → chat | drag a thing onto the chat wing; composer `#` group "IRIS knows" | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
+| 5 | copy link / deep-link serialisation | the back stack is structural (one level out), not a recorded stack |
+| 6.1 | input interrupts a flight; long jumps through a fragment tunnel | the object does not travel (camera flights only); tweenPath 2.4–2.8 s (> 1.2 s); reduced motion is instant, not a 200 ms fade |
+| 6.3 | the live dot; crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
+| 7 cortex | territory health line; ghost outlines of dissolved claims | territory labels (name only: no counts, no "this week"); arbor lights end to end; uses bloom as arches; tether lit on focus |
+| 8 timeline | the live strand's pulse | strand card has no tags; per-turn arches |
+| 9 oracle | live `oracle_decision` drives the ray; the acting-side split; the reliability curve | rings + amber first gap |
+| 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
+| 13 details | hover intent 80 ms / card linger 250 ms; card never covers its object; scrambled titles; one live dot; the empty-state sentence | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
+
+Measured on the way (2026-10-26): the first snapshot after a restart took 404 s, cold on the C: hard disk (recall
+156 s, claims 111 s, counts 51 s); warm, every part is milliseconds. A later open 30 min after the warm-up took 70 s
+(the pages were evicted again). The store holds 1.1 GB of live pages and no free pages: the cold cost is the disk,
+not bloat. Moving `data/memory.db` to the SSD (D:) is the owner's decision.

@@ -1164,12 +1164,15 @@ sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=(2.5+Math.sqrt(s.e
 beadGeo.setAttribute('position',new THREE.BufferAttribute(bP,3));beadGeo.setAttribute('aA',new THREE.BufferAttribute(bA,1));
 beadGeo.setAttribute('aDs',new THREE.BufferAttribute(Float32Array.from(sess,desyncSession),1));   // a session that failed or was set back desyncs
 beadGeo.setAttribute('aS',new THREE.BufferAttribute(bS,1));beadGeo.setAttribute('aC',new THREE.BufferAttribute(bC,3));
+// the timeline filter chips (UX-PLAN 8.3) DIM a strand that does not match, never remove it: 1 kept, 0 filtered out
+const bF=new Float32Array(sess.length).fill(1);beadGeo.setAttribute('aF',new THREE.BufferAttribute(bF,1));
 const beadMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0},uHover:{value:-1}},
-  vertexShader:`uniform float uPix,uVis,uTime;uniform float uHover;attribute float aA,aS,aDs;attribute vec3 aC;varying vec3 vC;varying float vA;
+  vertexShader:`uniform float uPix,uVis,uTime;uniform float uHover;attribute float aA,aS,aDs,aF;attribute vec3 aC;varying vec3 vC;varying float vA;
     float h1(float x){return fract(sin(x*127.1)*43758.5453);}
     void main(){float id=float(gl_VertexID),dz=step(.9,h1(floor(uTime*5.)+id*7.3))*aDs;   // failures and setbacks: a brief glitch now and then
       vec4 mv=modelViewMatrix*vec4(position+vec3(h1(id+floor(uTime*20.))-.5,0.,h1(id*3.+floor(uTime*20.))-.5)*dz*.6,1.);float h=step(abs(id-uHover),.1);
-      vC=mix(aC,vec3(1.,.3,.3),dz*.8);vA=uVis*(.8+aA*.6+h*.8);gl_PointSize=min((aS+h*4.+aA*3.*(.5+.5*sin(uTime*3.)))*uPix*(60./-mv.z),40.*uPix);gl_Position=projectionMatrix*mv;}`,
+      vC=mix(aC,vec3(1.,.3,.3),dz*.8);vA=uVis*(.8+aA*.6+h*.8)*mix(.16,1.,aF);
+      gl_PointSize=min((aS+h*4.+aA*3.*(.5+.5*sin(uTime*3.)))*mix(.6,1.,aF)*uPix*(60./-mv.z),40.*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     float core=smoothstep(.22,.0,d),halo=smoothstep(.5,.0,d)*.4;gl_FragColor=vec4(vC,(core+halo)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
@@ -1213,10 +1216,31 @@ function placeTimelineLabels(show){
     if(!a.front||Math.abs(a.y-lastY)<16){el.style.opacity=0;return}lastY=a.y;
     el.style.opacity=.55;el.style.left=(a.x-el.offsetWidth)+'px';el.style.top=(a.y-7)+'px'});
   const used=[];   // newest conversations sit side by side: a name that would overlap another stays for hover
-  LOD.forEach((s,i)=>{const el=lodEls[i];const k=sess.indexOf(s);if(!show||state.hoverBead===k){el.style.opacity=0;return}
+  LOD.forEach((s,i)=>{const el=lodEls[i];const k=sess.indexOf(s);if(!show||state.hoverBead===k||!bF[k]){el.style.opacity=0;return}
     const a=project(new V3(0,helixY(sessS(s)),0).addScaledVector(right,R*.32));
     if(!a.front||used.some(y=>Math.abs(y-a.y)<15)){el.style.opacity=0;return}used.push(a.y);el.style.opacity=.75;el.style.left=(a.x+6)+'px';el.style.top=(a.y-7)+'px'})}
 sess.forEach((s,i)=>{if(s.exit==='live')bA[i]=1});
+// TIMELINE FILTER CHIPS (UX-PLAN 8.3): by outcome and by territory (the strand's most common domain). One group = any
+// of its chips; groups combine with AND. A strand that does not match dims (bF), never disappears. Chat tags are not a
+// group: 5 of 5,836 conversations carry one (2026-10-26) - a chip row of them would filter nothing.
+const sessOut=s=>s.exit==='live'?'live':s.exit==='drift'?'drifted':'finished';
+const sessDom=sess.map(s=>{const c={};for(const e of s.events||[]){const d=e.domain||'general';c[d]=(c[d]||0)+1}
+  return Object.entries(c).sort((a,b)=>b[1]-a[1])[0]?.[0]||'general'});
+const filt={out:new Set(),dom:new Set()};
+const CHIP_GROUPS=(()=>{const count=(xs)=>{const c={};for(const x of xs)c[x]=(c[x]||0)+1;return Object.entries(c).sort((a,b)=>b[1]-a[1])};
+  return [['out',count(sess.map(sessOut))],['dom',count(sessDom).slice(0,6)]]
+    .filter(([,xs])=>xs.length>1)})();   // a group with one value matches every strand: it filters nothing
+function applyFilters(){const any=filt.out.size+filt.dom.size>0;
+  sess.forEach((s,i)=>{bF[i]=!any||((!filt.out.size||filt.out.has(sessOut(s)))&&(!filt.dom.size||filt.dom.has(sessDom[i])))?1:0});
+  beadGeo.attributes.aF.needsUpdate=true;renderChips()}
+function renderChips(){const el=host.querySelector('#chips');if(!el)return;
+  const n=sess.filter((_,i)=>bF[i]).length,any=filt.out.size+filt.dom.size>0;
+  el.innerHTML=CHIP_GROUPS.map(([g,xs])=>xs.map(([v,c])=>`<a data-chip="${g}" data-v="${esc(v)}" class="${filt[g].has(v)?'on':''}">${esc(g==='dom'?domainWord(v):v)} <i>${fmt(c)}</i></a>`).join('')).join('<b>·</b>')+
+    (any?`<b>·</b><a data-chipx>clear · ${fmt(n)} of ${fmt(sess.length)}</a>`:'')}
+const domainWord=d=>(d||'general').replace(/_/g,' ');
+host.querySelector('#chips')?.addEventListener('click',e=>{const x=e.target.closest('[data-chipx]');if(x){filt.out.clear();filt.dom.clear();applyFilters();return}
+  const c=e.target.closest('[data-chip]');if(!c)return;const s=filt[c.dataset.chip];s.has(c.dataset.v)?s.delete(c.dataset.v):s.add(c.dataset.v);applyFilters()});
+renderChips();
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 5b. coordinate spaces as layers, the nodes in them (trust channel + fading), pins, the immune response
@@ -2310,10 +2334,10 @@ KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
 const HELP={
   cortex:[['hover','name a territory, a claim, a pin'],['click','dive into a territory · focus a claim'],['Enter','go in where the pointer is'],
     ['Esc · Alt+← · back','one level out'],['k','health view (Kyudo)'],['s','show the spaces'],['wheel','nearer · further']],
-  timeline:[['hover a bead','its strand and what memory gave it'],['click a bead','its recall arches'],['Enter','walk into the strand'],
-    ['wheel','move through time'],['Ctrl + wheel','zoom in to the turns'],['g','watch it grow'],['Esc','clear the focus']],
-  corridor:[['← →','claim to claim along the strand'],['wheel','step through the strand'],['click a claim','the thread it belongs to'],
-    ['Enter','that claim in the cortex'],['the far door','walk into the next strand'],['Esc','back to the helix']],
+  timeline:[['hover a bead','its strand and what memory gave it'],['← →','strand to strand in time'],['↑ ↓ · wheel','move through time'],
+    ['click a bead','its recall arches'],['Enter','walk into the strand'],['Ctrl + wheel','zoom in to the turns'],['g','watch it grow'],['Esc','clear the focus']],
+  corridor:[['↑ ↓ · wheel','walk along the strand'],['← →','claim to claim'],['Shift + ← →','turn to turn'],['Tab','walk to the far doorway'],
+    ['click a claim','the thread it belongs to'],['Enter','that claim in the cortex'],['the far door','walk into the next strand'],['Esc','back to the helix']],
   artifacts:[['click','open a folder · a thing'],['Esc','up one folder']],
   oracle:[['hover a sector','a consumer and its job'],['click','its ladder, history and curve'],['Esc','back to the ring']]};
 const HELP_ALL=[['1 – 4','cortex · timeline · artifacts · oracle'],['/','search what IRIS remembers'],['f','follow IRIS live'],['r','replay the last turn'],['?','this sheet']];
@@ -2843,7 +2867,7 @@ function hover(x,y){
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> session${rs.from===1?'':'s'} · ${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
+        <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
     else if(!syncHoverStrand(x,y))clearAnno('hover');return}
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
@@ -2929,6 +2953,18 @@ function neuronStep(dir){if(!tunnel)return;if(tunnel.stops)return threadStep(dir
   const u=dir>0?us.find(v=>v>now+.004):[...us].reverse().find(v=>v<now-.004);if(u!=null){cam.tpT=Math.max(0,u-.02);cam.idle=-9}}
 function throughDoor(){if(!tunnel||state.doorLock)return;state.doorLock=true;setTimeout(()=>state.doorLock=false,1500);
   const nx=tunnel.door.next;if(nx)enterTunnel(nx);else exitTunnel()}
+// WALKING (UX-PLAN 6.2). In the corridor Shift+← → steps turn to turn (each user message starts a turn) and Tab
+// walks to the far doorway. On the helix ← → step strand to strand in time (the ones the chips keep) and show the
+// same card a hover shows; ↑ ↓ move a day through time. The keyboard reuses the pointer's hover, so both read alike.
+function turnStep(dir){if(!tunnel)return;const us=tunnel.items.filter(n=>n.type==='msg'&&n.m.role==='user').map(n=>n.u).sort((a,b)=>a-b);
+  const now=cam.tpT+.02;const u=dir>0?us.find(v=>v>now+.004):[...us].reverse().find(v=>v<now-.004);if(u!=null){cam.tpT=Math.max(0,u-.02);cam.idle=-9}}
+function toDoorway(){if(!tunnel)return;cam.tpT=Math.max(cam.tpT,.955);cam.idle=-9}
+const beadOrder=()=>sess.map((s,i)=>i).filter(i=>bF[i]).sort((a,b)=>sess[a].started-sess[b].started);
+function beadStep(dir){const order=beadOrder();if(!order.length)return;const at=order.indexOf(state.hoverBead);
+  const k=order[at<0?(dir>0?0:order.length-1):clamp(at+dir,0,order.length-1)];const y=helixY(sessS(sess[k]));
+  cam.targetT.y=clamp(y,-HELIX_H,HELIX_H);cam.idle=-9;
+  setTimeout(()=>{const a=project(new V3(0,y,0));if(a.front)hover(a.x,a.y)},420)}   // the helix has turned to it: hover it
+function dayStep(dir){const now=nowS();cam.targetT.y=clamp(cam.targetT.y+dir*Math.max(.05,Math.abs(timeY(now)-timeY(now-86400))),-HELIX_H,HELIX_H);cam.idle=-9}
 function threadStep(dir){const st=tunnel.stops;if(!st||!st.length)return;const now=cam.tpT+.02;
   const u=dir>0?st.find(v=>v>now+.004):[...st].reverse().find(v=>v<now-.004);if(u!=null)cam.tpT=Math.max(0,u-.02);cam.idle=-9}
 function openThreadInMind(){const li=tunnel?.sel;if(li==null||li<0)return;exitTunnel(()=>{const fi=LM[li].dom;
@@ -2966,7 +3002,11 @@ addEventListener('keydown',e=>{
   if(e.key==='Escape'&&help.on){toggleHelp(false);e.preventDefault();e.stopPropagation();return}   // the sheet closes before anything steps out
   const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
   if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
+  if(cam.mode==='tunnel'&&e.shiftKey&&(k==='arrowright'||k==='arrowleft')){turnStep(k==='arrowright'?1:-1);e.preventDefault();return}
+  if(cam.mode==='tunnel'&&k==='tab'){toDoorway();e.preventDefault();return}
   if(cam.mode==='tunnel'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
+  if(state.lens==='timeline'&&cam.mode==='orbit'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){beadStep(k==='arrowright'?1:-1);e.preventDefault();return}
+  if(state.lens==='timeline'&&cam.mode==='orbit'&&(k==='arrowup'||k==='arrowdown')){dayStep(k==='arrowup'?1:-1);e.preventDefault();return}
   // Escape (and Alt+Left, and the mouse's back button) steps out ONE level; only at the top level does it pass through
   // (the dashboard then closes as before). Enter goes in, to what the pointer is on.
   if(k==='escape'||(k==='arrowleft'&&e.altKey)){if(stepOut()){e.preventDefault();e.stopPropagation()}return}
@@ -3189,6 +3229,7 @@ const _frame=()=>{
   // impulses
   updateSparks(dt);updateRings(dt);updateThreads(dt);updateSatellites(t);
   updateCamera(dt);syncFrame(dt);updateCrumb();$('key').classList.toggle('on',state.lens==='cortex'&&cam.mode!=='tunnel'&&!state.diving);
+  $('chips').classList.toggle('on',state.lens==='timeline'&&cam.mode==='orbit'&&CHIP_GROUPS.length>0);
   if(cam.mode==='tunnel'&&tunnel){
     // the far doorway opens as you near the end of the thread; the side door stays ajar
     tunnel.door.mesh.material.uniforms.uOpen.value=smooth01((cam.tp-.78)/.18);
