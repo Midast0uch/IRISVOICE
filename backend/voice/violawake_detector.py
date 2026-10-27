@@ -23,10 +23,24 @@ Audit result (pin_4cbe8eb4afab): ``WakeDetector`` does NOT expose
 
 import logging
 import os
+import sys
 from collections import deque
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# NO TORCH IN THE BACKEND (2026-10-27). violawake_sdk/vad.py imports the
+# silero_vad PACKAGE at module level, and that package imports torch (the CUDA
+# build: ~40 DLLs, 7-17 s warm, minutes on a cold disk). Every import of
+# violawake_sdk loaded it on the iris-wake-audio-init thread while the rest of
+# the boot ran; the backend died with a native access violation inside torch's
+# _load_dll_libraries on 3 boots (2026-10-25 11:56 + 14:43, 2026-10-27 12:57;
+# logs/crash_traceback.log). The VAD gate only ever ran Silero's ONNX model -
+# torch only wrapped its arrays - so _SileroOnnxVAD below runs that same model
+# with onnxruntime (already loaded for the wake head), and the package is
+# kept out of this process: violawake's own "silero-vad not installed" branch
+# (load_silero_vad = None) takes over. Nothing else in the backend imports it.
+sys.modules.setdefault("silero_vad", None)
 
 # Violawake / OpenWakeWord contract (verified in T0 audit):
 # 16 kHz mono int16, 20 ms / 320-sample frames.
@@ -180,6 +194,67 @@ UTTERANCE_TRACE_FLOOR: float = 0.20
 # 0.310 up. Setting 0.40 sat INSIDE the voice range and rejected the owner
 # while the taps never approached it - the opposite of the intent.
 VAD_SPEECH_MEAN_MIN: float = 0.15
+
+
+class _SileroOnnxVAD:
+    """Silero VAD on onnxruntime alone - the same packaged model
+    (silero_vad/data/silero_vad.onnx) and the same windowing as
+    ``violawake_sdk.vad.SileroVAD`` + ``silero_vad.utils_vad.OnnxWrapper``:
+    512-sample windows at 16 kHz with a 64-sample context carried over, the
+    (2, 1, 128) state carried over, int16 frames scaled to [-1, 1], short frames
+    zero-padded, the maximum window probability returned. No torch."""
+
+    _WINDOW = 512
+    _CONTEXT = 64
+
+    def __init__(self) -> None:
+        import importlib.machinery
+
+        import numpy as np
+        import onnxruntime as ort
+
+        # PathFinder reads the files without importing the package (it is
+        # blocked in sys.modules above, and importing it would load torch).
+        spec = importlib.machinery.PathFinder.find_spec("silero_vad")
+        if spec is None or not spec.submodule_search_locations:
+            raise ImportError("silero-vad model files not found")
+        path = os.path.join(list(spec.submodule_search_locations)[0], "data", "silero_vad.onnx")
+        if not os.path.isfile(path):
+            raise ImportError(f"silero-vad model missing: {path}")
+        opts = ort.SessionOptions()
+        opts.inter_op_num_threads = 1
+        opts.intra_op_num_threads = 1
+        self._np = np
+        self._session = ort.InferenceSession(path, sess_options=opts, providers=["CPUExecutionProvider"])
+        self._sr = np.array(SAMPLE_RATE, dtype=np.int64)
+        self.reset()
+
+    def reset(self) -> None:
+        np = self._np
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self._CONTEXT), dtype=np.float32)
+
+    def process_frame(self, audio_bytes: bytes) -> float:
+        """Speech probability 0.0-1.0 of one int16 PCM frame."""
+        np = self._np
+        if not isinstance(audio_bytes, (bytes, bytearray)) or len(audio_bytes) % 2:
+            raise ValueError("audio_bytes must be int16 PCM bytes")
+        pcm = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        probs = []
+        for start in range(0, pcm.size, self._WINDOW):
+            chunk = pcm[start:start + self._WINDOW]
+            if chunk.size < self._WINDOW:
+                chunk = np.pad(chunk, (0, self._WINDOW - chunk.size))
+            x = np.concatenate([self._context, chunk[None, :]], axis=1)
+            try:
+                out, self._state = self._session.run(
+                    None, {"input": x, "state": self._state, "sr": self._sr})
+            except Exception as exc:  # noqa: BLE001 - the gate reads 0, as violawake's did
+                logger.warning("[ViolawakeDetector] Silero ONNX VAD error (samples=%d): %s", pcm.size, exc)
+                return 0.0
+            self._context = x[:, -self._CONTEXT:]
+            probs.append(float(out.reshape(-1)[0]))
+        return max(probs, default=0.0)
 #     collapse). Synthetic speech collapses to 0.576-0.589 on its first
 #     below-threshold chunk (measured 2026-09-05, full and x0.3 gain).
 #     BUT a live voice in a real room releases GRADUALLY (reverb tail):
@@ -350,9 +425,7 @@ class ViolawakeWakeWordDetector:
         self._vad = None
         self._recent_speech: deque = deque(maxlen=CONSECUTIVE_CHUNKS)
         try:
-            from violawake_sdk.vad import SileroVAD  # noqa: PLC0415
-
-            self._vad = SileroVAD()
+            self._vad = _SileroOnnxVAD()
             logger.info(
                 "[ViolawakeDetector] Silero VAD gate active "
                 f"(speech_mean_min={VAD_SPEECH_MEAN_MIN})"

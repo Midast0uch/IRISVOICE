@@ -1,5 +1,56 @@
 # IRIS Changelog
 
+## 2026-10-27 — Memory surface final, recall reach, faster coding turns, start-up crash fix
+
+Every item below was measured on the live app and has a guard test that fails on the old
+code; the before/after numbers are in `docs/audits/2026-09-29/PROGRESS.md` (Standards S122–S129).
+
+### feat: The Memory surface is final
+
+One design file: `docs/Design/Memory-Cortex/MEMORY-INTERFACE.md` (Part I the interface,
+Part II the memory foundation). Five views (cortex, timeline, corridor, artifacts, Oracle)
+with one grammar, chat ↔ memory both ways, deep links, corrections, live sparks, helper
+strands that report back, a fragment tunnel for long jumps, and a tidy HUD.
+
+- **A turn names the claims it used (S125):** one `RECALL_USED` event per claim, keyed
+  `<conversation>:<turn>`; "every time it was used" reads an exact link, not a time window.
+- **Coordinates keep 6 decimals (S122):** the chain held 1,221 distinct positions over 31,884 rows.
+
+### feat: Recall reaches every stored memory (S128)
+
+Recall scored only the newest 200 chunks of its filter (research reached 11% of its
+summaries, a session ~1.5%, the store 0.14%). A 128-byte sign fingerprint of every chunk now
+lives in RAM; the 200 nearest join the exact score.
+
+- **recall@10 vs exact search:** research 0.14 → 0.975, turn 0.054 → 0.901, store 0.029 → 0.96
+- **candidate p95:** 9.5 ms (research), 20.6 ms (turn); warm-up ~30 s on a background thread
+- **`evals/memory_bench.py`:** the memory benchmark (real chat queries, standards in `evals/standards.json`)
+- **`specs/memory-recall-reach/`:** the plan for honest vectors, exact words (FTS5),
+  compression, budget + decay, and memory-native ranking
+
+### perf: Coding turns stop re-doing finished work (S126, S127)
+
+- **Coverage:** a step that changed the file and ran it cleanly now covers the goal even when
+  the text check cannot confirm it; a made change gets one check step, never a full re-plan.
+- **One API connection pool:** a new TLS handshake per model call cost a median 86 ms (max 1.9 s).
+- **The artifact graft keeps folders:** it no longer overwrites `tests/test_x.py` as a "missing" file.
+- **Measured:** c04 114 → 31–49 s, c06 64 → 31 s, c15 50.5 → 36 s, c05 43–70 → 18–37 s.
+
+### perf: A one-sentence answer ends its turn (S123)
+
+A direct (tool-less) answer no longer reads as a wrong package or an uncovered fact:
+a REST chat turn fell from ~170 s to 5–6 s.
+
+### fix: Start-up crash in the wake path (S129)
+
+The backend died on 3 boots with a native access violation while torch's CUDA DLLs loaded
+on the wake-audio thread. The wake word's Silero VAD only needed its ONNX model: it now runs
+on onnxruntime (identical output) and torch is never imported into the backend.
+
+### fix: logs/iris.log has a size budget (S124)
+
+One file handle, rotation at 64 MB into 3 backups (≤ 256 MB); the 5.8 GB legacy file was set aside.
+
 ## [Unreleased] — Model-Selection Authority + Sherpa STT + UI/WS Hardening — 2026-09-03
 
 ### feat: Model-selection authority (timestamps over heuristics)
