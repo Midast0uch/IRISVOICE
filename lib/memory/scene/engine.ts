@@ -2527,7 +2527,7 @@ function dive(i){
   const pts=[camera.position.clone(),...arcTo(camera.position,c,R*2.0,3),c.clone().multiplyScalar(R*1.08),c.clone().multiplyScalar(R*.6)];
   const looks=[cam.look.clone(),new V3(),new V3(),lookIn.clone().multiplyScalar(.3),lookIn];
   LM.forEach((l,k)=>{somaData[k*8+6]=l.dom===i?1:0});somaTex.needsUpdate=true;
-  tweenPath(pts,looks,64,REDUCED?.01:2.8,{kick:9,
+  tweenPath(pts,looks,64,REDUCED?.01:1.2,{kick:9,
     onT:e=>{if(e>.42)state.openT=1;if(e>.6)state.focusDimT=1},
     done:()=>{cam.mode='fly';flyFrom(camera.position,lookIn);cam.fovT=64;state.inside=true;state.diving=false;
       hint('drag · look &nbsp; scroll / w a s d · swim &nbsp; q e · down up<br>click a thought · go to it &nbsp; click space · glide there &nbsp; esc · back out'+(innerRoom(i).k>1.5?`<br>inside, the room is ${Math.round(innerRoom(i).k)}× the size it looks from outside · fast in empty space, slow beside a thought`:''));
@@ -2548,7 +2548,7 @@ function exitInterior(done){
   const end=c.clone().multiplyScalar(58).add(new V3(0,R*.4,0));
   const pts=[camera.position.clone(),c.clone().multiplyScalar(R*.62),c.clone().multiplyScalar(R*1.1),c.clone().multiplyScalar(R*2.6),end];
   const looks=[cam.look.clone(),c.clone().multiplyScalar(-R*.1),new V3(),new V3(),new V3()];
-  tweenPath(pts,looks,38,REDUCED?.01:2.4,{kick:6,
+  tweenPath(pts,looks,38,REDUCED?.01:1.2,{kick:6,
     onT:e=>{if(e>.62)state.openT=0},
     done:()=>{state.openT=0;cam.mode='orbit';orbitFrom(camera.position,new V3());state.diving=false;done&&done();
       if(!done)hint('drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme')}});

@@ -402,7 +402,7 @@ conversations carry one).
 | 4.5 chat → memory | thread orbit Alt+click / `◎` (the lens "In memory" is built) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
 | 4.6 memory → chat | drag a thing onto the chat wing (the `#` group "IRIS knows" is built: claims from the memory search; pins wait for an agent-side resolver) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
 | 5 | copy link / deep-link serialisation | the back stack is structural (one level out), not a recorded stack |
-| 6.1 | long jumps through a fragment tunnel | the object does not travel (camera flights only); tweenPath 2.4–2.8 s (> 1.2 s; any input now lands it at once); reduced motion is instant, not a 200 ms fade |
+| 6.1 | long jumps through a fragment tunnel | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
 | 6.3 | crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |
 | 8 timeline | the live strand's pulse for a strand the snapshot does not hold yet (a chat opened after the view loaded) | strand card has no tags; per-turn arches |
