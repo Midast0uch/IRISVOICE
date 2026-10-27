@@ -421,3 +421,6 @@ dot (the crumb shows one dot for 12 s after a live memory event or Oracle decisi
 linger 250 ms; the territory health line (§7.2: claims by trust channel, how many fade under the decay law, the
 last cleaning pass - on the live store nothing fades yet: the longest idle span is 23 active days, every claim keeps >= 94%). Ghost outlines (§7.5): in the health view (`k`) the claims dissolved this week show as dashed
 outlines on their territory; hover gives the claim and the reason (live: 60, all "too many different claims shared its place").
+The inside grows (owner, 2026-10-26): inside a territory you shrink, the claims keep their size and the room scales so
+the median gap to a nearest neighbour reads as one orb radius (x1..x24; live "everyday": x7). The wall stays put in the
+world, so from inside it moves out; speed follows the nearest claim (x0.3 beside one, up to x4 in empty space).

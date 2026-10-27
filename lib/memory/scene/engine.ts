@@ -939,11 +939,11 @@ const somaData=new Float32Array(Math.max(1,NL)*2*4);
 LM.forEach((l,i)=>{somaData[i*8+3]=l.tier==='candidate'?.42:1;somaData[i*8+5]=l.tier==='candidate'?1:0;somaData[i*8+7]=l.contradictions>0?1:0});
 const somaTex=new THREE.DataTexture(somaData,Math.max(1,NL)*2,1,THREE.RGBAFormat,THREE.FloatType);
 somaTex.minFilter=somaTex.magFilter=THREE.NearestFilter;somaTex.needsUpdate=true;
-const forestU={...U,uSomaTex:{value:somaTex},uScrub:{value:1},uSearch:{value:0},uFocusDim:{value:0},uVis:{value:1},uNear:{value:0}};
+const forestU={...U,uSomaTex:{value:somaTex},uScrub:{value:1},uSearch:{value:0},uFocusDim:{value:0},uVis:{value:1},uNear:{value:0},uRoom:{value:1}};   // uRoom: the inside's scale - a claim keeps its size while its room grows
 const tierU={value:-1};   // -1 every claim, 1 proven only, 0 still learning only (the key)
 const forestMat=new THREE.ShaderMaterial({uniforms:forestU,
   vertexShader:`
-    uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis; uniform sampler2D uSomaTex;
+    uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis,uRoom; uniform sampler2D uSomaTex;
     attribute float aSoma,aT,aBorn; attribute vec4 aRand; attribute vec3 aCol;
     varying vec3 vCol; varying float vA;
     void main(){
@@ -966,7 +966,7 @@ const forestMat=new THREE.ShaderMaterial({uniforms:forestU,
       vCol=col; vA=a*vis*uVis;
       float sz=isCore>.5?(3.2+wake*3.+pulse*7.+hl*3.):(1.05+isMem*.5+ap*1.4);
       float cap=isCore>.5?(9.+pulse*12.+hl*6.):4.;
-      gl_PointSize=min(sz*uPix*(70./-mv.z),cap*uPix);
+      gl_PointSize=min(sz*uPix*(70./-mv.z)/uRoom,cap*uPix);
       gl_Position=projectionMatrix*mv;
     }`,
   fragmentShader:`varying vec3 vCol;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
@@ -1029,12 +1029,13 @@ const somaCellMat=new THREE.ShaderMaterial({uniforms:{...forestU,uTier:tierU},
   vertexShader:`uniform float uTime,uPix,uScrub,uSearch,uFocusDim,uVis,uNear,uTier;uniform sampler2D uSomaTex;
     attribute float aSoma,aSize,aBorn,aChan;attribute vec3 aCol,aHue;attribute vec4 aEv,aInfo;
     varying vec3 vC;varying float vA;varying vec4 vEv;varying vec4 vInfo;varying vec3 vHue;varying float vChan;
+    uniform float uRoom;
     void main(){vChan=aChan;ivec2 ix=ivec2(int(aSoma+.5)*2,0);vec4 s0=texelFetch(uSomaTex,ix,0),s1=texelFetch(uSomaTex,ix+ivec2(1,0),0);
       float hl=max(s0.b,s1.b);vec4 mv=modelViewMatrix*vec4(position,1.);
       float a=(.5+s0.r*.4+s0.g*.6+hl*.35)*mix(.35,1.,uNear)*mix(1.,.12,uSearch*(1.-s0.b))*mix(1.,.42,uFocusDim*(1.-hl))*step(aBorn,uScrub)*uVis*(uTier<0.?1.:step(abs((1.-s1.g)-uTier),.5));
       vC=mix(mix(aCol,vec3(1.),s0.g*.6),vec3(1.,.3,.24),s1.r);vA=a;vEv=aEv;vHue=aHue;
       vInfo=vec4(s1.g,aInfo.y,max(aInfo.z,s1.a*1.),aInfo.w); // live state wins: a promotion ends the dashes, a contradiction notches
-      gl_PointSize=min(aSize*2.1*(1.+s0.g*.5+hl*.3)*uPix*(60./-mv.z),110.*uPix);gl_Position=projectionMatrix*mv;}`,
+      gl_PointSize=min(aSize*2.1*(1.+s0.g*.5+hl*.3)*uPix*(60./-mv.z)/uRoom,110.*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:GLYPH_FRAG,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const somaCells=new THREE.Points(somaCellGeo,somaCellMat);somaCells.frustumCulled=false;cortex.add(somaCells);KIND_OBJ.claim.push(somaCells);
 
@@ -2151,12 +2152,17 @@ function updateCamera(dt){
     const lk=1-Math.pow(.08,dt),free=mouse.down?0:1;cam.lean.x=lerp(cam.lean.x,-mouse.nx*.22*free,lk);cam.lean.y=lerp(cam.lean.y,mouse.ny*.15*free,lk);
     const fwd=dirOf(cam.yaw+cam.lean.x,clamp(cam.pitch+cam.lean.y,-1.45,1.45));
     const right=new V3().crossVectors(fwd,new V3(0,1,0)).normalize(),up=new V3().crossVectors(right,fwd);
-    const A=R*2.4*dt;if(keys.w||keys.arrowup)cam.vel.addScaledVector(fwd,A);if(keys.s||keys.arrowdown)cam.vel.addScaledVector(fwd,-A);
+    const room=state.inside&&state.diveReg>=0?innerRoom(state.diveReg):null;
+    cam.k=lerp(innerK(),room?room.k:1,1-Math.pow(.15,dt));   // eases in over about a second, so the change is felt, not jumped
+    // fast in empty space, slow beside a claim: the nearest claim against the territory's usual gap (x0.3 .. x4)
+    if(room){let dn=Infinity;for(const i of somaByReg[state.diveReg])dn=Math.min(dn,somaPos[i].distanceTo(cam.pos));cam.f=clamp(dn/(room.gap*.5),.3,4)}else cam.f=1;
+    forestU.uRoom.value=innerK();
+    const A=R*2.4*dt*cam.f/innerK();if(keys.w||keys.arrowup)cam.vel.addScaledVector(fwd,A);if(keys.s||keys.arrowdown)cam.vel.addScaledVector(fwd,-A);
     if(keys.a||keys.arrowleft)cam.vel.addScaledVector(right,-A);if(keys.d||keys.arrowright)cam.vel.addScaledVector(right,A);
     if(keys.e||keys[' '])cam.vel.y+=A;if(keys.q||keys.shift)cam.vel.y-=A;
     if(!REDUCED&&cam.idle>3){const w=smooth01((cam.idle-3)/4),piv=state.focusSoma>=0?somaWorld(state.focusSoma):new V3();
       const rel=cam.pos.clone().sub(piv),tan=new V3(0,1,0).cross(rel);
-      if(tan.lengthSq()>1e-6){tan.normalize();cam.pos.addScaledVector(tan,R*(state.focusSoma>=0?.05:.04)*w*dt);cam.pos.y+=Math.sin(t*.35)*R*.006*w*dt}
+      if(tan.lengthSq()>1e-6){tan.normalize();cam.pos.addScaledVector(tan,R*(state.focusSoma>=0?.05:.04)*w*dt/innerK());cam.pos.y+=Math.sin(t*.35)*R*.006*w*dt/innerK()}
       if(state.focusSoma>=0){const d=piv.clone().sub(cam.pos).normalize();cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*Math.min(1,dt*1.5*w);
         cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),Math.min(1,dt*1.5*w))}
       else cam.yawT+=.05*w*dt}
@@ -2311,7 +2317,7 @@ function placeInsideLabels(show){const ri=state.diveReg;
     .sort((a,b)=>a.d-b.d).slice(0,5):[];
   nearEls.forEach((el,i)=>{const o=near[i];if(!o){el.style.opacity=0;return}const a=project(somaWorld(o.k));if(!a.front){el.style.opacity=0;return}
     const t=LM[o.k].claim;if(el.dataset.k!==String(o.k)){el.dataset.k=o.k;el.textContent=t.length>40?t.slice(0,39)+'…':t}
-    el.style.opacity=clamp(1.2-o.d/(R*.9),.25,.8);el.style.left=(a.x+10)+'px';el.style.top=(a.y-6)+'px'})}
+    el.style.opacity=clamp(1.2-o.d*innerK()/(R*.9),.25,.8);el.style.left=(a.x+10)+'px';el.style.top=(a.y-6)+'px'})}
 function placeRegionLabels(show){
   const c=project(new V3()),edge=project(new V3(R,0,0).applyQuaternion(camera.quaternion));const rs=Math.abs(edge.x-c.x)||200;
   regC.forEach((v,i)=>{const L=regLabelEls[i];const camDir=camera.position.clone().normalize();const vis=show&&v.dot(camDir)>.15;
@@ -2497,7 +2503,7 @@ function setLens(l){
 }
 function regionWorld(i,s=R){return regC[i].clone().multiplyScalar(s)}
 function dive(i){
-  if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;clearAnno('hover');
+  if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');
   const c=regC[i].clone(),lookIn=c.clone().multiplyScalar(-R*.25);
   // one flight: swing round to the region, the cells open as we near, pass through, settle inside
   const pts=[camera.position.clone(),...arcTo(camera.position,c,R*2.0,3),c.clone().multiplyScalar(R*1.08),c.clone().multiplyScalar(R*.6)];
@@ -2506,7 +2512,7 @@ function dive(i){
   tweenPath(pts,looks,64,REDUCED?.01:2.8,{kick:9,
     onT:e=>{if(e>.42)state.openT=1;if(e>.6)state.focusDimT=1},
     done:()=>{cam.mode='fly';flyFrom(camera.position,lookIn);cam.fovT=64;state.inside=true;state.diving=false;
-      hint('drag · look &nbsp; scroll / w a s d · swim &nbsp; q e · down up<br>click a thought · go to it &nbsp; click space · glide there &nbsp; esc · back out');
+      hint('drag · look &nbsp; scroll / w a s d · swim &nbsp; q e · down up<br>click a thought · go to it &nbsp; click space · glide there &nbsp; esc · back out'+(innerRoom(i).k>1.5?`<br>inside, the room is ${Math.round(innerRoom(i).k)}× the size it looks from outside · fast in empty space, slow beside a thought`:''));
       const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1}});
 }
 // a territory's own health line (UX-PLAN 7.2, Kyudo): who its claims came from, how many fade, the last cleaning pass
@@ -2631,7 +2637,7 @@ annosEl.addEventListener('click',e=>{
   if(e.target.closest('[data-home]')){exitTunnel();return}
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
 function flyToSoma(k){
-  const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16);
+  const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
   setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
   setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');
   // evidence satellites orbit the focused thought
@@ -2639,8 +2645,8 @@ function flyToSoma(k){
 const satGroup=new THREE.Group();scene.add(satGroup);let satFor=-1;
 function satellites(k){satGroup.clear();satFor=k;if(k<0)return;
   LM[k].evidence.forEach((e,i)=>{const s=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:new THREE.Color(EVID_COL[e.kind]||'#fff'),transparent:true,
-    opacity:.95,blending:THREE.AdditiveBlending,depthWrite:false}));s.scale.setScalar(e.kind==='user'?R*.016:R*.01);
-    s.userData={ph:i/LM[k].evidence.length*6.28,ax:new V3(gauss(),gauss(),gauss()).normalize(),r:R*(.045+.012*i)};satGroup.add(s)})}
+    opacity:.95,blending:THREE.AdditiveBlending,depthWrite:false}));s.scale.setScalar((e.kind==='user'?R*.016:R*.01)/innerKT());
+    s.userData={ph:i/LM[k].evidence.length*6.28,ax:new V3(gauss(),gauss(),gauss()).normalize(),r:R*(.045+.012*i)/innerKT()};satGroup.add(s)})}
 function updateSatellites(t){if(satFor<0)return;const c=somaWorld(satFor);satGroup.children.forEach(s=>{const u=s.userData;
   const v=new V3(Math.cos(t*.8+u.ph),Math.sin(t*.8+u.ph),0).multiplyScalar(u.r).applyAxisAngle(u.ax,1.1);s.position.copy(c).add(v)})}
 const DARK=new THREE.Color(0x020306),VOID=new THREE.Color('#dfe8ee'),voidCol=new THREE.Color();
@@ -2683,6 +2689,17 @@ let nextEv=1.2,nextRecall=5,nextPromo=18,nextCorr=34,nextDec=2,nextMote=6,nextQ=
 function regionPoint(fi){return regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.12)).normalize().multiplyScalar(R)}
 function pickSoma(){if(!NL)return -1;const k=Math.floor(Math.pow(rng(),1.6)*NL);return LM.map((l,i)=>[i,l.activations]).sort((a,b)=>b[1]-a[1])[k%NL][0]}
 const somaByReg=REG.map((_,ri)=>LM.map((l,i)=>l.dom===ri?i:-1).filter(i=>i>=0));
+// THE INSIDE GROWS (owner, 2026-10-26): inside a territory you shrink, so the room is set by what it holds and not by the
+// orb's size - the same map, more space. The scale takes the territory's median gap between a claim and its nearest
+// neighbour up to INNER_GAP. Movement, glides and the stop in front of a claim divide by it; the wall stays where it is in
+// the world, so from where you are it moves out. Measured once per territory (n^2 over its claims, a few ms at 460).
+const INNER_GAP=R,INNER_K_MAX=24,innerCache=new Map();
+function innerRoom(ri){if(innerCache.has(ri))return innerCache.get(ri);const ids=somaByReg[ri]||[];let room={k:1,gap:INNER_GAP};
+  if(ids.length>1){const gaps=ids.map(i=>{let m=Infinity;for(const j of ids)if(j!==i)m=Math.min(m,somaPos[i].distanceTo(somaPos[j]));return m}).sort((a,b)=>a-b);
+    const gap=Math.max(gaps[gaps.length>>1],1e-3);room={k:clamp(INNER_GAP/gap,1,INNER_K_MAX),gap}}
+  innerCache.set(ri,room);return room}
+const innerK=()=>cam.k||1;   // eased: movement
+const innerKT=()=>state.inside&&state.diveReg>=0?innerRoom(state.diveReg).k:1;   // target: a stop distance, a satellite's size
 function pickSomaIn(fi){const s=somaByReg[fi];return s&&s.length?s[Math.floor(rng()*s.length)]:pickSoma()}
 function emit(e){
   e.ts=nowS();tick(e);
@@ -3027,7 +3044,7 @@ function click(x,y){
   if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1);
       // click into open space: glide that way and turn toward it
       const d=new V3(x/innerWidth*2-1,-(y/innerHeight*2-1),.5).unproject(camera).sub(camera.position).normalize();
-      cam.vel.addScaledVector(d,R*.9);cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*.6;cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),.6);cam.idle=0}return}
+      cam.vel.addScaledVector(d,R*.9*(cam.f||1)/innerK());cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*.6;cam.pitchT=lerp(cam.pitchT,Math.asin(clamp(d.y,-1,1)),.6);cam.idle=0}return}
   if(state.lens==='cortex'&&state.hoverReg>=0)dive(state.hoverReg);
   if(state.lens==='oracle'){focusSector(state.hoverSec>=0&&state.hoverSec!==state.focusSec?state.hoverSec:-1);return}
   if(state.lens==='timeline'){if(state.hoverTurn>=0){const t=TURNS[state.hoverTurn];enterTunnel(t.s);
@@ -3038,7 +3055,7 @@ function click(x,y){
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
   if(cam.mode==='orbit'){if(state.lens==='timeline'&&e.ctrlKey){cam.distT=clamp(cam.distT*(1+e.deltaY*.0015),R*1.1,R*9)}   // turn zoom
     else if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
-  else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03)}
+  else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03*(cam.f||1)/innerK())}
   else if(cam.mode==='tunnel'){if(tunnel?.stops){const n=performance.now();if(n-(state.lastStep||0)>380){state.lastStep=n;threadStep(Math.sign(e.deltaY))}}
     else{cam.tpT+=e.deltaY*.00012;if(cam.tp>.975&&e.deltaY>0)throughDoor()}}},{passive:false});
 addEventListener('keydown',e=>{
