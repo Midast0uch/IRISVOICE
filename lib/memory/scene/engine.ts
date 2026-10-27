@@ -147,7 +147,7 @@ const READ={
   RECALL_DELIVERED:'remembered something',RECALL_USED:'used what it remembered',RECALL_HELPED:'remembering this helped',
   RECALL_MISLED:'remembering this misled',RECALL_MISSED:'forgot something it knew',APERTURE_DROPPED:'let a memory leave its mind',
   OFFLOADED:'set a thought aside',RESTRETCHED:'brought a thought back',PREMATURE_EVICTION:'let a thought go too early',
-  LESSON:'learned a lesson',LANDMARK_PROMOTED:'IRIS is now sure about this',LANDMARK_STALE:'a certainty went stale',
+  LESSON:'learned a lesson',LANDMARK_CRYSTALLIZED:'a new claim crystallized',LANDMARK_PROMOTED:'IRIS is now sure about this',LANDMARK_STALE:'a certainty went stale',
   LANDMARK_DEMOTED:'a certainty was withdrawn',CHAIN_CREATED:'learned a way of working',CHAIN_VARIANT:'found a variation that works',
   UNSAFE_REFUSED:'refused something unsafe',ESCALATED_UNSURE:'checked with you when unsure',INJECTION_SUSPECTED:'spotted a manipulation attempt',
   PERMISSION_DENIED:'was not allowed',DEPENDENCY_CHANGED:'a dependency changed',RESOURCE_LIMIT:'hit a limit of this machine',WORLD_CHANGED:'the world changed',
@@ -1473,10 +1473,13 @@ function updateSparks(dt){
 const pulseRings=Array.from({length:14},()=>{const m=new THREE.Mesh(new THREE.RingGeometry(.92,1,96),
   new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}));
   m.visible=false;scene.add(m);return {m,t:0,dur:1,max:1,on:false}});
-function pulseRing(pos,col,size,dur=1.4){const p=pulseRings.find(x=>!x.on);if(!p)return;p.on=true;p.t=0;p.dur=dur;p.max=size;p.m.position.copy(pos);
+function pulseRing(pos,col,size,dur=1.4,inward=false){const p=pulseRings.find(x=>!x.on);if(!p)return;p.on=true;p.t=0;p.dur=dur;p.max=size;p.inward=inward;p.m.position.copy(pos);
   p.m.material.color.set(col);p.m.visible=true}
+// ASSEMBLY (UX-PLAN 6.3): a new claim crystallizes - rings close in on its place, one after another, as fragments flying together
+function assembleAt(pos,col){[0,180,360].forEach((d,i)=>setTimeout(()=>pulseRing(pos,col,R*(.42-.1*i),1.1,true),d))}
 function updateRings(dt){for(const p of pulseRings){if(!p.on)continue;p.t+=dt;const x=p.t/p.dur;if(x>=1){p.on=false;p.m.visible=false;continue}
-  p.m.scale.setScalar(p.max*(.15+easeIO(Math.min(1,x*1.3))*.85));p.m.material.opacity=Math.pow(1-x,1.6)*.9;p.m.lookAt(camera.position)}}
+  const e=easeIO(Math.min(1,x*1.3));p.m.scale.setScalar(p.max*(p.inward?1-.88*e:.15+e*.85));
+  p.m.material.opacity=p.inward?Math.sin(Math.PI*x)*.85:Math.pow(1-x,1.6)*.9;p.m.lookAt(camera.position)}}
 const threads=Array.from({length:6},()=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(40*3),3));
   const l=new THREE.Line(g,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false}));
   l.frustumCulled=false;scene.add(l);return {l,t:0,life:0,on:false,a:new V3(),b:new V3(),c:new V3()}});
@@ -2921,7 +2924,10 @@ function calmLiveBead(){const calm=performance.now()-liveAt>=LIVE_DOT_S*1000;
   if(liveNew&&calm&&state.hoverNew!==true)liveNew=null;   // a quiet new strand stops pulsing, like the live dot
   newBead.visible=!!liveNew&&state.lens==='timeline'&&cam.mode==='orbit';
   if(newBead.visible)newBead.scale.setScalar(R*.06*(1+.35*Math.sin(performance.now()/160)));
-  if(liveBead<0||!calm)return;bA[liveBead]=0;beadGeo.attributes.aA.needsUpdate=true;liveBead=-1}
+  if(liveBead<0||!calm)return;bA[liveBead]=0;beadGeo.attributes.aA.needsUpdate=true;
+  // TURN-END SETTLE (UX-PLAN 6.3): the strand's moments stopped coming - its bead settles with one soft ring
+  if(state.lens==='timeline'&&cam.mode==='orbit')pulseRing(beadPos(liveBead),THEMES[themeIdx][1],R*.14,1.3);
+  liveBead=-1}
 function liveMsg(msg){
   if(!USE_REAL||!msg)return;const p=msg.payload||{};
   if(msg.type==='memory_event'||msg.type==='oracle_decision')liveAt=performance.now();
@@ -2933,7 +2939,11 @@ function liveMsg(msg){
     if(follow.q.length>=FOLLOW_Q_MAX)follow.q.shift();   // the newest moments win
     follow.q.push({family:r.family,label:r.label,valence:r.valence,actor:r.actor,evidence:r.evidence,
       domain:String(r.topic_domain||'general').split('/')[0],landmark:r.landmark_id&&M.lmIndex.has(r.landmark_id)?M.lmIndex.get(r.landmark_id):null})}}
-  else if(msg.type==='landmark_update'){for(const u of p.updates||[]){const k=M.lmIndex.get(u.landmark_id);if(k==null||!LM[k])continue;const l=LM[k];
+  else if(msg.type==='landmark_update'){for(const u of p.updates||[]){const k=M.lmIndex.get(u.landmark_id);
+    // a NEW claim is not in this snapshot: it assembles in the territory IRIS is working in (the live strand's), else the largest
+    if(u.kind==='crystallized'&&k==null){if(cursorNow()&&cortexShown()&&fxTake(2)){const ri=liveBead>=0?regOf(sess[liveBead].domain):0;
+      assembleAt(regionPoint(ri),'#f4fbff')}tick({family:'memory',label:'LANDMARK_CRYSTALLIZED',valence:'advances',evidence:'none',actor:'agent',domain:REG[0]});continue}
+    if(k==null||!LM[k])continue;const l=LM[k];
     if(u.tier)l.tier=u.tier;if(u.activation_count!=null)l.activations=u.activation_count;
     if(u.kind==='activated'){l.last_activated=u.ts;somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}
     if(u.kind==='promoted'&&cursorNow()&&cortexShown()&&fxTake(2))pulseRing(somaWorld(k),THEMES[themeIdx][1],R*.3,2);   // graduation

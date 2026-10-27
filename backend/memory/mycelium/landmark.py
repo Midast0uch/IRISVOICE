@@ -649,6 +649,8 @@ class LandmarkIndex:
                 landmark.created_at,
             ),
         )
+        # Live tap (MEMORY-UX-PLAN 6.3 "a claim crystallizes = assembly"): the surface hears of a NEW claim.
+        memory_live.landmark_update(landmark.landmark_id, "crystallized", tier="candidate")
 
         # Auto-connect to similar existing landmarks
         self._auto_connect(landmark)

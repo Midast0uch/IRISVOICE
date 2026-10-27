@@ -402,12 +402,12 @@ conversations carry one).
 | 4.5 chat → memory | — (thread orbit Alt+click and the front thread's `◎` open `thread:<id>` = the braid fanned) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
 | 4.6 memory → chat | — (drag: a "⠿ drag" grip on a claim, an artifact and a strand carries application/x-iris-ref; the chat's drop makes the chip) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
 | 5 | — (deep links built: "⧉ link" in the crumb copies <app>/?memory=<address>; the app opens it on load and on a click anywhere in the app) | the back stack is structural (one level out), not a recorded stack |
-| 6.1 | long jumps through a fragment tunnel | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
-| 6.3 | crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
+| 6.1 | long jumps through a fragment tunnel (a jump into or out of a corridor already passes the pale-void assembly; a claim-to-claim jump in the cortex is two 1.2 s flights) | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
+| 6.3 | — (a new claim: landmark.save taps landmark_update "crystallized"; rings close in on the live territory + the ticker line. Turn end: the live strand's bead settles with one ring when its moments stop) | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |
 | 8 timeline | — (a strand not in the snapshot pulses as one new bead at "now"; click = continue in chat) | strand card has no tags; per-turn arches |
 | 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
-| 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
+| 10 data | decided 2026-10-27: `/health` = `/api/memory/overview` + the snapshot's meta (last integrity pass, fading, ghosts); WS `recall` and `integrity_pass` ride `memory_event` (RECALL_*, LANDMARK_DISSOLVED / MERGED, MEMORY_PRUNED) and `landmark_update`; `/strands?thread=` waits for a consumer - the snapshot carries each strand's thread, it is needed only when the view loads strands beyond its 48-thread window | `/turn/{conv}/{turn}` path form; `/claims` filters |
 | 13 details | — | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
 
 Measured on the way (2026-10-26): the first snapshot after a restart took 404 s, cold on the C: hard disk (recall
