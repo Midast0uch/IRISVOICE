@@ -1241,6 +1241,10 @@ function buildBraids(){braidG.children.forEach(o=>{o.geometry.dispose();o.materi
   add(help,new THREE.LineDashedMaterial({color:0xffb547,dashSize:R*.03,gapSize:R*.02,transparent:true,opacity:.5,depthWrite:false}))}
 function setFan(root){fan.root=root;sess.forEach((s,i)=>{const p=beadPos(i);bP.set([p.x,p.y,p.z],i*3)});beadGeo.attributes.position.needsUpdate=true;buildBraids()}
 buildBraids();
+// a strand's card offers its thread's fan: strands made minutes apart sit at one height, so their braid lies inside the
+// beads' hover zones and could not be reached by hovering the line itself (live 2026-10-27)
+function fanLinkHTML(s){const root=threadRoot(s),m=THREADS.get(root);if(!m||m.length<2)return '';
+  return `<span class="go" data-fan="${esc(root)}">${fan.root===root?'⟡ fold the strands of its thread back':`⟡ its thread · ${fmt(m.length)} strands — open them round the axis`}</span>`}
 function threadFanHTML(root){const m=(THREADS.get(root)||[]).slice().sort((a,b)=>sess[b].started-sess[a].started);
   const top=sess.find(x=>x.id===root)||sess[m[m.length-1]];
   return `<div class="k">thread · ${fmt(m.length)} strands</div><div class="t">${esc(top?.objective||'a thread')}</div><div class="m">`+
@@ -2747,6 +2751,7 @@ annosEl.addEventListener('click',e=>{
   if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(e.target.closest('[data-home]')){exitTunnel();return}
   if(e.target.closest('[data-report]')){throughDoor();return}
+  const fl=e.target.closest('[data-fan]');if(fl){setFan(fan.root===fl.dataset.fan?null:fl.dataset.fan);clearAnno('hover');return}
   const tc=e.target.closest('[data-claim]');if(tc){const l=LM[+tc.dataset.claim];if(l)focusRef('claim:'+l.id);return}   // a task's touched claim
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
 function flyToSoma(k){
@@ -3101,7 +3106,7 @@ function hover(x,y){
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(beadPos(k)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
+        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>${fanLinkHTML(s)}`)}
     else if(newBead.visible&&liveNew&&nearestScreen([newBead.position],x,y,18)===0){state.hoverNew=true;state.hoverBraid=null;canvas.style.cursor='pointer';
       setAnno('hover','newbead'+liveNew.tid,()=>project(newBead.position),`<div class="k">being written now · not in this view yet</div><div class="t">${esc(prettyThread(liveNew.tid))}</div><div class="m">it takes its place on the helix the next time the memory opens</div><span class="go">click · continue it in chat</span>`)}
     else{state.hoverNew=false;const bi=nearestScreen(braidPts.map(b=>b.p),x,y,12);state.hoverBraid=bi>=0?braidPts[bi].root:null;

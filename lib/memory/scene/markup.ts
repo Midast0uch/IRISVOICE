@@ -59,6 +59,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory .anno .m .w{color:var(--warn)} .iris-memory .anno .m .u{color:var(--white)}
 .iris-memory .anno .go{display:inline-block;margin-top:.6em;font-size:10.5px;color:var(--brand);pointer-events:auto;cursor:pointer}
 .iris-memory .anno .go:hover{color:var(--white)}
+.iris-memory .anno .go+.go{margin-left:1.1em}   /* two paths on one card never run together */
 .iris-memory .anno.right{text-align:left} .iris-memory .anno.left{text-align:right}
 .iris-memory #hud{position:absolute;inset:0;pointer-events:none}
 .iris-memory #brand{position:absolute;left:22px;top:18px;font-size:11px;letter-spacing:.32em;color:var(--ink)}
