@@ -1305,6 +1305,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         messages: dict[str, list] = {}
         children: dict[str, list] = {}
         thread_of: dict[str, str] = {}
+        tags_of: dict[str, list] = {}   # a strand's tags (conversations.tags): the corridor rail shows them (UX-PLAN 4.4)
         helpers: dict[str, dict] = {}   # a helper strand: the strand it reports to and the moments it reported (UX-PLAN 4.4)
         with _optional_chat_store(chat_path) as cdb:
             if cdb is not None:
@@ -1325,7 +1326,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                     # a helper: the strand it reports to, and every report it posted there (conversation_store.report_back)
                     # PLAN  … FROM conversations WHERE id = ? -> SEARCH conversations USING INDEX sqlite_autoindex_conversations_1
                     # PLAN  … FROM messages WHERE conversation_id = ? AND source = ? -> SEARCH messages USING INDEX idx_messages_conv
-                    row = cdb.execute("SELECT reports_to, parent_id FROM conversations WHERE id = ?", (cid,)).fetchone()                         if has_rt else None
+                    row = cdb.execute("SELECT reports_to, parent_id, tags FROM conversations WHERE id = ?", (cid,)).fetchone()                         if has_rt else None
+                    tags_of[t] = [x for x in jload(row[2], []) if isinstance(x, str)][:8] if row and row[2] else []
                     if row and row[1]:
                         thread_of[t] = row[1]   # the thread (root conversation) a strand belongs to (UX-PLAN 4.3 braids)
                     if row and row[0]:
@@ -1364,7 +1366,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                              "exit": "live" if live else ("drift" if x and x[2] and not x[1] else "natural"),
                              "traj": traj.get(t, []), "eval": _is_eval_thread(t, chat_title), "episodes": [],
                              "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, []),
-                             "thread": thread_of.get(t, conv_of.get(t, t)), "reports_to": helpers.get(t, {}).get("reports_to"), "reports": helpers.get(t, {}).get("reports", []),
+                             "thread": thread_of.get(t, conv_of.get(t, t)), "tags": tags_of.get(t, []), "reports_to": helpers.get(t, {}).get("reports_to"), "reports": helpers.get(t, {}).get("reports", []),
                              "ghost": t in ghosts})
 
         lap("sessions")
