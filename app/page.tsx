@@ -146,6 +146,33 @@ export default function Home() {
     return () => window.removeEventListener('iris:card_action', handler);
   }, [state.level, handleCollapseToIdle, openDashboardSolo, openDashboard, isChatOpen]);
 
+  // Deep links (MEMORY-UX-PLAN 5.3): "<app>/?memory=<address>" opens the memory at that place - on load, and when such a
+  // link is clicked anywhere in the app (a chat message, a pin), in place of a new browser tab. The address holds ids only.
+  useEffect(() => {
+    const open = (addr: string | null) => {
+      if (addr) window.dispatchEvent(new CustomEvent('iris:card_action', { detail: { action: 'open_memory', focus: addr } }))
+    }
+    const params = new URLSearchParams(window.location.search)
+    const first = params.get('memory')
+    if (first) {
+      params.delete('memory')
+      const rest = params.toString()
+      window.history.replaceState(null, '', window.location.pathname + (rest ? `?${rest}` : '') + window.location.hash)
+      setTimeout(() => open(first), 0) // after the card-action listener above is attached
+    }
+    const onClick = (e: MouseEvent) => {
+      const a = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null
+      if (!a) return
+      let url: URL
+      try { url = new URL(a.href, window.location.href) } catch { return }
+      if (url.origin !== window.location.origin || !url.searchParams.get('memory')) return
+      e.preventDefault()
+      open(url.searchParams.get('memory'))
+    }
+    document.addEventListener('click', onClick, true)
+    return () => document.removeEventListener('click', onClick, true)
+  }, [])
+
   // Memory -> chat (MEMORY-UX-PLAN 4.6): the memory asks for a conversation (at a turn). The chat wing opens - beside
   // the dashboard when it is open - and the chat view takes the request once it is mounted.
   useEffect(() => {

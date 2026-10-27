@@ -396,12 +396,12 @@ conversations carry one).
 
 | § | MISSING | PARTIAL |
 |---|---|---|
-| 3.2 paths | turn → the claim it touched; thread → fan the braid; thread rename / pin; artifact → the strand it was made in | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
+| 3.2 paths | turn → the claim it touched; thread → fan the braid; thread rename / pin (artifact → its strand: built, the cell card's "step into that thread") | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
 | 4.3 helix | forked strand leaves / reports to the thread line; hover a braid → fan; click → beads open | braid joins only parent → child; hover labels for the rest |
 | 4.4 corridor | rail tags (data gap: the snapshot carries no strand tags; 5 of 5,836 conversations have any) | breadcrumb (the far door now walks the strands of one thread) |
 | 4.5 chat → memory | thread orbit Alt+click / `◎` (the lens "In memory" is built) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
 | 4.6 memory → chat | drag a thing onto the chat wing (the `#` group "IRIS knows" is built: claims from the memory search; pins wait for an agent-side resolver) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
-| 5 | copy link / deep-link serialisation | the back stack is structural (one level out), not a recorded stack |
+| 5 | — (deep links built: "⧉ link" in the crumb copies <app>/?memory=<address>; the app opens it on load and on a click anywhere in the app) | the back stack is structural (one level out), not a recorded stack |
 | 6.1 | long jumps through a fragment tunnel | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
 | 6.3 | crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |

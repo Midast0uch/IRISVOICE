@@ -2449,6 +2449,15 @@ const follow={on:true,q:[],next:0,missed:0,unseen:0};
 let chatTurn=null;
 try{follow.on=localStorage.getItem('iris.memory.follow')!=='0'}catch(e){}
 let crumbKey='';
+// DEEP LINKS (UX-PLAN 5.3): the place you are, as the address focusRef / iris:open_memory takes - ids, never content.
+// "⧉ link" copies <app>/?memory=<address>; the app opens it on load, and a click on it in a chat message opens it here.
+function currentAddress(){
+  if(cam.mode==='tunnel'&&tunnel){if(tunnel.sel>=0&&LM[tunnel.sel])return 'claim:'+LM[tunnel.sel].id;
+    return chatTurn&&chatTurn.conv===tunnel.session.id&&chatTurn.turn?'turn:'+chatTurn.conv+':'+chatTurn.turn:'strand:'+tunnel.session.id}
+  if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])return 'claim:'+LM[state.focusSoma].id;
+  if(state.lens==='artifacts'&&tissue.focus>=0&&tissue.cells[tissue.focus]?.a)return 'artifact:'+tissue.cells[tissue.focus].a.id;
+  return 'lens:'+(state.lens||'cortex')}
+const linkOf=addr=>`${window.location.origin}/?memory=${encodeURIComponent(addr)}`;   // window.: a local "location" shadows it here
 function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the sheet follows the view
   const parts=['memory'];
   if(cam.mode==='tunnel'&&tunnel){const root=threadRoot(tunnel.session);parts.push('timeline');if(root!==tunnel.session.id)parts.push('thread · '+titleOf(root));
@@ -2468,8 +2477,12 @@ function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the
     ((inChat||s_?.ghost)&&opts.correctTarget?`<a class="strandact" data-sact="forget" data-sid="${esc(s_.id)}">forget what IRIS learned here</a><a class="strandact" data-sact="purge" data-sid="${esc(s_.id)}">purge its words</a>`:'')+
     (uses.k>=0&&state.lens==='timeline'?`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`+
       (uses.chat?`<a class="chat" data-conv="${esc(uses.chat.conv)}" data-turn="${esc(uses.chat.turn)}" title="open the newest turn that was given this claim">↗ newest use in chat</a>`:''):'')+
+    `<a class="copylink" title="copy a link to this place - it holds ids, never content">⧉ link</a>`+
     (when?`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`:'')}
-$('crumb').addEventListener('click',e=>{if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}
+$('crumb').addEventListener('click',e=>{const cl=e.target.closest('.copylink');
+  if(cl){const url=linkOf(currentAddress());const done=ok=>{cl.textContent=ok?'link copied ✓':url;setTimeout(()=>{crumbKey='';updateCrumb()},1600)};
+    try{navigator.clipboard.writeText(url).then(()=>done(true),()=>done(false))}catch(_){done(false)}return}
+  if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}
   const sa=e.target.closest('[data-sact]');if(sa){strandAction(sa.dataset.sact,sa.dataset.sid,sa);return}
   const c=e.target.closest('.chat');if(c)window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:c.dataset.conv,turnId:c.dataset.turn||undefined}}))});
 function updateStats(fps){const c=M.meta.counts||{};
