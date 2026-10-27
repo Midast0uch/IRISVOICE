@@ -981,6 +981,7 @@ SNAPSHOT_PIN_LINKS = 4000
 SNAPSHOT_NODES = 600
 SNAPSHOT_NODE_EDGES = 4000
 SNAPSHOT_QUORUM = 80
+REPORT_SOURCE = "strand_report:"              # messages.source of a helper's report (= conversation_store.REPORT_SOURCE)
 SNAPSHOT_GHOSTS = 60                          # dissolved claims the health view outlines (UX-PLAN 7.5)
 GHOST_DAYS = 7                                # ... for a week after the integrity pass dissolved them
 SNAPSHOT_RECALL_TURNS = 60
@@ -1303,19 +1304,31 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         conv_of = {t: (exits[t][3] if t in exits and exits[t][3] else t) for t in thread_ids}
         messages: dict[str, list] = {}
         children: dict[str, list] = {}
+        helpers: dict[str, dict] = {}   # a helper strand: the strand it reports to and the moments it reported (UX-PLAN 4.4)
         with _optional_chat_store(chat_path) as cdb:
             if cdb is not None:
+                has_rt = "reports_to" in table_cols(cdb, "conversations")
                 # the conversation strands of the tunnel: its messages (a short preview, never the whole text) and the
                 # strands forked from it (parent_id)
                 for t in thread_ids:
                     cid = conv_of[t]
                     # PLAN  … FROM messages WHERE conversation_id = ? ORDER BY timestamp LIMIT 80
                     #       -> SEARCH messages USING INDEX idx_messages_conv (conversation_id=?) + TEMP B-TREE
-                    for r in cdb.execute("SELECT role, timestamp, substr(text, 1, ?), length(text) FROM messages "
+                    for r in cdb.execute("SELECT role, timestamp, substr(text, 1, ?), length(text), source FROM messages "
                                          "WHERE conversation_id = ? ORDER BY timestamp LIMIT ?",
                                          (PREVIEW_MESSAGE, cid, MESSAGES_CAP)):
+                        src = r[4] or ""
                         messages.setdefault(t, []).append({"role": "user" if r[0] == "user" else "iris", "ts": ts_of(r[1]),
-                                                           "text": r[2], "len": r[3] or 0})
+                                                           "text": r[2], "len": r[3] or 0,
+                                                           "report": src[len(REPORT_SOURCE):] if src.startswith(REPORT_SOURCE) else None})
+                    # a helper: the strand it reports to, and every report it posted there (conversation_store.report_back)
+                    # PLAN  … FROM conversations WHERE id = ? -> SEARCH conversations USING INDEX sqlite_autoindex_conversations_1
+                    # PLAN  … FROM messages WHERE conversation_id = ? AND source = ? -> SEARCH messages USING INDEX idx_messages_conv
+                    row = cdb.execute("SELECT reports_to FROM conversations WHERE id = ?", (cid,)).fetchone() if has_rt else None
+                    if row and row[0]:
+                        helpers[t] = {"reports_to": row[0], "reports": [ts_of(x[0]) for x in cdb.execute(
+                            "SELECT timestamp FROM messages WHERE conversation_id = ? AND source = ? ORDER BY timestamp",
+                            (row[0], REPORT_SOURCE + cid))]}
                     # PLAN  … FROM conversations WHERE parent_id = ? LIMIT 6 -> SEARCH … USING INDEX idx_conversations_parent
                     for r in cdb.execute("SELECT id, title, created_at, updated_at FROM conversations WHERE parent_id = ? "
                                          "LIMIT 6", (cid,)):
@@ -1348,6 +1361,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                              "exit": "live" if live else ("drift" if x and x[2] and not x[1] else "natural"),
                              "traj": traj.get(t, []), "eval": _is_eval_thread(t, chat_title), "episodes": [],
                              "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, []),
+                             "reports_to": helpers.get(t, {}).get("reports_to"), "reports": helpers.get(t, {}).get("reports", []),
                              "ghost": t in ghosts})
 
         lap("sessions")

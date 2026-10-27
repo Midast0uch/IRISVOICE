@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -802,6 +802,25 @@ async def patch_strand(strand_id: str, body: StrandPatch) -> dict[str, Any]:
     if strand is None:
         raise HTTPException(status_code=404, detail=f"Strand {strand_id} not found")
     return strand
+
+
+class StrandReport(BaseModel):
+    text: Optional[str] = Field(default=None, max_length=20000)
+
+
+@router.post("/strands/{strand_id}/report", status_code=201)
+async def report_strand(strand_id: str, body: StrandReport) -> dict[str, Any]:
+    """A helper strand reports back: its result (by default its newest IRIS answer) becomes a
+    message in the strand it reports to; that message's time is the report moment."""
+    from backend.conversation_store import report_back
+
+    try:
+        out = report_back(strand_id, body.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if out is None:
+        raise HTTPException(status_code=404, detail=f"Strand {strand_id} not found")
+    return out
 
 
 @router.patch("/threads/{thread_id}")

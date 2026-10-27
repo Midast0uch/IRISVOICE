@@ -4,14 +4,15 @@
  * The strand map (concept iris-strands.html, "map = the strand switcher").
  * Each strand of the current thread is a stream; its label shows the name, the
  * tags and a working dot. Click a strand to open it (a strand IS a conversation
- * id). A helper strand shows "reports to <name>". The foot makes a new strand:
- * a name, the preset tags, your own tags.
+ * id). A helper strand shows "reports to <name>" and can report back (its newest
+ * answer becomes a message in that strand). The foot makes a new strand: a name,
+ * the preset tags, your own tags, and whether it helps the strand that is open.
  *
  * Data: GET /api/threads/{id}/strands.
  */
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { createStrand, fetchStrands, PRESET_STRAND_TAGS, type Strand } from "@/lib/strands/api"
+import { createStrand, fetchStrands, PRESET_STRAND_TAGS, reportStrand, type Strand } from "@/lib/strands/api"
 import type { Palette } from "@/lib/brandPalette"
 import { useCanvasLoop } from "@/components/chrome/useCanvasLoop"
 import { useEscape } from "./useEscape"
@@ -49,6 +50,8 @@ export function StrandMap({ threadId, palette, activeId, running, onSwitch, onCr
   const [own, setOwn] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [helps, setHelps] = useState(false)
+  const [reported, setReported] = useState<string | null>(null)
   const [width, setWidth] = useState(480)
   const rootRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -120,8 +123,9 @@ export function StrandMap({ threadId, palette, activeId, running, onSwitch, onCr
     if (busy) return
     setBusy(true); setError(null)
     try {
-      const s = await createStrand(threadId, { name: name.trim() || "new strand", tags })
-      setName(""); setTags([])
+      const reportsTo = helps && activeId && byId.has(activeId) ? activeId : undefined
+      const s = await createStrand(threadId, { name: name.trim() || "new strand", tags, ...(reportsTo ? { reports_to: reportsTo } : {}) })
+      setName(""); setTags([]); setHelps(false)
       setStrands((prev) => [...(prev ?? []), s])
       onCreated(s)
     } catch (e) {
@@ -131,6 +135,19 @@ export function StrandMap({ threadId, palette, activeId, running, onSwitch, onCr
       setBusy(false)
     }
   }
+
+  const report = async (s: Strand) => {
+    setError(null); setReported(null)
+    try {
+      await reportStrand(s.id)
+      const parent = s.reports_to ? byId.get(s.reports_to) : undefined
+      setReported(`“${strandLabel(s, threadId)}” reported back to “${parent ? strandLabel(parent, threadId) : "its strand"}”.`)
+    } catch (e) {
+      console.warn("[StrandMap] reportStrand failed:", e)
+      setError("Nothing to report yet: the helper has no answer.")
+    }
+  }
+  const active = activeId ? byId.get(activeId) : undefined
 
   return (
     <div ref={rootRef} className="iris-hd-map" role="dialog" aria-label="Strands of this thread" style={{ ...brandVars(palette), top }}>
@@ -152,6 +169,10 @@ export function StrandMap({ threadId, palette, activeId, running, onSwitch, onCr
                 <b>{strandLabel(s, threadId)}</b>
                 <span>{s.tags.join(" · ") || "no tag"}</span>
                 {parent && <span>reports to “{strandLabel(parent, threadId)}”</span>}
+                {parent && (
+                  <span role="button" tabIndex={-1} className="iris-hd-report" title="post this helper's newest answer into the strand it reports to"
+                    data-testid="strand-report" onClick={(e) => { e.stopPropagation(); void report(s) }}>↩ report back</span>
+                )}
                 {running.has(s.id) && <i className="iris-hd-act" role="img" aria-label="working" style={{ background: RUN }} />}
                 {/* ◎ its memory (MEMORY-UX-PLAN 4.5): the strand's corridor; the row itself still switches the chat */}
                 <span role="button" tabIndex={-1} className="iris-hd-mem" title="its memory" data-testid="strand-memory"
@@ -178,9 +199,14 @@ export function StrandMap({ threadId, palette, activeId, running, onSwitch, onCr
             placeholder="your own tag ↵"
             aria-label="Your own tag"
           />
+          {active && (
+            <button type="button" className="iris-hd-tagpick" aria-pressed={helps} onClick={() => setHelps((v) => !v)}
+              title="the new strand reports back to the strand that is open">helps “{strandLabel(active, threadId)}”</button>
+          )}
           <button type="submit" className="iris-hd-small" disabled={busy}>Add</button>
         </form>
         {error && <div className="iris-hd-cap" role="alert" style={{ color: "#ff7a6e" }}>{error}</div>}
+        {reported && <div className="iris-hd-cap" role="status">{reported}</div>}
       </div>
     </div>
   )

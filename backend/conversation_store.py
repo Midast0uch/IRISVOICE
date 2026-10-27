@@ -718,6 +718,36 @@ def create_strand(
     return get_strand(strand_id)  # type: ignore[return-value]
 
 
+REPORT_SOURCE = "strand_report:"   # messages.source of a helper's report in its parent strand (+ the helper's id)
+
+
+def report_back(strand_id: str, text: str | None = None) -> dict[str, Any] | None:
+    """A helper strand reports back: its result becomes a message in the strand it reports to.
+
+    ``text`` defaults to the helper's newest IRIS answer. The message's ``source`` is
+    ``REPORT_SOURCE + strand_id``, so its timestamp IS the moment the helper reported
+    (the memory surface reads it). None when the strand does not exist; ValueError when
+    it is not a helper (no ``reports_to``) or there is nothing to report.
+    """
+    strand = get_strand(strand_id)
+    if strand is None:
+        return None
+    parent = strand.get("reports_to")
+    if not parent:
+        raise ValueError(f"strand {strand_id} is not a helper (it reports to no strand)")
+    if text is None or not text.strip():
+        conv = get_conversation(strand_id) or {}
+        answers = [m.get("text") or "" for m in conv.get("messages", []) if m.get("role") != "user"]
+        text = next((t for t in reversed(answers) if t.strip()), "")
+    if not text.strip():
+        raise ValueError(f"strand {strand_id} has nothing to report yet")
+    body = f"Report from the helper strand \u201c{strand.get('title') or strand_id}\u201d:\n\n{text.strip()}"
+    msg = add_message(parent, "assistant", body, source=REPORT_SOURCE + strand_id)
+    if msg is None:
+        raise ValueError(f"the strand {parent} that {strand_id} reports to no longer exists")
+    return {"parent": parent, "message": msg}
+
+
 def update_strand(
     strand_id: str, name: str | None = None, tags: list[str] | None = None
 ) -> dict[str, Any] | None:

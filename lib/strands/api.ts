@@ -74,6 +74,12 @@ export function patchStrand(
   return call("PATCH", `/api/strands/${enc(strandId)}`, body)
 }
 
+/** A helper strand reports back: its newest IRIS answer (or `text`) becomes a message in the
+ * strand it reports to; that message's time is the report moment (UX-PLAN 4.4). */
+export function reportStrand(strandId: string, text?: string): Promise<{ parent: string }> {
+  return call("POST", `/api/strands/${enc(strandId)}/report`, text ? { text } : {})
+}
+
 export function patchThread(
   threadId: string,
   body: { title?: string; pinned?: boolean },

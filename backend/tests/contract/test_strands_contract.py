@@ -96,6 +96,36 @@ def test_strands_share_a_thread_and_report_back(env):
     assert cs.get_conversation(helper["id"])["messages"][0]["text"] == "swarm says hi"
 
 
+def test_a_helper_reports_back_into_the_strand_it_reports_to(env):
+    """UX-PLAN 4.4: a helper's report is a message in its parent strand, marked with the
+    helper's id, so its timestamp is the moment the helper reported."""
+    cs, client = env
+    root = _thread(cs, "the whole", "root message")
+    plan = client.post(f"/api/threads/{root}/strands", json={"name": "plan"}).json()
+    helper = client.post(
+        f"/api/threads/{root}/strands", json={"name": "research", "reports_to": plan["id"]}
+    ).json()
+
+    r = client.post(f"/api/strands/{helper['id']}/report", json={})
+    assert r.status_code == 422, "nothing to report before the helper has answered"
+
+    cs.add_message(helper["id"], role="user", text="find sources")
+    cs.add_message(helper["id"], role="assistant", text="found three sources")
+    r = client.post(f"/api/strands/{helper['id']}/report", json={})
+    assert r.status_code == 201
+    assert r.json()["parent"] == plan["id"]
+    last = cs.get_conversation(plan["id"])["messages"][-1]
+    assert last["role"] == "assistant" and last["source"] == f"strand_report:{helper['id']}"
+    assert "found three sources" in last["text"] and "research" in last["text"]
+    row = cs._get_conn().execute(
+        "SELECT source FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 1", (plan["id"],)
+    ).fetchone()
+    assert row[0] == f"strand_report:{helper['id']}", "the mark is stored, not only cached"
+
+    assert client.post(f"/api/strands/{plan['id']}/report", json={"text": "x"}).status_code == 422, "not a helper"
+    assert client.post("/api/strands/strand-000000000000/report", json={}).status_code == 404
+
+
 def test_strand_bounds_and_errors(env):
     cs, client = env
     root = _thread(cs, "t")

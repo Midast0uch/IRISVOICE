@@ -12,6 +12,7 @@ jest.mock("@/lib/strands/api", () => ({
   createStrand: jest.fn(),
   patchStrand: jest.fn(),
   patchThread: jest.fn(),
+  reportStrand: jest.fn(),
 }))
 
 const PALETTE = ["hsl(190, 100%, 60%)", "hsl(220, 90%, 65%)", "hsl(150, 80%, 55%)"] as const
@@ -55,6 +56,24 @@ describe("StrandMap", () => {
     expect(lbl("s-help").textContent).toContain("reports to “fix the cap”")
     expect(lbl("s-help").querySelector('[aria-label="working"]')).toBeTruthy()
     expect(lbl("s-fix").querySelector('[aria-label="working"]')).toBeNull()
+  })
+
+  it("a new strand can help the open strand, and a helper reports back to it (UX-PLAN 4.4)", async () => {
+    const made = strand("s-new", "look it up", { reports_to: "s-fix" })
+    ;(api.createStrand as jest.Mock).mockResolvedValue(made)
+    ;(api.reportStrand as jest.Mock).mockResolvedValue({ parent: "s-fix" })
+    const { onSwitch } = mount()
+    await waitFor(() => expect(lbl("s-fix")).toBeTruthy())
+    fireEvent.change(screen.getByLabelText("New strand name"), { target: { value: "look it up" } })
+    fireEvent.click(screen.getByRole("button", { name: "helps “fix the cap”" }))
+    fireEvent.click(screen.getByRole("button", { name: "Add" }))
+    await waitFor(() => expect(api.createStrand).toHaveBeenCalledWith("root", { name: "look it up", tags: [], reports_to: "s-fix" }))
+
+    fireEvent.click(lbl("s-help").querySelector('[data-testid="strand-report"]') as HTMLElement)
+    await waitFor(() => expect(api.reportStrand).toHaveBeenCalledWith("s-help"))
+    expect(onSwitch).not.toHaveBeenCalled()   // the action does not switch the chat
+    expect((await screen.findByRole("status")).textContent).toBe("“check callers” reported back to “fix the cap”.")
+    expect(lbl("s-fix").querySelector('[data-testid="strand-report"]')).toBeNull()   // only a helper reports
   })
 
   it("clicking a strand calls the switch handler with its conversation id", async () => {
