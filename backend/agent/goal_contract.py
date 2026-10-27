@@ -356,10 +356,12 @@ def map_to_steps(
 
 
 def _outcome_verified(outcome: object) -> bool:
+    """True when a settled node may cover a fact. ANSWERED = a DIRECT (tool-less) node's
+    real answer, which nothing outside can verify (agent_kernel._gc_coverage_label)."""
     if outcome is None:
         return False
     if isinstance(outcome, str):
-        return outcome.strip().upper() in ("VERIFIED", "OK", "PARTIAL")
+        return outcome.strip().upper() in ("VERIFIED", "OK", "PARTIAL", "ANSWERED")
     if isinstance(outcome, (tuple, list)) and outcome:
         return _outcome_verified(outcome[0])
     _status = getattr(outcome, "status", outcome)

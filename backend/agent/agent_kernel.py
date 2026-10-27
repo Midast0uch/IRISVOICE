@@ -546,6 +546,31 @@ def _turn_end_settle(owner) -> None:
         logger.info("[DER] turn-end fold-back waited %.2fs", waited)
 
 
+def _gc_coverage_label(verified: str, item, step_result) -> str:
+    """The label a settled node gives the goal contract's coverage (goal_contract.mark_coverage).
+
+    A DIRECT node (no tool: the planner's rule or the needs_action Oracle decided so) has
+    nothing outside that could verify it, so a real answer commits UNVERIFIED for ever -
+    and a fact it answered could never be covered: the turn pushed "cover the open fact"
+    with more tool-less steps, BLOCKED the fact after 2 pushes and told the user it "could
+    not cover" what it had just answered. Live 2026-10-27: "Pack sunscreen to protect your
+    skin from the sun." for "in one short sentence, name one thing to pack for a beach
+    trip" - 3 steps and a false "could not cover" note. Such an answer is ANSWERED: it
+    covers a fact under the same own-terms / names rule as a verified result. Coverage
+    is "addressed", not evidence - the evidence ladder never sees this label.
+    Module level on purpose (stand-in kernels bind only some methods).
+    """
+    try:
+        from backend.agent.external_reference import DIRECT
+
+        if (verified == "UNVERIFIED" and getattr(item, "mode", None) == DIRECT
+                and str(step_result or "").strip()):
+            return "ANSWERED"
+    except Exception as exc:  # noqa: BLE001 - the plain label stands
+        logger.debug("[goal-contract] coverage label fell back: %r", exc)
+    return verified
+
+
 def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
     """Typed execution events (spec research-memory-chain-browser D9 / Wave E)
     on lane("memory_events"): never on the answer path, never raises. The
@@ -20113,7 +20138,9 @@ Respond with a JSON object:
                         if _gc_state is not None:
                             from backend.agent import goal_contract as _gc_mod2
 
-                            _gc_state["outcomes"].append(_verified)
+                            _gc_state["outcomes"].append(
+                                _gc_coverage_label(_verified, item, step_result)
+                            )
                             _gc_state["results"].append(str(step_result or ""))
                             _gc_cov = _gc_mod2.mark_coverage(
                                 _gc_state["contract"],

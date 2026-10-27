@@ -394,7 +394,16 @@ def _bar_action(result_text, expected_output, raw_doc_id, prior_summaries) -> st
 
 
 def _bar_direct(result_text, expected_output, raw_doc_id, prior_summaries) -> str:
-    """direct / unclassified: judged against expected_output terms."""
+    """direct / unclassified: judged against expected_output terms.
+
+    A tool-less answer has no outside artifact, so a word of the plan's paraphrase
+    that the answer lacks is NOT evidence it answered something else: zero overlap
+    reads `unclear`, never `mismatched`. Live 2026-10-27: "Pack sunscreen to protect
+    your skin" (correct) shared no term with the planner's expected output, read
+    `mismatched` -> wrong_package -> try_different, and the loop re-planned and
+    explored for ~3 min. Over the newest logs 19 of 83 direct first steps read
+    `mismatched` (p90 163 s per turn vs 47 s matched).
+    """
     text = _one_line(result_text)
     terms = _extract_terms(expected_output)
     if not terms:
@@ -402,7 +411,7 @@ def _bar_direct(result_text, expected_output, raw_doc_id, prior_summaries) -> st
     lower = text.lower()
     hits = sum(1 for t in terms if t in lower)
     if hits == 0:
-        return "mismatched" if text else "unclear"
+        return "unclear"
     return "matched" if hits >= max(1, len(terms) // 2) else "unclear"
 
 

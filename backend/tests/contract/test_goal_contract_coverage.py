@@ -345,3 +345,40 @@ def test_ct_gc13_failure_path_feeds_learning_hooks():
     assert hasattr(AgentKernel, "_der_score_step_outcome")
     assert hasattr(DerLinkWriter, "link_derives_from")
     assert hasattr(DerLinkWriter, "link_failed_like")
+
+
+# CT-GC15 (live 2026-10-27, one-sentence REST turn): a DIRECT (tool-less) node's real
+# answer can never be verified from outside, so it committed UNVERIFIED, never covered
+# the fact it answered, and the turn pushed 2 more tool-less steps, BLOCKED the fact and
+# told the user it "could not cover" it. The kernel labels such an answer ANSWERED; the
+# contract lets ANSWERED cover under the same own-terms rule; nothing else changes.
+_FACT = "in one short sentence, name one thing to pack for a beach trip"
+_ANSWER = "Pack sunscreen to protect your skin from the sun."
+
+
+def test_ct_gc15_a_direct_answer_covers_the_fact_it_answered():
+    from types import SimpleNamespace
+
+    from backend.agent.agent_kernel import _gc_coverage_label
+    from backend.agent.external_reference import DIRECT
+
+    direct = SimpleNamespace(mode=DIRECT)
+    assert _gc_coverage_label("UNVERIFIED", direct, _ANSWER) == "ANSWERED"
+    c = Contract(required=(_FACT,))
+    assert gc.mark_coverage(c, ["ANSWERED"], [_ANSWER]).C == 1.0
+
+
+def test_ct_gc15_only_a_real_direct_answer_is_answered():
+    from types import SimpleNamespace
+
+    from backend.agent.agent_kernel import _gc_coverage_label
+    from backend.agent.external_reference import DIRECT
+
+    tool_node = SimpleNamespace(mode="react")
+    assert _gc_coverage_label("UNVERIFIED", tool_node, _ANSWER) == "UNVERIFIED"   # a tool node must verify
+    direct = SimpleNamespace(mode=DIRECT)
+    assert _gc_coverage_label("FAILED", direct, _ANSWER) == "FAILED"
+    assert _gc_coverage_label("UNVERIFIED", direct, "   ") == "UNVERIFIED"
+    c = Contract(required=(_FACT,))
+    assert gc.mark_coverage(c, ["UNVERIFIED"], [_ANSWER]).C == 0.0                # unchanged
+    assert gc.mark_coverage(c, ["ANSWERED"], ["The weather in Paris is mild."]).C == 0.0   # own terms still rule

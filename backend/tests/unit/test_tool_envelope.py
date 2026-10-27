@@ -126,6 +126,21 @@ def test_stuck_shape_wrong_package():
     assert classify_stuck_shape("success", "mismatched", "new", "real output", "", None, None) == "wrong_package"
 
 
+def test_a_correct_direct_answer_in_other_words_is_not_a_wrong_package():
+    """Live 2026-10-27 (one-sentence REST turn, ~3 min): a tool-less answer that shares
+    no word with the planner's paraphrase read `mismatched` -> wrong_package ->
+    try_different, and the loop re-planned for minutes. No word overlap is no
+    evidence for a tool-less answer: it reads `unclear`, and nothing tells the loop
+    to try something else."""
+    answer = "Pack sunscreen to protect your skin from the sun."
+    expected = "A single sentence naming one essential beach item"
+    match = derive_match(tool_family(None), answer, expected, "")
+    assert match == "unclear"
+    shape = classify_stuck_shape("partial", match, "new", answer, "", None, None)
+    assert shape != "wrong_package"
+    assert derive_suggestion(shape, "partial", "") != "try_different"
+
+
 def test_stuck_shape_idling():
     assert classify_stuck_shape(
         "success", "matched", "new", "good output", "", 0.5, 0.5,
