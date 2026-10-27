@@ -2116,6 +2116,12 @@ function tweenTo(pos,look,fov,dur,done){cam.tween={p0:camera.position.clone(),l0
 function tweenPath(pts,looks,fov,dur,{done=null,onT=null,kick=0}={}){
   cam.tween={path:new THREE.CatmullRomCurve3(pts,false,'centripetal'),lpath:new THREE.CatmullRomCurve3(looks,false,'centripetal'),
     f0:camera.fov,f1:fov,t:0,dur:REDUCED?.01:dur,done,onT,kick}}
+// INPUT WINS (UX-PLAN 6.1): any click, wheel or key ends a flight at once - the camera lands where it was going and the
+// flight's own onT(1) / done() run, so the state it leaves (inside, diving, the fly mode) is the same as after a full
+// flight; then the input acts. A done() that starts the next leg is landed too (at most 4 legs, so a loop cannot hang).
+function landFlight(){for(let n=0;cam.tween&&n<4;n++){const tw=cam.tween;
+  if(tw.path){camera.position.copy(tw.path.getPoint(1));cam.look.copy(tw.lpath.getPoint(1))}else{camera.position.copy(tw.p1);cam.look.copy(tw.l1)}
+  camera.fov=tw.f1;camera.lookAt(cam.look);camera.updateProjectionMatrix();cam.tween=null;tw.onT&&tw.onT(1);tw.done&&tw.done()}}
 // points on a great circle from the camera's side of the orb round to a region, so a flight to a
 // region on the far side swings round the orb instead of cutting through it
 function arcTo(from,toDir,r1,n){const d0=from.clone().normalize(),r0=from.length(),q=new THREE.Quaternion().setFromUnitVectors(d0,toDir),out=[];
@@ -3003,9 +3009,9 @@ canvas.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);mouse.nx
     else if(cam.mode==='fly'){cam.yawT-=dx*.004;cam.pitchT=clamp(cam.pitchT+dy*.004,-1.4,1.4)}}
   else hover(_px(e),_py(e))});
 tcv.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);hover(_px(e),_py(e))});
-canvas.addEventListener('pointerdown',e=>{mouse.down=true;mouse.dragged=0;mouse.lx=_px(e);mouse.ly=_py(e)});
+canvas.addEventListener('pointerdown',e=>{landFlight();mouse.down=true;mouse.dragged=0;mouse.lx=_px(e);mouse.ly=_py(e)});
 addEventListener('pointerup',e=>{const was=mouse.down;mouse.down=false;if(!was||mouse.dragged>6)return;click(_px(e),_py(e))});
-tcv.addEventListener('click',e=>{const x=_px(e),y=_py(e);
+tcv.addEventListener('click',e=>{landFlight();const x=_px(e),y=_py(e);
   const cr=crumbHit(x,y);if(cr){setTissueLevel(tissue.path.slice(0,cr.k),null);return}
   const i=tissueHit(x,y);
   if(i<0){const th=threadHit(x,y);if(th>=0){enterTunnel(tissue.threads[th].s);return}tissue.focus=-1;clearAnno('focus');return}
@@ -3063,7 +3069,7 @@ function click(x,y){
         const it=tunnel.items.find(n=>n.type==='msg'&&n.m.ts===t.user.ts);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);setTimeout(()=>clearInterval(w),8000);return}
     if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else syncClick()}
 }
-canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;
+canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;landFlight();
   if(cam.mode==='orbit'){if(state.lens==='timeline'&&e.ctrlKey){cam.distT=clamp(cam.distT*(1+e.deltaY*.0015),R*1.1,R*9)}   // turn zoom
     else if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
   else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03*(cam.f||1)/innerK())}
@@ -3077,7 +3083,7 @@ addEventListener('keydown',e=>{
   dismissCoach();
   if(e.key==='?'){toggleHelp();e.preventDefault();return}
   if(e.key==='Escape'&&help.on){toggleHelp(false);e.preventDefault();e.stopPropagation();return}   // the sheet closes before anything steps out
-  const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;
+  const k=e.key.toLowerCase();keys[k]=true;cam.idle=0;if(!['shift','control','alt','meta'].includes(k))landFlight();
   if(k==='enter'&&cam.mode==='tunnel'&&tunnel?.sel>=0){openThreadInMind();return}
   if(cam.mode==='tunnel'&&e.shiftKey&&(k==='arrowright'||k==='arrowleft')){turnStep(k==='arrowright'?1:-1);e.preventDefault();return}
   if(cam.mode==='tunnel'&&k==='tab'){toDoorway();e.preventDefault();return}
