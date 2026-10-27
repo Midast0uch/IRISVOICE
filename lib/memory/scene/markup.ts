@@ -69,7 +69,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #stats em{font-style:normal;color:var(--dim)}
 .iris-memory #title{position:absolute;left:22px;top:70px;max-width:520px;font-family:'Inter Tight',sans-serif;
   font-weight:300;font-size:24px;line-height:1.25;color:var(--white);opacity:0;transition:opacity .6s}
-.iris-memory #title small{display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--dim);margin-top:.6em;letter-spacing:.04em}
+.iris-memory #title small{display:block;font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--dim);margin-top:.6em;letter-spacing:.04em} .iris-memory #title small .w{color:var(--warn)}
 .iris-memory #ticker{position:absolute;left:22px;bottom:22px;font-size:11px;line-height:1.8;max-width:46vw}
 .iris-memory #ticker .line{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .6s}
 .iris-memory #ticker .line.old{opacity:.32}

@@ -287,6 +287,20 @@ def _best_sector(con: sqlite3.Connection, ids: Optional[list[str]] = None) -> di
     return {k: v[1] for k, v in best.items()}
 
 
+def _last_integrity_pass(con: sqlite3.Connection, have: set) -> Optional[dict]:
+    """The newest Kyudo cleaning event (rare labels, a handful of rows each), or None."""
+    # PLAN  SELECT MAX(ts), COUNT(*) FROM memory_events WHERE family='memory' AND label=?
+    #       -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?)
+    last: Optional[dict] = None
+    if "memory_events" in have:
+        for lab in INTEGRITY_LABELS:
+            ts, n = con.execute("SELECT MAX(ts), COUNT(*) FROM memory_events WHERE family = 'memory' AND label = ?",
+                                (lab,)).fetchone()
+            if ts is not None and (last is None or ts > last["ts"]):
+                last = {"ts": ts, "label": lab, "total_of_label": n}
+    return last
+
+
 # ── overview ─────────────────────────────────────────────────────────────────────────────────────
 def overview() -> dict:
     """Counts, territories and the last integrity pass: enough to draw the cortex labels."""
@@ -378,17 +392,7 @@ def overview() -> dict:
         out["eval_share"] = {"basis": "newest_steps", "eval": sum(1 for t in sample if t.startswith(EVAL_THREAD_PREFIX)),
                              "total": len(sample)}
 
-        # last integrity pass: the newest Kyudo cleaning event (rare labels, a handful of rows each)
-        # PLAN  SELECT MAX(ts), COUNT(*) FROM memory_events WHERE family='memory' AND label=?
-        #       -> SEARCH memory_events USING INDEX idx_memory_events_label (family=? AND label=?)
-        last: Optional[dict] = None
-        if "memory_events" in have:
-            for lab in INTEGRITY_LABELS:
-                ts, n = con.execute("SELECT MAX(ts), COUNT(*) FROM memory_events WHERE family = 'memory' AND label = ?",
-                                    (lab,)).fetchone()
-                if ts is not None and (last is None or ts > last["ts"]):
-                    last = {"ts": ts, "label": lab, "total_of_label": n}
-        out["last_integrity_pass"] = last
+        out["last_integrity_pass"] = _last_integrity_pass(con, have)
         # PLAN  SELECT ts, signal_type, shadow FROM mycelium_quorum_log ORDER BY ts DESC LIMIT 1
         #       -> SCAN mycelium_quorum_log USING INDEX idx_quorum_log_ts (LIMIT 1)
         q = None
@@ -1039,6 +1043,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                   "landmarks_absorbed": n("mycelium_landmarks", "WHERE absorbed = 1") if "absorbed" in lm_cols else 0,
                   "edges": n("mycelium_landmark_edges"), "merges": n("mycelium_landmark_merges"),
                   "episodes": n("episodes"), "fragments": n("context_chunks"), "artifacts": n("document_data")}
+        integrity = _last_integrity_pass(con, have)   # the territory health line names the last cleaning (UX-PLAN 7.2)
         lap("counts")
         ev_cols = table_cols(con, "memory_events")
         ev_thread_idx = "memory_events" in have and has_index_on(con, "memory_events", "thread_id")
@@ -1162,7 +1167,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         #       -> SCAN mycelium_landmarks + TEMP B-TREE FOR ORDER BY (3.3k rows, small table)
         lm_want = ("landmark_id", "label", "task_class", "micro_abstract_text", "tier", "is_permanent", "evidence",
                    "activation_count", "contradictions", "last_activated", "last_verified", "created_at", "conversation_ref",
-                   "traversal_sequence")
+                   "traversal_sequence", "cumulative_score")
         lm_rows = con.execute(f"SELECT {pick_cols(lm_cols, lm_want)} FROM mycelium_landmarks {live_sql} "
                               f"ORDER BY created_at DESC LIMIT ?", (SNAPSHOT_LANDMARKS,)).fetchall() if lm_cols else []
         lm_ids = [r["landmark_id"] for r in lm_rows]
@@ -1193,13 +1198,21 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             for part in _chunks(sorted({x for seq in claim_nodes.values() for x in seq})):
                 node_of.update({r[0]: (r[1], r[2]) for r in con.execute(
                     f"SELECT node_id, space_id, label FROM mycelium_nodes WHERE node_id IN ({_marks(len(part))})", part)})
+        # decay (Kyudo): the same law and active-day clock the search ranks with; computed, never written back.
+        # PLAN  SELECT DISTINCT substr(timestamp,1,10) FROM episodes WHERE timestamp >= ? -> COVERING INDEX idx_ep_timestamp
+        law = _search_law() if lm_rows else None
+        clock = law["clock"](con, 0.0) if law else None
         landmarks = []
         for r in lm_rows:
             ev: list[dict] = []
             kinds: dict[str, int] = {}
-            for e in jload(r["evidence"], [])[-400:]:
-                if not isinstance(e, dict):
-                    continue
+            full = [e for e in jload(r["evidence"], []) if isinstance(e, dict)]
+            touch = max([ts_of(r[c]) or 0.0 for c in ("created_at", "last_activated", "last_verified")] +
+                        [ts_of(e.get("at")) or 0.0 for e in full])
+            _, fading = _claim_alive(law, r["cumulative_score"] or 0.0, bool(r["is_permanent"]),
+                                     clock.days_since(touch) if touch else 0.0,
+                                     (r["activation_count"] or 0) + law["independent"](full))
+            for e in full[-400:]:
                 k = LM_EVIDENCE.get(str(e.get("kind")), "claim")
                 kinds[k] = kinds.get(k, 0) + 1
                 if kinds[k] <= 4:  # the page shows counts; keep a few dated entries per kind
@@ -1210,7 +1223,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             landmarks.append({"id": r["landmark_id"], "claim": text, "cls": r["task_class"] or "other",
                               "tier": r["tier"] or "candidate", "permanent": bool(r["is_permanent"]), "evidence": ev,
                               "evidence_counts": dict(kinds), "activations": r["activation_count"] or 0,
-                              "contradictions": r["contradictions"] or 0,
+                              "contradictions": r["contradictions"] or 0, "fading": fading,
                               "last_activated": ts_of(r["last_activated"]), "last_verified": ts_of(r["last_verified"]),
                               "born": ts_of(r["created_at"]), "session": r["conversation_ref"], "fams": fams,
                               "steps": [{"space": node_of[x][0], "label": node_of[x][1]}
@@ -1538,7 +1551,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                 (time.perf_counter() - t_start) * 1000, threads, events, include_eval,
                 " ".join(f"{k}={v * 1000:.0f}" for k, v in parts.items()))
     return {"meta": {"source": "data/memory.db (read-only snapshot)", "generated": time.time(), "counts": counts,
-                     "eval_share": eval_share, "warnings": warnings, "available": available},
+                     "eval_share": eval_share, "warnings": warnings, "available": available,
+                     "last_integrity_pass": integrity},
             "famCounts": fam_counts, "domCounts": dom_counts, "sessions": sessions, "events": out_events,
             "landmarks": landmarks, "edges": edges, "episodes": episodes, "artifacts": artifacts,
             "oracle": oracle, "mind": [], "sectors": sectors, "pins": pins, "spaces": spaces,
@@ -2302,8 +2316,7 @@ class _Search:
         days = clock.days_since(c["touch"]) if clock is not None and c.get("touch") else 0.0
         c["days"] = days
         if kind == "claim":
-            alive = c["score"] if c["permanent"] else law["credibility"](c["score"], law["rate"], days, c["n"])
-            c["fading"] = not c["permanent"] and c["score"] > 0 and alive < FADING_BELOW * c["score"]
+            alive, c["fading"] = _claim_alive(law, c["score"], c["permanent"], days, c["n"])
             ev = EVIDENCE_LADDER.get(c["best"], EVIDENCE_LADDER["none"])
             proven = ev if c["tier"] == "landmark" else ev * CANDIDATE_FACTOR
         elif kind == "node":
@@ -2333,6 +2346,12 @@ class _Search:
         mine = MINE_BOOST if c.get("mine") else 1.0
         c["strength"] = c["alive"] * (PROVEN_BASE + PROVEN_SPAN * c["proven"]) * (1.0 + USED_WEIGHT * used) * trust * mine
         c["rank"] = c["match"] * KIND_WEIGHT[c["kind"]] * c["strength"] * (CLEANED_FACTOR if c.get("absorbed") else 1.0)
+
+
+def _claim_alive(law: dict, score: float, permanent: bool, days: float, n: int) -> tuple[float, bool]:
+    """A claim's decayed score after `days` active idle days, and whether it is fading (under FADING_BELOW of its score)."""
+    alive = score if permanent else law["credibility"](score, law["rate"], days, n)
+    return alive, not permanent and score > 0 and alive < FADING_BELOW * score
 
 
 def _search_law() -> dict:

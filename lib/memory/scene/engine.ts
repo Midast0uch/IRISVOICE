@@ -198,6 +198,7 @@ const oracleWord=c=>{const [b,f]=String(c).split(':');return (ORACLE_PLAIN[b]||b
 // null = legacy internal. The membrane carries it as texture (porous + pale when weak), never as glare.
 const CHAN_WORD={4:'set by the system',3:'came from you',2:'came from a verified source',1:'came from an outside source',0:'came from a source nobody vouches for'};
 const chanWord=c=>c==null?'an older memory, from inside IRIS':CHAN_WORD[c]||'';
+const CHAN_SHORT={4:'from the system',3:'from you',2:'verified',1:'from outside',0:'unvouched'};
 const LOCK_WORD={4:'only the system writes here',3:'only you and the system write here',2:'verified sources and above write here',
   1:'outside sources may write here',0:'any source may write here'};
 const SPACE_WORD={conduct:'how you like to work',domain:'what you work on',style:'how you like to be spoken to',chrono:'when you work',
@@ -2490,8 +2491,14 @@ function dive(i){
     onT:e=>{if(e>.42)state.openT=1;if(e>.6)state.focusDimT=1},
     done:()=>{cam.mode='fly';flyFrom(camera.position,lookIn);cam.fovT=64;state.inside=true;state.diving=false;
       hint('drag · look &nbsp; scroll / w a s d · swim &nbsp; q e · down up<br>click a thought · go to it &nbsp; click space · glide there &nbsp; esc · back out');
-      const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments</small>`;T.style.opacity=1}});
+      const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1}});
 }
+// a territory's own health line (UX-PLAN 7.2, Kyudo): who its claims came from, how many fade, the last cleaning pass
+function healthLine(d){const lms=M.landmarks.filter(l=>l.domain===d);if(!lms.length)return 'no claims yet';
+  const by={};lms.forEach(l=>{const k=l.channel==null?'from inside IRIS':CHAN_SHORT[l.channel];by[k]=(by[k]||0)+1});
+  const fad=lms.filter(l=>l.fading).length,ip=M.meta.last_integrity_pass;
+  return `${fmt(lms.length)} claims · ${Object.entries(by).sort((a,b)=>b[1]-a[1]).map(([k,n])=>`${fmt(n)} ${k}`).join(' · ')}<br>`+
+    `${fad?`<span class="w">${fmt(fad)} fading</span>`:'nothing fading'} · last cleaning ${ip&&ip.ts?ago(ip.ts):'never'}`}
 function exitInterior(done){
   if(!state.inside)return done&&done();
   const i=state.diveReg,c=regC[i];clearAnno('focus');clearAnno('hover');setFocusSoma(-1);state.focusDimT=0;
