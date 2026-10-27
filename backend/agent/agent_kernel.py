@@ -18841,7 +18841,7 @@ Respond with a JSON object:
             return "voice"
         _tc = str(getattr(self, "_der_task_class", "") or "").lower()
         # TaskClassifier labels carry a "_task" suffix ("research_task");
-        # the bare set never matched them (MEMORY-FOUNDATION-ANALYSIS 13.2).
+        # the bare set never matched them (MEMORY-INTERFACE Part II 13.2).
         if _tc.endswith("_task"):
             _tc = _tc[: -len("_task")]
         if _tc in ("research", "explore", "investigate"):

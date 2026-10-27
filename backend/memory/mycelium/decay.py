@@ -1,7 +1,7 @@
 """
 Growth and decay as ONE law — the Kyudo self-cleaning of the coordinate graph.
 
-docs/Design/Memory-Cortex/MEMORY-FOUNDATION-ANALYSIS.md §11. Every learned
+docs/Design/Memory-Cortex/MEMORY-INTERFACE.md Part II §11. Every learned
 strength (edge score, landmark-edge score, node confidence above its floor)
 moves by the same law in both directions:
 
@@ -123,7 +123,7 @@ def _utc_date(ts: float) -> str:
 class ActivityClock:
     """
     The clock decay counts: ACTIVE days - UTC dates with at least one episode
-    (owner decision, 2026-10-19; MEMORY-FOUNDATION-ANALYSIS §11.4). Decay then
+    (owner decision, 2026-10-19; MEMORY-INTERFACE Part II §11.4). Decay then
     follows the speed at which the memory grows: an away month forgets nothing,
     a busy week fades unreinforced memory per use, not per calendar day.
     Live store: 52 active days in the last 90.
@@ -215,7 +215,7 @@ def landmark_credibility(score: float, rate: float, days: float, n: Optional[int
     edge (``edge_decay_amount``), with n = the evidence behind the claim
     (activations + independent outside evidence). Computed from the stored
     score and the span since the last touch, never written back, so a pass
-    that repeats changes nothing (integrity.py, MEMORY-FOUNDATION-ANALYSIS §16)."""
+    that repeats changes nothing (integrity.py, MEMORY-INTERFACE Part II §16)."""
     return max(0.0, score - edge_decay_amount(rate, 1.0, days, n))
 
 

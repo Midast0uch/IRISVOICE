@@ -1552,7 +1552,7 @@ class MyceliumInterface:
         # (collapse_duplicates runs inside the integrity pass above, AFTER the hub
         # landmarks are dissolved: the 88 live look-alikes of 2026-10-19 shared one
         # cluster only because of the global-top-6 bug, their claims differ - owner
-        # decision 2026-10-19, MEMORY-FOUNDATION-ANALYSIS §16.)
+        # decision 2026-10-19, MEMORY-INTERFACE Part II §16.)
 
         # Step 7 - sectors, SHADOW: computed and logged (SECTOR_* events), read by nothing.
         try:

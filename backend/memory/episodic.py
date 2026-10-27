@@ -97,7 +97,7 @@ def _shadow_trust_rank(scored: list, zone_of: dict, limit: int) -> None:
     """SHADOW (Kyudo Part 3, channel-weighted retrieval): would weighting each
     chunk's score by its zone's channel weight (user 1.2, tool 1.0, web 0.7)
     change the top-k? Counted only - the returned ranking is unchanged until
-    the counts justify a switch (MEMORY-FOUNDATION-ANALYSIS §12)."""
+    the counts justify a switch (MEMORY-INTERFACE Part II §12)."""
     if len(scored) <= 1:
         return
     try:

@@ -1,5 +1,5 @@
 """
-Sectors - a living registry of topics, in SHADOW MODE (MEMORY-FOUNDATION-ANALYSIS 5.1, W9).
+Sectors - a living registry of topics, in SHADOW MODE (MEMORY-INTERFACE Part II 5.1, W9).
 
 A sector is a stable text path ("systems/memory/recall"), never a number. The 13
 topic-domain registry keys (spaces.DOMAIN_IDS) are the proven ROOTS. Landmarks belong

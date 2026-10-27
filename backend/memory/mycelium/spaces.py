@@ -48,7 +48,7 @@ class CoordinateSpace:
     dtype: str
     value_range: Tuple[float, float]
     description: str
-    # -- Kyudo terms (MEMORY-FOUNDATION-ANALYSIS §12.3) ------------------------
+    # -- Kyudo terms (MEMORY-INTERFACE Part II §12.3) ------------------------
     write_lock: int = _SYSTEM                   # lowest HyphaChannel value that may write
     decay_rate: float = DEFAULT_DECAY_RATE      # node decay rate per active day
     confidence_floor: float = DEFAULT_CONFIDENCE_FLOOR
@@ -186,7 +186,7 @@ DOMAIN_IDS: Dict[str, int] = {
 # 12.0 is the ordinal of "general" when the registry was frozen; stored domain
 # nodes hold ordinal / 12.0, so the scale is a constant, not a derived value.
 # (A root above ordinal 12 encodes above 1.0: widening the domain axis range is
-# a deliberate step, taken with that root - MEMORY-FOUNDATION-ANALYSIS 5.1.)
+# a deliberate step, taken with that root - MEMORY-INTERFACE Part II 5.1.)
 DOMAIN_ORDINAL_SCALE: float = 12.0
 
 

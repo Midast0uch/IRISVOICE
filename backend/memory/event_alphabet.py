@@ -185,7 +185,7 @@ _SEED = [
     ("MEMORY_PRUNED", "memory", "sets_back", "agent", "orphan or dangling memory rows were removed or re-pointed"),
     ("CHAIN_CREATED", "memory", "advances", "agent", "a node chain crystallized"),
     ("CHAIN_VARIANT", "memory", "advances", "agent", "a proven pivot became a variant"),
-    # sectors (MEMORY-FOUNDATION-ANALYSIS 5.1, SHADOW): computed and logged, read by nothing
+    # sectors (MEMORY-INTERFACE Part II 5.1, SHADOW): computed and logged, read by nothing
     ("SECTOR_BORN", "memory", "neutral", "agent", "a candidate sector was born from a recurring term"),
     ("SECTOR_PROVEN", "memory", "advances", "world", "outside evidence closed a candidate sector"),
     ("SECTOR_SPLIT", "memory", "neutral", "agent", "a sector whose outcomes disagree grew a child"),

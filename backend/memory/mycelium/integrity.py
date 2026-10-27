@@ -76,7 +76,7 @@ from .spaces import LANDMARK_PRUNE_THRESHOLD, MERGE_OVERLAP_THRESHOLD
 logger = logging.getLogger(__name__)
 
 # -- rule thresholds (start values; each was read against the live store, see
-#    MEMORY-FOUNDATION-ANALYSIS section 16) ----------------------------------------------
+#    MEMORY-INTERFACE Part II section 16) ----------------------------------------------
 HUB_MIN_CLAIMS = 3                  # different claims on one place -> the place proves none
 MIN_LIVE_CLUSTER_FRACTION = 0.5     # the same bar as "the same landmark" (merge overlap)
 CREDIBILITY_RATE = _DECAY_NON_PERMANENT   # per active day, landmark.apply_landmark_decay

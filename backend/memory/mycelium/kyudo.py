@@ -71,7 +71,7 @@ CHANNEL_WEIGHTS: Dict[HyphaChannel, float] = {
 # Maximum fraction of untrusted sources allowed in a landmark cluster
 LANDMARK_TRUST_CAP: float = 0.30
 
-# One trust vocabulary (MEMORY-FOUNDATION-ANALYSIS §12, proposal 3). The
+# One trust vocabulary (MEMORY-INTERFACE Part II §12, proposal 3). The
 # episodic store's PACMAN zones (episodic.py) and the document store's trust
 # labels name what a HyphaChannel names; every memory write maps to a channel
 # through these. An unknown word fails closed (UNTRUSTED).

@@ -655,7 +655,7 @@ class LandmarkIndex:
         # Auto-connect to similar existing landmarks
         self._auto_connect(landmark)
 
-        # Sector membership (MEMORY-FOUNDATION-ANALYSIS 5.1, SHADOW: nothing reads it).
+        # Sector membership (MEMORY-INTERFACE Part II 5.1, SHADOW: nothing reads it).
         try:
             from .sectors import assign_landmark_sectors
 

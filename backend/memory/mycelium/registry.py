@@ -1,7 +1,7 @@
 """
 SpaceRegistry — the coordinate spaces as an OPEN registry (W10, Kyudo proposal 6).
 
-MEMORY-FOUNDATION-ANALYSIS §5.2, §10 (W10), §12.2 #6, §12.3. The
+MEMORY-INTERFACE Part II §5.2, §10 (W10), §12.2 #6, §12.3. The
 ``mycelium_spaces`` table is the source of truth. Each row declares the terms
 of one space: its WRITE LOCK (the lowest HyphaChannel allowed to write it —
 separate from the context-window zones that decide where a profile section
@@ -256,7 +256,7 @@ class SpaceRegistry:
 
     def writers(self, space_id: str) -> Tuple[str, ...]:
         """Subagent profiles that may write ``space_id`` (declared; the write
-        path does not enforce them yet — MEMORY-FOUNDATION-ANALYSIS §12.2 #5)."""
+        path does not enforce them yet — MEMORY-INTERFACE Part II §12.2 #5)."""
         space = self._spaces.get(space_id)
         return () if space is None else space.writers
 

@@ -845,7 +845,7 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _lp_exc:
         logger.warning("[db] landmark policy / memory_cases migration skipped: %s", _lp_exc)
 
-    # Sectors, SHADOW (MEMORY-FOUNDATION-ANALYSIS 5.1 / W9): the registry tables, the
+    # Sectors, SHADOW (MEMORY-INTERFACE Part II 5.1 / W9): the registry tables, the
     # 13 topic-domain roots, and a sector for every live landmark that has none.
     # Idempotent; nothing reads the tables.
     try:

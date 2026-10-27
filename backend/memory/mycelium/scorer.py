@@ -197,7 +197,7 @@ class EdgeScorer:
         """
         Apply score decay to edges and delete those below PRUNE_THRESHOLD
         (0.08) (Req 7.3-7.5) - the decay half of the ONE growth/decay law
-        (decay.py; MEMORY-FOUNDATION-ANALYSIS §11).
+        (decay.py; MEMORY-INTERFACE Part II §11).
 
           score -= rate * m * days * a(n)
           rate = the space's own rate (toolpath 0.02) for the edges of a

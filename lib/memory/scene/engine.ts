@@ -206,7 +206,7 @@ const SPACE_WORD={conduct:'how you like to work',domain:'what you work on',style
 // membrane tint per channel: cool and grey when weak, warm when strong (dim on purpose)
 const CHAN_TINT=['#7d7a8c','#8793ad','#9fb8c8','#cdd6d2','#dcd2b4'];
 const chanTint=c=>CHAN_TINT[c==null?3:clamp(Math.round(c),0,4)];
-// pins (MEMORY-FOUNDATION-ANALYSIS 13.3): explicit memory, held not earned
+// pins (MEMORY-INTERFACE Part II 13.3): explicit memory, held not earned
 const PIN_TYPES={note:{col:'#e6d79c',word:'a note'},file:{col:'#8fb8ff',word:'a file'},folder:{col:'#7fa0d8',word:'a folder'},
   image:{col:'#ff9ec4',word:'an image'},doc:{col:'#d3dbe2',word:'a document'},url:{col:'#6fe3d2',word:'a web page'},
   decision:{col:'#ffb066',word:'a decision'},fragment:{col:'#b9a0ff',word:'a fragment'},checkpoint:{col:'#f3ead0',word:'a checkpoint'}};
@@ -364,7 +364,7 @@ function synthMemory(){
   const mind=['your exact request','plan · step 3 of 5','turn_store.py · lines 40–120','the failing test output','what "the wing" means to you',
     'run one test file, not the suite','last week\'s similar fix','the project folder layout','your voice speed preference','an open question for you',
     'the search results from step 2','the error from the shell'];
-  // ── sectors: roots are the topic-domain territories, children nest inside them (MEMORY-FOUNDATION-ANALYSIS 5.1)
+  // ── sectors: roots are the topic-domain territories, children nest inside them (MEMORY-INTERFACE Part II 5.1)
   const KIDS={systems:['memory','tests','lanes'],web:['research','browsing'],ai:['voice','oracle'],devops:['ports'],data:['store'],design:['orb']};
   const sectors=DOMAINS.map(d=>({key:d,parent:null,label:DOM_WORD[d],status:'proven',members:0}));
   for(const [d,ks] of Object.entries(KIDS))ks.forEach((k,j)=>sectors.push({key:d+'/'+k,parent:d,label:k,status:(d+k).length%3===0?'candidate':'proven',members:0}));
@@ -1305,7 +1305,7 @@ SPACES.forEach((s,i)=>{const m=new THREE.Mesh(new THREE.IcosahedronGeometry(spR[
     void main(){float f=pow(max(1.-abs(dot(vN,vV)),0.),1.6);gl_FragColor=vec4(uTint,(.004+.012*f+uShow*(.03+.07*f))*(.55+.1*uLock)*uVis);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,wireframe:true}));cortex.add(m);KIND_OBJ.node.push(m)});
 
-// NODES (mycelium_nodes): small cells on their space's shell. FADING (the 11 law, MEMORY-FOUNDATION-ANALYSIS 11.2):
+// NODES (mycelium_nodes): small cells on their space's shell. FADING (the 11 law, MEMORY-INTERFACE Part II 11.2):
 // only confidence ABOVE the 0.4 floor was earned, so opacity and saturation follow (confidence-0.4)/0.6; what is not
 // renewed sinks back to the floor and dims. Nothing here ever brightens with age. The membrane carries the trust channel.
 const NDS=M.nodes.filter(n=>spI.has(n.space));

@@ -1405,7 +1405,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                   "session": r["conversation_id"], "ts": ts_of(r["created_at"]), "weight": 1.0, "seed": i + 1})
 
         lap("artifacts")
-        # ⑦ pins (MEMORY-FOUNDATION-ANALYSIS 13.3): explicit memory, held not earned. 0 rows today: the page then shows
+        # ⑦ pins (MEMORY-INTERFACE Part II 13.3): explicit memory, held not earned. 0 rows today: the page then shows
         # none. "held in context" has no stored flag yet; the 'held' / 'context' tag stands in.
         pins: list[dict] = []
         pin_cols = table_cols(con, "mycelium_pins")
