@@ -2798,9 +2798,16 @@ function replayTurn(){const by=new Map();for(const e of M.events){if(!e.episode|
 // THE LIVE DOT (UX-PLAN 6.3 / 13): one meaning everywhere - IRIS is working on a turn right now. The memory hears it as
 // live taps; the dot stays while they keep coming (LIVE_DOT_S after the last), whether or not follow mode is on.
 const LIVE_DOT_S=12;let liveAt=-1e9;
+// THE LIVE STRAND (UX-PLAN 8.5): the strand a turn is writing to now pulses on the helix (the beads' aA), the same
+// signal as the live dot - it calms LIVE_DOT_S after its last live event. Only a strand this snapshot holds can pulse.
+const sessIx=new Map(sess.map((s,i)=>[s.id,i]));let liveBead=-1;
+function markLiveBead(tid){const i=sessIx.get(tid);if(i==null||i===liveBead)return;
+  if(liveBead>=0)bA[liveBead]=0;liveBead=i;bA[i]=1;beadGeo.attributes.aA.needsUpdate=true}
+function calmLiveBead(){if(liveBead<0||performance.now()-liveAt<LIVE_DOT_S*1000)return;bA[liveBead]=0;beadGeo.attributes.aA.needsUpdate=true;liveBead=-1}
 function liveMsg(msg){
   if(!USE_REAL||!msg)return;const p=msg.payload||{};
   if(msg.type==='memory_event'||msg.type==='oracle_decision')liveAt=performance.now();
+  if(msg.type==='memory_event')for(const r of p.events||[])if(r&&r.thread_id)markLiveBead(r.thread_id);
   if(p.dropped>0){follow.missed+=p.dropped;drawFollow()}
   if(!follow.on)return;
   if(msg.type==='memory_event'){for(const r of p.events||[]){
@@ -3314,6 +3321,7 @@ const _frame=()=>{
     else{clearAnno('doorA');clearAnno('doorB')}}
   else{clearAnno('arrive');clearAnno('doorA');clearAnno('doorB')}
   // HUD
+  calmLiveBead();
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
   placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);

@@ -405,7 +405,7 @@ conversations carry one).
 | 6.1 | input interrupts a flight; long jumps through a fragment tunnel | the object does not travel (camera flights only); tweenPath 2.4–2.8 s (> 1.2 s); reduced motion is instant, not a 200 ms fade |
 | 6.3 | crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |
-| 8 timeline | the live strand's pulse | strand card has no tags; per-turn arches |
+| 8 timeline | the live strand's pulse for a strand the snapshot does not hold yet (a chat opened after the view loaded) | strand card has no tags; per-turn arches |
 | 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
 | 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
 | 13 details | scrambled titles; the empty-state sentence | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
