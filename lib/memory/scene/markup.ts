@@ -185,6 +185,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #qres .r .why{display:block;text-indent:0;color:var(--faint);font-size:9.5px;overflow:hidden;text-overflow:ellipsis}
 .iris-memory #qres .r.on{color:var(--white)}.iris-memory #qres .r.on .kw{color:var(--brand)}.iris-memory #qres .r.on .why{color:var(--dim)}
 .iris-memory #qres .r.gone .tt{opacity:.55;font-style:italic}
+.iris-memory #warp{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none}
 .iris-memory #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
 .iris-memory /* thread rail: the session's neurons and tasks laid out in time; click one to travel there */
 #rail{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);width:min(680px,76vw);height:40px;pointer-events:auto;opacity:0;transition:opacity .4s}
@@ -210,6 +211,7 @@ export const MEMORY_HTML = String.raw`<canvas id="gl"></canvas>
 <svg id="leaders"></svg>
 <div id="labels"></div>
 <div id="annos"></div>
+<canvas id="warp"></canvas>
 <div id="hud">
   <div id="brand">IRIS <span>· MEMORY</span></div>
   <div id="local">everything here lives on this machine</div>

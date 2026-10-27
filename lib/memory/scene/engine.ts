@@ -2764,6 +2764,35 @@ function updateSatellites(t){if(satFor<0)return;const c=somaWorld(satFor);satGro
   const v=new V3(Math.cos(t*.8+u.ph),Math.sin(t*.8+u.ph),0).multiplyScalar(u.r).applyAxisAngle(u.ax,1.1);s.position.copy(c).add(v)})}
 const DARK=new THREE.Color(0x020306),VOID=new THREE.Color('#dfe8ee'),voidCol=new THREE.Color();
 function flash(on,ms=260){const f=$('flash');f.style.transition=`opacity ${ms}ms`;f.style.opacity=on?.85:0}
+// FRAGMENT TUNNEL (UX-PLAN 6.1): a LONG jump (a claim in another view or territory: search, a deep link, a card's path)
+// passes through a brief tunnel of fragments rushing past, pale at its heart - never a black frame, never a 2-3 s chain
+// of flights. `go` starts the move; while the tunnel runs every flight lands at once (landFlight), and the tunnel thins
+// out once `settled()` holds (at least WARP_MIN_MS, at most WARP_MAX_MS). Reduced motion: a 200 ms pale cross-fade.
+const WARP_MIN_MS=520,WARP_MAX_MS=2400,warpCv=$('warp');let warpOn=false;
+function warpJump(go,settled){
+  if(REDUCED){flash(true,100);setTimeout(()=>{go();const w=setInterval(()=>{landFlight();if(settled()){clearInterval(w);flash(false,200)}},50);
+    setTimeout(()=>{clearInterval(w);flash(false,200)},WARP_MAX_MS)},100);return}
+  if(warpOn){go();return}
+  warpOn=true;const ctx=warpCv.getContext('2d'),dpr=Math.min(2,devicePixelRatio||1);warpCv.style.display='block';
+  const W=warpCv.width=Math.max(1,warpCv.clientWidth*dpr),H=warpCv.height=Math.max(1,warpCv.clientHeight*dpr),cx=W/2,cy=H/2,K=Math.hypot(W,H)*.06;
+  const col=THEMES[themeIdx][1],F=Array.from({length:320},()=>({a:Math.random()*Math.PI*2,z:.05+Math.random()*.95,v:.9+Math.random()*1.4,w:Math.random()}));
+  const t0=performance.now();let last=t0,went=false,doneAt=0;
+  const frame=now=>{const dt=Math.min(.05,(now-last)/1000);last=now;const age=now-t0;
+    if(!went&&age>=WARP_MIN_MS*.4){went=true;try{go()}catch(e){console.warn('[memory] long jump failed',e)}}
+    if(went)landFlight();
+    if(went&&!doneAt&&(age>=WARP_MIN_MS&&settled()||age>=WARP_MAX_MS))doneAt=now;
+    const env=doneAt?Math.max(0,1-(now-doneAt)/260):Math.min(1,age/180);
+    ctx.clearRect(0,0,W,H);
+    const g=ctx.createRadialGradient(cx,cy,0,cx,cy,Math.hypot(cx,cy));g.addColorStop(0,`rgba(232,246,252,${.9*env})`);g.addColorStop(.35,`rgba(120,170,190,${.35*env})`);g.addColorStop(1,`rgba(2,3,6,${.25*env})`);
+    ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.lineCap='round';
+    for(const f of F){f.z-=dt*f.v*.9;if(f.z<=.03){f.z=1;f.a=Math.random()*Math.PI*2}
+      const r0=K/f.z,r1=K/Math.min(1,f.z+.06*f.v),x0=cx+Math.cos(f.a)*r0,y0=cy+Math.sin(f.a)*r0,x1=cx+Math.cos(f.a)*r1,y1=cy+Math.sin(f.a)*r1;
+      ctx.strokeStyle=f.w>.7?`rgba(255,255,255,${.75*env})`:col;ctx.globalAlpha=f.w>.7?1:.6*env;ctx.lineWidth=(1+2.4*(1-f.z))*dpr;
+      ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x0,y0);ctx.stroke()}
+    ctx.globalAlpha=1;
+    if(doneAt&&env<=0){ctx.clearRect(0,0,W,H);warpCv.style.display='none';warpOn=false;return}
+    requestAnimationFrame(frame)};
+  requestAnimationFrame(frame)}
 function enterTunnel(s,{at=null}={}){
   if(cam.mode==='tunnel'){disposeTunnel()}
   state.from=state.inside?'cortex':state.lens;
@@ -3265,8 +3294,12 @@ function focusRef(ref){
   const [kind,...rest]=String(ref||'').split(':');const id=rest.join(':');
   if(kind==='lens'&&LENSES.some(l=>l[0]===id)){setLens(id);return true}
   if(kind==='claim'){const k=M.lmIndex?.get(id);if(k==null)return false;
+    // near (inside its own territory already): the short flight; anything else is a long jump through the fragment tunnel
+    if(state.inside&&cam.mode!=='tunnel'&&LM[k].dom===state.diveReg){flyToSoma(k);return true}
     const go=()=>{dive(LM[k].dom);const w=setInterval(()=>{if(state.inside){clearInterval(w);flyToSoma(k)}},120);setTimeout(()=>clearInterval(w),8000)};
-    if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else{setLens('cortex');setTimeout(go,300)}return true}
+    warpJump(()=>{if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else{setLens('cortex');setTimeout(go,30)}},
+      ()=>state.inside&&state.focusSoma===k&&!cam.tween);
+    return true}
   if(kind==='thread'){const m=THREADS.get(id)||THREADS.get(threadRoot(M.sById?.get(id)||{id}));
     if(m&&m.length>1){const go=()=>{setLens('timeline');setFan(threadRoot(sess[m[0]]));cam.targetT.y=clamp(beadPos(m[0]).y,-HELIX_H,HELIX_H);cam.idle=-9};
       if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else go();return true}}
