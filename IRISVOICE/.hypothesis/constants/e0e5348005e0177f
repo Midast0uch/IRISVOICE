@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_auto_round.py
-# hypothesis_version: 6.151.9
-
-['PreTrainedModel', 'device_map', 'input_ids']

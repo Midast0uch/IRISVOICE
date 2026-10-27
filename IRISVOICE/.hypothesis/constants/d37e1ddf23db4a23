@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\tokenizers\implementations\sentencepiece_unigram.py
-# hypothesis_version: 6.151.9
-
-[8000, ' {2,}', '.', 'SentencePieceUnigram', 'add_prefix_space', 'always', 'model', 'never', 'rb', 'replacement', '▁']

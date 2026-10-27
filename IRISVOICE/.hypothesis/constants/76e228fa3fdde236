@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_bitnet.py
-# hypothesis_version: 6.151.9
-
-[0.9, 'PreTrainedModel', 'autobitlinear', 'cpu', 'device_map', 'disk', 'offline', 'online', 'weight']

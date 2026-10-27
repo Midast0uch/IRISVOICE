@@ -1,2 +1,0 @@
-- Rest is essential for physical recovery and mental clarity.
-- Regular rest improves productivity and reduces stress.

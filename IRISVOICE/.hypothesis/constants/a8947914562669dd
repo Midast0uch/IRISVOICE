@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\zero_shot_classification.py
-# hypothesis_version: 6.151.9
-
-[',', 'This example is {}.', 'candidate_label', 'candidate_labels', 'entail', 'hypothesis_template', 'is_last', 'labels', 'logits', 'multi_label', 'pt', 'scores', 'sequence', 'too short', 'use_cache']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\commands\config\default.py
-# hypothesis_version: 6.151.9
-
-['--config_file', '--mixed_precision', 'LOCAL_MACHINE', 'MULTI_GPU', 'MULTI_HPU', 'MULTI_MLU', 'MULTI_MUSA', 'MULTI_NPU', 'MULTI_SDAA', 'MULTI_XPU', 'NO', 'bf16', 'compute_environment', 'debug', 'default', 'distributed_type', 'enable_cpu_affinity', 'fp16', 'fp8', 'mixed_precision', 'no', 'num_processes', 'save_location', 'use_cpu']

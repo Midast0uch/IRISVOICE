@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\squim\objective.py
-# hypothesis_version: 6.151.9
-
-[-1.3669, 0.0, 1e-08, 0.5, 0.999, 1.0, 3.8224, 4.5, 4.999, 100, 128, 256, 512, 'LSTM', 'alpha', 'pesq', 'sisdr', 'stoi']

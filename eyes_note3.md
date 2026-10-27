@@ -1,2 +1,0 @@
-- Sleep helps the body recover.
-- Adequate sleep improves mental clarity.

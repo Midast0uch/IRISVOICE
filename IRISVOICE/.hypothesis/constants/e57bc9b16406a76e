@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\testing\_internal\logging_tensor.py
-# hypothesis_version: 6.151.9
-
-[', ', 'LoggingTensor', 'elem', 'input', 'requires_grad']

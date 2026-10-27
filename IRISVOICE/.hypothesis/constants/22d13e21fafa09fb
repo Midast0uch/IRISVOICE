@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\logic\boolalg.py
-# hypothesis_version: 6.151.9
-
-['Boolean', 'a', 'b', 'c', 'cnf', 'deep', 'dnf', 'evaluate', 'measure', 'other', 'ratio', 'simplify', '{:b}']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\oxford_iiit_pet.py
-# hypothesis_version: 6.151.9
-
-['Cat', 'Dog', 'RGB', '_', 'annotations', 'binary-category', 'category', 'images', 'oxford-iiit-pet', 'segmentation', 'split', 'target_types', 'test', 'trainval', 'trimaps']

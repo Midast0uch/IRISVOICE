@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\video_classification.py
-# hypothesis_version: 6.151.9
-
-['av', 'frame_sampling_rate', 'function_to_apply', 'http://', 'https://', 'label', 'none', 'num_frames', 'pt', 'rgb24', 'score', 'sigmoid', 'softmax', 'top_k']

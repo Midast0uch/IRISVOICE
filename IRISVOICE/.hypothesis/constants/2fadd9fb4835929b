@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\imagenette.py
-# hypothesis_version: 6.151.9
-
-['.jpeg', '160px', '320px', 'English springer', 'French horn', 'Tinca tinca', 'cassette player', 'chain saw', 'chainsaw', 'church', 'church building', 'chute', 'dustcart', 'full', 'garbage truck', 'gas pump', 'gasoline pump', 'golf ball', 'horn', 'island dispenser', 'n01440764', 'n02102040', 'n02979186', 'n03000684', 'n03028079', 'n03394916', 'n03417042', 'n03425413', 'n03445777', 'n03888257', 'parachute', 'petrol pump', 'size', 'split', 'tench', 'train', 'val']

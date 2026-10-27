@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\inaturalist.py
-# hypothesis_version: 6.151.9
-
-['.tar.gz', '2017', '2018', '2019', '2021', '2021_train', '2021_train_mini', '2021_valid', '_', 'class', 'family', 'full', 'genus', 'kingdom', 'order', 'phylum', 'super', 'target_type', 'version']

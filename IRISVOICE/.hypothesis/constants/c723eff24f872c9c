@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\convnext.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-06, 0.02, 0.1, 0.4, 0.5, 1.0, 4.456, 8.684, 15.355, 34.361, 82.52, 83.616, 84.062, 84.414, 96.146, 96.65, 96.87, 96.976, 109.119, 191.703, 338.064, 754.537, 128, 192, 224, 230, 232, 236, 256, 384, 512, 768, 1000, 1024, 1536, 28589128, 50223688, 88591464, 197767336, '(', ')', 'ConvNeXt', 'ImageNet-1K', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'convnext_base', 'convnext_large', 'convnext_small', 'convnext_tiny', 'min_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 'row']

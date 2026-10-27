@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\tv_tensors\_bounding_boxes.py
-# hypothesis_version: 6.151.9
-
-['CXCYWH', 'CXCYWHR', 'XYWH', 'XYWHR', 'XYXY', 'XYXYXYXY', 'hard', 'soft']

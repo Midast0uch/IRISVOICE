@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\quantization\shufflenetv2.py
-# hypothesis_version: 6.151.9
-
-[0.04, 0.145, 0.296, 0.583, 1.501, 2.334, 3.672, 7.467, 57.972, 68.36, 72.052, 75.354, 79.78, 87.582, 90.7, 92.488, 116, 176, 192, 224, 232, 244, 352, 464, 488, 704, 976, 1024, 2048, 1366792, 2278604, 3503624, 7393996, '0', '1', '2', '3', '4', '5', '6', '7', 'ImageNet-1K', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'backend', 'categories', 'conv1', 'conv5', 'fbgemm', 'min_size', 'num_classes', 'num_params', 'pretrained', 'quantize', 'recipe', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0', 'unquantized']

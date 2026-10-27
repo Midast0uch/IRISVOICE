@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\clevr.py
-# hypothesis_version: 6.151.9
-
-['*', 'clevr', 'image_filename', 'images', 'objects', 'scenes', 'split', 'test', 'train', 'val']

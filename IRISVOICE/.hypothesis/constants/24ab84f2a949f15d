@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\nn\utils\_expanded_weights\instance_norm_expanded_weights.py
-# hypothesis_version: 6.151.9
-
-['bias', 'eps', 'ni...->ni', 'running_mean', 'running_var', 'weight']

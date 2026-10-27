@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\rnnt.py
-# hypothesis_version: 6.151.9
-
-[0.0, 1e-05, 0.001, 0.1, 0.3, 128, 512, 1024, 2048, 'RNNT', 'depthwise', 'emformer_rnnt_base', 'emformer_rnnt_model', 'gelu', 'relu', 'tanh', 'trunc']

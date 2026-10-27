@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\tracking.py
-# hypothesis_version: 6.151.9
-
-[', ', '.', '3.41.0', '>=', 'CLEARML_PROJECT', 'CLEARML_TASK', 'Comet run flushed', 'FRAMEWORK', 'MLFLOW_NESTED_RUN', 'MLFLOW_RUN_ID', 'MLFLOW_TAGS', 'SwanLab run closed', 'WANDB_MODE', 'WandB run closed', '_', '`name`', '`tracker`', 'aim', 'aim_image', 'all', 'clearml', 'comet_ml', 'config', 'dvclive', 'eval', 'hparams', 'hparams.yml', 'main_process_only', 'mlflow', 'name', 'offline', 'project_name', 'run', 'swanlab', 'task_name', 'tensorboard', 'test', 'track', 'tracker', 'trackio', 'trackio run closed', 'train', 'w', 'wandb', '🤗Accelerate']

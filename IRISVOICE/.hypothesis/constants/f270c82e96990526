@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\torch_xla.py
-# hypothesis_version: 6.151.9
-
-['-U', '.', 'IPython', 'google.colab', 'install', 'pip', 'torch']

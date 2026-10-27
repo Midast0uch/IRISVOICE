@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\logic\inference.py
-# hypothesis_version: 6.151.9
-
-['dpll', 'dpll2', 'minisat22', 'pycosat', 'pysat', 'z3']

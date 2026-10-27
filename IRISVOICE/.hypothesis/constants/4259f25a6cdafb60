@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\parallelism_config.py
-# hypothesis_version: 6.151.9
-
-['1', '2.2.0', '>=', 'Accelerator', '__dict__', 'cp', 'deepspeed', 'device_mesh', 'dp', 'dp_cp', 'dp_replicate', 'dp_shard', 'dp_shard_cp', 'sp', 'torch', 'tp']

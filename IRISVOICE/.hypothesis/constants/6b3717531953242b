@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\concrete\expr_with_limits.py
-# hypothesis_version: 6.151.9
-
-['1.6', '_diff_wrt', 'expecting Range', 'force', 'is_commutative']

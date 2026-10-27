@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\voc.py
-# hypothesis_version: 6.151.9
-
-[2007, 2013, '.jpg', '.png', '.txt', '.xml', '2007', '2007-test', '2008', '2009', '2010', '2011', '2012', 'Annotations', 'ImageSets', 'JPEGImages', 'Main', 'RGB', 'Segmentation', 'SegmentationClass', 'TrainVal', 'VOC2007', 'VOC2008', 'VOC2009', 'VOC2010', 'VOC2011', 'VOC2012', 'VOCdevkit', 'annotation', 'base_dir', 'filename', 'image_set', 'md5', 'object', 'test', 'train', 'trainval', 'url', 'val', 'year']

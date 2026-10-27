@@ -1,2 +1,0 @@
-- Sleep helps the brain consolidate memories.
-- Adequate sleep improves mood and cognitive performance.

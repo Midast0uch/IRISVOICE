@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\ssdlite.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.001, 0.03, 0.2, 0.5, 0.55, 0.583, 0.95, 1.0, 13.418, 21.3, 128, 256, 300, 320, 512, 3440060, 'COCO-val2017', '_docs', '_file_size', '_is_cn', '_metrics', '_ops', 'bbox_regression', 'box_map', 'categories', 'cls_logits', 'detections_per_img', 'image_mean', 'image_std', 'min_size', 'nms_thresh', 'num_classes', 'num_params', 'pretrained', 'pretrained_backbone', 'recipe', 'score_thresh', 'size', 'topk_candidates']

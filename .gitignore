@@ -158,3 +158,61 @@ data/turn_recordings/
 
 # sherpa-onnx keyword model, downloaded 2026-10-26 for the wake word comparison (not adopted)
 models/kws/
+
+# ── Stray root files (removed from the repo 2026-10-27, owner) ──────────────
+# Scratch logs and probes, notes, test output, pid/runtime markers, screenshots,
+# another agent tool's scratch, and a test cache that sat in a nested IRISVOICE/.
+/.*.txt
+/.*.py
+/.install_done.txt.copy
+/.iris-pids/
+/.mcm_prune_pending.json
+/.commandcode/
+/.workbuddy-ai/
+/.playwright-mcp/
+/_probe_*
+/_T17_block.py
+/_gate.txt
+/_h.txt
+/_head_kernel.py
+/_run_harness.py
+/_surgery1.py
+/_trace_reuse.py
+/jest_*.txt
+/*_note*.md
+/flicker_check.md
+/*extraction*.json
+/extracted_robotics_data.json
+/benchmark_balanced_mtp.json
+/frontend.err
+/launch_log.txt
+/tauri_dev_pid.txt
+/temp_*.json
+/temp_*.txt
+/page_after_wake.yml
+/orb-baseline.png
+/orb_after_wake.png
+/clear-storage.html
+/IRISLFM.code-workspace
+/manual_load.py
+/restart_backend.py
+/start-backend-detached.py
+/download_audio_model.py
+/launch_backend.ps1
+/launch_detach.ps1
+/build_cuda_final.bat
+/AGENT.md
+/BOOT_STRAP.md
+/MCM_DB_ISSUES.md
+/IRISVOICE/
+/notes/
+/evidence/
+/verification/
+/test-results/
+/%
+/=
+/a
+/b
+/w
+/y
+/[[]input removed due to failed tool call]

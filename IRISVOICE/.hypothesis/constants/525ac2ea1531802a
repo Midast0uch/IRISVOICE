@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\segmentation\deeplabv3.py
-# hypothesis_version: 6.151.9
-
-[0.5, 10.452, 42.301, 60.3, 66.4, 67.4, 91.2, 92.4, 160.515, 178.722, 233.217, 258.743, 256, 520, 1024, 2048, 11029328, 42004074, 60996202, 'DeepLabV3', '_docs', '_file_size', '_is_cn', '_metrics', '_ops', 'aux', 'aux_loss', 'bilinear', 'categories', 'deeplabv3_resnet101', 'deeplabv3_resnet50', 'layer3', 'layer4', 'min_size', 'miou', 'num_classes', 'num_params', 'out', 'pixel_acc', 'pretrained', 'pretrained_backbone', 'recipe']

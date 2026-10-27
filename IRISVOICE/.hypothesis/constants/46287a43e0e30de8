@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\distributions\relaxed_bernoulli.py
-# hypothesis_version: 6.151.9
-
-['RelaxedBernoulli', 'logits', 'probs']

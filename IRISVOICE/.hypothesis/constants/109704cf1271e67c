@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_higher_order_ops\scan.py
-# hypothesis_version: 6.151.9
-
-['call_function', 'carry', 'combine_fn', 'init', 'meta', 'mode', 'output', 'placeholder', 'scan', 'scan_combine_graph', 'val']

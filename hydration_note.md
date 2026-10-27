@@ -1,2 +1,0 @@
-- Water is essential for maintaining bodily functions and regulating temperature.
-- Drinking enough water each day supports digestion, skin health, and overall energy levels.

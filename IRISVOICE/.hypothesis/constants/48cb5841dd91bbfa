@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\image_segmentation.py
-# hypothesis_version: 6.151.9
-
-[0.5, 0.9, 255, 'Image.Image', 'L', 'OneFormerConfig', 'id', 'images', 'input_ids', 'instance', 'label', 'label_id', 'mask', 'mask_threshold', 'max_length', 'panoptic', 'pt', 'score', 'segmentation', 'segments_info', 'semantic', 'subtask', 'target_size', 'task_inputs', 'threshold', 'timeout', 'vision']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\huggingface_hub\repocard_data.py
-# hypothesis_version: 6.151.9
-
-['EvalResult', 'args', 'config', 'dataset', 'eval_results', 'metric_value', 'metrics', 'model-index', 'model_name', 'name', 'results', 'revision', 'source', 'split', 'task', 'train-eval-index', 'train_eval_index', 'type', 'url', 'value', 'verified', 'verifyToken', 'verify_token']

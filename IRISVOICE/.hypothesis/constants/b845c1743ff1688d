@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\ssd.py
-# hypothesis_version: 6.151.9
-
-[0.0, 0.01, 0.07, 0.15, 0.224, 0.225, 0.229, 0.25, 0.33, 0.406, 0.40784, 0.45, 0.456, 0.45882, 0.48235, 0.485, 0.5, 0.51, 0.69, 0.87, 1.0, 1.05, 5.0, 10.0, 25.1, 34.858, 135.988, 255.0, 100, 128, 200, 256, 300, 400, 512, 1024, 35641826, '0', 'COCO-val2017', 'SSD300_VGG16_Weights', '_docs', '_file_size', '_metrics', '_ops', 'bbox_regression', 'box_coder', 'box_map', 'boxes', 'categories', 'classification', 'cls_logits', 'image_mean', 'image_std', 'inf', 'labels', 'min_size', 'none', 'num_classes', 'num_params', 'out_channels', 'pretrained', 'pretrained_backbone', 'proposal_matcher', 'recipe', 'scores', 'size', 'ssd300_vgg16', 'sum']

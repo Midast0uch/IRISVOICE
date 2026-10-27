@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\lsun.py
-# hypothesis_version: 6.151.9
-
-['Classes: {classes}', 'LSUN class', 'RGB', '_', '_cache_', 'bedroom', 'bridge', 'church_outdoor', 'classes', 'classroom', 'conference_room', 'dining_room', 'entries', 'kitchen', 'living_room', 'postfix', 'rb', 'restaurant', 'test', 'tower', 'train', 'val', 'wb']

@@ -1,4 +1,0 @@
-# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\onnx\_internal\torchscript_exporter\onnx_proto_utils.py
-# hypothesis_version: 6.151.9
-
-['::', 'input_*.pb', 'map_type', 'model.onnx', 'optional_type', 'output_*.pb', 'rb', 'sequence_type', 'tensor_type', 'test_', 'test_data_set_0', 'to_function_proto', 'wb']
