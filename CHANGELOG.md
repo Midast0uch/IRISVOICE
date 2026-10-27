@@ -56,7 +56,8 @@ teardown. Short sounds and the playback fallback now use an owned stream, as spe
 ### docs: CLAUDE.md and AGENTS.md agree
 
 The owner's 2026-10-25 rule ("continue working and fix anything you find along the way") is in both files;
-AGENTS.md gained the build-store hand-off step (REQ-2b) it was missing.
+AGENTS.md gained the build-store hand-off step (REQ-2b) it was missing. CLAUDE.md took AGENTS.md's newer
+report-back section (response length matches the need; technical language is required).
 
 ### fix: logs/iris.log has a size budget (S124)
 
