@@ -398,7 +398,7 @@ conversations carry one).
 |---|---|---|
 | 3.2 paths | turn → the claim it touched; thread → fan the braid; thread rename / pin; artifact → the strand it was made in | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
 | 4.3 helix | forked strand leaves / reports to the thread line; hover a braid → fan; click → beads open | braid joins only parent → child; hover labels for the rest |
-| 4.4 corridor | helper report-back arch; rail tags (data gap: the snapshot carries no strand tags; 5 of 5,836 conversations have any) | breadcrumb (the far door now walks the strands of one thread) |
+| 4.4 corridor | rail tags (data gap: the snapshot carries no strand tags; 5 of 5,836 conversations have any) | breadcrumb (the far door now walks the strands of one thread) |
 | 4.5 chat → memory | thread orbit Alt+click / `◎` (the lens "In memory" is built) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
 | 4.6 memory → chat | drag a thing onto the chat wing (the `#` group "IRIS knows" is built: claims from the memory search; pins wait for an agent-side resolver) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
 | 5 | copy link / deep-link serialisation | the back stack is structural (one level out), not a recorded stack |
@@ -408,7 +408,7 @@ conversations carry one).
 | 8 timeline | the live strand's pulse for a strand the snapshot does not hold yet (a chat opened after the view loaded) | strand card has no tags; per-turn arches |
 | 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
 | 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
-| 13 details | scrambled titles; the empty-state sentence | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
+| 13 details | — | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
 
 Measured on the way (2026-10-26): the first snapshot after a restart took 404 s, cold on the C: hard disk (recall
 156 s, claims 111 s, counts 51 s); warm, every part is milliseconds. A later open 30 min after the warm-up took 70 s

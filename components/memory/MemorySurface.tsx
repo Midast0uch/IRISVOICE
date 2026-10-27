@@ -39,6 +39,13 @@ const LINE: React.CSSProperties = { fontFamily: "'JetBrains Mono', ui-monospace,
 const wantsDemo = () =>
   process.env.NODE_ENV !== "production" && typeof window !== "undefined" && new URLSearchParams(window.location.search).get("memory") === "demo"
 
+/** True when a loaded snapshot holds nothing at all: no strand, no claim, no moment. */
+const isEmptyMemory = (m: unknown): boolean => {
+  if (!m || typeof m !== "object") return false
+  const len = (k: string) => (Array.isArray((m as Record<string, unknown>)[k]) ? ((m as Record<string, unknown[]>)[k]).length : 0)
+  return len("sessions") === 0 && len("landmarks") === 0 && len("events") === 0
+}
+
 export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySurfaceProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const engineRef = useRef<MemoryEngine | null>(null)
@@ -159,7 +166,13 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
       {load.kind === "loading" && (
         <div style={centre} aria-live="polite">
           <span style={{ ...LINE, color: INK, textShadow: "0 0 12px rgba(0,212,255,.45)" }}>the memory is assembling</span>
-          <span style={{ ...LINE, color: DIM, fontSize: 10, letterSpacing: ".08em" }}>reading data/memory.db — the first read after a start can take a while</span>
+          <span style={{ ...LINE, color: DIM, fontSize: 10, letterSpacing: ".08em" }}>reading the memory store — the first read after a start can take a while</span>
+        </div>
+      )}
+      {load.kind === "ready" && isEmptyMemory(load.model) && (
+        // UX-PLAN 13: an empty memory says so plainly - the scene still draws behind it
+        <div style={{ ...centre, pointerEvents: "none" }} role="status">
+          <span style={{ ...LINE, color: INK }}>Nothing remembered here yet — use IRIS and it will grow</span>
         </div>
       )}
       {load.kind === "resting" && (

@@ -1843,8 +1843,11 @@ function buildTunnel(s){
   hs.scale.setScalar(26);hs.position.copy(home);g.add(hs);
   // the doorways: a tall arch at the far end (the strands climb onto it) that opens onto the NEXT thread, and a small side
   // arch on the wall that takes you back to this thread's beginning
-  const next=nextInThread(s);   // UX-PLAN 4.4: the far door leads on within the THREAD, not to any next strand
-  const door=new THREE.Mesh(archGeo,doorMat(THREAD_COL,new THREE.Color(next?'#7fe8ff':'#f4fbff'),1));
+  // a HELPER strand's far door reports back (UX-PLAN 4.4): it opens onto the strand it reports to, at the moment of its
+  // newest report (conversation_store.report_back); every other strand's far door leads on within its thread
+  const report=s.reports_to&&(s.reports||[]).length?{to:s.reports_to,ts:s.reports[s.reports.length-1],target:sessOf(s.reports_to)||null}:null;
+  const next=report?null:nextInThread(s);   // UX-PLAN 4.4: the far door leads on within the THREAD, not to any next strand
+  const door=new THREE.Mesh(archGeo,doorMat(THREAD_COL,new THREE.Color(report?'#ffb547':next?'#7fe8ff':'#f4fbff'),1));
   door.scale.setScalar(rad1);door.position.copy(P1);door.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(Rd,Ud,T1.clone().negate()));g.add(door);
   const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(archGeo,doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
   backDoor.scale.setScalar(radius(.9)*.3);backDoor.position.copy(backP);backDoor.lookAt(curve.getPointAt(.9));g.add(backDoor);
@@ -1857,7 +1860,7 @@ function buildTunnel(s){
     return {mesh:m,world:P.clone().add(TUN_OFF),cs,target:sess.find(x=>x.id===pr.id)||null}});
   scene.add(g);rng=mulberry32(99);
   return {g,curve,frameAt,session:s,items,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands:pairs,hlU,fibU,partU,tileU,pins:pinList,
-    door:{mesh:door,world:P1.clone().add(TUN_OFF),next},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},forks,onWall};
+    door:{mesh:door,world:P1.clone().add(TUN_OFF),next,report},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},forks,onWall,uOf};
 }
 // light an item and everything it is linked to (a message and its moments, or a moment and its turn)
 function tunnelHighlight(it){
@@ -2222,10 +2225,12 @@ function updateCamera(dt){
 // ═══════════════════════════════════════════════════════════════════════════
 // 10. HUD: scramble text (XurOrb), leader-line annotations (video 2), lenses
 // ═══════════════════════════════════════════════════════════════════════════
-const CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←';
+// UX-PLAN 13: the reveal scrambles words only - a digit always shows its real value and the noise has no digits, so
+// a number never flickers and a title never shows a number that is not there
+const CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZ→↑←';
 function scramble(el,text,frames=22){const len=text.length;let f=0;clearInterval(el._sc);el._final=text;
   if(REDUCED){el.textContent=text;return}
-  el._sc=setInterval(()=>{f++;let o='';for(let i=0;i<len;i++)o+=f/frames>i/len||text[i]===' '?text[i]:CHARS[Math.floor(Math.random()*CHARS.length)];
+  el._sc=setInterval(()=>{f++;let o='';for(let i=0;i<len;i++)o+=f/frames>i/len||text[i]===' '||(text[i]>='0'&&text[i]<='9')?text[i]:CHARS[Math.floor(Math.random()*CHARS.length)];
     el.textContent=o;if(f>=frames){clearInterval(el._sc);el.textContent=text}},30)}
 const $=id=>document.getElementById(id);
 const svg=$('leaders'),labelsEl=$('labels'),annosEl=$('annos');
@@ -2653,6 +2658,7 @@ annosEl.addEventListener('click',e=>{
   const un=e.target.closest('[data-undo]');if(un){runUndo(+un.dataset.undo);return}
   if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(e.target.closest('[data-home]')){exitTunnel();return}
+  if(e.target.closest('[data-report]')){throughDoor();return}
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
 function flyToSoma(k){
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
@@ -2669,7 +2675,7 @@ function updateSatellites(t){if(satFor<0)return;const c=somaWorld(satFor);satGro
   const v=new V3(Math.cos(t*.8+u.ph),Math.sin(t*.8+u.ph),0).multiplyScalar(u.r).applyAxisAngle(u.ax,1.1);s.position.copy(c).add(v)})}
 const DARK=new THREE.Color(0x020306),VOID=new THREE.Color('#dfe8ee'),voidCol=new THREE.Color();
 function flash(on,ms=260){const f=$('flash');f.style.transition=`opacity ${ms}ms`;f.style.opacity=on?.85:0}
-function enterTunnel(s){
+function enterTunnel(s,{at=null}={}){
   if(cam.mode==='tunnel'){disposeTunnel()}
   state.from=state.inside?'cortex':state.lens;
   clearAnno('focus');clearAnno('hover');satellites(-1);
@@ -2677,6 +2683,7 @@ function enterTunnel(s){
       if(state.inside){state.inside=false;state.openT=0;LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;state.focusDimT=0}
       showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);state.voidT=REDUCED?0:1;tunnel.tileU.uAsm.value=REDUCED?1:0;cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
       cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
+      if(at!=null){cam.tp=cam.tpT=Math.max(0,tunnel.uOf(at)-.02);cam.idle=-9}   // arrive at a moment (a helper's report)
       const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
       T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
       $('scrub').classList.remove('on');
@@ -2902,7 +2909,8 @@ function hover(x,y){
     if(st<0&&k<0){for(const [nm,d] of [['door',tunnel.door],['back',tunnel.back],...tunnel.forks.map((f,i)=>['fork'+i,f])]){const p=project(d.world);
       const e=project(d.world.clone().add(new V3(0,d===tunnel.door?4:1.5,0)));if(p.front&&Math.hypot(p.x-x,p.y-y)<Math.max(30,Math.abs(e.y-p.y))&&d.world.distanceTo(camera.position)<70){
         state.hoverDoor=nm;canvas.style.cursor='pointer';tunnelHighlight(null);
-        const nx=tunnel.door.next;
+        const nx=tunnel.door.next,rp=tunnel.door.report;
+        if(nm==='door'&&rp){setAnno('hover','door-rep',()=>project(d.world),`<div class="k">doorway · reports back</div><div class="t">${esc(titleOf(rp.to))}</div><div class="m">this helper reported ${ago(rp.ts)}</div><span class="go">${rp.target?'click · step through to the moment it reported':'click · open that strand in chat'}</span>`,{hot:true});return}
         if(d.cs){const f=d,t=f.cs.title||'a strand of this conversation';
           setAnno('hover','door-'+nm,()=>project(d.world),`<div class="k">doorway · a strand forked here</div><div class="t">${esc(t)}</div><div class="m">${f.cs.started?'started '+ago(f.cs.started):''}${f.target?'':' · not in this view of the memory'}</div><span class="go">${f.target?'click · walk into its corridor':'click · open it in chat'}</span>`,{hot:true});return}
         setAnno('hover','door-'+nm,()=>project(d.world),nm==='door'
@@ -3047,6 +3055,8 @@ function neuronStep(dir){if(!tunnel)return;if(tunnel.stops)return threadStep(dir
 function forkDoor(i){const f=tunnel?.forks[i];if(!f||state.doorLock)return;state.doorLock=true;setTimeout(()=>state.doorLock=false,1500);
   if(f.target)enterTunnel(f.target);else window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:f.cs.id}}))}
 function throughDoor(){if(!tunnel||state.doorLock)return;state.doorLock=true;setTimeout(()=>state.doorLock=false,1500);
+  const r=tunnel.door.report;
+  if(r){if(r.target)enterTunnel(r.target,{at:r.ts});else window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:r.to}}));return}
   const nx=tunnel.door.next;if(nx)enterTunnel(nx);else exitTunnel()}
 // WALKING (UX-PLAN 6.2). In the corridor Shift+← → steps turn to turn (each user message starts a turn) and Tab
 // walks to the far doorway. On the helix ← → step strand to strand in time (the ones the chips keep) and show the
@@ -3337,7 +3347,10 @@ const _frame=()=>{
       setAnno('arrive','arr'+best,()=>project(s.world),`<div class="k">claim · ${tunnel.sel===s.li?'on your thread':'in this strand'}</div><div class="t">${esc(LM[s.li].claim)}</div>`)}
     else if(best<0)clearAnno('arrive');
     // near the end the two doorways name themselves: the next thread ahead, the way back on the side
-    if(cam.tp>.86){const nx=tunnel.door.next;
+    if(cam.tp>.86&&tunnel.door.report){const rp=tunnel.door.report;
+      setAnno('doorA','dArep',()=>project(tunnel.door.world.clone().add(new V3(0,4,0))),`<div class="k">doorway · ahead · reports back</div><div class="t">${esc(titleOf(rp.to))}</div><span class="go" data-report="1">step through to the moment this helper reported</span>`);
+      setAnno('doorB','dB',()=>project(tunnel.back.world),`<div class="k">doorway · beside you</div><span class="go" data-rewind="1">↺ back to the beginning of this thread</span>`)}
+    else if(cam.tp>.86){const nx=tunnel.door.next;
       setAnno('doorA','dA'+(nx?nx.id:'home'),()=>project(tunnel.door.world.clone().add(new V3(0,4,0))),
         `<div class="k">doorway · ahead</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><span class="go" ${nx?`data-go="${nx.id}"`:'data-home="1"'}>${nx?'step through to the next strand of this thread':'the last strand of its thread · return'}</span>`);
       setAnno('doorB','dB',()=>project(tunnel.back.world),`<div class="k">doorway · beside you</div><span class="go" data-rewind="1">↺ back to the beginning of this thread</span>`)}
