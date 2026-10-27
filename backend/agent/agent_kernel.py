@@ -13132,6 +13132,28 @@ Respond with a JSON object:
                     )
                 return False
 
+            # A coverage stall on change facts whose change a step already made is
+            # not "stuck": what is missing is one passing run, and the cover push
+            # asks for exactly that (goal_contract.cover_goal). A re-plan from the
+            # request redid read/edit/check (live c05 2026-10-27: 3 steps, 51 s).
+            # If the check fails, C stays open and the gate fires on the next settle.
+            if str(reason or "").startswith("coverage_"):
+                try:
+                    from backend.agent import goal_contract as _gc_gate
+
+                    _gate_open = AgentKernel._goal_contract_open_facts(self)
+                    _gate_res = (getattr(self, "_goal_contract_state", None) or {}).get("results") or ()
+                    if _gate_open and all(_gc_gate.change_awaits_check(_f, _gate_res) for _f in _gate_open):
+                        _counters["gate_check_only"] = _counters.get("gate_check_only", 0) + 1
+                        logger.info(
+                            "[DER:streak-gate] %s on a change already made - one check "
+                            "step instead of a re-plan conv=%s", reason,
+                            getattr(self, "conversation_id", ""),
+                        )
+                        return False
+                except Exception as _gco_exc:  # noqa: BLE001 - doubt keeps the re-plan
+                    logger.debug("[DER:streak-gate] check-only test failed: %r", _gco_exc)
+
             from backend.agent.der_constants import STREAK_GATE_MAX_FIRES
 
             if queue.streak_gate_fires >= STREAK_GATE_MAX_FIRES:
@@ -20901,8 +20923,10 @@ Respond with a JSON object:
                 len(_open), str(_open[0])[:160],
             )
             self._der_note_depth_route("cover_open_fact")
-            return {"description": (
-                f"Cover the open required fact: {str(_open[0])[:300]}"
+            from backend.agent import goal_contract as _gc_cover
+
+            return {"description": _gc_cover.cover_goal(
+                _open[0], self._goal_contract_state.get("results") or ()
             )}
         except Exception as _cs_exc:  # noqa: BLE001 - doubt means no push
             logger.warning("[goal-contract] cover step failed: %r", _cs_exc)

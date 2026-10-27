@@ -195,6 +195,30 @@ def _changed_or_checked(result: str) -> bool:
     return changed or _checked_after_change(result)
 
 
+def change_awaits_check(fact: str, results: Iterable[str]) -> bool:
+    """True when ``fact`` asks for a change and a step of this turn already made one
+    (a change tool ran ok): what the fact still lacks is ONE passing run of the code
+    or its tests, not the work again. Live c05 2026-10-27: a 2-step plan (read, edit)
+    left the fact open, the streak gate re-planned from the request and 3 new steps
+    read, edited and checked again - reply 51 s against a 25 s standard."""
+    if not _asks_for_change(fact):
+        return False
+    from backend.agent.node_executor import _CHANGE_TOOLS
+
+    return any(
+        tool in _CHANGE_TOOLS and ok == "ok"
+        for res in (results or ()) for tool, _t, ok in _ACTION_RE.findall(str(res or ""))
+    )
+
+
+def cover_goal(fact: str, results: Iterable[str]) -> str:
+    """The goal of the step that covers an open fact (the kernel's cover push)."""
+    if change_awaits_check(fact, results):
+        return (f"Run the code or its tests to check the change already made for: {str(fact)[:300]}. "
+                "Change the files again only if that check fails.")
+    return f"Cover the open required fact: {str(fact)[:300]}"
+
+
 @dataclass(frozen=True)
 class Contract:
     """The goal contract: floor (required) + ceiling (discovered) + version."""
