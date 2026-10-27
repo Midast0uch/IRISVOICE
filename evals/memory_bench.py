@@ -69,6 +69,17 @@ def _queries(n: int, seed: int) -> list:
     return rows[:n]
 
 
+def _fold_filter(con) -> str:
+    """' AND folded_into IS NULL' when the store has the column (REQ-4 AC2):
+    a folded near-duplicate is not a candidate; its canonical row is."""
+    try:
+        if "folded_into" in {r[1] for r in con.execute("PRAGMA table_info(context_chunks)")}:
+            return " AND folded_into IS NULL"
+    except Exception:
+        pass
+    return ""
+
+
 def _load(con):
     """Every chunk: rowid, session, type, zone, backend, timestamp, vector.
 
@@ -81,7 +92,7 @@ def _load(con):
     for rid, sid, ctype, zone, backend, ts, blob, code, scale in con.execute(
             "SELECT rowid, session_id, chunk_type, zone, embedding_backend, timestamp, embedding, "
             "vec_i8, vec_scale FROM context_chunks "
-            "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL"):
+            "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL" + _fold_filter(con)):
         if blob and not len(blob) % 4:
             vec = np.frombuffer(blob, dtype="<f4")
         else:
@@ -110,9 +121,13 @@ def _pct(xs, p):
 
 
 # REQ-3 / T13: the words a user actually types back. Each case is built from a
-# REAL chunk and asks one question: did the candidate stage bring the SOURCE row
-# back for its own literal token? Meaning-only recall is the "old" number; the
-# FTS union is the "new" one.
+# REAL chunk and asks one question: did the candidate stage bring the row that
+# carries the literal back? Meaning-only recall is the "old" number; the FTS
+# union is the "new" one.
+# REQ-4 AC2 made the unit fold-aware: a folded row's representative is its
+# CANONICAL row, so a case hits when the source or its canonical is a candidate.
+# The pool is the newest 20,000 recallable rows; a one-time store sweep (the
+# fold) shifts the case set, so the words standard is re-recorded after one.
 _WORD_PATTERNS = (
     re.compile(r"\b([A-Za-z0-9_\-]{3,}\.(?:py|tsx|ts|md|json|yaml|yml|db|log))\b"),
     re.compile(r"\b([0-9a-f]{12,32})\b"),
@@ -123,8 +138,8 @@ _WORD_PATTERNS = (
 def _words_cases(con, limit: int = 40, seed: int = 11) -> list:
     rows = con.execute(
         "SELECT rowid, content FROM context_chunks "
-        "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL "
-        "ORDER BY rowid DESC LIMIT 20000"
+        "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL" + _fold_filter(con) +
+        " ORDER BY rowid DESC LIMIT 20000"
     ).fetchall()
     random.Random(seed).shuffle(rows)
     cases = []
@@ -229,6 +244,20 @@ def main() -> int:
         hit_old = hit_new = hit_any = 0
         uniq_n = uniq_hit = 0
         wms = []
+        # REQ-4 AC2: a folded source row's representative is its canonical row
+        canon_of = {}
+        try:
+            for rid_, fid_ in con.execute(
+                    "SELECT rowid, folded_into FROM context_chunks WHERE folded_into IS NOT NULL"):
+                canon_of[rid_] = fid_
+            if canon_of:
+                ids_ = list({f for f in canon_of.values()})
+                id_to_rowid = dict(con.execute(
+                    "SELECT id, rowid FROM context_chunks WHERE id IN (%s)"
+                    % ",".join("?" * len(ids_)), ids_).fetchall())
+                canon_of = {k: id_to_rowid[v] for k, v in canon_of.items() if v in id_to_rowid}
+        except Exception:
+            canon_of = {}
         wvecs = [emb.encode_with_meta(tok) for _rid, tok in wcases]
         for (rid, tok), qm in zip(wcases, wvecs):
             t = time.perf_counter()
@@ -236,9 +265,10 @@ def main() -> int:
             kw = set(chunk_fts.search(
                 con, tok, limit=chunk_fts.KEYWORD_CANDIDATES))
             wms.append((time.perf_counter() - t) * 1e3)
+            reps = {rid} | ({canon_of[rid]} if rid in canon_of else set())   # source or its canonical
             if rid in near:
                 hit_old += 1
-            if rid in near or rid in kw:
+            if reps & (near | kw):
                 hit_new += 1
             if kw:
                 hit_any += 1
@@ -247,7 +277,7 @@ def main() -> int:
                 ('"%s"' % tok,)).fetchone()[0]
             if n_rows <= 5:
                 uniq_n += 1
-                if rid in near or rid in kw:
+                if reps & (near | kw):
                     uniq_hit += 1
         report["words"] = {
             "cases": len(wcases),
@@ -331,6 +361,12 @@ def main() -> int:
         cov = vector_compress.coverage(con)
     except Exception:
         cov = {}
+    try:
+        from backend.memory import fold_chunks
+
+        report["folded"] = fold_chunks.counts(con)
+    except Exception:
+        pass
     compress_report = {"int8_bytes": vector_quant.I8_BYTES + 8,
                        "fingerprint_bytes": vector_quant.FP_BYTES, "types": {}}
     for name, r in per_type.items():
@@ -399,14 +435,16 @@ def main() -> int:
         if s_words.get("unique_reach_new") is not None and (
                 w.get("unique_reach_new") or 0) < s_words["unique_reach_new"] - 0.02:
             bad.append(f"words: unique_reach {w.get('unique_reach_new')} < standard {s_words['unique_reach_new']} - 0.02")
-        # REQ-4 AC1: a type the bench cleared keeps int8 scoring within 0.02. If
-        # it slips, the float must come back for that type - do not lower the bar.
+        # REQ-4 AC1: the contract is the DELTA - int8 scoring must not fall more
+        # than 0.02 below float for a type whose float was dropped. The absolute
+        # recall moves with the row population (a fold changes it); the delta
+        # isolates precision, which is what AC1 bounds.
         s_comp = std["memory"].get("compression") or {}
         for t, v in ((report.get("compression") or {}).get("types") or {}).items():
-            s = s_comp.get(t) or {}
-            if s.get("keep_float") is False and v["recall@10_int8"] < s["recall@10_int8"] - 0.02:
-                bad.append(f"compression[{t}]: int8 recall {v['recall@10_int8']} < standard "
-                           f"{s['recall@10_int8']} - 0.02 (float must return for this type)")
+            if v["delta"] < -0.02:
+                bad.append(f"compression[{t}]: int8 recall {v['recall@10_int8']} is "
+                           f"{-v['delta']:.4f} below float {v['recall@10_float']} "
+                           "(> 0.02; the float must return for this type)")
         s_bpr = std["memory"].get("vector_bytes_per_row")
         bpr = (report.get("bytes_per_chunk") or {}).get("live_vector_bytes_per_row")
         if s_bpr and bpr and bpr > s_bpr * 1.05 + 8:

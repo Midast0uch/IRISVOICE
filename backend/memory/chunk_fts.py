@@ -150,6 +150,13 @@ def search(conn, query: str, *, session_id: Optional[str] = None,
         "WHERE context_chunks_fts MATCH ?",
     ]
     params: List[object] = [match]
+    # REQ-4 AC2: a folded near-duplicate is not a candidate. The probe keeps a
+    # store that predates the column working (meaning only, no error counted).
+    try:
+        if "folded_into" in {r[1] for r in conn.execute("PRAGMA table_info(context_chunks)")}:
+            sql.append("AND context_chunks.folded_into IS NULL")
+    except Exception:  # noqa: BLE001 - the filter is an optimisation, not a gate
+        pass
     if session_id:
         sql.append("AND context_chunks.session_id = ?")
         params.append(session_id)

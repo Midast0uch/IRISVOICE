@@ -445,6 +445,9 @@ class EpisodicStore:
             ("vec_fp",          "BLOB"),
             ("vec_i8",          "BLOB"),
             ("vec_scale",       "REAL"),
+            # REQ-4 AC2 (T15): a folded near-duplicate points at its canonical
+            # row; recall reads folded_into IS NULL only (fold_chunks.py).
+            ("folded_into",      "TEXT"),
         ]
         for col, col_def in migrations:
             if col not in existing:
@@ -1090,7 +1093,11 @@ class EpisodicStore:
             where_clauses.append(f"zone IN ({placeholders})")
             params_list.extend(zones)
 
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        # REQ-4 AC2: a folded near-duplicate is not a candidate - its canonical
+        # row carries the content. The fold keeps the row (a reference, not a
+        # delete), so unfold() puts it back and this filter alone changes.
+        where_clauses.append("folded_into IS NULL")
+        where_sql = f"WHERE {' AND '.join(where_clauses)}"
         _cols = "id, content, embedding, timestamp, embedding_backend, zone, vec_i8, vec_scale"
 
         # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
@@ -1134,7 +1141,8 @@ class EpisodicStore:
                 for _part in range(0, len(_near), 500):
                     _ids = _near[_part:_part + 500]
                     rows += [r for r in self.db.execute(
-                        f"SELECT {_cols} FROM context_chunks WHERE rowid IN ({','.join('?' * len(_ids))})",
+                        f"SELECT {_cols} FROM context_chunks "
+                        f"WHERE rowid IN ({','.join('?' * len(_ids))}) AND folded_into IS NULL",
                         _ids,
                     ).fetchall() if r[0] not in _seen]
         except Exception as e:

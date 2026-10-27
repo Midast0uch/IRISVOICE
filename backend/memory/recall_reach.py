@@ -74,9 +74,12 @@ class ChunkFingerprints:
         # REQ-4 AC1: a row may carry only the 128-byte fingerprint (the float is
         # dropped for a chunk type the bench cleared). 1,152 B/row instead of
         # 4,096 - the warm-up reads the store ~3.5x faster.
+        # REQ-4 AC2: a folded near-duplicate is never a candidate; its canonical
+        # row carries the content, so the index does not hold the copies.
         rows = conn.execute(
             "SELECT rowid, session_id, chunk_type, zone, embedding_backend, vec_fp, embedding "
-            "FROM context_chunks WHERE rowid > ? AND (vec_fp IS NOT NULL OR embedding IS NOT NULL) "
+            "FROM context_chunks WHERE rowid > ? AND folded_into IS NULL "
+            "AND (vec_fp IS NOT NULL OR embedding IS NOT NULL) "
             "ORDER BY rowid LIMIT ?", (after, FP_BATCH),
         ).fetchall()
         vecs, meta = [], []
