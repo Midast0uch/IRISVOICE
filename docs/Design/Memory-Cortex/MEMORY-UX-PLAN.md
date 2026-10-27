@@ -1,5 +1,10 @@
 # Memory Cortex — the functional UX plan
 
+> **Status: DONE (2026-10-27).** Every item of the MISSING column in §14 is built, and the three items built
+> but never checked live (the thread fan click, a drag onto the chat, the clipboard copy) were checked live. The
+> PARTIAL column in §14 lists polish beyond the plan's DONE lines - items that exist in a simpler form; they are
+> follow-up work, not gaps.
+
 Owner direction, 2026-10-21:
 
 > "The cortex orb and timeline now are much closer to the vision… but when it comes to functionality and UX we are
@@ -382,7 +387,7 @@ the black-screen bug proved that the in-app browser can hide a GPU-specific fail
 - Reduced motion and reduced transparency honoured everywhere; the white void on entry becomes a quick fade.
 - Privacy: the memory never leaves the machine; a copied deep link holds ids, never content.
 
-## 14. Status against this plan (audit 2026-10-26)
+## 14. Status against this plan (audit 2026-10-26; closed 2026-10-27)
 
 The phase DONE lines of §12 were met, but the plan itself is NOT complete. An item-by-item audit of the code (engine,
 markup, MemorySurface, the API and the chat side) found the gaps below. Fixed the same day: the `?` control sheet and
@@ -402,13 +407,23 @@ conversations carry one).
 | 4.5 chat → memory | — (thread orbit Alt+click and the front thread's `◎` open `thread:<id>` = the braid fanned) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
 | 4.6 memory → chat | — (drag: a "⠿ drag" grip on a claim, an artifact and a strand carries application/x-iris-ref; the chat's drop makes the chip) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
 | 5 | — (deep links built: "⧉ link" in the crumb copies <app>/?memory=<address>; the app opens it on load and on a click anywhere in the app) | the back stack is structural (one level out), not a recorded stack |
-| 6.1 | long jumps through a fragment tunnel (a jump into or out of a corridor already passes the pale-void assembly; a claim-to-claim jump in the cortex is two 1.2 s flights) | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
+| 6.1 | — (a long jump to a claim passes a fragment tunnel: live timeline -> a claim in another territory, tunnel 157-891 ms, claim focused at 543 ms; was ~2.6 s of chained flights) | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
 | 6.3 | — (a new claim: landmark.save taps landmark_update "crystallized"; rings close in on the live territory + the ticker line. Turn end: the live strand's bead settles with one ring when its moments stop) | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |
 | 8 timeline | — (a strand not in the snapshot pulses as one new bead at "now"; click = continue in chat) | per-turn arches |
 | 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
 | 10 data | decided 2026-10-27: `/health` = `/api/memory/overview` + the snapshot's meta (last integrity pass, fading, ghosts); WS `recall` and `integrity_pass` ride `memory_event` (RECALL_*, LANDMARK_DISSOLVED / MERGED, MEMORY_PRUNED) and `landmark_update`; `/strands?thread=` waits for a consumer - the snapshot carries each strand's thread, it is needed only when the view loads strands beyond its 48-thread window | `/turn/{conv}/{turn}` path form; `/claims` filters |
 | 13 details | — | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
+
+Live checks that closed the plan (2026-10-27, the dashboard pane, real input where the pane allows it):
+- the thread fan: a strand's card link "its thread · 7 strands" (real click) moved "direct repro 4" from x 627 to 683
+  round the axis; "fold ... back" (real click) put it back. The braid line itself is unreachable when a thread's strands
+  were made minutes apart (it lies inside the beads' 26 px hover zones) - hence the card link.
+- drag to the chat: the claim card's grip carried {address: claim:98e6568b4e74, label} in a real DataTransfer and the
+  chat's drop made the composer chip `claim:98e6568b4e74` (kind knows), no file overlay. A mouse drag could not be
+  driven: the pane cannot show the chat and the memory side by side at a usable scale.
+- the clipboard: a real click on "⧉ link" wrote http://127.0.0.1:3000/?memory=claim%3A98e6568b4e74 and showed
+  "link copied ✓".
 
 Measured on the way (2026-10-26): the first snapshot after a restart took 404 s, cold on the C: hard disk (recall
 156 s, claims 111 s, counts 51 s); warm, every part is milliseconds. A later open 30 min after the warm-up took 70 s
