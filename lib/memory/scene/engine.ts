@@ -2655,7 +2655,7 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
   const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':/^toolpath_task_/.test(l.cls)?'a way that worked for a task':'');
   const how=claimHow(l);
   return `<div class="k">claim · ${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''}${cw?' · '+esc(cw):''} · ${syncHTML(syncClaim(l))}</div>
-    <div class="t">${esc(l.claim)}</div>
+    <div class="t" title="${esc(l.claim)}">${esc(l.claim)}</div>
     <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times${l.last_activated?' · last used '+ago(l.last_activated):''} · ${l.last_verified?'last confirmed '+ago(l.last_verified):'not confirmed yet'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>

@@ -36,7 +36,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory /* leader-line labels float on the scene: a dark halo behind each glyph keeps them readable */
 .anno:not(.cell){text-shadow:0 0 3px #000,0 0 8px #000,0 0 16px rgba(0,0,0,.9)}
 .iris-memory /* cell: the point swells into an organic cell with the full text inside (artifact-cell language) */
-.anno.cell{max-width:none;width:330px;padding:46px 44px 48px;text-align:center;
+.anno.cell{max-width:none;width:340px;padding:64px 46px 70px;text-align:center;
   background:radial-gradient(ellipse at 50% 42%,rgba(9,20,30,.96),rgba(3,8,14,.93) 72%);
   border:1px solid var(--cell,#7fe8ff);
   box-shadow:inset 0 0 22px -6px var(--cell,#7fe8ff),0 0 26px -6px var(--cell,#7fe8ff),0 0 70px -24px var(--cell,#7fe8ff);
@@ -46,9 +46,12 @@ export const MEMORY_CSS = String.raw`
   animation:membrane 7s ease-in-out infinite alternate}
 .iris-memory .anno.cell.on{transform:scale(1);opacity:1}
 .iris-memory .anno.cell .k{color:var(--cell,#7fe8ff)}
-.iris-memory .anno.cell .t{font-size:17.5px;color:#fff;margin:.45em 0 .6em}
+.iris-memory .anno.cell .t{font-size:17.5px;color:#fff;margin:.45em 0 .6em;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
 .iris-memory .anno.cell .m{font-size:11px;color:#c3d6df}
-.iris-memory .anno.cell .go{margin-top:.9em}
+.iris-memory .anno.cell .go{margin:.8em .45em 0}
+/* the blob's edge curves in: its first and last rows stay narrow so they sit inside the shape (owner: text did not fit) */
+.iris-memory .anno.cell .k,.iris-memory .anno.cell .acts{max-width:80%;margin-left:auto;margin-right:auto}
+.iris-memory .anno.cell .acts{margin-top:12px;line-height:1.7}
 @keyframes membrane{0%{border-radius:47% 53% 44% 56%/55% 45% 55% 45%}50%{border-radius:55% 45% 52% 48%/46% 56% 44% 54%}
   100%{border-radius:44% 56% 49% 51%/52% 48% 57% 43%}}
 @media (prefers-reduced-motion:reduce){.iris-memory .anno.cell{animation:none;transition:opacity .2s}}
