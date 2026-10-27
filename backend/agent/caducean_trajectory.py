@@ -866,15 +866,18 @@ def _u_band(u_mag: float) -> str:
 
 
 def format_coords(x: float, y: float, xi: float, u: float) -> str:
-    """Canonical 4D coordinate string with 2 fixed decimal places.
+    """Canonical 4D coordinate string with 6 fixed decimal places.
 
-    Format: ``"x.xx,y.yy,xi.xx,u.xx"``
+    Format: ``"x.xxxxxx,y.yyyyyy,xi.xxxxxx,u.xxxxxx"``
 
     Used by the Immortus chain and document storage for trajectory-proximity
     queries.  Round-trips through ``parse_coords`` with no precision loss
-    beyond the 2 decimal places.
+    beyond the 6 decimal places. Was 2 places until 2026-10-26 (owner): the
+    chain then held 1,221 distinct positions over 31,884 rows, one of them on
+    6,595 rows. Every reader parses floats (parse_coords, iris_ffi proximity,
+    event_alphabet.quantize_state bins), so 2-place rows already stored stay valid.
     """
-    return f"{x:.2f},{y:.2f},{xi:.2f},{u:.2f}"
+    return f"{x:.6f},{y:.6f},{xi:.6f},{u:.6f}"
 
 
 def parse_coords(s: str) -> Tuple[float, float, float, float]:

@@ -25,7 +25,7 @@ from backend.agent.caducean_trajectory import format_coords, parse_coords
 
 SAMPLE_COORD = {"x": 0.12, "y": 0.34, "xi": 0.5, "u": 0.7}
 EXPECTED_COORD_STR = format_coords(0.12, 0.34, 0.5, 0.7)
-# "0.12,0.34,0.50,0.70"
+# "0.120000,0.340000,0.500000,0.700000"
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────
@@ -235,10 +235,10 @@ class TestW4CoordinateContract:
         assert round(u, 2) == 0.70
 
     def test_w4_format_immutability(self):
-        """2-decimal format is a stable contract (CU-7)."""
+        """6-decimal format is a stable contract (CU-7; 2 until 2026-10-26)."""
         import re
         s = format_coords(0.12, 0.34, 0.5, 0.7)
         assert re.match(
-            r"^-?\d+\.\d{2},-?\d+\.\d{2},-?\d+\.\d{2},-?\d+\.\d{2}$",
+            r"^-?\d+\.\d{6},-?\d+\.\d{6},-?\d+\.\d{6},-?\d+\.\d{6}$",
             s,
         ), f"format {s!r} does not match canonical pattern"

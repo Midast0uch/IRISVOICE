@@ -249,8 +249,8 @@ Expect `UNEXERCISED (no coords_from written yet) 0`.
 > *"Search the web for how WAL mode works in SQLite and save the findings as a markdown document."*
 
 **Re-read the endpoint.** `memory.total_populated_coords_from` must now be **> 0**, and
-`coordinate_tables[].sample` should show canonical 2-decimal coordinates like
-`"0.12,0.34,0.50,0.70"`.
+`coordinate_tables[].sample` should show canonical 6-decimal coordinates (2 until 2026-10-26) like
+`"0.120000,0.340000,0.500000,0.700000"`.
 
 **PASS (step 1)** — count moved from 0.
 **FAIL** — still 0. The write path never fires; capture which tool ran and report. This is the

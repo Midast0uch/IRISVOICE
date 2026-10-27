@@ -159,7 +159,7 @@ def test_quick_search_lands_three_homes_from_a_lane_not_the_answer_path(mem, mon
     row = mem.chain[0]
     assert row["nbl_outcome"] == "research" and row["file_path"] == doc_id
     assert row["thread_id"] == "conv-A" and row["topic_domain"]
-    assert row["coords_from"] == row["coords_to"] == "1.00,0.00,1.05,0.20"
+    assert row["coords_from"] == row["coords_to"] == "1.000000,0.000000,1.050000,0.200000"
     ref = json.loads(row["result"])
     assert len(row["result"]) < 2048 and ref["document_id"] == doc_id
     assert "claims" not in ref and "dashboard" not in ref, "chain row must be a reference"

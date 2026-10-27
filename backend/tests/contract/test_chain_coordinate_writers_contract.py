@@ -24,8 +24,8 @@ import pytest
 from backend.agent.caducean_trajectory import format_coords
 
 COORD = {"x": 0.12, "y": 0.34, "xi": 0.5, "u": 0.7}
-COORD_STR = format_coords(0.12, 0.34, 0.5, 0.7)  # "0.12,0.34,0.50,0.70"
-_REAL = re.compile(r"^-?\d+\.\d{2},-?\d+\.\d{2},-?\d+\.\d{2},-?\d+\.\d{2}$")
+COORD_STR = format_coords(0.12, 0.34, 0.5, 0.7)  # "0.120000,0.340000,0.500000,0.700000"
+_REAL = re.compile(r"^-?\d+\.\d{6},-?\d+\.\d{6},-?\d+\.\d{6},-?\d+\.\d{6}$")
 
 
 class FakeRecorder:

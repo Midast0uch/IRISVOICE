@@ -3,7 +3,7 @@ Unit tests for format_coords / parse_coords (REQ-5).
 
 Verifies:
   - Round-trip: format_coords → parse_coords is exact for representative values
-  - Fixed 2-decimal precision (no more, no less)
+  - Fixed 6-decimal precision (no more, no less; 2 until 2026-10-26, owner)
   - parse_coords raises ValueError on malformed input
 """
 
@@ -24,28 +24,28 @@ from backend.agent.caducean_trajectory import format_coords, parse_coords
         (0.5, 0.25, 0.125, 0.0625),   # fractional
         (-0.5, -0.25, -0.125, -0.0625),  # negative fractional
         (123.45, 67.89, 0.01, 999.99),  # moderate magnitudes
-        (1.234, 5.678, 9.012, 3.456),  # >2 decimal digits → truncated
+        (1.2345678, 5.6789012, 9.0123456, 3.4567891),  # >6 decimal digits → rounded
         (0.001, 0.009, 0.099, 0.999),  # small values
         (-0.001, -0.009, -0.099, -0.999),  # negative small
     ],
 )
 def test_round_trip(x, y, xi, u):
-    """format_coords → parse_coords returns exact values (2-dec precision)."""
+    """format_coords → parse_coords returns exact values (6-dec precision)."""
     s = format_coords(x, y, xi, u)
     rx, ry, rxi, ru = parse_coords(s)
 
-    # Each field should match round(x, 2)
-    assert rx == pytest.approx(round(x, 2))
-    assert ry == pytest.approx(round(y, 2))
-    assert rxi == pytest.approx(round(xi, 2))
-    assert ru == pytest.approx(round(u, 2))
+    # Each field should match round(x, 6)
+    assert rx == pytest.approx(round(x, 6), abs=1e-9)
+    assert ry == pytest.approx(round(y, 6), abs=1e-9)
+    assert rxi == pytest.approx(round(xi, 6), abs=1e-9)
+    assert ru == pytest.approx(round(u, 6), abs=1e-9)
 
 
-# ── Precision: exactly 2 decimal places ───────────────────────────────────
+# ── Precision: exactly 6 decimal places ───────────────────────────────────
 
 
-def test_exactly_two_decimals():
-    """format_coords always produces exactly 2 digits after the decimal."""
+def test_exactly_six_decimals():
+    """format_coords always produces exactly 6 digits after the decimal."""
     s = format_coords(1.0, 2.0, 3.0, 4.0)
     # Pattern: number.number,number.number,number.number,number.number
     parts = s.split(",")
@@ -53,21 +53,21 @@ def test_exactly_two_decimals():
     for p in parts:
         assert "." in p, f"Missing decimal point in {p!r}"
         integer_part, fractional_part = p.split(".")
-        assert len(fractional_part) == 2, (
-            f"Expected 2 fractional digits, got {len(fractional_part)} in {p!r}"
+        assert len(fractional_part) == 6, (
+            f"Expected 6 fractional digits, got {len(fractional_part)} in {p!r}"
         )
         # Integer part may have leading minus sign
         assert integer_part.lstrip("-").isdigit(), f"Non-numeric integer part in {p!r}"
 
 
 def test_large_magnitudes():
-    """Large values still produce valid 2-decimal format."""
+    """Large values still produce valid 6-decimal format."""
     s = format_coords(10000.0, -5000.0, 0.0, 3.14159)
     rx, ry, rxi, ru = parse_coords(s)
     assert rx == pytest.approx(10000.00)
     assert ry == pytest.approx(-5000.00)
     assert rxi == pytest.approx(0.00)
-    assert ru == pytest.approx(3.14)
+    assert ru == pytest.approx(3.14159, abs=1e-9)
 
 
 # ── Malformed input ───────────────────────────────────────────────────────

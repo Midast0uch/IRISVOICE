@@ -81,7 +81,7 @@ def test_ws_path_recall_via_active_conversation_mapping(conn, recorder):
     coord = recorder.get_latest_coordinate(recording_session_id)
     assert coord is not None
     s = format_coords(coord["x"], coord["y"], coord["xi"], coord["u"])
-    assert s == "1.00,2.00,0.50,0.70"
+    assert s == "1.000000,2.000000,0.500000,0.700000"
 
     # Lookup by conversation_id alone returns None (no records under that key)
     coord_by_conv = recorder.get_latest_coordinate(conversation_id)
@@ -122,7 +122,7 @@ def test_multi_step_trajectory_recall(conn, recorder):
     s = format_coords(latest["x"], latest["y"], latest["xi"], latest["u"])
     rx, ry, rxi, ru = format_coords(4.0, 8.0, 0.4, 0.04).split(",")
     # (float comparison via split/float is exact at 2 decimals)
-    assert s == "4.00,8.00,0.40,0.04"
+    assert s == "4.000000,8.000000,0.400000,0.040000"
 
 
 def test_no_trajectory_returns_none(conn, recorder):
