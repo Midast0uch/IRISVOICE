@@ -2414,6 +2414,10 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
       e.onmouseenter=()=>this.lbl.textContent=LM[st.li].claim;this.marks.push({e,st})});
     const endM=mk('circle',{cx:W-8,cy:14,r:6,fill:'rgba(2,3,6,.6)',stroke:'#7fe8ff','stroke-dasharray':'2 2','pointer-events':'all'});
     endM.onclick=()=>{cam.tpT=.95;cam.idle=-9};endM.onmouseenter=()=>this.lbl.textContent='the doorway: the next thread, or back to the beginning';
+    // past the doorway, a chat strand ends in the chat (UX-PLAN 4.4): its newest turn, the same event the crumb sends
+    if((T.session.messages||[]).length){const go=mk('text',{x:W-2,y:1,'text-anchor':'end',fill:'#7fe8ff','font-size':11,'pointer-events':'all',style:'cursor:pointer'});
+      go.textContent='↗ chat';go.onclick=()=>window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:T.session.id}}));
+      go.onmouseenter=()=>this.lbl.textContent='continue in chat: open this conversation at its newest turn'}
     this.pos=mk('path',{d:'M0,0',fill:'#f4fbff'});this.W=W;this.lbl.textContent=T.session.objective},
   update(tp){if(!this.pos||!tunnel)return;const x=8+clamp(tp+.02,0,1)*(this.W-16);this.pos.setAttribute('d',`M${x-4},29 L${x+4},29 L${x},23 Z`);
     for(const m of this.marks){const on=tunnel.sel<0||m.st.li===tunnel.sel||tunnel.linked.has(tunnel.sel+'-'+m.st.li)||tunnel.linked.has(m.st.li+'-'+tunnel.sel);
