@@ -17,6 +17,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory svg#leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 .iris-memory svg#leaders path{fill:none;stroke:rgba(212,236,246,.38);stroke-width:1}
 .iris-memory svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
+.iris-memory svg#leaders circle.ghost{fill:rgba(212,236,246,.04);stroke:rgba(212,236,246,.4);stroke-width:1;stroke-dasharray:2 2;pointer-events:auto;cursor:help}
 .iris-memory #labels,.iris-memory #annos{position:absolute;inset:0;pointer-events:none}
 .iris-memory .rlabel{position:absolute;white-space:nowrap;font-size:11px;letter-spacing:.04em;color:var(--dim);
   transition:opacity .35s,color .25s;opacity:0}

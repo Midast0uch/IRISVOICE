@@ -503,6 +503,7 @@ if(!REG.length)REG.push('general');
 const REGI=Object.fromEntries(REG.map((d,i)=>[d,i]));
 const regOf=d=>REGI[d]??REGI.general??0;
 M.landmarks.forEach(l=>{l.dom=regOf(l.domain)});
+M.ghosts=(M.ghosts||[]).filter(g=>g&&g.id&&g.claim);M.ghosts.forEach(g=>{g.dom=regOf(mapDom(g.domain||'general'))});
 // nested sub-territories: the children of the sector registry that sit under a drawn territory (depth 1; at most 12)
 const SUB=(M.sectorsOn?M.sectors.filter(s=>s.parent&&REGI[s.parent]!=null):[]).sort((a,b)=>(b.members||0)-(a.members||0)).slice(0,12)
   .map(s=>({key:s.key,label:s.label||domWord(String(s.key).split('/').pop()),status:s.status||'proven',members:s.members||0,ri:REGI[s.parent]}));
@@ -2318,6 +2319,19 @@ function placeRegionLabels(show){
     const w=L.el.offsetWidth;const left=clamp(side>0?lx+6:lx-6-w,8,innerWidth-w-8);
     L.el.style.left=left+'px';L.el.style.top=(ly-8)+'px';L.el.style.textAlign=side>0?'left':'right';
     L.p.setAttribute('d',`M${a.x},${a.y}L${side>0?Math.min(lx,left-6):Math.max(lx,left+w+6)},${ly}`);L.p.classList.toggle('hot',state.hoverReg===i)})}
+// GHOSTS (UX-PLAN 7.5): claims the integrity pass dissolved this week, as faint dashed outlines on their territory's skin
+// while the health view is on; hover names the claim and why it went. They read only; the snapshot drops them after a week.
+const ghostEls=M.ghosts.map((g,k)=>{const c=document.createElementNS('http://www.w3.org/2000/svg','circle');c.setAttribute('class','ghost');c.setAttribute('r','5');
+  let h=0;for(const ch of g.id)h=(h*31+ch.charCodeAt(0))>>>0;   // a stable spot near the territory's centre, from the id
+  const v=regC[g.dom]||regC[0],t1=new V3(Math.abs(v.y)>.9?1:0,Math.abs(v.y)>.9?0:1,0).cross(v).normalize(),t2=v.clone().cross(t1);
+  const a=(h%360)*Math.PI/180,r=.08+((h>>>9)%100)/100*.22;
+  g.pos=v.clone().addScaledVector(t1,Math.cos(a)*r).addScaledVector(t2,Math.sin(a)*r).normalize().multiplyScalar(R*1.01);
+  c.addEventListener('mouseenter',()=>setAnno('hover','ghost'+k,()=>project(g.pos),ghostCard(g)));
+  c.addEventListener('mouseleave',()=>lingerClear('hover'));c.style.display='none';svg.appendChild(c);return c});
+function ghostCard(g){return `<div class="k">dissolved ${esc(ago(g.dissolved))} · its outline stays a week</div><div class="t">${esc(g.claim.length>90?g.claim.slice(0,89)+'…':g.claim)}</div><div class="m">${esc(g.fate)}</div>`}
+function placeGhosts(show){const cd=camera.position.clone().normalize();
+  M.ghosts.forEach((g,k)=>{const c=ghostEls[k],a=show&&g.pos.clone().normalize().dot(cd)>.1?project(g.pos):null;
+    if(!a||!a.front){c.style.display='none';return}c.style.display='';c.setAttribute('cx',a.x.toFixed(1));c.setAttribute('cy',a.y.toFixed(1))})}
 const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','oracle']];
 LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
   a.onmouseenter=()=>scramble(a,w,14);$('lenses').appendChild(a)});
@@ -2948,7 +2962,7 @@ function setHealth(on){state.health=on;
     if(!on){SU.uRegCol.value[i].copy(regColOwn[i]);return}
     SU.uRegCol.value[i].copy(new THREE.Color('#ffb547').lerp(new THREE.Color('#7fe8ff'),pv).lerp(new THREE.Color('#ff4a3d'),Math.min(1,bad*2)))});
   const L=M.landmarks,c=M.meta?.counts||{};
-  healthEl.innerHTML=on?`health · <em>${fmt(L.filter(l=>l.tier!=='candidate').length)}</em> proven · <em>${fmt(L.filter(l=>l.tier==='candidate').length)}</em> still learning · <span class="w">${fmt(L.filter(l=>l.contradictions>0).length)} contradicted</span> · <em>${fmt(c.landmarks_absorbed||0)}</em> cleaned or merged in all<br><span class="dim">cyan holds · amber learning · red contradicted &nbsp; k · back to the territories' colours</span>`:'';
+  healthEl.innerHTML=on?`health · <em>${fmt(L.filter(l=>l.tier!=='candidate').length)}</em> proven · <em>${fmt(L.filter(l=>l.tier==='candidate').length)}</em> still learning · <span class="w">${fmt(L.filter(l=>l.contradictions>0).length)} contradicted</span> · <em>${fmt(c.landmarks_absorbed||0)}</em> cleaned or merged in all · <em>${fmt(M.ghosts.length)}</em> dissolved this week (dashed outlines)<br><span class="dim">cyan holds · amber learning · red contradicted &nbsp; k · back to the territories' colours</span>`:'';
   healthEl.classList.toggle('on',on)}
 function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
   if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
@@ -3281,6 +3295,7 @@ const _frame=()=>{
     else{clearAnno('doorA');clearAnno('doorB')}}
   else{clearAnno('arrive');clearAnno('doorA');clearAnno('doorB')}
   // HUD
+  placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
   placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();

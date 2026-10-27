@@ -404,7 +404,7 @@ conversations carry one).
 | 5 | copy link / deep-link serialisation | the back stack is structural (one level out), not a recorded stack |
 | 6.1 | input interrupts a flight; long jumps through a fragment tunnel | the object does not travel (camera flights only); tweenPath 2.4–2.8 s (> 1.2 s); reduced motion is instant, not a 200 ms fade |
 | 6.3 | crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
-| 7 cortex | ghost outlines of dissolved claims | arbor lights end to end; uses bloom as arches; tether lit on focus |
+| 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |
 | 8 timeline | the live strand's pulse | strand card has no tags; per-turn arches |
 | 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
 | 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
@@ -419,4 +419,5 @@ Re-checked as BUILT (the audit missed them): claim → where it was learned (the
 labels with counts and "this week"; the card side rule (a card never covers its object). Built 2026-10-26: the live
 dot (the crumb shows one dot for 12 s after a live memory event or Oracle decision); hover intent 80 ms and card
 linger 250 ms; the territory health line (§7.2: claims by trust channel, how many fade under the decay law, the
-last cleaning pass - on the live store nothing fades yet: the longest idle span is 23 active days, every claim keeps >= 94%).
+last cleaning pass - on the live store nothing fades yet: the longest idle span is 23 active days, every claim keeps >= 94%). Ghost outlines (§7.5): in the health view (`k`) the claims dissolved this week show as dashed
+outlines on their territory; hover gives the claim and the reason (live: 60, all "too many different claims shared its place").

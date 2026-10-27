@@ -981,6 +981,8 @@ SNAPSHOT_PIN_LINKS = 4000
 SNAPSHOT_NODES = 600
 SNAPSHOT_NODE_EDGES = 4000
 SNAPSHOT_QUORUM = 80
+SNAPSHOT_GHOSTS = 60                          # dissolved claims the health view outlines (UX-PLAN 7.5)
+GHOST_DAYS = 7                                # ... for a week after the integrity pass dissolved them
 SNAPSHOT_RECALL_TURNS = 60
 # the topic-domain registry (memory_chain.topic_domain values): a pin may name one in its tags
 DOM_KEYS = ["general", "web", "science", "data", "finance", "ai", "design", "mobile", "systems", "devops", "security", "hardware"]
@@ -1476,6 +1478,34 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             quorum.reverse()
 
         lap("quorum")
+        # ghosts (UX-PLAN 7.5): claims the integrity pass dissolved in the last GHOST_DAYS, newest first, with the reason
+        # PLAN  SELECT ts, payload FROM memory_events WHERE family='memory' AND label='LANDMARK_DISSOLVED' AND ts > ? ORDER BY ts DESC
+        #       -> SEARCH memory_events USING INDEX idx_memory_events_label_ts (family=? AND label=? AND ts>?)
+        ghosts: list[dict] = []
+        if "memory_events" in have and lm_cols:
+            gone: dict[str, tuple] = {}
+            for ts, payload in con.execute("SELECT ts, payload FROM memory_events WHERE family = 'memory' "
+                                           "AND label = 'LANDMARK_DISSOLVED' AND ts > ? ORDER BY ts DESC LIMIT ?",
+                                           (time.time() - GHOST_DAYS * 86400, SNAPSHOT_GHOSTS)):
+                p = jload(payload, {})
+                lid = p.get("landmark") if isinstance(p, dict) else None
+                if isinstance(lid, str) and lid not in gone:
+                    gone[lid] = (ts, str(p.get("reason") or ""))
+            if gone:
+                # PLAN  SELECT … FROM mycelium_landmarks WHERE landmark_id IN (…) -> SEARCH USING INDEX sqlite_autoindex_…_1
+                g_rows = {r["landmark_id"]: r for r in con.execute(
+                    f"SELECT {pick_cols(lm_cols, ('landmark_id', 'label', 'micro_abstract_text', 'conversation_ref', 'created_at', 'last_activated', 'last_verified'))} "
+                    f"FROM mycelium_landmarks WHERE landmark_id IN ({_marks(len(gone))})", list(gone))}
+                for lid, (ts, reason) in gone.items():
+                    r = g_rows.get(lid)
+                    if r is None:
+                        continue
+                    touch = max(ts_of(r[c]) or 0.0 for c in ("created_at", "last_activated", "last_verified"))
+                    idle = int(round(clock.days_since(touch))) if clock is not None and touch else None
+                    ghosts.append({"id": lid, "claim": r["micro_abstract_text"] or (r["label"] or "").replace("_", " "),
+                                   "session": r["conversation_ref"], "dissolved": ts, "reason": reason,
+                                   "fate": _dissolved_fate(reason, idle), "domain": "general"})
+        lap("ghosts")
         # ⑩ recalls: what the memory gave the agent on each step of a turn (RECALL_DELIVERED, typed by
         # agent_kernel._der_recall_delivered) and whether it helped (RECALL_HELPED / RECALL_MISLED, same recall_trace_id).
         # refs are DER chain ids: resolved to the prior step they name (its thread, what it did, its tool, its result) - a
@@ -1556,7 +1586,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             "famCounts": fam_counts, "domCounts": dom_counts, "sessions": sessions, "events": out_events,
             "landmarks": landmarks, "edges": edges, "episodes": episodes, "artifacts": artifacts,
             "oracle": oracle, "mind": [], "sectors": sectors, "pins": pins, "spaces": spaces,
-            "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum, "recalls": recalls}
+            "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum, "recalls": recalls, "ghosts": ghosts}
 
 
 
@@ -2383,14 +2413,18 @@ def _cleaned_fates(cleaned: list[dict], merges: dict[str, str], by_id: dict[str,
             continue
         reason = (c.get("falsify") or "").replace("dissolved:", "").strip()
         idle = int(round(clock.days_since(c["touch"]))) if clock is not None and c.get("touch") else None
-        if reason == "no_credibility":
-            c["fate"] = "no use and no evidence" + (f" - last touched {_plural(idle, 'active day', 'active days')} ago" if idle is not None else "")
-        elif reason == "dangling_cluster":
-            c["fate"] = "its places on the map were gone"
-        elif reason == "hub_cluster":
-            c["fate"] = "too many different claims shared its place"
-        else:
-            c["fate"] = "cleaned by the integrity pass"
+        c["fate"] = _dissolved_fate(reason, idle)
+
+
+def _dissolved_fate(reason: str, idle: Optional[int]) -> str:
+    """The reason Kyudo wrote for dissolving a claim, in plain words."""
+    if reason == "no_credibility":
+        return "no use and no evidence" + (f" - last touched {_plural(idle, 'active day', 'active days')} ago" if idle is not None else "")
+    if reason == "dangling_cluster":
+        return "its places on the map were gone"
+    if reason == "hub_cluster":
+        return "too many different claims shared its place"
+    return "cleaned by the integrity pass"
 
 
 def _why(c: dict) -> str:
