@@ -28,7 +28,7 @@ import logging
 import os
 import threading
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +321,17 @@ def embed(text: str, timeout_s: float = 30.0) -> Optional[List[float]]:
 # comfortably inside the 512-token slot.
 _MAX_INPUT_CHARS = 1024
 
+# A char bound is NOT a token bound (measured 2026-10-27). The sidecar's
+# physical batch is 512 tokens and llama-server answers HTTP 500 for the WHOLE
+# array when one element is over it. Dense text - file paths, JSON, a DER step
+# output - runs at ~1.5 chars/token, so 1024 chars became 648 tokens and every
+# such chunk silently fell back to the hash vector (374 of 3,966 sampled
+# "lfm25-emb-350m" vectors had the fallback's zero signature). These are the
+# retry clips, tried only after the server rejects an input, so long prose keeps
+# its full 1024-char embed and only the dense tail shrinks.
+_RETRY_CLIPS = (640, 448, 320)
+RETRIES: Dict[str, int] = {"batch_retry": 0, "item_retry": 0, "gave_up": 0}
+
 
 def _clip(text: str) -> str:
     """Bound one input to the sidecar's per-slot context. Never raises."""
@@ -329,34 +340,21 @@ def _clip(text: str) -> str:
     return text[:_MAX_INPUT_CHARS]
 
 
-def embed_batch(texts: List[str], timeout_s: float = 60.0) -> List[Optional[List[float]]]:
-    """Many texts -> many vectors in ONE POST (llama-server accepts arrays).
-
-    Session 248: the pre-search path made 4-6 SEQUENTIAL single-text calls;
-    measured live, a batch of 6 costs 88ms total vs ~100ms EACH sequential —
-    and one round trip instead of N removes the per-call overhead entirely.
-    Returns one entry per input: a vector, or None for that input on failure
-    (never raises)."""
-    if not texts:
-        return []
-    if not ensure_running():
-        return [None] * len(texts)
+def _post_embeddings(texts: List[str], timeout_s: float) -> Optional[List[Optional[List[float]]]]:
+    """One POST. Vectors per item, or None when the server rejected the array."""
     try:
         r = _get_client().post(
             f"http://127.0.0.1:{_SIDECAR_PORT}/v1/embeddings",
-            json={"input": [_clip(t) for t in texts]},
+            json={"input": texts},
             timeout=timeout_s,
         )
-        r.raise_for_status()
+        if r.status_code != 200:
+            logger.debug("[EmbSidecar] embed HTTP %s: %s", r.status_code, r.text[:200])
+            return None
         data = r.json()["data"]
         # llama-server returns data sorted by index; be defensive anyway.
         by_index = {int(item["index"]): item["embedding"] for item in data}
-        out: List[Optional[List[float]]] = []
-        for i in range(len(texts)):
-            vec = by_index.get(i)
-            out.append(list(vec) if vec is not None else None)
-        touch()
-        return out
+        return [list(by_index[i]) if i in by_index else None for i in range(len(texts))]
     except Exception as exc:
         logger.debug("[EmbSidecar] embed_batch failed: %s", exc)
         # Connection may be poisoned after a server restart — reset the pool.
@@ -368,7 +366,63 @@ def embed_batch(texts: List[str], timeout_s: float = 60.0) -> List[Optional[List
             except Exception:
                 pass
             _client = None
+        return None
+
+
+def _embed_one_shrinking(text: str, timeout_s: float, *, skip_first: bool) -> Optional[List[float]]:
+    """Embed one text, shrinking it until the server's batch size accepts it."""
+    if not skip_first:
+        vecs = _post_embeddings([text], timeout_s)
+        if vecs and vecs[0] is not None:
+            return vecs[0]
+    for limit in _RETRY_CLIPS:
+        if limit >= len(text):
+            continue
+        RETRIES["item_retry"] += 1
+        vecs = _post_embeddings([text[:limit]], timeout_s)
+        if vecs and vecs[0] is not None:
+            logger.info(
+                "[EmbSidecar] dense input clipped %d -> %d chars to fit the slot "
+                "(a hash fallback here was silent before 2026-10-27)",
+                len(text), limit,
+            )
+            return vecs[0]
+    RETRIES["gave_up"] += 1
+    return None
+
+
+def embed_batch(texts: List[str], timeout_s: float = 60.0) -> List[Optional[List[float]]]:
+    """Many texts -> many vectors in ONE POST (llama-server accepts arrays).
+
+    Session 248: the pre-search path made 4-6 SEQUENTIAL single-text calls;
+    mea
+sured live, a batch of 6 costs 88ms total vs ~100ms EACH sequential —
+    and one round trip instead of N removes the per-call overhead entirely.
+    Returns one entry per input: a vector, or None for that input on failure
+    (never raises)."""
+    if not texts:
+        return []
+    if not ensure_running():
         return [None] * len(texts)
+    clipped = [_clip(t) for t in texts]
+    out = _post_embeddings(clipped, timeout_s)
+    if out is not None and all(v is not None for v in out):
+        touch()
+        return out
+    # The server rejects the WHOLE array when one element is over its slot.
+    # Retry only the rejected items, shrinking until they fit (see _RETRY_CLIPS).
+    RETRIES["batch_retry"] += 1
+    whole_failed = out is None
+    known = out or [None] * len(clipped)
+    fixed: List[Optional[List[float]]] = []
+    for text, vec in zip(clipped, known):
+        if vec is not None:
+            fixed.append(vec)
+        else:
+            fixed.append(_embed_one_shrinking(text, timeout_s, skip_first=whole_failed))
+    if any(v is not None for v in fixed):
+        touch()
+    return fixed
 
 
 # ── Ripple coverage ─────────────────────────────────────────────────────────

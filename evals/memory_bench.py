@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sqlite3
 import statistics
 import sys
@@ -36,7 +37,7 @@ sys.path.insert(0, str(ROOT))
 
 import numpy as np  # noqa: E402
 
-from backend.memory import recall_reach  # noqa: E402
+from backend.memory import chunk_fts, recall_reach  # noqa: E402
 
 FILTERS = {
     # the three production callers (research_memory.py:482, agent_kernel.py:4046, recall_decoder.py:436)
@@ -97,11 +98,45 @@ def _pct(xs, p):
     return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))] if xs else None
 
 
+# REQ-3 / T13: the words a user actually types back. Each case is built from a
+# REAL chunk and asks one question: did the candidate stage bring the SOURCE row
+# back for its own literal token? Meaning-only recall is the "old" number; the
+# FTS union is the "new" one.
+_WORD_PATTERNS = (
+    re.compile(r"\b([A-Za-z0-9_\-]{3,}\.(?:py|tsx|ts|md|json|yaml|yml|db|log))\b"),
+    re.compile(r"\b([0-9a-f]{12,32})\b"),
+    re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*Error)\b"),
+)
+
+
+def _words_cases(con, limit: int = 40, seed: int = 11) -> list:
+    rows = con.execute(
+        "SELECT rowid, content FROM context_chunks WHERE embedding IS NOT NULL "
+        "ORDER BY rowid DESC LIMIT 20000"
+    ).fetchall()
+    random.Random(seed).shuffle(rows)
+    cases = []
+    for rid, text in rows:
+        if len(cases) >= limit:
+            break
+        for pat in _WORD_PATTERNS:
+            m = pat.search(text or "")
+            if not m:
+                continue
+            token = m.group(1)
+            if len(token) < 6 or (text or "").count(token) != 1:
+                continue
+            cases.append((int(rid), token))
+            break
+    return cases
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--queries", type=int, default=120)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--scale", type=int, default=10)
+    ap.add_argument("--words", type=int, default=40, help="exact-word cases (0 = skip)")
     ap.add_argument("--record-standard", action="store_true")
     a = ap.parse_args()
 
@@ -167,6 +202,53 @@ def main() -> int:
             "session": session,
         }
 
+    # ── KEYWORD SET (REQ-3 AC2 / T13) ─────────────────────────────────────
+    # GLOBAL on purpose: a filter makes the meaning path look good (a token taken
+    # from a row embeds NEAR that row, and a small session fits inside the 200
+    # candidates). The question this set answers is the one that failed live: can
+    # an EXACT literal be found across the whole store?
+    #   strict - did the SOURCE row come back for its own literal token?
+    #   any    - did any chunk carrying the token come back? (a common word such
+    #            as "ValueError" has 1,857 carriers; the source row is not the
+    #            point, the word is)
+    wcases = [c for c in (_words_cases(con, limit=a.words) if a.words else [])
+              if c[0] in pos]
+    if wcases:
+        hit_old = hit_new = hit_any = 0
+        uniq_n = uniq_hit = 0
+        wms = []
+        wvecs = [emb.encode_with_meta(tok) for _rid, tok in wcases]
+        for (rid, tok), qm in zip(wcases, wvecs):
+            t = time.perf_counter()
+            near = set(fp.candidates(con, qm.vector, qm.backend) or [])
+            kw = set(chunk_fts.search(
+                con, tok, limit=chunk_fts.KEYWORD_CANDIDATES))
+            wms.append((time.perf_counter() - t) * 1e3)
+            if rid in near:
+                hit_old += 1
+            if rid in near or rid in kw:
+                hit_new += 1
+            if kw:
+                hit_any += 1
+            n_rows = con.execute(
+                "SELECT count(*) FROM context_chunks_fts WHERE context_chunks_fts MATCH ?",
+                ('"%s"' % tok,)).fetchone()[0]
+            if n_rows <= 5:
+                uniq_n += 1
+                if rid in near or rid in kw:
+                    uniq_hit += 1
+        report["words"] = {
+            "cases": len(wcases),
+            "reach_old": round(hit_old / len(wcases), 4),
+            "reach_new": round(hit_new / len(wcases), 4),
+            "any_hit_new": round(hit_any / len(wcases), 4),
+            "unique_cases": uniq_n,
+            "unique_reach_new": round(uniq_hit / uniq_n, 4) if uniq_n else None,
+            "fts_indexed": chunk_fts.counts(con)[0] > 0,
+            "candidate_ms_p50": round(_pct(wms, 50), 2),
+            "candidate_ms_p95": round(_pct(wms, 95), 2),
+        }
+
     # the scan at N x today's rows (fingerprints repeated; filter = none)
     if fp._codes is not None and a.scale > 1:
         # the index at N x rows: its own code columns repeated, scanned by its own candidates()
@@ -205,7 +287,11 @@ def main() -> int:
     if a.record_standard:
         std["memory"] = {"source": out.name, "filters": {
             k: {"recall@10_new": v["recall@10_new"], "candidate_ms_new_p95": v["candidate_ms_new_p95"]}
-            for k, v in report["filters"].items()}}
+            for k, v in report["filters"].items()},
+            "words": {k: report["words"][k]
+                      for k in ("cases", "reach_new", "any_hit_new",
+                                "unique_reach_new", "candidate_ms_p95")
+                      if k in report.get("words", {})}}
         std_path.write_text(json.dumps(std, indent=2), encoding="utf-8")
         print("standard recorded")
     elif "memory" in std:
@@ -217,6 +303,17 @@ def main() -> int:
                 bad.append(f"{k}: recall@10 {v['recall@10_new']} < standard {s['recall@10_new']} - 0.02")
             if s.get("candidate_ms_new_p95") and (v["candidate_ms_new_p95"] or 0) > 2 * s["candidate_ms_new_p95"] + 5:
                 bad.append(f"{k}: candidate p95 {v['candidate_ms_new_p95']} ms > 2 x {s['candidate_ms_new_p95']} + 5")
+        # REQ-3: exact words must keep reaching their source row. A fall of more
+        # than 0.02 means the FTS union broke, not that the queries changed.
+        s_words = std["memory"].get("words") or {}
+        w = report.get("words") or {}
+        if s_words.get("reach_new") is not None and (w.get("reach_new") or 0) < s_words["reach_new"] - 0.02:
+            bad.append(f"words: reach {w.get('reach_new')} < standard {s_words['reach_new']} - 0.02")
+        if s_words.get("any_hit_new") is not None and (w.get("any_hit_new") or 0) < s_words["any_hit_new"] - 0.02:
+            bad.append(f"words: any_hit {w.get('any_hit_new')} < standard {s_words['any_hit_new']} - 0.02")
+        if s_words.get("unique_reach_new") is not None and (
+                w.get("unique_reach_new") or 0) < s_words["unique_reach_new"] - 0.02:
+            bad.append(f"words: unique_reach {w.get('unique_reach_new')} < standard {s_words['unique_reach_new']} - 0.02")
         for b in bad:
             print("REGRESSION", b)
         return 1 if bad else 0

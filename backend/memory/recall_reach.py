@@ -169,6 +169,48 @@ class ChunkFingerprints:
                 self._append([vecs[i] for i in fresh], [meta[i] for i in fresh])
                 self._max_rowid = max(self._max_rowid, last)
 
+    def update_rows(self, conn, rowids: List[int]) -> int:
+        """Replace the fingerprints of rows whose vector CHANGED (REQ-2 AC3).
+
+        ``refresh`` only appends rows above ``_max_rowid``. A repaired row keeps
+        its rowid and gets a new vector, so without this hook the index would
+        keep scoring the old (wrong) fingerprint for the life of the process.
+        ``_rowids`` is append-ordered by rowid, so a binary search finds the
+        slot. Returns the number of slots updated.
+        """
+        import numpy as np
+
+        ids = [int(r) for r in rowids if r]
+        if not ids or not self._ready:
+            return 0
+        changed = 0
+        for i in range(0, len(ids), 400):
+            part = ids[i:i + 400]
+            marks = ",".join("?" * len(part))
+            rows = conn.execute(
+                "SELECT rowid, embedding FROM context_chunks WHERE rowid IN (%s)" % marks,
+                part,
+            ).fetchall()
+            with self._lock:
+                n = self._n
+                if not n or self._codes is None:
+                    return changed
+                for rid, blob in rows:
+                    if not blob or len(blob) % 4:
+                        continue
+                    vec = np.frombuffer(blob, dtype="<f4")
+                    if len(vec) != self._dim:
+                        continue
+                    pos = int(np.searchsorted(self._rowids[:n], rid))
+                    if pos >= n or int(self._rowids[pos]) != rid:
+                        continue    # not in RAM (beyond the bound, or dropped)
+                    self._codes[:, pos] = np.packbits(vec > 0).view(np.uint64)
+                    changed += 1
+        if changed:
+            logger.info("[recall_reach] fingerprints updated store=%s rows=%d",
+                        self.store_path, changed)
+        return changed
+
     # ── query ────────────────────────────────────────────────────────────
     def candidates(self, conn, query_vec: Iterable[float], backend: str, *, session_id: Optional[str] = None,
                    chunk_types: Optional[List[str]] = None, zones: Optional[List[str]] = None,
@@ -233,3 +275,33 @@ def index_for(store_path: str, conn_factory) -> ChunkFingerprints:
             threading.Thread(target=lambda: idx.build(conn_factory()), daemon=True,
                              name="recall-reach-warm").start()
         return idx
+
+
+def status(store_path: str) -> Dict[str, object]:
+    """Engine state for /api/memory/overview (REQ-8 AC2 / T5). Never raises."""
+    with _INDEXES_LOCK:
+        idx = _INDEXES.get(store_path)
+    if idx is None:
+        return {"indexed": False, "ready": False, "rows": 0, "build_s": None}
+    with idx._lock:
+        rows = idx._n
+    return {
+        "indexed": True,
+        "ready": bool(idx._ready),
+        "failed": bool(idx._failed),
+        "rows": rows,
+        "build_s": round(idx.build_s, 3),
+    }
+
+
+def update_if_indexed(store_path: str, conn, rowids: List[int]) -> int:
+    """Update an EXISTING index; never start a build (REQ-2 AC3 repair hook).
+
+    A standalone repair script must not pay for a full warm-up it cannot use.
+    Returns 0 when no index exists for the path in this process.
+    """
+    with _INDEXES_LOCK:
+        idx = _INDEXES.get(store_path)
+    if idx is None:
+        return 0
+    return idx.update_rows(conn, rowids)

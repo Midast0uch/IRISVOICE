@@ -36,10 +36,11 @@ import hashlib
 import logging
 import math
 import os
+import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from threading import Lock, Thread
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,60 @@ BACKEND_BGE = "bge-m3"
 BACKEND_LFM = "lfm25-emb-350m"
 BACKEND_HASH = "hash"
 BACKEND_NEURAL = (BACKEND_BGE, BACKEND_LFM)
+
+# ── Fallback accounting (REQ-2 AC2, 2026-10-27) ───────────────────────────────
+# A fallback that is not counted is a silent lie: the row still stores a vector,
+# and before this change it also stored a LABEL that said the model made it.
+# 374 of 3,966 sampled LFM-labelled chunk vectors (9.4%) were more than half
+# exact zeros - the signature of _hash_embed - so recall was matching real
+# questions against noise it believed was model output.
+#   chunks        chunk-level fallbacks (one per failed chunk encode)
+#   lfm_error     ... because the GGUF/BGE call raised
+#   no_model      ... because the requested neural model was not loaded
+#   texts         STORED embeddings that are the hash space (what matters)
+#   mixed_texts   texts where some chunks succeeded and some fell back
+FALLBACK_COUNTERS: Dict[str, int] = {
+    "chunks": 0,
+    "lfm_error": 0,
+    "no_model": 0,
+    "texts": 0,
+    "mixed_texts": 0,
+}
+FALLBACK_CALLERS: Dict[str, int] = {}   # "module:function" -> fallback text count
+_FALLBACK_LOCK = Lock()
+
+
+def _caller_label() -> str:
+    """``module:function`` of the first frame outside this module.
+
+    The public encode() signature is pinned (CT-E1), so the caller is read from
+    the stack instead of added as an argument. Only the rare fallback path pays
+    for it.
+    """
+    try:
+        frame = sys._getframe(1)
+        while frame is not None and frame.f_globals.get("__name__") == __name__:
+            frame = frame.f_back
+        if frame is None:
+            return "-"
+        return f"{frame.f_globals.get('__name__', '?')}:{frame.f_code.co_name}"
+    except Exception:  # noqa: BLE001 - accounting must never break an encode
+        return "-"
+
+
+def _count_chunk_fallback(cause: str) -> None:
+    with _FALLBACK_LOCK:
+        FALLBACK_COUNTERS["chunks"] += 1
+        FALLBACK_COUNTERS[cause] += 1
+
+
+def _correlation_id() -> str:
+    try:
+        from backend.monitoring.session_correlation import get_session_context
+
+        return get_session_context().get("session_id") or "-"
+    except Exception:  # noqa: BLE001 - logging context is optional
+        return "-"
 
 # ── THE ONE CHUNK STANDARD (2026-08-17) ────────────────────────────────────
 # Pacman (episodic.fragment_and_store) and this module's Chunker were each
@@ -716,14 +771,21 @@ class EmbeddingService:
     # into the same context. Held only for the embed call itself.
     _INFERENCE_LOCK = Lock()
 
-    def _encode_chunk_with(self, text: str, backend: str) -> List[float]:
-        """Embed a single chunk with the given backend, else hash fallback.
+    def _encode_chunk_with(self, text: str, backend: str) -> tuple[List[float], str]:
+        """Embed one chunk. Returns ``(vector, backend_that_actually_made_it)``.
+
+        REQ-2 AC1 (2026-10-27): the second value is the PROVENANCE of the
+        vector, not the backend that was asked for. A failed model call returns
+        the hash vector WITH ``BACKEND_HASH``; it must never be reported as the
+        requested model. Before this change the caller labelled every result
+        with the requested backend, so a fallback vector was stored as
+        "lfm25-emb-350m" and recall compared real questions against noise.
 
         INFERENCE IS SERIALIZED (2026-08-17). ``llama_cpp.Llama`` is NOT
         thread-safe: one context owns one batch/KV buffer, and two concurrent
         ``embed()`` calls corrupt it. ggml does not raise on corrupt state — it
         ABORTS THE PROCESS:
-            ggml-cpu/ops.cpp:4938: GGML_ASSERT(i1 >= 0 && i1 < ne1) failed
+            ggml-cpu/ops.cpp:4938:  GGML_ASSERT(i1 >= 0 && i1 < ne1) failed
         which surfaced as the backend vanishing mid-turn with no traceback, a
         dead port, and a stale LISTENING entry in netstat — i.e. it looked
         exactly like the agent hanging.
@@ -737,8 +799,16 @@ class EmbeddingService:
         """
         model = self._models.get(backend)
         if backend in (BACKEND_BGE, BACKEND_QWEN) and model is not None:
-            emb = model.encode(text, convert_to_numpy=True)
-            return emb.tolist()
+            try:
+                emb = model.encode(text, convert_to_numpy=True)
+                return emb.tolist(), backend
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[EmbeddingService] %s encode failed (%s); hash fallback",
+                    backend, exc,
+                )
+                _count_chunk_fallback("lfm_error")
+                return _hash_embed(text, self.EMBEDDING_DIM), BACKEND_HASH
         if backend == BACKEND_LFM and model is not None:
             safe = text[: self._GGUF_MAX_CHARS]
             if len(text) > self._GGUF_MAX_CHARS:
@@ -749,7 +819,7 @@ class EmbeddingService:
                 )
             try:
                 with self._INFERENCE_LOCK:
-                    return list(model.embed(safe))
+                    return list(model.embed(safe)), backend
             except Exception as exc:  # noqa: BLE001
                 # A native abort cannot be caught, but any Python-level failure
                 # must degrade to the hash fallback rather than kill the turn.
@@ -757,19 +827,54 @@ class EmbeddingService:
                     "[EmbeddingService] GGUF embed failed (%s); using hash fallback",
                     exc,
                 )
-                return _hash_embed(safe, self.EMBEDDING_DIM)
-        return _hash_embed(text, self.EMBEDDING_DIM)
+                _count_chunk_fallback("lfm_error")
+                return _hash_embed(safe, self.EMBEDDING_DIM), BACKEND_HASH
+        if backend != BACKEND_HASH:
+            # A neural backend was requested and its model is not loaded.
+            _count_chunk_fallback("no_model")
+        return _hash_embed(text, self.EMBEDDING_DIM), BACKEND_HASH
 
     def _encode_uncached_with(self, text: str, backend: str) -> Embedding:
-        """Embed text with chunking + max-pool + post-pool L2 (REQ-2)."""
+        """Embed text with chunking + max-pool + post-pool L2 (REQ-2).
+
+        REQ-2 AC1: if ANY chunk falls back, the whole text is stored as the
+        hash space, never as a max-pool of hash and model chunks. A mixed pool
+        belongs to neither space, and the truthful vector is the hash of the
+        whole text. The label follows the vector.
+        """
         chunker = self._chunker_for(backend)
         chunks, truncated = chunker.chunk(text)
-        if len(chunks) == 1:
-            vec = self._encode_chunk_with(chunks[0], backend)
-            return Embedding(
-                vector=vec, backend=backend, chunk_count=1, truncated=False
+        vecs: List[List[float]] = []
+        made_by: List[str] = []
+        for chunk in chunks:
+            vec, actual = self._encode_chunk_with(chunk, backend)
+            vecs.append(vec)
+            made_by.append(actual)
+        if any(b != backend for b in made_by):
+            mixed = any(b == backend for b in made_by)
+            with _FALLBACK_LOCK:
+                FALLBACK_COUNTERS["texts"] += 1
+                if mixed:
+                    FALLBACK_COUNTERS["mixed_texts"] += 1
+                caller = _caller_label()
+                FALLBACK_CALLERS[caller] = FALLBACK_CALLERS.get(caller, 0) + 1
+            logger.warning(
+                "[EmbeddingService] VECTOR FALLBACK requested=%s stored=%s "
+                "cause=%s caller=%s session=%s chunks=%d chars=%d",
+                backend, BACKEND_HASH,
+                "mixed" if mixed else "all", caller, _correlation_id(),
+                len(chunks), len(text),
             )
-        vecs = [self._encode_chunk_with(c, backend) for c in chunks]
+            return Embedding(
+                vector=_hash_embed(text, self.EMBEDDING_DIM),
+                backend=BACKEND_HASH,
+                chunk_count=len(chunks),
+                truncated=truncated,
+            )
+        if len(vecs) == 1:
+            return Embedding(
+                vector=vecs[0], backend=backend, chunk_count=1, truncated=False
+            )
         pooled = l2_normalize(max_pool(vecs))
         return Embedding(
             vector=pooled,

@@ -383,7 +383,37 @@ class EpisodicStore:
         self.db.commit()
         self._migrate_chunk_schema()
         self._migrate_embedding_backend()
+        self._init_chunk_fts()
         logger.debug("[EpisodicStore] Schema initialized")
+
+    def _init_chunk_fts(self) -> None:
+        """REQ-3: keep an FTS5 index over chunk text. Never blocks a recall.
+
+        The index itself is created here (cheap, ``IF NOT EXISTS``); a store that
+        predates it is rebuilt from the content table ON A LANE at first open -
+        measured 2026-10-27: 146,973 chunks, no FTS object at all. A test store
+        (not owned by the one writer) is skipped: a rebuild racing a test's
+        inserts would make the test's own fixture non-deterministic; the
+        backfill is covered directly by its contract test.
+        """
+        try:
+            from backend.memory import chunk_fts
+            from backend.memory.db import owns_store
+
+            if not chunk_fts.ensure_schema(self.db):
+                return
+            indexed, total = chunk_fts.counts(self.db)
+            if total <= 0 or indexed == total or not owns_store(self.db):
+                return
+            from backend.utils.durability_queue import lane
+
+            lane("memory_fts").submit("chunk-fts-backfill", chunk_fts.backfill, self.db)
+            logger.info(
+                "[EpisodicStore] FTS backfill queued (%d indexed of %d chunks)",
+                indexed, total,
+            )
+        except Exception as exc:  # noqa: BLE001 - AC4: recall stays meaning-only
+            logger.warning("[EpisodicStore] FTS init skipped: %s", exc)
 
     def _migrate_chunk_schema(self) -> None:
         """Add columns introduced in the Pacman lifecycle upgrade to existing DBs.
@@ -1057,6 +1087,26 @@ class EpisodicStore:
                 chunk_types=chunk_types, zones=zones,
             )
             if _near is not None:
+                # REQ-3 AC2: the exact words join the candidate union by RANK
+                # (reciprocal rank fusion), never by raw score - bm25 and cosine
+                # are not comparable. The exact scorer below is still the judge;
+                # this only decides WHICH rows are scored (the union, bounded to
+                # M + KEYWORD_CANDIDATES + 50).
+                try:
+                    from backend.agent import write_counters
+                    from backend.memory import chunk_fts
+
+                    _kw = chunk_fts.search(
+                        self.db, query, session_id=session_id,
+                        chunk_types=chunk_types, zones=zones,
+                    )
+                    if _kw:
+                        _new = [r for r in _kw if r not in set(_near)]
+                        if _new:
+                            write_counters.bump("memory.keyword.new_candidates", len(_new))
+                        _near = chunk_fts.fuse_by_rank(_near, _kw)
+                except Exception as _kw_exc:  # noqa: BLE001 - AC4: meaning only
+                    logger.debug("[EpisodicStore] keyword candidates skipped: %s", _kw_exc)
                 rows = self.db.execute(
                     f"SELECT {_cols} FROM context_chunks {where_sql} ORDER BY timestamp DESC LIMIT 50",
                     params_list,

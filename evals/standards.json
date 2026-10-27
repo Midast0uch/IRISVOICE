@@ -94,20 +94,27 @@
   "recorded_at": "2026-09-30T06:51:24",
   "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards",
   "memory": {
-    "source": "memory-bench-20261027-125616.json",
+    "source": "memory-bench-20261027-155155.json",
     "filters": {
       "research": {
-        "recall@10_new": 0.975,
-        "candidate_ms_new_p95": 9.54
+        "recall@10_new": 0.9758,
+        "candidate_ms_new_p95": 2.93
       },
       "turn_trusted_tool": {
-        "recall@10_new": 0.9008,
-        "candidate_ms_new_p95": 20.6
+        "recall@10_new": 0.9225,
+        "candidate_ms_new_p95": 5.56
       },
       "global": {
-        "recall@10_new": 0.96,
-        "candidate_ms_new_p95": 41.11
+        "recall@10_new": 0.9592,
+        "candidate_ms_new_p95": 11.82
       }
+    },
+    "words": {
+      "cases": 40,
+      "reach_new": 0.575,
+      "any_hit_new": 1.0,
+      "unique_reach_new": 1.0,
+      "candidate_ms_p95": 102.3
     }
   }
 }

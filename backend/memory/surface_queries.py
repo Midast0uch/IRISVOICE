@@ -336,6 +336,25 @@ def overview() -> dict:
         counts["claims_absorbed"] = sum(absorbed.values())
         out["claims"] = {"live": live, "absorbed": absorbed}
 
+        # REQ-8 AC2 (T5): the recall engine's own counters. These are IN-PROCESS
+        # values (this backend since it started), not store contents: a fallback
+        # or FTS miss that is not visible here is a silent one (HIDDEN FAILURES).
+        try:
+            from backend.memory import chunk_fts, recall_reach
+            from backend.memory.embedding import FALLBACK_CALLERS, FALLBACK_COUNTERS
+            from backend.memory.embedding_sidecar import RETRIES
+
+            out["recall"] = {
+                "reach": recall_reach.status(str(memory_db_path())),
+                "reach_counters": dict(recall_reach.COUNTERS),
+                "keyword_counters": dict(chunk_fts.COUNTERS),
+                "embed_fallbacks": dict(FALLBACK_COUNTERS),
+                "embed_fallback_callers": dict(FALLBACK_CALLERS),
+                "sidecar_retries": dict(RETRIES),
+            }
+        except Exception as exc:  # noqa: BLE001 - the surface must still draw
+            out["recall"] = {"error": str(exc)}
+
         # territories: sector roots with their live claims (proven = tier other than candidate)
         sectors = _sectors(con)
         parent = {s["key"]: s["parent"] for s in sectors}
