@@ -3,6 +3,8 @@ Log Manager - System/voice/MCP log collection and export
 """
 import json
 import logging
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -51,6 +53,13 @@ def _module_to_source(module: str) -> str:
         return top
     return "system"
 
+
+# logs/iris.log has a size budget (2026-10-27: it had grown to 5.8 GB - a plain FileHandler
+# plus a raw handle, never rotated). One handle; at LOG_ROTATE_BYTES it rolls over to
+# iris.log.1 .. iris.log.<LOG_BACKUPS> (the oldest is dropped), so the files hold at most
+# (LOG_BACKUPS + 1) * LOG_ROTATE_BYTES.
+LOG_ROTATE_BYTES = 64 * 1024 * 1024
+LOG_BACKUPS = 3
 
 # Third-party loggers that are per-request chatter at DEBUG/INFO.
 _NOISY_LIBRARY_LOGGERS = ("httpcore", "httpx", "urllib3", "hpack")
@@ -143,22 +152,50 @@ class LogManager:
         return True
 
     def _setup_file_logging(self):
-        """Set up file-based logging"""
-        log_file = self._log_dir / "iris.log"
+        """Set up file-based logging: ONE handle on logs/iris.log, rotated by size.
 
-        handler = logging.FileHandler(log_file, mode='a')
-        handler.setFormatter(logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        ))
+        The file used to have two handles (a logging.FileHandler on the "IRIS" logger,
+        which nothing logged to, and the raw handle below) and no rotation: on Windows a
+        rename fails while another handle holds the file, and the log reached 5.8 GB.
+        Line-buffered so the Monitor sees lines promptly (log() flushes anyway).
+        """
+        self._log_path = self._log_dir / "iris.log"
+        self._write_lock = threading.Lock()   # log() is called from many threads
+        # A file far over the budget predates it (the 5.8 GB one): set it ASIDE, out of the
+        # rotation set, so a later rollover never deletes it - the owner decides its fate.
+        try:
+            if self._log_path.stat().st_size > (LOG_BACKUPS + 1) * LOG_ROTATE_BYTES:
+                aside = self._log_dir / f"iris-legacy-{datetime.now():%Y%m%d-%H%M%S}.log"
+                os.replace(self._log_path, aside)
+                logging.getLogger(__name__).warning(
+                    "[monitor.logs] an unbounded iris.log was set aside as %s (kept, not rotated)", aside.name)
+        except OSError:
+            pass   # no file yet, or it is held: it rolls into iris.log.1 on the first budget step
+        self._log_file = open(self._log_path, "a", encoding="utf-8", buffering=1)
+        try:
+            self._log_size = self._log_path.stat().st_size
+        except OSError:
+            self._log_size = 0
 
-        self._logger = logging.getLogger("IRIS")
-        self._logger.addHandler(handler)
-        self._logger.setLevel(logging.DEBUG)
-
-        # Raw handle for direct (non-logging) writes from log(). Kept open for
-        # the lifetime of the process. Line-buffered so the Monitor sees logs
-        # promptly without us calling flush on every record (we do flush anyway).
-        self._log_file = open(log_file, "a", encoding="utf-8", buffering=1)
+    def _rollover(self) -> None:
+        """iris.log -> iris.log.1 -> ... -> iris.log.<LOG_BACKUPS> (the oldest dropped).
+        The only handle is closed first, so the renames can succeed on Windows. Called
+        with _write_lock held. A failed rename keeps writing to the current file and
+        tries again at the next budget step - logging never breaks the caller."""
+        try:
+            if self._log_file:
+                self._log_file.close()
+            for i in range(LOG_BACKUPS, 0, -1):
+                src = self._log_path.with_name(f"iris.log.{i - 1}") if i > 1 else self._log_path
+                dst = self._log_path.with_name(f"iris.log.{i}")
+                if src.exists():
+                    os.replace(src, dst)
+            self._log_size = 0
+        except OSError as exc:
+            logging.getLogger(__name__).warning("[monitor.logs] rollover failed: %s", exc)
+            self._log_size = LOG_ROTATE_BYTES // 2   # retry after another half budget
+        finally:
+            self._log_file = open(self._log_path, "a", encoding="utf-8", buffering=1)
     
     def log(self, level: str, source: str, message: str, details: Dict[str, Any] = None):
         """Add a log entry"""
@@ -183,9 +220,13 @@ class LogManager:
                 "source": entry.source,
                 "message": entry.message,
             })
-            if self._log_file:
-                self._log_file.write(line + "\n")
-                self._log_file.flush()
+            with self._write_lock:
+                if self._log_file:
+                    self._log_file.write(line + "\n")
+                    self._log_file.flush()
+                    self._log_size += len(line) + 2
+                    if self._log_size >= LOG_ROTATE_BYTES:
+                        self._rollover()
         except Exception:
             pass
     
