@@ -426,6 +426,7 @@ function normalizeMemory(M){
   // the newer concepts: a snapshot or a store that predates one simply has none of it
   M.sectors=(M.sectors||[]).filter(s=>s&&s.key&&s.status!=='dissolved');M.pins=M.pins||[];M.spaces=M.spaces||[];
   M.nodes=M.nodes||[];M.nodeEdges=M.nodeEdges||[];M.quorum=M.quorum||[];M.meta=M.meta||{};M.recalls=M.recalls||[];
+  M.ghosts=(M.ghosts||[]).filter(g=>g&&g.id&&g.claim);
   // sectors: roots are the territories, children nest inside them; with no registry the topic domains stand in
   const secBy=new Map(M.sectors.map(s=>[s.key,s]));
   const par=k=>{const p=secBy.get(k)?.parent;return p&&secBy.has(p)?p:null};
@@ -449,6 +450,7 @@ function normalizeMemory(M){
     l.sector=M.sectorsOn&&l.sector&&secBy.has(l.sector)?childOf(l.sector):null;
     l.domain=mapDom(l.domain);l.channel=l.channel==null?null:clamp(Math.round(l.channel),0,4);
     l.born=l.born||l.last_verified||l.last_activated||nowS()}
+  for(const g of M.ghosts)g.domain=mapDom(g.domain||'general');
   M.sById=sById;M.epById=new Map(M.episodes.map(e=>[e.id,e]));
   M.lmIndex=new Map(M.landmarks.map((l,i)=>[l.id,i]));
   for(const e of M.events)if(typeof e.landmark==='string')e.landmark=M.lmIndex.has(e.landmark)?M.lmIndex.get(e.landmark):null;
@@ -503,7 +505,7 @@ if(!REG.length)REG.push('general');
 const REGI=Object.fromEntries(REG.map((d,i)=>[d,i]));
 const regOf=d=>REGI[d]??REGI.general??0;
 M.landmarks.forEach(l=>{l.dom=regOf(l.domain)});
-M.ghosts=(M.ghosts||[]).filter(g=>g&&g.id&&g.claim);M.ghosts.forEach(g=>{g.dom=regOf(mapDom(g.domain||'general'))});
+M.ghosts.forEach(g=>{g.dom=regOf(g.domain)});
 // nested sub-territories: the children of the sector registry that sit under a drawn territory (depth 1; at most 12)
 const SUB=(M.sectorsOn?M.sectors.filter(s=>s.parent&&REGI[s.parent]!=null):[]).sort((a,b)=>(b.members||0)-(a.members||0)).slice(0,12)
   .map(s=>({key:s.key,label:s.label||domWord(String(s.key).split('/').pop()),status:s.status||'proven',members:s.members||0,ri:REGI[s.parent]}));
