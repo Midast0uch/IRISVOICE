@@ -92,5 +92,22 @@
     }
   },
   "recorded_at": "2026-09-30T06:51:24",
-  "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards"
+  "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards",
+  "memory": {
+    "source": "memory-bench-20261027-125616.json",
+    "filters": {
+      "research": {
+        "recall@10_new": 0.975,
+        "candidate_ms_new_p95": 9.54
+      },
+      "turn_trusted_tool": {
+        "recall@10_new": 0.9008,
+        "candidate_ms_new_p95": 20.6
+      },
+      "global": {
+        "recall@10_new": 0.96,
+        "candidate_ms_new_p95": 41.11
+      }
+    }
+  }
 }

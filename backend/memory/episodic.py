@@ -1042,17 +1042,46 @@ class EpisodicStore:
             params_list.extend(zones)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        _cols = "id, content, embedding, timestamp, embedding_backend, zone"
 
+        # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
+        # by fingerprint across EVERY row the filter allows, plus the newest 50 the old
+        # path saw. Before, only the newest 200 were scored (research recall: 200 of
+        # 1,777 summaries). None = the index is warming or failed: the old path runs.
+        rows = None
         try:
-            rows = self.db.execute(
-                f"SELECT id, content, embedding, timestamp, embedding_backend, zone "
-                f"FROM context_chunks "
-                f"{where_sql} ORDER BY timestamp DESC LIMIT 200",
-                params_list,
-            ).fetchall()
+            from backend.memory import recall_reach
+
+            _near = recall_reach.index_for(self.db_path, lambda: self.db).candidates(
+                self.db, query_embedding, query_backend, session_id=session_id,
+                chunk_types=chunk_types, zones=zones,
+            )
+            if _near is not None:
+                rows = self.db.execute(
+                    f"SELECT {_cols} FROM context_chunks {where_sql} ORDER BY timestamp DESC LIMIT 50",
+                    params_list,
+                ).fetchall()
+                _seen = {r[0] for r in rows}
+                for _part in range(0, len(_near), 500):
+                    _ids = _near[_part:_part + 500]
+                    rows += [r for r in self.db.execute(
+                        f"SELECT {_cols} FROM context_chunks WHERE rowid IN ({','.join('?' * len(_ids))})",
+                        _ids,
+                    ).fetchall() if r[0] not in _seen]
         except Exception as e:
-            logger.warning(f"[EpisodicStore] chunk retrieve error: {e}")
-            return []
+            logger.warning(f"[EpisodicStore] reach path failed, newest-200 path: {e}")
+            rows = None
+
+        if rows is None:
+            try:
+                rows = self.db.execute(
+                    f"SELECT {_cols} FROM context_chunks "
+                    f"{where_sql} ORDER BY timestamp DESC LIMIT 200",
+                    params_list,
+                ).fetchall()
+            except Exception as e:
+                logger.warning(f"[EpisodicStore] chunk retrieve error: {e}")
+                return []
 
         import datetime as _dt
 

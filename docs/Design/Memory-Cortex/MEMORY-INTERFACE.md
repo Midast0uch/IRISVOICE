@@ -467,7 +467,10 @@ The design is complete; the largest remaining gains are in the **data the design
    "software": python, tests, bug, function, refactor, script) — a change to a closed lattice and its coordinate ids,
    and a new root, so it waits for the owner's design of sector births (only after a Kyudo reorganization).
 2. ~~Recall events do not name the claim they delivered~~ — done 2026-10-27 (§10.4: `RECALL_USED` per claim used).
-3. **The view holds the newest 48 threads**; older ones are reached by search only. Loading a thread on demand makes
+3. **Recall reached only the newest 200 chunks of its filter** — reach done 2026-10-27 (S128: fingerprints, recall@10
+   0.90-0.975 vs exact search); honest vectors, exact words, compression, budgets and memory-native ranking are
+   specified in `specs/memory-recall-reach/` and measured by `evals/memory_bench.py`.
+4. **The view holds the newest 48 threads**; older ones are reached by search only. Loading a thread on demand makes
    the timeline the whole history.
 
 Polish beyond the plan, in a simpler form today: claim arches per use and frost-bridge walking; the focused object
