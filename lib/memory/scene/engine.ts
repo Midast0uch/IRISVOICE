@@ -1201,9 +1201,22 @@ TURNS.forEach(t=>{const a=turnsOf.get(t.si),i=a.indexOf(t);t.world=new V3(R*.07,
 const turnGeo=new THREE.BufferGeometry();turnGeo.setAttribute('position',new THREE.Float32BufferAttribute(TURNS.flatMap(t=>[t.world.x,t.world.y,t.world.z]),3));
 const turnPts=new THREE.Points(turnGeo,new THREE.PointsMaterial({color:0xbfe9f6,size:3,sizeAttenuation:false,transparent:true,opacity:.85,depthWrite:false,blending:THREE.AdditiveBlending}));
 turnPts.visible=false;turnPts.frustumCulled=false;cortex.add(turnPts);   // state.turnZoom is set per frame (state is declared below)
+// TURN → THE CLAIMS IT TOUCHED (UX-PLAN 3.2): a claim LEARNED in this strand during the window, or given EVIDENCE here then
+// (each evidence entry carries its strand and time). Live 2026-10-26: no moment of the snapshot names a claim (0 of 903),
+// so the claim's own record is the link. At most 3, newest first - each a path to the claim in the cortex.
+function claimsInWindow(sid,t0,t1){const out=[];
+  LM.forEach((l,k)=>{const learned=l.session===sid&&l.born>=t0&&l.born<t1,ev=(l.evidence||[]).find(e=>e.session===sid&&e.at>=t0&&e.at<t1);
+    if(learned||ev)out.push({k,how:learned?'learned here':'evidence here: '+(EVID_WORD[ev.kind]||ev.kind),at:learned?l.born:ev.at})});
+  return out.sort((a,b)=>b.at-a.at).slice(0,3)}
+function touchedHTML(sid,t0,t1){return claimsInWindow(sid,t0,t1).map(({k,how})=>{const c=LM[k].claim;
+  return `<span class="go" data-claim="${k}">→ ${esc(how)} · ${esc(c.length>60?c.slice(0,59)+'…':c)}</span>`}).join('')}
 function turnHTML(t){const q=x=>{const v=String(x?.text||'').trim().split(/\n/)[0];return v.length>90?v.slice(0,89)+'…':v};
   return `<div class="k">turn ${fmt(turnsOf.get(t.si).indexOf(t)+1)} of ${fmt(turnsOf.get(t.si).length)} · ${ago(t.user.ts)}</div><div class="t">${esc(q(t.user)||'you wrote')}</div>
-    <div class="m">${t.reply?`IRIS: <em>${esc(q(t.reply)||'replied')}</em>`:'no reply recorded'}<br>${esc(t.s.objective||'')}</div><span class="go">click · walk into this turn</span>`}
+    <div class="m">${t.reply?`IRIS: <em>${esc(q(t.reply)||'replied')}</em>`:'no reply recorded'}<br>${esc(t.s.objective||'')}${turnClaims(t)}</div><span class="go">click · walk into this turn</span>`}
+// the claims a turn touched (claimsInWindow), named on its card: from the user's message to the next one
+function turnClaims(t){const a=turnsOf.get(t.si)||[],nx=a[a.indexOf(t)+1],t1=nx?nx.user.ts:(t.reply?.ts||t.user.ts)+600;
+  const cs=claimsInWindow(t.s.id,t.user.ts-60,t1);
+  return cs.length?'<br>'+cs.map(({k,how})=>`<em>${esc(how)}</em> · ${esc(LM[k].claim.length>50?LM[k].claim.slice(0,49)+'…':LM[k].claim)}`).join('<br>'):''}
 // DATE TICKS (UX-PLAN 4.3): now at the top, then today, yesterday, this week and the months; they slide with the helix
 // like a clock face. LOD LABELS: the 4 newest conversations are named all the time; the rest on hover.
 const TICKS=(()=>{const out=[],now=nowS(),d=new Date();d.setHours(0,0,0,0);const today=d.getTime()/1000;
@@ -2672,6 +2685,7 @@ annosEl.addEventListener('click',e=>{
   if(e.target.closest('[data-rewind]')){if(tunnel){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(e.target.closest('[data-home]')){exitTunnel();return}
   if(e.target.closest('[data-report]')){throughDoor();return}
+  const tc=e.target.closest('[data-claim]');if(tc){const l=LM[+tc.dataset.claim];if(l)focusRef('claim:'+l.id);return}   // a task's touched claim
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
 function flyToSoma(k){
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
@@ -2954,7 +2968,7 @@ function hover(x,y){
       setAnno('hover','gate'+gt,()=>project(g.world),`<div class="k">task · ${ep.outcome==='running'?'running now':ep.outcome==='success'?'went well':ep.outcome==='partial'?'partly done':'did not work'}</div>
         <div class="t">${esc(ep.summary)}</div><div class="m">went well <em>${Math.round(ep.score*100)}</em> / 100 · took ${span(ep.duration/1)}
         ${ep.corrected?'<br><span class="u">you corrected IRIS here</span>':ep.confirmed?'<br>you confirmed this':''}
-        ${ep.failure_reason?`<br><span class="w">${esc(ep.failure_reason)}</span>`:''}<br>what IRIS did: ${(ep.tools||[]).map(t=>t.replace(/_/g,' ')).join(' → ')}</div>`,{hot:ep.corrected});return}
+        ${ep.failure_reason?`<br><span class="w">${esc(ep.failure_reason)}</span>`:''}<br>what IRIS did: ${(ep.tools||[]).map(t=>t.replace(/_/g,' ')).join(' → ')}</div>${touchedHTML(tunnel.session.id,ep.ts-60,ep.ts+Math.max(60,ep.duration||0)+60)}`,{hot:ep.corrected});return}
     lingerClear('hover');return}
   if(state.lens==='artifacts'&&tissue.t>.5&&!state.inside){const i=tissueHit(x,y),th=i<0?threadHit(x,y):-1,cr=crumbHit(x,y);
     tissue.hover=i;tissue.hoverThread=th;const pt=i>=0||th>=0||!!cr;canvas.style.cursor=tcv.style.cursor=pt?'pointer':'default';
