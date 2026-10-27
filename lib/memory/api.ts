@@ -119,7 +119,7 @@ export function takeChatTurn(): ChatRequest | null {
 }
 
 /**
- * Corrections v1 (MEMORY-SURFACE-BUILD.md section 5): the backend writes each one as USER evidence and answers with the
+ * Corrections v1 (SURFACE-BUILD section 5): the backend writes each one as USER evidence and answers with the
  * claim's state before and after; the surface shows only what the backend answered (never optimistic). Undo within
  * 10 minutes. Claims only for now.
  */

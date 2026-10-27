@@ -1,4 +1,4 @@
-"""Every SQL statement of the Memory surface, in one place (MEMORY-SURFACE-BUILD.md section 6/7, phase 0).
+"""Every SQL statement of the Memory surface, in one place (SURFACE-BUILD section 6/7, phase 0).
 
 The surface READS the app memory (data/memory.db, opened only through resolve_memory_store_path) and the
 chat store (data/conversations.db, the path conversation_store uses). It never writes either of them.
@@ -1616,7 +1616,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
 
 
 # ── search: GET /api/memory/search ───────────────────────────────────────────────────────────────
-# MEMORY-SURFACE-BUILD.md section 3. Not a web search: the answer to "what does the memory hold about this, and how
+# SURFACE-BUILD section 3. Not a web search: the answer to "what does the memory hold about this, and how
 # much does it hold it". TEXT ONLY. It reads, it never writes: no activation, no RECALL event, no row (a search is
 # not a recall - contract-tested by the store's logical digest). One bounded statement per kind on a read-only
 # connection; the match is done in Python (accent-insensitive, which SQL LIKE cannot do), the rank by the memory's law.

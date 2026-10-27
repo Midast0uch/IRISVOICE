@@ -1,7 +1,7 @@
 """Live taps for the Memory surface: what IRIS does to its memory, as it happens.
 
 The Memory dashboard shows memory being used from REAL events only
-(docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md section 10.1 and 11). Three
+(docs/Design/Memory-Cortex/MEMORY-INTERFACE.md §7 and §10.4). Three
 messages reach the frontend as the window event ``iris:ws_message`` with
 ``detail = {type, payload}``. Every message is ONE BATCH: a list plus ``dropped``.
 

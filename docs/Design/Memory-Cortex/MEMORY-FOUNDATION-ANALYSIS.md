@@ -3,7 +3,7 @@
 Status: ANALYSIS + PROPOSAL for owner review, 2026-10-18. Read-only throughout: code read, live
 `data/memory.db` queried with `mode=ro`, nothing written. Every number below was measured on the
 live store on 2026-10-18 unless marked *code-read* (found by reading code, not run) or
-*UNVERIFIED*. Companion: `MEMORY-DASHBOARD-DESIGN.md` (this folder) §16.
+*UNVERIFIED*. Companion: `MEMORY-INTERFACE.md` (this folder; it replaced `DASHBOARD-DESIGN` on 2026-10-27, its §14 maps the old sections).
 
 Sources: `docs/CADUCEAN_ARCHITECTURE.md`, `docs/CADUCEAN_TECHNICAL_OVERVIEW.md`,
 `docs/Design/EVENT_TAXONOMY.md`, `docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md`,
@@ -530,7 +530,7 @@ file, folder, image, doc, url, decision, fragment, checkpoint).
   local step ids (`s1`, `s2` …), so **every plan's `s1` is the same node**: 16,569 of the links
   resolve to `der_fan_traces.step_id`, but without a session scope the lineage graph collapses
   onto ~64 ids. `weight` is 1.0 on every row.
-- `docs/Design/Memory-Cortex/MEMORY-DASHBOARD-DESIGN.md:712` lists a "Keep this in mind: pin into
+- the former `DASHBOARD-DESIGN:712` (now `MEMORY-INTERFACE.md` §8.3) lists a "Keep this in mind: pin into
   the context window" action; nothing implements it, and the mockup draws no pins.
 
 **What a pin is in IRIS (proposal).** Learned memory grows (neurons, edges, landmarks); a pin is

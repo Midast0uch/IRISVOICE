@@ -38,7 +38,7 @@ import type { Palette as BrandPalette } from '@/lib/brandPalette';
 // cli-workspace-unification T7 (REQ-7 AC2): the Workspace Hub surface —
 // lazy-loaded so the hub bundle only loads when the rail node is clicked.
 const DeveloperWorkspace = lazy(() => import('@/components/workspace/DeveloperWorkspace'));
-// The Memory surface (docs/Design/Memory-Cortex/MEMORY-SURFACE-BUILD.md). three.js loads only when it opens.
+// The Memory surface (SURFACE-BUILD). three.js loads only when it opens.
 const MemorySurface = lazy(() => import('@/components/memory/MemorySurface'));
 import { MonitorPage } from '@/components/dashboard/MonitorPage';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';

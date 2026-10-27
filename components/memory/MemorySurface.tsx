@@ -1,7 +1,7 @@
 "use client"
 
 /**
- * The Memory surface of the dashboard (docs/Design/Memory-Cortex/MEMORY-SURFACE-BUILD.md): the cortex, the
+ * The Memory surface of the dashboard (SURFACE-BUILD): the cortex, the
  * timeline, the artifacts and the Oracle of IRIS's memory (data/memory.db), drawn by the scene engine ported from
  * the validated mockup (lib/memory/scene/engine.ts).
  *

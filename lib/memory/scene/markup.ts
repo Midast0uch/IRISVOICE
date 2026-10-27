@@ -1,5 +1,5 @@
-// The Memory surface's stylesheet and HUD markup, ported verbatim from the validated mockup
-// (docs/Design/Memory-Cortex/index.html). Every selector is scoped to .iris-memory and nothing is
+// The Memory surface's stylesheet and HUD markup, ported from the validated mockup (removed 2026-10-27; the design
+// is docs/Design/Memory-Cortex/MEMORY-INTERFACE.md). Every selector is scoped to .iris-memory and nothing is
 // position:fixed, so the surface lives inside the dashboard wing like any other surface.
 export const MEMORY_CSS = String.raw`
 .iris-memory{

@@ -728,7 +728,7 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
             db_path, _ci_exc,
         )
 
-    # Memory surface API (MEMORY-SURFACE-BUILD.md): recall refs name chain ids, and
+    # Memory surface API (SURFACE-BUILD): recall refs name chain ids, and
     # resolving them without an index on chain_id was a full scan of ~42k rows with big
     # text columns (11 s warm, 98 s cold, measured), so the API gated the lookup off.
     # The ALTER loop above guarantees the column. IF NOT EXISTS: built once.

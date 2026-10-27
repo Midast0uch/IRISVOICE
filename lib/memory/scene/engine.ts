@@ -1,6 +1,6 @@
-// @ts-nocheck -- a verbatim port of the validated mockup (docs/Design/Memory-Cortex/index.html, the visual
-// reference). Types arrive section by section as the surface is split into modules (MEMORY-SURFACE-BUILD.md §6);
-// until then this file keeps the mockup's code exactly, so the look cannot drift in the port.
+// @ts-nocheck -- ported from the validated mockup (removed 2026-10-27; this engine is the reference now). The design
+// is docs/Design/Memory-Cortex/MEMORY-INTERFACE.md; its §14 maps the UX-PLAN / SURFACE-BUILD / DASHBOARD-DESIGN
+// section tags used in the comments below.
 /* eslint-disable */
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';

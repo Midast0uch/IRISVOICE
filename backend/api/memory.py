@@ -1,4 +1,4 @@
-"""Read API of the Memory surface (MEMORY-SURFACE-BUILD.md phase 0).
+"""Read API of the Memory surface (SURFACE-BUILD phase 0).
 
   GET /api/memory/overview                         counts, territories, last integrity pass
   GET /api/memory/claims?territory=&tier=&limit=   live claim cards (the exporter's landmark shape)

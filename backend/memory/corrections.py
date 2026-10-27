@@ -1,4 +1,4 @@
-"""Memory corrections v1 (MEMORY-SURFACE-BUILD.md section 5; MEMORY-UX-PLAN.md section 11 decision 2).
+"""Memory corrections v1 (SURFACE-BUILD section 5; UX-PLAN section 11 decision 2).
 
   POST /api/memory/correct        {action, target, reason?, confirm?}
   POST /api/memory/correct/undo   {correction_id}

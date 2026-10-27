@@ -1,17 +1,17 @@
-"""Export a bounded, read-only snapshot of IRIS app memory for the Memory Cortex mockup.
+"""Export a bounded, read-only snapshot of IRIS app memory (the same model the Memory surface draws).
 
     python docs/Design/Memory-Cortex/export_snapshot.py            # all recent threads
     python docs/Design/Memory-Cortex/export_snapshot.py --no-eval  # skip eval-* threads
     python docs/Design/Memory-Cortex/export_snapshot.py --db C:/dev/IRISVOICE/data/memory.db  # explicit store
 
-Writes docs/Design/Memory-Cortex/memory-snapshot.js (window.IRIS_MEMORY = {...}); open
-index.html?real to view it. The snapshot holds personal memory: it is git-ignored and must not
-be published or committed.
+Writes docs/Design/Memory-Cortex/memory-snapshot.js (window.IRIS_MEMORY = {...}) - an offline copy of
+the model for inspection (the mockup that read it was removed 2026-10-27). The snapshot holds personal
+memory: it is git-ignored and must not be published or committed.
 
 This file is only the command line. The model itself (every SQL statement, every mapping into the
 dashboard's plain vocabulary, the optional-table detection) lives in backend/memory/surface_queries.py
-snapshot(), the same function GET /api/memory/snapshot serves, so the mockup and the app read the same
-shape from the same SQL (MEMORY-SURFACE-BUILD.md section 6). Read-only URI connections, LIMIT on every
+snapshot(), the same function GET /api/memory/snapshot serves, so the export and the app read the same
+shape from the same SQL (MEMORY-INTERFACE.md §10.3). Read-only URI connections, LIMIT on every
 row query, no blobs or embeddings, references only. meta.available lists the optional tables found.
 """
 from __future__ import annotations
