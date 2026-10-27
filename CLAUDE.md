@@ -583,6 +583,11 @@ JUST FIX IT — do not ask permission for a fix that is clearly correct.
 Ask ONLY when a real decision is needed (two valid approaches with different
 consequences). One short question, options listed, no essay around it.
 
+2026-10-25 (owner): "you don't have to keep asking me, continue working and fix anything
+you find along the way." That covers fixing findings met during the task, updating a test
+whose pinned list the owner's own plan changed (state each test change in the commit), and
+running offline repair scripts the owner approved. Keep asking only for a genuine design fork.
+
 ALWAYS record work without being asked:
   - record_edit / record_test for what you touched
   - pin_add for the root cause and the fix

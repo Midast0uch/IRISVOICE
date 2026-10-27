@@ -47,6 +47,17 @@ The backend died on 3 boots with a native access violation while torch's CUDA DL
 on the wake-audio thread. The wake word's Silero VAD only needed its ONNX model: it now runs
 on onnxruntime (identical output) and torch is never imported into the backend.
 
+### fix: The processing chime can no longer crash the backend (S130)
+
+Eight backend deaths (2026-10-20..25) all crashed inside `sounddevice`'s global `sd.play()` from the
+processing-chime loop: every call stops and closes the previous global stream, which races its native
+teardown. Short sounds and the playback fallback now use an owned stream, as speech has since 2026-10-23.
+
+### docs: CLAUDE.md and AGENTS.md agree
+
+The owner's 2026-10-25 rule ("continue working and fix anything you find along the way") is in both files;
+AGENTS.md gained the build-store hand-off step (REQ-2b) it was missing.
+
 ### fix: logs/iris.log has a size budget (S124)
 
 One file handle, rotation at 64 MB into 3 backups (≤ 256 MB); the 5.8 GB legacy file was set aside.

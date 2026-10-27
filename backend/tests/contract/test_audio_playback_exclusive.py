@@ -157,3 +157,30 @@ def test_a_busy_device_skips_instead_of_hanging(monkeypatch):
         assert dev.calls == 0
     finally:
         pl._PLAYBACK_LOCK.release()
+
+
+class _NoGlobalDevice(_Device):
+    """The module-global API is forbidden: sd.play / sd.stop stop and close the PREVIOUS
+    global stream, racing its native callback teardown even on one thread."""
+
+    def play(self, *a, **k):
+        raise AssertionError("sd.play (the module-global stream) was called")
+
+    def stop(self, *a, **k):
+        raise AssertionError("sd.stop (the module-global stream) was called")
+
+
+def test_short_sounds_and_the_fallback_never_use_the_global_stream(monkeypatch):
+    """2026-10-27: eight sttproc-loop deaths (2026-10-20..25) all crashed in stop/close <- start_stream <- sd.play
+    from the chime loop. The playback lock (2026-10-25) stopped two threads sharing the global stream, but sd.play
+    still tears the previous global stream down itself on every call. Short sounds and the play_audio fallback now
+    play through an owned OutputStream, like speech."""
+    dev = _NoGlobalDevice()
+    monkeypatch.setattr(pl, "_sd", lambda: dev)
+    p = _pipeline()
+    chunk = np.zeros(2400, dtype=np.float32)
+    for _ in range(3):                                   # the chime loop: back-to-back plays on one thread
+        assert pl.play_exclusive(chunk, 24000, timeout=5) is True
+    assert pl.play_exclusive(np.zeros((2400, 2), dtype=np.float32), 24000, timeout=5) is True   # stereo mixed down
+    p.play_audio(chunk)
+    assert dev.calls == 5

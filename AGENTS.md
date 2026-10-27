@@ -594,6 +594,11 @@ JUST FIX IT — do not ask permission for a fix that is clearly correct.
 Ask ONLY when a real decision is needed (two valid approaches with different
 consequences). One short question, options listed, no essay around it.
 
+2026-10-25 (owner): "you don't have to keep asking me, continue working and fix anything
+you find along the way." That covers fixing findings met during the task, updating a test
+whose pinned list the owner's own plan changed (state each test change in the commit), and
+running offline repair scripts the owner approved. Keep asking only for a genuine design fork.
+
 ALWAYS record work without being asked:
   - record_edit / record_test for what you touched
   - pin_add for the root cause and the fix
@@ -638,6 +643,13 @@ The three layers should all be present:
 When the project reaches its completion condition (defined in `.mcm/GOALS.md` §2),
 .mcm/coordinates.db transfers to the application's runtime memory store.
 Same schema. No migration. The build memory becomes the app memory.
+
+To make that true (REQ-2b): the BUILD store's shared tables are schema-identical
+to the application store after ONE offline, human-run step at hand-off —
+`python scripts/migrate_build_store_inheritance.py .mcm/coordinates.db`
+(idempotent, non-destructive; dry-run with `--dry-run`). It applies the same
+coordinate ALTER the application engine runs (memory_chain coords columns) and
+drops the orphan memory_chain_v2. Never run at app start.
 
 ---
 
