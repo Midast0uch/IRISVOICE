@@ -1182,15 +1182,6 @@ const beadMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0},uHover:{va
     float core=smoothstep(.22,.0,d),halo=smoothstep(.5,.0,d)*.4;gl_FragColor=vec4(vC,(core+halo)*vA);}`,
   transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
 const beads=new THREE.Points(beadGeo,beadMat);beads.frustumCulled=false;cortex.add(beads);
-// THREAD BRAIDS (UX-PLAN 4.3): a strand forked from a conversation hangs from it - a faint curved line from the parent's
-// bead to each of its strands' beads that this memory holds.
-const braidG=new THREE.Group();cortex.add(braidG);
-{const P=[];const byId=new Map(sess.map(s=>[s.id,s]));
-  for(const s of sess)for(const ch of s.strands||[]){const c=byId.get(ch.id);if(!c)continue;
-    const a=new V3(0,helixY(sessS(s)),0),b=new V3(0,helixY(sessS(c)),0),m=a.clone().lerp(b,.5).add(new V3(R*.18,0,R*.18));
-    const crv=new THREE.QuadraticBezierCurve3(a,m,b).getPoints(16);for(let i=0;i<crv.length-1;i++)P.push(crv[i].x,crv[i].y,crv[i].z,crv[i+1].x,crv[i+1].y,crv[i+1].z)}
-  if(P.length){const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
-    braidG.add(new THREE.LineSegments(g,new THREE.LineBasicMaterial({color:0x7fe8ff,transparent:true,opacity:.28,blending:THREE.AdditiveBlending,depthWrite:false})))}}
 // TURN ZOOM (UX-PLAN 8.4): Ctrl+wheel on the helix zooms in; then each conversation's bead opens into its turns - a
 // short column of ticks beside it, one per turn (a user message and the reply after it). Hovering a tick reads that
 // turn; clicking it walks into the conversation at that turn.
@@ -1227,7 +1218,34 @@ const tickEls=TICKS.map(t=>{const el=document.createElement('div');el.className=
 // THREADS (UX-PLAN 4.1/4.4): a strand forked from another (chat parent_id, listed in the parent's `strands`) belongs to
 // its parent's thread; the corridor's far door walks the strands of one thread in time.
 const PARENT_OF=new Map();for(const s of sess)for(const c of s.strands||[])PARENT_OF.set(c.id,s.id);
-const threadRoot=s=>{let id=s.id;for(let n=0;n<8&&PARENT_OF.has(id);n++)id=PARENT_OF.get(id);return id};
+const threadRoot=s=>{if(s.thread)return s.thread;let id=s.id;for(let n=0;n<8&&PARENT_OF.has(id);n++)id=PARENT_OF.get(id);return id};
+// THREADS AS BRAIDS (UX-PLAN 4.3): the strands of one thread (the snapshot's thread id, else the fork links) are joined by
+// a faint line down the helix; a helper's line rejoins the strand it reports to (amber, dashed). Hover a braid = the
+// thread and its strands as a short fan; click = the thread's beads open round the axis so each can be picked (Esc folds).
+const THREADS=new Map();sess.forEach((s,i)=>{const r=threadRoot(s),a=THREADS.get(r)||[];a.push(i);THREADS.set(r,a)});
+const fan={root:null};
+function beadPos(i){const s=sess[i],p=new V3(0,helixY(sessS(s)),0);
+  if(fan.root&&threadRoot(s)===fan.root){const m=THREADS.get(fan.root),th=m.indexOf(i)/m.length*Math.PI*2+.4;p.x+=Math.cos(th)*R*.34;p.z+=Math.sin(th)*R*.34}
+  return p}
+const braidG=new THREE.Group();cortex.add(braidG);let braidPts=[];
+function buildBraids(){braidG.children.forEach(o=>{o.geometry.dispose();o.material.dispose()});braidG.clear();braidPts=[];
+  const line=[],help=[],seg=(arr,a,b,bow,root)=>{const m=a.clone().lerp(b,.5).add(new V3(R*bow,0,R*bow));
+    const c=new THREE.QuadraticBezierCurve3(a,m,b).getPoints(16);for(let i=0;i<c.length-1;i++)arr.push(c[i].x,c[i].y,c[i].z,c[i+1].x,c[i+1].y,c[i+1].z);
+    if(root)c.forEach((p,i)=>{if(i%4===2)braidPts.push({root,p})})};
+  for(const [root,m] of THREADS){if(m.length<2)continue;const ord=m.slice().sort((a,b)=>sess[a].started-sess[b].started);
+    for(let j=0;j<ord.length-1;j++)seg(line,beadPos(ord[j]),beadPos(ord[j+1]),.18,root)}
+  sess.forEach((s,i)=>{if(!s.reports_to)return;const pi=sess.findIndex(x=>x.id===s.reports_to);if(pi>=0)seg(help,beadPos(i),beadPos(pi),-.12,null)});
+  const add=(P,mat)=>{if(!P.length)return;const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(P,3));
+    const L=new THREE.LineSegments(g,mat);L.computeLineDistances?.();braidG.add(L)};
+  add(line,new THREE.LineBasicMaterial({color:0x7fe8ff,transparent:true,opacity:.28,blending:THREE.AdditiveBlending,depthWrite:false}));
+  add(help,new THREE.LineDashedMaterial({color:0xffb547,dashSize:R*.03,gapSize:R*.02,transparent:true,opacity:.5,depthWrite:false}))}
+function setFan(root){fan.root=root;sess.forEach((s,i)=>{const p=beadPos(i);bP.set([p.x,p.y,p.z],i*3)});beadGeo.attributes.position.needsUpdate=true;buildBraids()}
+buildBraids();
+function threadFanHTML(root){const m=(THREADS.get(root)||[]).slice().sort((a,b)=>sess[b].started-sess[a].started);
+  const top=sess.find(x=>x.id===root)||sess[m[m.length-1]];
+  return `<div class="k">thread · ${fmt(m.length)} strands</div><div class="t">${esc(top?.objective||'a thread')}</div><div class="m">`+
+    m.slice(0,6).map(i=>{const x=sess[i],live=x.exit==='live';return `${live?'<span class="livedot"></span>':''}${esc((x.objective||'a strand').slice(0,44))}${x.reports_to?' · <em>helper</em>':''} · ${ago(x.ended||x.started)}`}).join('<br>')+
+    `</div><span class="go">${fan.root===root?'click · fold the strands back':'click · open the strands round the axis'}</span>`}
 function nextInThread(s){const root=threadRoot(s);const mem=sess.filter(x=>threadRoot(x)===root).sort((a,b)=>a.started-b.started);
   const i=mem.indexOf(s);return i>=0&&i<mem.length-1?mem[i+1]:null}
 const LOD=sess.filter(s=>!/^test run/.test(s.objective||'')).sort((a,b)=>b.started-a.started).slice(0,4);
@@ -1241,7 +1259,7 @@ function placeTimelineLabels(show){
     el.style.opacity=.55;el.style.left=(a.x-el.offsetWidth)+'px';el.style.top=(a.y-7)+'px'});
   const used=[];   // newest conversations sit side by side: a name that would overlap another stays for hover
   LOD.forEach((s,i)=>{const el=lodEls[i];const k=sess.indexOf(s);if(!show||state.hoverBead===k||!bF[k]){el.style.opacity=0;return}
-    const a=project(new V3(0,helixY(sessS(s)),0).addScaledVector(right,R*.32));
+    const a=project(beadPos(k).addScaledVector(right,R*.32));
     if(!a.front||used.some(y=>Math.abs(y-a.y)<15)){el.style.opacity=0;return}used.push(a.y);el.style.opacity=.75;el.style.left=(a.x+6)+'px';el.style.top=(a.y-7)+'px'})}
 sess.forEach((s,i)=>{if(s.exit==='live')bA[i]=1});
 // TIMELINE FILTER CHIPS (UX-PLAN 8.3): by outcome and by territory (the strand's most common domain). One group = any
@@ -2374,7 +2392,9 @@ function placeGhosts(show){const cd=camera.position.clone().normalize();
 const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','oracle']];
 LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
   a.onmouseenter=()=>scramble(a,w,14);$('lenses').appendChild(a)});
-function hint(t){$('hint').innerHTML=t}
+let hintT=null;
+function showHint(){const h=$('hint');h.classList.add('fresh');clearTimeout(hintT);hintT=setTimeout(()=>h.classList.remove('fresh'),7000)}
+function hint(t){const h=$('hint');if(h.innerHTML!==t){h.innerHTML=t;showHint()}}
 // THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
 const KEY=[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
 function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
@@ -2483,26 +2503,58 @@ function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the
   const s_=cam.mode==='tunnel'&&tunnel?tunnel.session:null,inChat=!!s_&&!!(s_.messages||[]).length;
   const back=inChat&&chatTurn&&chatTurn.conv===s_.id?chatTurn.turn:'';
   const working=performance.now()-liveAt<LIVE_DOT_S*1000;
-  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back+'|'+working;if(k===crumbKey)return;crumbKey=k;
-  $('crumb').innerHTML=(working?'<span class="livedot" title="IRIS is working on a turn now"></span>':'')+
-    parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')+
-    (inChat?`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`:'')+
-    ((inChat||s_?.ghost)&&opts.correctTarget?`<a class="strandact" data-sact="forget" data-sid="${esc(s_.id)}">forget what IRIS learned here</a><a class="strandact" data-sact="purge" data-sid="${esc(s_.id)}">purge its words</a>`:'')+
-    (uses.k>=0&&state.lens==='timeline'?`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`+
-      (uses.chat?`<a class="chat" data-conv="${esc(uses.chat.conv)}" data-turn="${esc(uses.chat.turn)}" title="open the newest turn that was given this claim">↗ newest use in chat</a>`:''):'')+
-    `<a class="copylink" title="copy a link to this place - it holds ids, never content">⧉ link</a>`+
-    (when?`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`:'')}
-$('crumb').addEventListener('click',e=>{const cl=e.target.closest('.copylink');
+  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back+'|'+working+'|'+crumbMore+'|'+uses.k;if(k===crumbKey)return;crumbKey=k;
+  // TIDY HEADER (owner, 2026-10-26): the path on one line; the actions in ONE row - the common ones always, the rarer ones
+  // (rename, pin, forget, purge) behind "⋯ more"
+  const main=[],more=[];
+  if(inChat)main.push(`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`);
+  if(uses.k>=0&&state.lens==='timeline'){main.push(`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`);
+    if(uses.chat)main.push(`<a class="chat" data-conv="${esc(uses.chat.conv)}" data-turn="${esc(uses.chat.turn)}" title="open the newest turn that was given this claim">↗ newest use in chat</a>`)}
+  if(when)main.push(`<a class="when${follow.unseen?' pulse':''}" title="return to now">as of ${esc(when)} · now ↻${follow.unseen?` · ${fmt(follow.unseen)} new`:''}</a>`);
+  if(inChat)main.push(`<span class="copylink" draggable="true" data-ref="strand:${esc(s_.id)}" data-label="strand · ${esc((s_.objective||'').slice(0,60))}" title="drag onto the chat: a reference chip, never the content">⠿ drag</span>`);
+  main.push(`<a class="copylink" title="copy a link to this place - it holds ids, never content">⧉ link</a>`);
+  if(inChat){more.push(`<a class="copylink" data-rename="${esc(s_.id)}" title="rename this strand (the chat shows the new name too)">✎ rename</a>`);
+    if(s_.thread===s_.id)more.push(`<a class="copylink" data-pinthread="${esc(s_.id)}" title="pin this thread to the top of the chat's thread list">◇ pin thread</a>`)}
+  if((inChat||s_?.ghost)&&opts.correctTarget)more.push(`<a class="strandact" data-sact="forget" data-sid="${esc(s_.id)}">forget what IRIS learned here</a>`,`<a class="strandact" data-sact="purge" data-sid="${esc(s_.id)}">purge its words</a>`);
+  $('crumb').innerHTML=`<div class="path">${working?'<span class="livedot" title="IRIS is working on a turn now"></span>':''}${parts.map((p,i)=>i===parts.length-1?`<b>${esc(p)}</b>`:esc(p)).join('<i>›</i>')}</div>`+
+    `<div class="acts">${main.join('')}${more.length?`<a class="moreT" title="${crumbMore?'fewer actions':'rename, pin, forget, purge'}">${crumbMore?'‹ less':'⋯ more'}</a><span class="more${crumbMore?' on':''}">${more.join('')}</span>`:''}</div>`}
+let crumbMore=false;
+// RENAME / PIN (UX-PLAN 3.2): in place, no dialog - the same endpoints as the chat's strand map and thread orbit
+function renameStrand(id,el){const s_=M.sById.get(id);if(!s_)return;const inp=document.createElement('input');inp.className='rename';inp.value=s_.objective||'';
+  inp.maxLength=120;inp.setAttribute('aria-label','New name of this strand');el.replaceWith(inp);inp.focus();inp.select();
+  const back=()=>{crumbKey='';updateCrumb()};
+  inp.addEventListener('keydown',ev=>{ev.stopPropagation();if(ev.key==='Escape'){back();return}if(ev.key!=='Enter')return;const name=inp.value.trim();if(!name){back();return}
+    const root=s_.thread===s_.id,url=root?`/api/threads/${encodeURIComponent(id)}`:`/api/strands/${encodeURIComponent(id)}`;
+    fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(root?{title:name}:{name})})
+      .then(r=>{if(!r.ok)throw new Error(String(r.status));s_.objective=name;const T=$('title');if(T.firstChild)T.firstChild.textContent=name;back()})
+      .catch(err=>{console.warn('[memory] rename failed',id,err);inp.value='the name did not take';setTimeout(back,1400)})});
+  inp.addEventListener('blur',()=>setTimeout(()=>{if(document.activeElement!==inp)back()},150))}
+$('crumb').addEventListener('click',e=>{if(e.target.closest('.moreT')){crumbMore=!crumbMore;crumbKey='';updateCrumb();return}
+  const rn=e.target.closest('[data-rename]');if(rn){renameStrand(rn.dataset.rename,rn);return}
+  const pt=e.target.closest('[data-pinthread]');if(pt){fetch(`/api/threads/${encodeURIComponent(pt.dataset.pinthread)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{"pinned":true}'})
+    .then(r=>{pt.textContent=r.ok?'◆ pinned in the thread list':'the pin did not take'}).catch(()=>{pt.textContent='the pin did not take'});return}
+  const cl=e.target.closest('.copylink');
   if(cl){const url=linkOf(currentAddress());const done=ok=>{cl.textContent=ok?'link copied ✓':url;setTimeout(()=>{crumbKey='';updateCrumb()},1600)};
     try{navigator.clipboard.writeText(url).then(()=>done(true),()=>done(false))}catch(_){done(false)}return}
   if(e.target.closest('.when')){state.replay=false;state.scrubT=1;follow.unseen=0}
   const sa=e.target.closest('[data-sact]');if(sa){strandAction(sa.dataset.sact,sa.dataset.sid,sa);return}
   const c=e.target.closest('.chat');if(c)window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:c.dataset.conv,turnId:c.dataset.turn||undefined}}))});
-function updateStats(fps){const c=M.meta.counts||{};
-  $('stats').innerHTML=`<em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands<br>`+
-  `<em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
-  `${PINS.length||NDS.length?` · <em>${PINS.length}</em> pins · <em>${NDS.length}</em> nodes in <em>${SPACES.length}</em> layers`:''}<br>`+
-  `${Math.round(fps)} fps · ${fmt(NS+NI+mistN+(tunnel?26000:0))} points · ${esc(M.meta.source)}`}
+// TIDY / FULL (owner, 2026-10-26: "a lot of text, a bit messy"): tidy folds what you read once - the counts' details, the
+// older ticker line, the key's words (hover the key), the key hints after a few seconds. The choice is remembered here.
+const pref=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:v==='1'}catch(_){return d}};
+const setPref=(k,v)=>{try{localStorage.setItem(k,v?'1':'0')}catch(_){}};
+let tidy=pref('iris.memory.tidy.v1',true),statsOpen=pref('iris.memory.stats.v1',false),statsFps=0;
+const rootEl=$('hud').closest('.iris-memory')||host;
+function applyTidy(){rootEl.classList.toggle('tidy',tidy);$('brand').title=tidy?'everything here lives on this machine':''}
+applyTidy();
+function updateStats(fps){if(fps!=null)statsFps=fps;const c=M.meta.counts||{};
+  $('stats').innerHTML=`<a class="sum" title="${statsOpen?'fewer numbers':'all the numbers'}"><em>${fmt(c.landmarks||NL)}</em> claims · <em>${fmt(c.events||M.events.length)}</em> moments · <em>${fmt(c.sessions||sess.length)}</em> strands <i>${statsOpen?'▴':'▾'}</i></a>`+
+  (statsOpen?`<div class="det"><em>${fmt(c.fragments||0)}</em> fragments · <em>${fmt(c.artifacts||M.artifacts.length)}</em> things made`+
+    `${PINS.length||NDS.length?`<br><em>${PINS.length}</em> pins · <em>${NDS.length}</em> nodes in <em>${SPACES.length}</em> layers`:''}<br>`+
+    `${Math.round(statsFps)} fps · ${fmt(NS+NI+mistN+(tunnel?26000:0))} points · ${esc(M.meta.source)}</div>`:'')+
+  `<a class="tidyT" title="${tidy?'show everything':'fold what you read once'}">${tidy?'◑ full view':'◐ tidy view'}</a>`}
+$('stats').addEventListener('click',e=>{if(e.target.closest('.sum')){statsOpen=!statsOpen;setPref('iris.memory.stats.v1',statsOpen);updateStats()}
+  else if(e.target.closest('.tidyT')){tidy=!tidy;setPref('iris.memory.tidy.v1',tidy);applyTidy();updateStats();showHint()}});
 const tickLines=document.querySelectorAll('#ticker .line');
 // the immune response in the ticker: what the guard noticed, where, and whether it counted
 function tickGuard(q,ri){const col=q.shadow?'#7d8f9b':q.signal==='quorum_reorganization_reset'?'#9fd8c8':'#ffb547';
@@ -2586,6 +2638,11 @@ function exitInterior(done){
 }
 function setFocusSoma(k){state.focusSoma=k;LM.forEach((_,j)=>{somaData[j*8+2]=j===k?1:(somaData[j*8+2]>0&&j!==k&&state.search?somaData[j*8+2]:0)});somaTex.needsUpdate=true}
 function somaWorld(k){return somaPos[k].clone()}
+// DRAG TO THE CHAT (UX-PLAN 4.6): a handle that carries an address + label (application/x-iris-ref) - the chat's drop
+// makes the same reference chip as "ask IRIS". Cards ignore the pointer except their links, so the handle is the grip.
+const dragHandle=(addr,label)=>`<span class="go drag" draggable="true" data-ref="${esc(addr)}" data-label="${esc(label.length>60?label.slice(0,59)+'…':label)}" title="drag onto the chat: a reference chip, never the content">⠿ drag to the chat</span>`;
+host.addEventListener('dragstart',e=>{const h=e.target?.closest?.('[data-ref]');if(!h||!e.dataTransfer)return;
+  e.dataTransfer.setData('application/x-iris-ref',JSON.stringify({address:h.dataset.ref,label:h.dataset.label}));e.dataTransfer.setData('text/plain',h.dataset.label||'');e.dataTransfer.effectAllowed='copy'});
 function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
   const counts=l.evidence_counts?{...l.evidence_counts}:{};if(!l.evidence_counts)l.evidence.forEach(e=>counts[e.kind]=(counts[e.kind]||0)+1);
   const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
@@ -2598,7 +2655,7 @@ function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
     <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times${l.last_activated?' · last used '+ago(l.last_activated):''} · ${l.last_verified?'last confirmed '+ago(l.last_verified):'not confirmed yet'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
-    ${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep&&opts.uses?`<span class="go" data-uses="${k}">→ every time it was used</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep&&opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${deep?correctionHTML(k):''}`}
+    ${deep?dragHandle('claim:'+l.id,'claim · '+l.claim):''}${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep&&opts.uses?`<span class="go" data-uses="${k}">→ every time it was used</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep&&opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${deep?correctionHTML(k):''}`}
 // EVERY TIME IT WAS USED (UX-PLAN 7.4): the turns that were given this claim - the timeline lights the beads of their
 // conversations (the others dim) and the breadcrumb counts them; Esc returns. The most direct answer to "is this claim
 // worth anything?".
@@ -2665,6 +2722,7 @@ const mineEl=document.createElement('div');mineEl.id='mine';$('hud').appendChild
 function drawMine(reload){if(!opts.corrections){mineEl.style.display='none';return}
   if(reload)opts.corrections().then(r=>{mine.list=r.corrections||[];drawMine(false)}).catch(()=>{});
   const live=mine.list.filter(c=>!c.undone);
+  mineEl.classList.toggle('none',!live.length&&!mine.open);   // tidy view: no live correction, no line
   mineEl.innerHTML=(mine.open?`<div class="list">${mine.list.length?mine.list.slice(0,12).map(c=>{
     const k=M.lmIndex.get(c.landmark_id),can=!c.undone&&c.undo_until>nowS();
     return `<div class="row${c.undone?' gone':''}"><span class="u">${esc(CORR_WORD[c.action]||c.action)}</span> · ${ago(c.ts)}${c.undone?' · undone':''}<br><span class="t">${esc(c.claim||'')}</span>${can?` <a data-undo-id="${esc(c.correction_id)}" data-k="${k??-1}">undo</a>`:''}${k!=null?` <a data-claim="${k}">show</a>`:''}</div>`}).join(''):'<div class="row">none yet</div>'}</div>`:'')+`<a class="head">your corrections · ${fmt(live.length)}${mine.open?' ▾':''}</a>`}
@@ -2717,7 +2775,7 @@ function enterTunnel(s,{at=null}={}){
       document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
       hint('scroll / w s · travel through the strand &nbsp; ← → · claim to claim<br>hover · read a message or moment &nbsp; click a claim · follow its thread &nbsp; esc · back');
       flash(false,REDUCED?1:700)},REDUCED?0:240)};
-  if(state.lens==='timeline'&&!state.inside&&cam.mode==='orbit'){const bi=sess.indexOf(s);const p=new V3(0,helixY(sessS(s)),0);
+  if(state.lens==='timeline'&&!state.inside&&cam.mode==='orbit'){const bi=sess.indexOf(s);const p=beadPos(bi);
     tweenTo(p.clone().add(camera.position.clone().sub(p).normalize().multiplyScalar(4)),p,22,.9,goIn)}
   else goIn();
 }
@@ -2851,11 +2909,19 @@ function replayTurn(){const by=new Map();for(const e of M.events){if(!e.episode|
 // live taps; the dot stays while they keep coming (LIVE_DOT_S after the last), whether or not follow mode is on.
 const LIVE_DOT_S=12;let liveAt=-1e9;
 // THE LIVE STRAND (UX-PLAN 8.5): the strand a turn is writing to now pulses on the helix (the beads' aA), the same
-// signal as the live dot - it calms LIVE_DOT_S after its last live event. Only a strand this snapshot holds can pulse.
-const sessIx=new Map(sess.map((s,i)=>[s.id,i]));let liveBead=-1;
-function markLiveBead(tid){const i=sessIx.get(tid);if(i==null||i===liveBead)return;
-  if(liveBead>=0)bA[liveBead]=0;liveBead=i;bA[i]=1;beadGeo.attributes.aA.needsUpdate=true}
-function calmLiveBead(){if(liveBead<0||performance.now()-liveAt<LIVE_DOT_S*1000)return;bA[liveBead]=0;beadGeo.attributes.aA.needsUpdate=true;liveBead=-1}
+// signal as the live dot - it calms LIVE_DOT_S after its last live event. A strand this snapshot does not hold yet (a chat
+// opened after the view loaded) pulses as ONE new bead at "now" on the helix: hover names it, click continues it in chat.
+const sessIx=new Map(sess.map((s,i)=>[s.id,i]));let liveBead=-1,liveNew=null;
+const newBead=new THREE.Sprite(new THREE.SpriteMaterial({map:GLOW,color:new THREE.Color(THEMES[0][1]),transparent:true,opacity:.9,
+  blending:THREE.AdditiveBlending,depthWrite:false}));newBead.visible=false;cortex.add(newBead);
+function markLiveBead(tid){const i=sessIx.get(tid);
+  if(i==null){liveNew={tid,at:nowS()};newBead.position.set(R*.05,timeY(nowS()),R*.05);return}
+  if(i===liveBead)return;if(liveBead>=0)bA[liveBead]=0;liveBead=i;bA[i]=1;beadGeo.attributes.aA.needsUpdate=true}
+function calmLiveBead(){const calm=performance.now()-liveAt>=LIVE_DOT_S*1000;
+  if(liveNew&&calm&&state.hoverNew!==true)liveNew=null;   // a quiet new strand stops pulsing, like the live dot
+  newBead.visible=!!liveNew&&state.lens==='timeline'&&cam.mode==='orbit';
+  if(newBead.visible)newBead.scale.setScalar(R*.06*(1+.35*Math.sin(performance.now()/160)));
+  if(liveBead<0||!calm)return;bA[liveBead]=0;beadGeo.attributes.aA.needsUpdate=true;liveBead=-1}
 function liveMsg(msg){
   if(!USE_REAL||!msg)return;const p=msg.payload||{};
   if(msg.type==='memory_event'||msg.type==='oracle_decision')liveAt=performance.now();
@@ -2989,14 +3055,18 @@ function hover(x,y){
   if(state.lens==='timeline'&&state.turnZoom){const ti=nearestScreen(TURNS.map(t=>t.world),x,y,10);state.hoverTurn=ti;
     if(ti>=0){canvas.style.cursor='pointer';beadMat.uniforms.uHover.value=-1;state.hoverBead=-1;setAnno('hover','turn'+ti,()=>project(TURNS[ti].world),turnHTML(TURNS[ti]));return}}
   else state.hoverTurn=-1;
-  if(state.lens==='timeline'){const k=nearestScreen(sess.map(s=>new V3(0,helixY(sessS(s)),0)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
+  if(state.lens==='timeline'){const k=nearestScreen(sess.map((_,i)=>beadPos(i)),x,y,26);state.hoverBead=k;beadMat.uniforms.uHover.value=k;
     if(k>=0){const s=sess[k];canvas.style.cursor='pointer';buildSyncFor(s.id);syncU.uSel.value=-1;const rs=recSummary(s.id);
       const eps=s.episodes.map(id=>M.epById.get(id)).filter(Boolean);const corr=eps.some(e=>e.corrected);
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
-      setAnno('hover','bead'+k,()=>project(new V3(0,helixY(sessS(s)),0)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
+      setAnno('hover','bead'+k,()=>project(beadPos(k)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
         <div class="m">${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>`)}
-    else if(!syncHoverStrand(x,y))lingerClear('hover');return}
+    else if(newBead.visible&&liveNew&&nearestScreen([newBead.position],x,y,18)===0){state.hoverNew=true;state.hoverBraid=null;canvas.style.cursor='pointer';
+      setAnno('hover','newbead'+liveNew.tid,()=>project(newBead.position),`<div class="k">being written now · not in this view yet</div><div class="t">${esc(prettyThread(liveNew.tid))}</div><div class="m">it takes its place on the helix the next time the memory opens</div><span class="go">click · continue it in chat</span>`)}
+    else{state.hoverNew=false;const bi=nearestScreen(braidPts.map(b=>b.p),x,y,12);state.hoverBraid=bi>=0?braidPts[bi].root:null;
+      if(bi>=0){const b=braidPts[bi];canvas.style.cursor='pointer';setAnno('hover','braid'+b.root+(fan.root===b.root),()=>project(b.p),threadFanHTML(b.root))}
+      else if(!syncHoverStrand(x,y))lingerClear('hover')}return}
   if(state.lens==='oracle'){
     ray.setFromCamera(new THREE.Vector2(x/innerWidth*2-1,-(y/innerHeight)*2+1),camera);const p=new V3();
     if(ray.ray.intersectPlane(new THREE.Plane(new V3(0,0,1),0),p)){const r=p.length();
@@ -3065,7 +3135,7 @@ tcv.addEventListener('click',e=>{landFlight();const x=_px(e),y=_py(e);
   tissue.focus=tissue.focus===i?-1:i;clearAnno('hover');
   if(tissue.focus>=0){const s=M.sById.get(c.a.session);
     setAnno('focus','artf'+i,()=>({x:c.cx,y:c.cy,front:true}),`<div class="k">${KIND_WORD[c.a.kind]||c.a.kind} · ${esc(c.a.folder||'unsorted')} · made ${ago(c.a.ts)}</div><div class="t">${esc(c.a.name)}</div>
-      <div class="m">${s?`made while: <em>${esc(s.objective)}</em>`:''}</div>${s?`<span class="go" data-go="${s.id}">→ step into that thread</span>`:''}`,{hot:true})}
+      <div class="m">${s?`made while: <em>${esc(s.objective)}</em>`:''}</div>${dragHandle('artifact:'+c.a.id,'artifact · '+(c.a.name||c.a.title||c.a.id))}${s?`<span class="go" data-go="${s.id}">→ step into that thread</span>`:''}`,{hot:true})}
   else clearAnno('focus')});
 // a thread = one thought and everything linked to it in this session; scrolling then travels
 // from one of its neurons to the next along the wall
@@ -3116,7 +3186,7 @@ function click(x,y){
   if(state.lens==='timeline'){if(state.hoverTurn>=0){const t=TURNS[state.hoverTurn];enterTunnel(t.s);
       const w=setInterval(()=>{if(cam.mode!=='tunnel'||!tunnel||tunnel.session!==t.s)return;clearInterval(w);   // to the turn's own message
         const it=tunnel.items.find(n=>n.type==='msg'&&n.m.ts===t.user.ts);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);setTimeout(()=>clearInterval(w),8000);return}
-    if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else syncClick()}
+    if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else if(state.hoverNew&&liveNew){window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:liveNew.tid}}))}else if(state.hoverBraid){setFan(fan.root===state.hoverBraid?null:state.hoverBraid);clearAnno('hover')}else syncClick()}
 }
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;landFlight();
   if(cam.mode==='orbit'){if(state.lens==='timeline'&&e.ctrlKey){cam.distT=clamp(cam.distT*(1+e.deltaY*.0015),R*1.1,R*9)}   // turn zoom
@@ -3163,6 +3233,7 @@ function stepOut(){
   if(state.inside){exitInterior();return true}
   if(state.lens==='artifacts'&&tissue.path.length){tissueUp();return true}
   if(keyFocus){setKindFocus(null);return true}
+  if(state.lens==='timeline'&&fan.root){setFan(null);return true}
   if(state.lens==='timeline'&&sync.sid){disposeSync();clearAnno('hover');return true}
   if(state.lens==='oracle'&&state.focusSec>=0){focusSector(-1);return true}
   if(clearUses()){hint('');return true}
@@ -3185,6 +3256,9 @@ function focusRef(ref){
   if(kind==='claim'){const k=M.lmIndex?.get(id);if(k==null)return false;
     const go=()=>{dive(LM[k].dom);const w=setInterval(()=>{if(state.inside){clearInterval(w);flyToSoma(k)}},120);setTimeout(()=>clearInterval(w),8000)};
     if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else{setLens('cortex');setTimeout(go,300)}return true}
+  if(kind==='thread'){const m=THREADS.get(id)||THREADS.get(threadRoot(M.sById?.get(id)||{id}));
+    if(m&&m.length>1){const go=()=>{setLens('timeline');setFan(threadRoot(sess[m[0]]));cam.targetT.y=clamp(beadPos(m[0]).y,-HELIX_H,HELIX_H);cam.idle=-9};
+      if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else go();return true}}
   if(kind==='strand'||kind==='thread'){const s_=M.sById?.get(id);if(!s_)return false;enterTunnel(s_);return true}
   const toTop=go=>{if(cam.mode==='tunnel')exitTunnel(go);else if(state.inside)exitInterior(go);else go()};
   if(kind==='artifact'){const a=M.artifacts.find(a=>a.id===id);if(!a)return false;

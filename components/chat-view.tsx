@@ -2721,6 +2721,7 @@ ${message.text}`;
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (Array.from(e.dataTransfer.types || []).includes('application/x-iris-ref')) return; // a memory reference, not a file
     
     if (!isDraggingFile) {
       setIsDraggingFile(true);
@@ -2756,6 +2757,18 @@ ${message.text}`;
     e.stopPropagation();
     setIsDraggingFile(false);
     setDraggedFileType(null);
+    // a thing dragged out of the memory (MEMORY-UX-PLAN 4.6): an address + label, never content - the same chip as "ask IRIS"
+    const refRaw = e.dataTransfer.getData('application/x-iris-ref');
+    if (refRaw) {
+      try {
+        const r = JSON.parse(refRaw) as { address?: unknown; label?: unknown };
+        if (typeof r.address === 'string' && r.address) {
+          const ref = { address: r.address, label: String(r.label || r.address), kind: (r.address.startsWith('claim:') ? 'knows' : 'iris') as 'knows' | 'iris' };
+          setComposerRefs((prev) => (prev.some((p) => p.address === ref.address) ? prev : [...prev, ref]));
+        }
+      } catch { console.warn('[chat] a memory drop did not parse'); }
+      return;
+    }
     
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {

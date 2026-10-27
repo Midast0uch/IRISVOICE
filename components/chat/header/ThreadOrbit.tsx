@@ -244,7 +244,9 @@ function OrbitLabel({ t, x, y, loop, front, current, opacity, onOpen, onPin }: {
       aria-current={current ? "true" : undefined}
       style={{ left: Math.round(x), top: Math.round(y), opacity }}
     >
-      <button type="button" className="iris-hd-oopen" onClick={() => onOpen(t)} title={t.last_preview || t.title}>
+      {/* Alt+click (or the front thread's ◎) opens the thread's braid in the memory, fanned open (MEMORY-UX-PLAN 4.5) */}
+      <button type="button" className="iris-hd-oopen" onClick={(e) => (e.altKey ? openThreadMemory(t.id) : onOpen(t))}
+        title={`${t.last_preview || t.title} · Alt+click: its memory`}>
         <span className="iris-hd-otitle">{t.title}</span>
         <small>{meta(t)}</small>
       </button>
@@ -258,8 +260,15 @@ function OrbitLabel({ t, x, y, loop, front, current, opacity, onOpen, onPin }: {
       >
         {t.pinned ? "◆" : "◇"}
       </button>
+      {front && (
+        <button type="button" className="iris-hd-pin" data-testid="thread-memory" aria-label={`The memory of ${t.title}`}
+          title="its memory: the thread's braid on the helix" onClick={() => openThreadMemory(t.id)}>◎</button>
+      )}
     </div>
   )
 }
+
+const openThreadMemory = (threadId: string) =>
+  window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_memory", focus: `thread:${threadId}` } }))
 
 export default ThreadOrbit

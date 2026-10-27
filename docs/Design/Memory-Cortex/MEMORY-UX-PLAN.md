@@ -396,16 +396,16 @@ conversations carry one).
 
 | § | MISSING | PARTIAL |
 |---|---|---|
-| 3.2 paths | thread → fan the braid; thread rename / pin (artifact → its strand: built, the cell card's "step into that thread") | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
-| 4.3 helix | forked strand leaves / reports to the thread line; hover a braid → fan; click → beads open | braid joins only parent → child; hover labels for the rest |
+| 3.2 paths | — (built 2026-10-26: braid fan, rename / pin in the crumb; artifact → its strand is the cell card's "step into that thread") | claim arches per use; walk the frost bridges; strand → its thread; turn → its arches / Oracle rays; thread → open in chat; pin tether travel; recall arch → source / target corridor |
+| 4.3 helix | — (built: thread line per thread, a helper's amber line rejoins its parent; hover = the fan card; click = beads open round the axis; Esc folds) | braid joins only parent → child; hover labels for the rest |
 | 4.4 corridor | rail tags (data gap: the snapshot carries no strand tags; 5 of 5,836 conversations have any) | breadcrumb (the far door now walks the strands of one thread) |
-| 4.5 chat → memory | thread orbit Alt+click / `◎` (the lens "In memory" is built) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
-| 4.6 memory → chat | drag a thing onto the chat wing (the `#` group "IRIS knows" is built: claims from the memory search; pins wait for an agent-side resolver) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
+| 4.5 chat → memory | — (thread orbit Alt+click and the front thread's `◎` open `thread:<id>` = the braid fanned) | the turn's memory button is a button, not a `⋯` menu with "decided here" |
+| 4.6 memory → chat | — (drag: a "⠿ drag" grip on a claim, an artifact and a strand carries application/x-iris-ref; the chat's drop makes the chip) | ask-IRIS rides `iris:open_conversation`, not `iris:composer_ref` |
 | 5 | — (deep links built: "⧉ link" in the crumb copies <app>/?memory=<address>; the app opens it on load and on a click anywhere in the app) | the back stack is structural (one level out), not a recorded stack |
 | 6.1 | long jumps through a fragment tunnel | the object does not travel (camera flights only); the dive and the exit now take 1.2 s (were 2.8 / 2.4 s) and any input lands a flight at once; reduced motion is instant, not a 200 ms fade |
 | 6.3 | crystallize = assembly; turn-end settle | far-end assembly; live Oracle ray; graduation; dissolution as fragments; quorum wave |
 | 7 cortex | — | arbor lights end to end; uses bloom as arches; tether lit on focus |
-| 8 timeline | the live strand's pulse for a strand the snapshot does not hold yet (a chat opened after the view loaded) | strand card has no tags; per-turn arches |
+| 8 timeline | — (a strand not in the snapshot pulses as one new bead at "now"; click = continue in chat) | strand card has no tags; per-turn arches |
 | 9 oracle | — (re-checked: live `oracle_decision` drives the pupil, `liveMsg` → `pupilDecision`; the reliability curve is drawn, `curveSVG`) | the acting side is a ladder clause, not a split sector; rings + amber first gap |
 | 10 data | `/strands?thread=`; `/health`; WS `recall`, `integrity_pass` | `/turn/{conv}/{turn}` path form; `/claims` filters |
 | 13 details | — | grab cursor; selection across a view switch; loading fragments; "show more"; DPR / detach; full keyboard; reduced transparency |
@@ -418,7 +418,9 @@ not bloat. The store moved to the SSD (`D:/IRIS/store/memory.db`, S121): the sam
 Re-checked as BUILT (the audit missed them): claim → where it was learned (the corridor's learned-in path); territory
 labels with counts and "this week"; the card side rule (a card never covers its object). Built 2026-10-26: the live
 dot (the crumb shows one dot for 12 s after a live memory event or Oracle decision); hover intent 80 ms and card
-linger 250 ms; the territory health line (§7.2: claims by trust channel, how many fade under the decay law, the
+linger 250 ms; the tidy header and footer (owner: "a lot of text, a bit messy"): one path line + one action row (rarer
+actions behind "⋯ more"), counts as one line (▾ for the rest), a tidy / full switch that folds the key's words, the old ticker
+line, an empty corrections line and the key hints after 7 s; the narrow layout follows the panel (container query), not the window; the territory health line (§7.2: claims by trust channel, how many fade under the decay law, the
 last cleaning pass - on the live store nothing fades yet: the longest idle span is 23 active days, every claim keeps >= 94%). Ghost outlines (§7.5): in the health view (`k`) the claims dissolved this week show as dashed
 outlines on their territory; hover gives the claim and the reason (live: 60, all "too many different claims shared its place").
 The inside grows (owner, 2026-10-26): inside a territory you shrink, the claims keep their size and the room scales so
