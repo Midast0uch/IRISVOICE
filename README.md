@@ -143,6 +143,30 @@ probabilities, so an unsure verdict can be *escalated* to the Brain rather than 
 Full architecture, the job map, the enforcement chokepoint, the phase-domain concurrency model
 and every measured number: **[docs/architecture/oracle.md](./docs/architecture/oracle.md)**.
 
+### 🧠 Memory — what IRIS remembers, made visible
+
+The **Memory** surface of the dashboard (Surfaces › Memory, or the chat header's ◉ › Memory) is a window into IRIS's
+own memory store — what it knows, how sure it is, where it learned it, what it did with it, and how it decides.
+Design: **[docs/Design/Memory-Cortex/MEMORY-INTERFACE.md](./docs/Design/Memory-Cortex/MEMORY-INTERFACE.md)** (one file:
+Part I the interface, Part II the memory foundation — growth/decay law, Kyudo, sectors, integrity).
+
+- **Five views, one grammar** (hover = identify · click = focus · Enter = go in · Esc = one step out · `/` = search ·
+  `?` = keys): the **cortex** (a map of claims by territory; inside a territory the room grows with what it holds),
+  the **timeline** (a helix of conversations; threads as braids, helpers rejoining their parent), the **corridor**
+  (one conversation relived; forks and helpers are doorways), **artifacts**, and the **Oracle** (how IRIS decides).
+- **Chat ↔ memory both ways:** open a strand, turn, thread or claim in the memory from the chat; continue in chat,
+  ask IRIS about a claim, or drag any thing onto the chat as a reference chip. Deep links (`/?memory=<address>`) hold
+  ids, never content.
+- **Health and trust (Kyudo):** per-territory health lines, a health view (`k`), ghosts of what was cleaned with the
+  reason; corrections (that's right · that's wrong · forget · pin · forget a strand · purge) written by the backend as
+  user evidence and undoable for 10 minutes.
+- **Helper strands report back:** a strand can help another (strand map › "helps …"); "↩ report back" posts its result
+  into the parent strand, and the corridor's arch walks to that moment.
+- **Live:** while IRIS works, inward sparks = remembering, outward = recording, rays = deciding; a new claim assembles;
+  a finished turn settles. Tidy / full view switch for the HUD.
+- **Store:** the app memory lives at `D:/IRIS/store/memory.db` (SSD; `data/memory_config.json` `db_path`), always
+  opened through `resolve_memory_store_path`; the surface only reads (`/api/memory/*`, LIMIT-bounded, indexed).
+
 ### 🕸 DER-DAG Execution Model
 
 DER no longer runs as a hardcoded Director→Explorer→Reviewer pipeline over a flat queue. Execution is now a **physics-governed, memory-backed DAG** (specs `specs/der-dag-inversion/` + `specs/dag-node-execution-model/`):
@@ -1259,6 +1283,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[Oracle — Decision Engine](./docs/architecture/oracle.md)**: the CPU-only calibrated scorer — jobs and their routing, the two-key enforcement chokepoint, the hardened bar, calibration (`fit_oracle_calibration.py`), the phase-domain concurrency model, and every measured number with its provenance
 - **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: *(historical)* the pre-DAG DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges. Superseded by DER-DAG above; the trailing director was deleted 2026-08-06.
 - **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
+- **[Memory interface + foundation](./docs/Design/Memory-Cortex/MEMORY-INTERFACE.md)**: the one design document of IRIS's memory — Part I the Memory surface (views, grammar, paths, live grammar, corrections, data path, budgets), Part II the memory foundation (growth/decay law, Kyudo self-cleaning, sectors and spaces, the integrity pass)
 - **[Recall-as-Cognition](./docs/architecture/RECALL_AS_COGNITION.md)**: Two-phase memory retrieval protocol — op grammar, iterative recall, streaming filter, episode feedback loop, skill genesis, and performance model
 - **[PiN System](./docs/architecture/PIN_SYSTEM.md)**: Primordial Information Nodes — pin data model, recall ops (`pin="title"`, `pin query="text"`, `pin file="X.md"`, `pin tags="a,b"`), auto-checkpoint heuristic, wiki link graph, tunable search weights
 - **[Model-Agnostic Architecture Verification](./docs/architecture/MODEL_AGNOSTIC_ARCHITECTURE_VERIFICATION.md)**: Verification that agent capabilities remain identical across all inference backends
@@ -1290,6 +1315,9 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - `GET /api/agent/status` - Agent status
 - `GET /docs` - Swagger UI
 - `GET /redoc` - ReDoc documentation
+- `GET /api/memory/snapshot` · `/overview` · `/claims` · `/claims/{id}` · `/claims/{id}/uses` · `/threads` · `/strand/{id}` · `/turn/{conversation}/{turn}` · `/search` · `/oracle` · `/corrections` - the Memory surface's read API (read-only)
+- `POST /api/memory/correct` · `/api/memory/correct/undo` - corrections (user evidence, undoable)
+- `GET /api/threads` · `GET|POST /api/threads/{id}/strands` · `PATCH /api/strands/{id}` · `POST /api/strands/{id}/report` · `PATCH /api/threads/{id}` - threads, strands, helper report-back
 
 **WebSocket Message Types**
 
@@ -1324,6 +1352,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - `voice_audio_chunk` - PCM chunk acknowledgment (monitor path)
 - `voice_final` - ASR transcript delivered as CustomEvent to chat-view (web mode)
 - `tts_word` - Word index + count for current TTS spoken word (highlighting sync)
+- `memory_event` · `landmark_update` · `oracle_decision` - the Memory surface's live taps (batched; from the existing single writers)
 
 For complete message documentation, see the WebSocket section above and the backend OpenAPI docs at `/docs` when the server is running.
 
