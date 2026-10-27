@@ -1848,9 +1848,16 @@ function buildTunnel(s){
   door.scale.setScalar(rad1);door.position.copy(P1);door.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(Rd,Ud,T1.clone().negate()));g.add(door);
   const backP=onWall(.9,Math.PI*.5+.9*TW,.92),backDoor=new THREE.Mesh(archGeo,doorMat(STRAND_COL,new THREE.Color('#f4fbff'),-1));
   backDoor.scale.setScalar(radius(.9)*.3);backDoor.position.copy(backP);backDoor.lookAt(curve.getPointAt(.9));g.add(backDoor);
+  // FORK DOORWAYS (UX-PLAN 4.4): where a strand forked off this conversation, a small arch in the wall (the side door's
+  // size) at the angle the forked strand leaves on; through it lies that strand's corridor, or the chat when this
+  // snapshot does not hold it
+  const forks=pairs.filter(pr=>pr.kind==='strand').map(pr=>{const u=Math.min(.95,pr.u0+.05),th=pr.th0+u*TW,P=onWall(u,th,.92);
+    const m=new THREE.Mesh(archGeo,doorMat(STRAND_COL,new THREE.Color('#e3a8db'),-1));m.scale.setScalar(radius(u)*.26);m.position.copy(P);
+    m.lookAt(curve.getPointAt(u));g.add(m);const cs=(s.strands||[]).find(c=>c.id===pr.id)||{id:pr.id,title:pr.label};
+    return {mesh:m,world:P.clone().add(TUN_OFF),cs,target:sess.find(x=>x.id===pr.id)||null}});
   scene.add(g);rng=mulberry32(99);
   return {g,curve,frameAt,session:s,items,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands:pairs,hlU,fibU,partU,tileU,pins:pinList,
-    door:{mesh:door,world:P1.clone().add(TUN_OFF),next},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},onWall};
+    door:{mesh:door,world:P1.clone().add(TUN_OFF),next},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},forks,onWall};
 }
 // light an item and everything it is linked to (a message and its moments, or a moment and its turn)
 function tunnelHighlight(it){
@@ -2439,7 +2446,8 @@ try{follow.on=localStorage.getItem('iris.memory.follow')!=='0'}catch(e){}
 let crumbKey='';
 function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the sheet follows the view
   const parts=['memory'];
-  if(cam.mode==='tunnel'&&tunnel){parts.push('timeline','strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
+  if(cam.mode==='tunnel'&&tunnel){const root=threadRoot(tunnel.session);parts.push('timeline');if(root!==tunnel.session.id)parts.push('thread · '+titleOf(root));
+    parts.push('strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
   else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'oracle'}[state.lens];if(lw)parts.push(lw);
     if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
     if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
@@ -2891,10 +2899,12 @@ function hover(x,y){
     const k=nearestScreen(tunnel.items.map(n=>near(n.world,70)),x,y,14);
     const st=nearestScreen(tunnel.stars.map(s=>near(s.world,90)),x,y,22);
     state.hoverDoor=null;
-    if(st<0&&k<0){for(const [nm,d] of [['door',tunnel.door],['back',tunnel.back]]){const p=project(d.world);
+    if(st<0&&k<0){for(const [nm,d] of [['door',tunnel.door],['back',tunnel.back],...tunnel.forks.map((f,i)=>['fork'+i,f])]){const p=project(d.world);
       const e=project(d.world.clone().add(new V3(0,d===tunnel.door?4:1.5,0)));if(p.front&&Math.hypot(p.x-x,p.y-y)<Math.max(30,Math.abs(e.y-p.y))&&d.world.distanceTo(camera.position)<70){
         state.hoverDoor=nm;canvas.style.cursor='pointer';tunnelHighlight(null);
         const nx=tunnel.door.next;
+        if(d.cs){const f=d,t=f.cs.title||'a strand of this conversation';
+          setAnno('hover','door-'+nm,()=>project(d.world),`<div class="k">doorway · a strand forked here</div><div class="t">${esc(t)}</div><div class="m">${f.cs.started?'started '+ago(f.cs.started):''}${f.target?'':' · not in this view of the memory'}</div><span class="go">${f.target?'click · walk into its corridor':'click · open it in chat'}</span>`,{hot:true});return}
         setAnno('hover','door-'+nm,()=>project(d.world),nm==='door'
           ?`<div class="k">doorway</div><div class="t">${nx?esc(nx.objective):'back to the timeline'}</div><div class="m">${nx?`the next strand of this thread · ${ago(nx.started)}`:'the last strand of its thread'}</div><span class="go">click · step through</span>`
           :`<div class="k">doorway</div><div class="t">back to the beginning of this thread</div><span class="go">click · return to its first moment</span>`,{hot:true});return}}}
@@ -3034,6 +3044,8 @@ function selectThread(li){if(!tunnel)return;tunnel.sel=li;tunnel.threadU.uSel.va
 function neuronStep(dir){if(!tunnel)return;if(tunnel.stops)return threadStep(dir);
   const us=[...new Set(tunnel.stars.map(s=>s.u))].sort((a,b)=>a-b);const now=cam.tpT+.02;
   const u=dir>0?us.find(v=>v>now+.004):[...us].reverse().find(v=>v<now-.004);if(u!=null){cam.tpT=Math.max(0,u-.02);cam.idle=-9}}
+function forkDoor(i){const f=tunnel?.forks[i];if(!f||state.doorLock)return;state.doorLock=true;setTimeout(()=>state.doorLock=false,1500);
+  if(f.target)enterTunnel(f.target);else window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:f.cs.id}}))}
 function throughDoor(){if(!tunnel||state.doorLock)return;state.doorLock=true;setTimeout(()=>state.doorLock=false,1500);
   const nx=tunnel.door.next;if(nx)enterTunnel(nx);else exitTunnel()}
 // WALKING (UX-PLAN 6.2). In the corridor Shift+← → steps turn to turn (each user message starts a turn) and Tab
@@ -3056,7 +3068,7 @@ function click(x,y){
   if(cam.tween||state.diving)return;
   hover(x,y);
   if(cam.mode==='tunnel'&&tunnel){if(state.hoverStar>=0)selectThread(tunnel.stars[state.hoverStar].li);
-    else if(state.hoverDoor==='door')throughDoor();else if(state.hoverDoor==='back'){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
+    else if(state.hoverDoor==='door')throughDoor();else if(/^fork\d+$/.test(state.hoverDoor||''))forkDoor(+state.hoverDoor.slice(4));else if(state.hoverDoor==='back'){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(state.lens==='cortex'&&slots.hover?.on&&/^pin\d+$/.test(slots.hover.key||'')){focusPin(+slots.hover.key.slice(3));return}   // a pin: its card
   if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1);
       // click into open space: glide that way and turn toward it
@@ -3317,6 +3329,7 @@ const _frame=()=>{
     // the far doorway opens as you near the end of the thread; the side door stays ajar
     tunnel.door.mesh.material.uniforms.uOpen.value=smooth01((cam.tp-.78)/.18);
     tunnel.back.mesh.material.uniforms.uOpen.value=state.hoverDoor==='back'?.85:.5;
+    tunnel.forks.forEach((f,i)=>{f.mesh.material.uniforms.uOpen.value=state.hoverDoor==='fork'+i?.85:.5});
     rail.update(cam.tp);
     // arriving at a neuron names it, without a hover
     const here=cam.tp+.025;let best=-1,bd=.009;tunnel.stars.forEach((s,i)=>{const d=Math.abs(s.u-here);if(d<bd){bd=d;best=i}});
