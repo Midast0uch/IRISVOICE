@@ -78,3 +78,49 @@ def test_non_change_facts_keep_the_word_rule():
     result = "Team Name | Year | Wins\nBoston Bruins | 1990 | 44"
     cov = _cover(G04_REQUEST, result)
     assert cov.C == 1.0, (cov.covered, cov.required_n)
+
+
+# Live c05 (2026-10-27): the edit and a clean "python greet.py --shout World" run both
+# committed UNVERIFIED (the text check could not confirm them), C stayed 0, the
+# coverage gap re-planned 3 steps that redid the work: reply 43-70 s vs a 25 s standard.
+C05_REQUEST = (
+    r"The project is in C:\Users\midas\AppData\Local\Temp\iris-evals\x\c05_add_cli_flag. "
+    "Add a --shout flag to greet.py. With --shout the greeting is printed in upper case. "
+    "Without it the output stays exactly the same."
+)
+C05_CHECKED = "Verified.\n\nActions:\n- run_command python greet.py World; python greet.py --shout World -> ok"
+
+
+def test_an_unverified_step_that_ran_the_code_cleanly_covers_a_change_fact():
+    c = _contract(C05_REQUEST)
+    assert gc.mark_coverage(c, ["UNVERIFIED"], [C05_CHECKED]).C == 1.0
+    edit_then_run = "Done.\n\nActions:\n- edit_file greet.py -> ok\n- run_command python greet.py --shout World -> ok"
+    assert gc.mark_coverage(c, ["UNVERIFIED"], [edit_then_run]).C == 1.0
+
+
+def test_an_unverified_step_needs_a_passing_run_after_its_change():
+    c = _contract(C05_REQUEST)
+    assert gc.mark_coverage(c, ["UNVERIFIED"], ["Done.\n\nActions:\n- edit_file greet.py -> ok"]).C == 0.0
+    run_then_edit = "Done.\n\nActions:\n- run_command python greet.py World -> ok\n- edit_file greet.py -> ok"
+    assert gc.mark_coverage(c, ["UNVERIFIED"], [run_then_edit]).C == 0.0
+    assert gc.mark_coverage(c, ["UNVERIFIED"], [C05_CHECKED + "\n\n" + NON_ZERO]).C == 0.0
+    assert gc.mark_coverage(c, ["FAILED"], [C05_CHECKED]).C == 0.0                       # never a failed step
+    plain = gc.Contract(required=("compare Bun vs Deno",))                                 # not a change fact
+    assert gc.mark_coverage(plain, ["UNVERIFIED"], ["Bun vs Deno\n\nActions:\n- run_command python x.py -> ok"]).C == 0.0
+
+
+def test_naming_a_python_file_is_not_running_the_code():
+    c = _contract(C05_REQUEST)
+    for cmd in ("cat greet.py", "type greet.py", "ls main.go"):
+        read = f"Read it.\n\nActions:\n- run_command {cmd} -> ok"
+        assert gc._checked_after_change(read) is False, cmd
+        assert gc.mark_coverage(c, ["UNVERIFIED"], [read]).C == 0.0, cmd
+    assert gc._checked_after_change("x\n\nActions:\n- run_command py -3 greet.py -> ok") is True
+
+
+def test_a_heredoc_command_keeps_its_action_line_readable():
+    from backend.agent.node_executor import NodeResult, _target
+
+    cmd = "cat > greet.py <<'EOF'\nimport argparse\n\n\ndef main():\n    pass\nEOF\npython greet.py World"
+    line = NodeResult(True, "Wrote it.", calls=[{"tool": "run_command", "target": _target({"command": cmd}), "ok": True}])
+    assert gc._ACTION_RE.findall(line.as_step_result())[0][0] == "run_command"

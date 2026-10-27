@@ -373,7 +373,9 @@ _MALFORMED_HINT = (
 def _target(params: dict) -> str:
     for key in ("path", "file_path", "command", "pattern", "query", "handle"):
         if params.get(key):
-            return str(params[key])[:80]
+            # one line: a heredoc command split its "- tool target -> ok" action line, so
+            # the step's actions could not be read (goal_contract._ACTION_RE)
+            return " ".join(str(params[key]).split())[:80]
     return ""
 
 

@@ -15892,8 +15892,11 @@ Respond with a JSON object:
     # step that names several files can only ever write one of them. Measured:
     # "create three files ... each with one bullet" wrote ONE file, the other two
     # were silently missing, and the user was told the files had been created.
+    # The folder stays on the name: "tests/test_geometry.py" read as "test_geometry.py",
+    # was "missing" in the project root, and the graft overwrote the real test file
+    # (live c11 2026-10-27: "Create the file test_geometry.py ..." -> hidden test failed).
     _ARTIFACT_NAME_RE = re.compile(
-        r"\b[\w][\w.\-]*\.(?:md|markdown|txt|json|csv|tsv|ya?ml|py|js|ts|tsx|html|log|rst|tex)\b",
+        r"\b[\w][\w.\-/\\]*\.(?:md|markdown|txt|json|csv|tsv|ya?ml|py|js|ts|tsx|html|log|rst|tex)\b",
         re.IGNORECASE,
     )
 

@@ -53,3 +53,18 @@ def test_the_der_loop_grafts_the_remainder_after_a_file_step():
     # Bounded three ways: tool scope, the shared graft budget, one attempt each.
     assert "DER_MAX_GRAFTS" in src
     assert "_artifact_graft_attempted" in src
+
+
+def test_a_file_named_with_its_folder_is_found_in_that_folder(tmp_path):
+    """Live c11 (2026-10-27): "Some tests in tests/test_geometry.py fail" was read as
+    "test_geometry.py", missing in the project root, and the graft step overwrote the
+    real test file. The folder stays on the name; an existing file is not missing."""
+    from backend.agent.agent_kernel import AgentKernel
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_geometry.py").write_text("def test_x():\n    assert True\n")
+    text = "Some tests in tests/test_geometry.py fail. Fix the bugs in the geometry package."
+    names = AgentKernel._declared_file_names(text)
+    assert names == ["tests/test_geometry.py"]
+    assert [n for n in names if AgentKernel._artifact_missing(n, str(tmp_path))] == []
+    assert AgentKernel._declared_file_names("Write notes.txt and summary.md") == ["notes.txt", "summary.md"]

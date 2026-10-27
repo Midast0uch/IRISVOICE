@@ -20,6 +20,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import re as _re
+import threading as _threading
 import time as _perf_t
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Protocol
@@ -617,10 +618,44 @@ def hedge_delay(base: str, model: str, read_s: Optional[float]) -> Optional[floa
     return delay if (read_s is None or delay < read_s) else None
 
 
+# One kept connection pool per API base URL (2026-10-27). A client per call paid a new TCP
+# + TLS handshake on every model call: measured against api.inceptionlabs.ai, median 86 ms
+# (max 1.9 s - a stalled handshake that set off a hedge) vs 23 ms (max 34 ms) on a kept
+# connection; a coding turn makes ~30 calls. Each call still builds its own light Client
+# (its own timeouts) over the shared transport; closing that Client leaves the pool open.
+# Bounded: one pool per base URL; idle connections expire after _API_KEEPALIVE_S.
+_API_POOLS: Dict[str, Any] = {}
+_API_POOLS_LOCK = _threading.Lock()
+_API_KEEPALIVE_S = 60.0
+
+
+def _api_transport(base_url: str) -> Any:
+    import httpx as _httpx
+    from backend.utils.ssl_context import get_ssl_context
+
+    class _KeptTransport(_httpx.HTTPTransport):
+        # The per-call Client closes its transport (close() and, under `with`, __exit__,
+        # which closes the pool directly); the pool stays.
+        def close(self) -> None:
+            pass
+
+        def __exit__(self, *exc) -> None:
+            pass
+
+    with _API_POOLS_LOCK:
+        pool = _API_POOLS.get(base_url)
+        if pool is None:
+            pool = _KeptTransport(verify=get_ssl_context(),
+                                  limits=_httpx.Limits(keepalive_expiry=_API_KEEPALIVE_S))
+            _API_POOLS[base_url] = pool
+        return pool
+
+
 def _post_hedged(client, url, headers, body, hedge_after: float, on_hedge) -> Any:
     """POST; with no answer after ``hedge_after`` s send the same request again
     and return the FIRST response. Raises the first error only when every
-    request failed. The losing request ends when the caller closes ``client``."""
+    request failed. The losing request runs out on its own (bounded by its read
+    timeout; the pool outlives the caller's client); its answer is dropped."""
     import threading as _th
 
     cond = _th.Condition()
@@ -878,7 +913,8 @@ class ApiHttpxTransport:
             _emitted = False
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context(),
+                    transport=_api_transport(self._api_base_url),
                 ) as _client:
                     _ask_usage = url not in _STREAM_USAGE_REFUSED
                     with _client.stream(
@@ -1057,7 +1093,8 @@ class ApiHttpxTransport:
             _hedge = hedge_delay(self._api_base_url, model, _read) if attempt == 0 else None
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(timeout_s or 60.0, read=_read), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0, read=_read), verify=get_ssl_context(),
+                    transport=_api_transport(self._api_base_url),
                 ) as _client:
                     if _hedge:
                         def _on_hedge(_h=_hedge):

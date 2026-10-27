@@ -140,8 +140,9 @@ def _names_in(text: str) -> List[str]:
 # "- run_command python -m pytest -q -> ok".
 _ACTION_RE = re.compile(r"^- (\S+) ?(.*?) -> (ok|FAILED)\s*$", re.MULTILINE)
 # A command that runs the code or its tests (not "ls", not "git status").
+# Not after a dot: "cat greet.py" names a file, it runs nothing (".py", ".go").
 _CHECK_CMD_RE = re.compile(
-    r"\b(?:pytest|unittest|python3?|py|node|npm|npx|jest|vitest|go|cargo|dotnet|mvn|gradle|make)\b",
+    r"(?<!\.)\b(?:pytest|unittest|python3?|py|node|npm|npx|jest|vitest|go|cargo|dotnet|mvn|gradle|make)\b",
     re.IGNORECASE,
 )
 _LAST_CMD_FAILED = "last command in this step exited non-zero"
@@ -372,6 +373,14 @@ def _outcome_verified(outcome: object) -> bool:
         return False
 
 
+def _is_unverified(outcome: object) -> bool:
+    if isinstance(outcome, (tuple, list)) and outcome:
+        return _is_unverified(outcome[0])
+    _status = getattr(outcome, "status", outcome)
+    _val = getattr(_status, "value", _status)
+    return str(_val or "").strip().upper() == "UNVERIFIED"
+
+
 def mark_coverage(
     contract: Contract,
     node_outcomes: Iterable[object],
@@ -427,6 +436,16 @@ def mark_coverage(
         _hit = False
         for _oc, _res in zip(_outcomes, _results):
             if not _outcome_verified(_oc):
+                # A change fact's evidence is outside the verifier: a step that ran the
+                # code or its tests after its last change, and passed, covers it even when
+                # the text check could not confirm the step (UNVERIFIED; never FAILED).
+                # Live c05 2026-10-27: the edit and a clean "python greet.py --shout" run
+                # committed UNVERIFIED, C stayed 0, the turn re-planned 3 steps that redid
+                # the work - reply 43-70 s against a 25 s standard.
+                if (_change_asks[_i] and _is_unverified(_oc) and _terms
+                        and _checked_after_change(_res)):
+                    _hit = True
+                    break
                 continue
             _low = _norm(_res)
             if not _terms:
