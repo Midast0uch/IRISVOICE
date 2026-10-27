@@ -71,15 +71,23 @@ class ChunkFingerprints:
     def _read(self, conn, after: int):
         import numpy as np
 
+        # REQ-4 AC1: a row may carry only the 128-byte fingerprint (the float is
+        # dropped for a chunk type the bench cleared). 1,152 B/row instead of
+        # 4,096 - the warm-up reads the store ~3.5x faster.
         rows = conn.execute(
-            "SELECT rowid, session_id, chunk_type, zone, embedding_backend, embedding FROM context_chunks "
-            "WHERE rowid > ? AND embedding IS NOT NULL ORDER BY rowid LIMIT ?", (after, FP_BATCH),
+            "SELECT rowid, session_id, chunk_type, zone, embedding_backend, vec_fp, embedding "
+            "FROM context_chunks WHERE rowid > ? AND (vec_fp IS NOT NULL OR embedding IS NOT NULL) "
+            "ORDER BY rowid LIMIT ?", (after, FP_BATCH),
         ).fetchall()
         vecs, meta = [], []
-        for rid, sid, ctype, zone, backend, blob in rows:
-            if not blob or len(blob) % 4:
+        for rid, sid, ctype, zone, backend, fp, blob in rows:
+            if fp and len(fp) == 16 * 8:
+                # the fingerprint IS the vector's sign pattern: unpack, do not re-read
+                vecs.append(np.unpackbits(np.frombuffer(fp, dtype=np.uint8)))
+            elif blob and not len(blob) % 4:
+                vecs.append(np.frombuffer(blob, dtype="<f4"))
+            else:
                 continue
-            vecs.append(np.frombuffer(blob, dtype="<f4"))
             meta.append((rid, sid, ctype, zone, backend))
         last = rows[-1][0] if rows else after
         return vecs, meta, last
@@ -188,23 +196,29 @@ class ChunkFingerprints:
             part = ids[i:i + 400]
             marks = ",".join("?" * len(part))
             rows = conn.execute(
-                "SELECT rowid, embedding FROM context_chunks WHERE rowid IN (%s)" % marks,
+                "SELECT rowid, embedding, vec_fp FROM context_chunks WHERE rowid IN (%s)" % marks,
                 part,
             ).fetchall()
             with self._lock:
                 n = self._n
                 if not n or self._codes is None:
                     return changed
-                for rid, blob in rows:
-                    if not blob or len(blob) % 4:
+                for rid, blob, fp in rows:
+                    if fp and len(fp) == 16 * 8:
+                        codes = np.frombuffer(fp, dtype=np.uint8).copy()
+                    elif blob and not len(blob) % 4:
+                        vec = np.frombuffer(blob, dtype="<f4")
+                        if len(vec) != self._dim:
+                            continue
+                        codes = np.packbits(vec > 0)
+                    else:
                         continue
-                    vec = np.frombuffer(blob, dtype="<f4")
-                    if len(vec) != self._dim:
+                    if len(codes) != 16 * 8:
                         continue
                     pos = int(np.searchsorted(self._rowids[:n], rid))
                     if pos >= n or int(self._rowids[pos]) != rid:
                         continue    # not in RAM (beyond the bound, or dropped)
-                    self._codes[:, pos] = np.packbits(vec > 0).view(np.uint64)
+                    self._codes[:, pos] = codes.view(np.uint64)
                     changed += 1
         if changed:
             logger.info("[recall_reach] fingerprints updated store=%s rows=%d",

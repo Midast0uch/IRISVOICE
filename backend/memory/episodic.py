@@ -26,6 +26,7 @@ from backend.memory.embedding import (
     EMBED_OVERLAP_CHARS,
 )
 from backend.memory.reindex import get_reindex_manager
+from backend.memory import vector_quant
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +437,14 @@ class EpisodicStore:
             # every call raised "unexpected keyword argument 'tool_name'"
             # before the column even mattered. Preserves existing rows (NULL).
             ("tool_name",       "TEXT"),
+            # REQ-4 AC1 (T14): the compact recall forms beside the float.
+            # vec_fp = 128-byte sign bitmap (the index form), vec_i8 = 1,024-byte
+            # symmetric int8 code, vec_scale = its one float. Filled by
+            # scripts/compress_vectors.py; the float is kept only for a chunk
+            # type where int8 loses more than 0.02 recall@10.
+            ("vec_fp",          "BLOB"),
+            ("vec_i8",          "BLOB"),
+            ("vec_scale",       "REAL"),
         ]
         for col, col_def in migrations:
             if col not in existing:
@@ -918,7 +927,7 @@ class EpisodicStore:
             # Dedup: compare against recent chunks in this session
             try:
                 rows = self.db.execute(
-                    """SELECT id, embedding, embedding_backend FROM context_chunks
+                    """SELECT id, embedding, embedding_backend, vec_i8, vec_scale FROM context_chunks
                        WHERE session_id = ? AND chunk_type = ?
                        ORDER BY timestamp DESC LIMIT 50""",
                     (session_id, chunk_type),
@@ -926,7 +935,8 @@ class EpisodicStore:
                 is_dup = False
                 for row in rows:
                     try:
-                        stored_emb = _unpack_embedding(row[1])
+                        # REQ-4 AC1: the float may be gone; the int8 code stands for it
+                        stored_emb = vector_quant.vector_of(row[1], row[3], row[4])
                         stored_backend = row[2] or BACKEND_BGE
                         if stored_emb:
                             try:
@@ -950,8 +960,14 @@ class EpisodicStore:
 
             chunk_id = str(uuid.uuid4())
             embedding_blob = _pack_embedding(embedding)
+            # REQ-4 AC1: write the compact forms with the row, so every chunk
+            # written from now on can lose its float without a backfill.
+            try:
+                _fp, _i8, _scale = vector_quant.compress(embedding)
+            except Exception:
+                _fp = _i8 = _scale = None
             batch_rows.append((chunk_id, session_id, chunk_type, _zone, chunk,
-                               embedding_blob, chunk_backend, tool_name))
+                               embedding_blob, chunk_backend, tool_name, _fp, _i8, _scale))
             stored_ids.append(chunk_id)
 
         # Batch insert all non-duplicate chunks
@@ -964,8 +980,9 @@ class EpisodicStore:
                 app_write(
                     self.db,
                     """INSERT INTO context_chunks
-                       (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name,
+                        vec_fp, vec_i8, vec_scale)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     row,
                 )
         elif batch_rows:
@@ -973,8 +990,9 @@ class EpisodicStore:
                 with self.db:
                     self.db.executemany(
                         """INSERT INTO context_chunks
-                           (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                           (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name,
+                            vec_fp, vec_i8, vec_scale)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         batch_rows
                     )
 
@@ -987,8 +1005,9 @@ class EpisodicStore:
                     def _row326(_r=row):
                         self.db.execute(
                             """INSERT INTO context_chunks
-                               (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                               (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name,
+                                vec_fp, vec_i8, vec_scale)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                             _r
                         )
                         self.db.commit()
@@ -1072,7 +1091,7 @@ class EpisodicStore:
             params_list.extend(zones)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        _cols = "id, content, embedding, timestamp, embedding_backend, zone"
+        _cols = "id, content, embedding, timestamp, embedding_backend, zone, vec_i8, vec_scale"
 
         # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
         # by fingerprint across EVERY row the filter allows, plus the newest 50 the old
@@ -1141,8 +1160,10 @@ class EpisodicStore:
         zone_of: Dict[str, Optional[str]] = {}
         for row in rows:
             try:
-                stored_emb = _unpack_embedding(row[2])
-                if not stored_emb:
+                # REQ-4 AC1: score the int8 code when the float is gone (4x less
+                # I/O per row, unchanged space - the code is the same direction)
+                stored_emb = vector_quant.vector_of(row[2], row[6], row[7])
+                if stored_emb is None or len(stored_emb) == 0:
                     continue
                 stored_backend = row[4] or BACKEND_BGE
                 try:

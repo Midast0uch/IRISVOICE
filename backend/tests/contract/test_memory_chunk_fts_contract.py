@@ -127,9 +127,18 @@ def kwstore(tmp_path):
          (-q).tobytes(), BACKEND_LFM, "2020-01-01 00:00:00"),
     )
     con.commit()
-    st._embed.encode_with_meta = lambda text: Embedding(
-        vector=q.tolist(), backend=BACKEND_LFM, chunk_count=1, truncated=False
-    )
+    class _Stub:
+        """A fixed query vector. Replace the STORE's service, not the singleton's
+        method: EmbeddingService is a process-wide singleton, so patching
+        ``st._embed.encode_with_meta`` leaked a canned vector into every later
+        test in the same process (found 2026-10-27: the honest-label contract
+        tests saw a model label on a call that never reached a model)."""
+
+        @staticmethod
+        def encode_with_meta(text):
+            return Embedding(vector=q.tolist(), backend=BACKEND_LFM, chunk_count=1, truncated=False)
+
+    st._embed = _Stub()
     yield st, con
     con.close()
     from backend.memory import recall_reach

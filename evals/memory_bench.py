@@ -70,16 +70,27 @@ def _queries(n: int, seed: int) -> list:
 
 
 def _load(con):
-    """Every chunk: rowid, session, type, zone, backend, timestamp, float vector."""
+    """Every chunk: rowid, session, type, zone, backend, timestamp, vector.
+
+    REQ-4 AC1: the vector comes from the float while it exists and from the int8
+    code after the drop, so the bench measures the same store before and after.
+    """
+    from backend.memory import vector_quant
+
     ids, meta, vecs = [], [], []
-    for rid, sid, ctype, zone, backend, ts, blob in con.execute(
-            "SELECT rowid, session_id, chunk_type, zone, embedding_backend, timestamp, embedding "
-            "FROM context_chunks WHERE embedding IS NOT NULL"):
-        if not blob or len(blob) != 4096:
+    for rid, sid, ctype, zone, backend, ts, blob, code, scale in con.execute(
+            "SELECT rowid, session_id, chunk_type, zone, embedding_backend, timestamp, embedding, "
+            "vec_i8, vec_scale FROM context_chunks "
+            "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL"):
+        if blob and not len(blob) % 4:
+            vec = np.frombuffer(blob, dtype="<f4")
+        else:
+            vec = vector_quant.decompress(code, scale)
+        if vec is None or len(vec) != vector_quant.DIM:
             continue
         ids.append(rid)
         meta.append((sid, ctype, zone, backend, ts or ""))
-        vecs.append(np.frombuffer(blob, dtype="<f4"))
+        vecs.append(vec)
     mat = np.stack(vecs).astype(np.float32)
     mat /= np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
     return np.array(ids), meta, mat
@@ -111,7 +122,8 @@ _WORD_PATTERNS = (
 
 def _words_cases(con, limit: int = 40, seed: int = 11) -> list:
     rows = con.execute(
-        "SELECT rowid, content FROM context_chunks WHERE embedding IS NOT NULL "
+        "SELECT rowid, content FROM context_chunks "
+        "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL "
         "ORDER BY rowid DESC LIMIT 20000"
     ).fetchall()
     random.Random(seed).shuffle(rows)
@@ -271,9 +283,77 @@ def main() -> int:
         report["scale"] = {"rows": int(big._n), "scan_ms_p50": round(_pct(times, 50), 2),
                            "scan_ms_p95": round(_pct(times, 95), 2)}
 
+    # ── COMPRESSION (REQ-4 AC1 / T14) ─────────────────────────────────────
+    # int8 keeps the direction; the question is whether SCORING the code instead
+    # of the float costs recall. Candidates are the ones recall actually uses,
+    # so only precision changes. Measured per chunk type, because AC1 keeps the
+    # float for any type that loses more than 0.02.
+    from backend.memory import vector_compress, vector_quant
+
+    i8_rows, i8_scales = [], []
+    for row in mat:
+        _fp, _code, _s = vector_quant.compress(row)
+        if _code is None:
+            i8_rows.append(np.zeros(vector_quant.DIM, dtype=np.int8))
+            i8_scales.append(0.0)
+        else:
+            i8_rows.append(np.frombuffer(_code, dtype=np.int8))
+            i8_scales.append(_s or 0.0)
+    mat8 = (np.stack(i8_rows).astype(np.float32)
+            * np.asarray(i8_scales, dtype=np.float32)[:, None] / 127.0)
+    _type_codes = {}
+    type_of = np.zeros(len(meta), dtype=np.int16)
+    for i, m in enumerate(meta):
+        type_of[i] = _type_codes.setdefault(m[1] or "", len(_type_codes))
+    _type_names = {v: k for k, v in _type_codes.items()}
+    newest_global = order[:50]
+    per_type = {t: {"float": [], "int8": []} for t in _type_names.values()}
+    for qm in qmeta:
+        q = np.asarray(qm.vector, dtype=np.float32)
+        q /= max(float(np.linalg.norm(q)), 1e-9)
+        s_f, s_q = mat @ q, mat8 @ q
+        near = fp.candidates(con, qm.vector, qm.backend) or []
+        cand = np.array(sorted(set(newest_global) | {pos[r] for r in near if r in pos}), dtype=np.int64)
+        if not len(cand):
+            continue
+        tc = type_of[cand]
+        for code, name in _type_names.items():
+            sel = cand[tc == code]
+            if len(sel) < K:
+                continue
+            idx = np.flatnonzero(type_of == code)
+            truth = set(idx[np.argsort(-s_f[idx])[:K]].tolist())
+            if not truth:
+                continue
+            per_type[name]["float"].append(len(truth & set(sel[np.argsort(-s_f[sel])[:K]].tolist())) / len(truth))
+            per_type[name]["int8"].append(len(truth & set(sel[np.argsort(-s_q[sel])[:K]].tolist())) / len(truth))
+    try:
+        cov = vector_compress.coverage(con)
+    except Exception:
+        cov = {}
+    compress_report = {"int8_bytes": vector_quant.I8_BYTES + 8,
+                       "fingerprint_bytes": vector_quant.FP_BYTES, "types": {}}
+    for name, r in per_type.items():
+        if not r["float"]:
+            continue
+        f = round(statistics.mean(r["float"]), 4)
+        q8 = round(statistics.mean(r["int8"]), 4)
+        compress_report["types"][name] = {
+            "queries": len(r["float"]), "recall@10_float": f, "recall@10_int8": q8,
+            "delta": round(q8 - f, 4), "keep_float": (f - q8) > 0.02,
+            "rows": int((type_of == _type_codes[name]).sum()),
+        }
+    live = {t: {"rows": v["rows"], "bytes_per_row": v["bytes_per_row"]}
+            for t, v in (cov.get("by_type") or {}).items()}
+    compress_report["live"] = live
+    report["compression"] = compress_report
+
     text_b = con.execute("SELECT AVG(length(content)) FROM context_chunks").fetchone()[0] or 0
     report["bytes_per_chunk"] = {"text": round(text_b), "vector_float32": 4096,
-                                 "fingerprint": int(fp._codes.shape[0] * 8) if fp._codes is not None else None}
+                                 "vector_int8": vector_quant.I8_BYTES + 8,
+                                 "fingerprint": vector_quant.FP_BYTES,
+                                 "compact_vectors": vector_quant.FP_BYTES + vector_quant.I8_BYTES + 8,
+                                 "live_vector_bytes_per_row": cov.get("bytes_per_row_vectors")}
     report["store_bytes"] = Path(path).stat().st_size
     con.close()
 
@@ -291,7 +371,12 @@ def main() -> int:
             "words": {k: report["words"][k]
                       for k in ("cases", "reach_new", "any_hit_new",
                                 "unique_reach_new", "candidate_ms_p95")
-                      if k in report.get("words", {})}}
+                      if k in report.get("words", {})},
+            "compression": {t: {"recall@10_float": v["recall@10_float"],
+                                "recall@10_int8": v["recall@10_int8"],
+                                "delta": v["delta"], "keep_float": v["keep_float"]}
+                            for t, v in (report.get("compression") or {}).get("types", {}).items()},
+            "vector_bytes_per_row": (report.get("bytes_per_chunk") or {}).get("live_vector_bytes_per_row")}
         std_path.write_text(json.dumps(std, indent=2), encoding="utf-8")
         print("standard recorded")
     elif "memory" in std:
@@ -314,6 +399,18 @@ def main() -> int:
         if s_words.get("unique_reach_new") is not None and (
                 w.get("unique_reach_new") or 0) < s_words["unique_reach_new"] - 0.02:
             bad.append(f"words: unique_reach {w.get('unique_reach_new')} < standard {s_words['unique_reach_new']} - 0.02")
+        # REQ-4 AC1: a type the bench cleared keeps int8 scoring within 0.02. If
+        # it slips, the float must come back for that type - do not lower the bar.
+        s_comp = std["memory"].get("compression") or {}
+        for t, v in ((report.get("compression") or {}).get("types") or {}).items():
+            s = s_comp.get(t) or {}
+            if s.get("keep_float") is False and v["recall@10_int8"] < s["recall@10_int8"] - 0.02:
+                bad.append(f"compression[{t}]: int8 recall {v['recall@10_int8']} < standard "
+                           f"{s['recall@10_int8']} - 0.02 (float must return for this type)")
+        s_bpr = std["memory"].get("vector_bytes_per_row")
+        bpr = (report.get("bytes_per_chunk") or {}).get("live_vector_bytes_per_row")
+        if s_bpr and bpr and bpr > s_bpr * 1.05 + 8:
+            bad.append(f"vectors: {bpr} B/row > standard {s_bpr} x 1.05 + 8 (REQ-4 growth budget)")
         for b in bad:
             print("REGRESSION", b)
         return 1 if bad else 0
