@@ -91,6 +91,8 @@ class Episode:
     # filed under the conversation (session_id) and the Mycelium wiring (outcome, landmark use, crystallize,
     # episode index) keeps the session it ingested the turn under. None = the same as session_id.
     graph_session_id: Optional[str] = None
+    # The turn this episode closes (with session_id: the "<conversation>:<turn>" key memory events carry).
+    turn_id: Optional[str] = None
 
 
 def _shadow_trust_rank(scored: list, zone_of: dict, limit: int) -> None:

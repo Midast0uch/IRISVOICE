@@ -888,6 +888,33 @@ def record_recall_delivered(conn, *, thread_id: str, task_id: str, step_id: str,
         return []
 
 
+# At most this many claims are typed as used by one turn (observe_region caps activations too).
+CLAIMS_USED_MAX = 8
+
+
+def record_claims_used(conn, *, thread_id: str, task_id: str, landmark_ids: List[str],
+                       coords: Optional[str] = None) -> List[str]:
+    """RECALL_USED, one per claim a turn used (the claims its region overlapped and that
+    Mycelium activated at turn end, interface.observe_landmark_use). ``links.landmark_id``
+    names the claim, so "what memory gave this turn" and "every time it was used" read an
+    exact link instead of a time window (before 2026-10-27 no memory event named a claim:
+    0 of 903 in the snapshot). Ids only; never raises."""
+    labels: List[str] = []
+    try:
+        ensure_schema(conn)
+        for lid in [str(x) for x in (landmark_ids or []) if x][:CLAIMS_USED_MAX]:
+            eid = emit_event(
+                conn, label="RECALL_USED", evidence="none", thread_id=thread_id,
+                episode_id=task_id, sigma_from=_sigma_from(), sigma_to=coords,
+                links={"landmark_id": lid[:64]}, payload={"source": "claim"}, chain=False,
+            )
+            if eid:
+                labels.append("RECALL_USED")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_events] record_claims_used failed task=%s: %s", task_id, exc)
+    return labels
+
+
 # A prior claim nothing re-checked, older than this, is a belief to re-check.
 _BELIEF_STALE_DAYS = 30
 

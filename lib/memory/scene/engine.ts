@@ -1195,9 +1195,12 @@ turnPts.visible=false;turnPts.frustumCulled=false;cortex.add(turnPts);   // stat
 // TURN → THE CLAIMS IT TOUCHED (UX-PLAN 3.2): a claim LEARNED in this strand during the window, or given EVIDENCE here then
 // (each evidence entry carries its strand and time). Live 2026-10-26: no moment of the snapshot names a claim (0 of 903),
 // so the claim's own record is the link. At most 3, newest first - each a path to the claim in the cortex.
-function claimsInWindow(sid,t0,t1){const out=[];
+// Since 2026-10-27 a turn that USED a claim types RECALL_USED naming it (links.landmark_id): that use is read exactly.
+function claimsInWindow(sid,t0,t1){const out=[],got=new Set();
   LM.forEach((l,k)=>{const learned=l.session===sid&&l.born>=t0&&l.born<t1,ev=(l.evidence||[]).find(e=>e.session===sid&&e.at>=t0&&e.at<t1);
-    if(learned||ev)out.push({k,how:learned?'learned here':'evidence here: '+(EVID_WORD[ev.kind]||ev.kind),at:learned?l.born:ev.at})});
+    if(learned||ev){got.add(k);out.push({k,how:learned?'learned here':'evidence here: '+(EVID_WORD[ev.kind]||ev.kind),at:learned?l.born:ev.at})}});
+  for(const e of M.events)if(e.label==='RECALL_USED'&&e.session===sid&&e.landmark!=null&&e.landmark<NL&&e.ts>=t0&&e.ts<t1&&!got.has(e.landmark)){
+    got.add(e.landmark);out.push({k:e.landmark,how:'used here',at:e.ts})}
   return out.sort((a,b)=>b.at-a.at).slice(0,3)}
 function touchedHTML(sid,t0,t1){return claimsInWindow(sid,t0,t1).map(({k,how})=>{const c=LM[k].claim;
   return `<span class="go" data-claim="${k}">→ ${esc(how)} · ${esc(c.length>60?c.slice(0,59)+'…':c)}</span>`}).join('')}

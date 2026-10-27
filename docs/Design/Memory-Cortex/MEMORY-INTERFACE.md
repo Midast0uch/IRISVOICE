@@ -390,6 +390,13 @@ WebSocket `memory_event` (each typed event, with thread and episode), `landmark_
 (`backend/utils/memory_live.py`), coalesced, never a new writer. Recall deliveries and integrity passes ride
 `memory_event` (RECALL_*, LANDMARK_DISSOLVED / MERGED, MEMORY_PRUNED).
 
+**A turn names the claims it used** (2026-10-27): at the turn's end the claims Mycelium activates
+(`observe_landmark_use`) are typed as `RECALL_USED`, one per claim (at most 8), `links.landmark_id` = the claim,
+`episode_id = "<conversation>:<turn>"` (`Episode.turn_id`), on the memory_events lane, never in the chain
+(`memory_events.record_claims_used`). `/claims/{id}/uses` reads them as exact uses (a use the episode index also
+holds counts once), and a turn's card says "used here". Live: one coding turn typed 6 claims; the episode index
+held 0 rows for them. Guards: `test_event_emitters_memory_contract.py`, `test_memory_claim_uses_contract.py`.
+
 ### 10.5 Ids contract
 
 Every memory row typed during a chat turn carries `thread_id = <conversation id>` and
@@ -451,12 +458,15 @@ The surface only reads, off the answer path: an evaluation run with it open must
 
 The design is complete; the largest remaining gains are in the **data the design shows**, not in the design:
 
-1. **Claims have no territory.** Every claim in the snapshot is "general" (landmarks carry no domain; ~90% of events
-   resolve to "general"), so the cortex cannot yet show what IRIS knows *by topic*. When claims land in real
-   territories, every cortex feature gains meaning at once. Tied to the owner's open decision on how sectors are born
-   (pin: births only after a Kyudo reorganization).
-2. **Recall events do not name the claim they delivered**, so "what memory gave this turn" and "every time it was
-   used" join by time window. Carrying the landmark id on `RECALL_*` events makes them exact.
+1. **Coding claims have no territory of their own** (measured 2026-10-27, owner decision: keep "general" for now).
+   A claim's territory is the root of its best sector (`mycelium_landmark_sectors`); 229 of 259 live claims have one
+   (data 48, web 40, hardware 5, finance 3, systems 2), 30 are the bootstrap seeds. The 131 in "general" are coding
+   tasks ("make test_roman.py pass", "fix the geometry package"): the topic list (`extractor._DOMAIN_KEYWORDS`, 13
+   closed values) has no value for general software work, so "general" is the true reading. Their sub-sectors
+   (general/evals, /appdata, /iris) are the weak word-recurrence sectors. The fix is one new closed value (e.g.
+   "software": python, tests, bug, function, refactor, script) — a change to a closed lattice and its coordinate ids,
+   and a new root, so it waits for the owner's design of sector births (only after a Kyudo reorganization).
+2. ~~Recall events do not name the claim they delivered~~ — done 2026-10-27 (§10.4: `RECALL_USED` per claim used).
 3. **The view holds the newest 48 threads**; older ones are reached by search only. Loading a thread on demand makes
    the timeline the whole history.
 

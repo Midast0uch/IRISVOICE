@@ -213,3 +213,31 @@ def test_a_use_names_the_turn_whose_events_came_just_before_it(env):
     assert by["ep-0"]["turn"] is None                   # an event of another thread never counts
     assert by["ep-6"]["turn"] is None                   # an event whose episode id names no turn
     assert all(u["step"] is None for u in by.values())
+
+
+def test_a_turn_that_typed_the_claim_it_used_is_a_use_with_its_exact_turn(env):
+    """Since 2026-10-27 a turn types RECALL_USED naming each claim it used (links.landmark_id, episode
+    "<conversation>:<turn>"). Live, a coding turn used 6 claims with 0 index rows - the index alone missed them.
+    Such a use names its turn exactly; a use both records hold counts once; another claim's event never counts."""
+    from backend.tests.contract.test_memory_api_contract import _ev
+
+    con = sqlite3.connect(env.mem)
+    con.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_label_ts ON memory_events(family, label, ts)")
+    _ev(con, "u1", T0 + 5000, "RECALL_USED", "conv-q", episode="conv-q:t4", links={"landmark_id": "C_FRESH"})
+    _ev(con, "u2", T0 + 5000, "RECALL_USED", "conv-q", episode="conv-q:t4", links={"landmark_id": "C_OTHER"})
+    _ev(con, "u3", T0 + 6000, "RECALL_USED", "conv-r", episode="conv-r:t2", links={"landmark_id": "C_FRESH"})
+    con.execute("INSERT INTO mycelium_episode_index VALUES ('r0','conv-r:t2','conv-r','[]','[]','C_FRESH','h',3,?)",
+                (T0 + 6000,))   # the same use on the index too
+    _ev(con, "u4", T0 + 5001, "RECALL_HELPED", "conv-q", episode="conv-q:t5", links={"landmark_id": "C_FRESH"})  # not a use
+    plan = " ".join(str(r) for r in con.execute(
+        "EXPLAIN QUERY PLAN SELECT ts FROM memory_events WHERE family = 'memory' AND label = 'RECALL_USED' "
+        "AND json_extract(links, '$.landmark_id') = ? ORDER BY ts DESC LIMIT 5", ("C_FRESH",)))
+    con.commit()
+    con.close()
+    assert "idx_memory_events_label_ts" in plan and "SCAN memory_events" not in plan, plan
+
+    d = _uses(env, "C_FRESH").json()
+    assert d == {"total": 2, "uses": [                                         # conv-r:t2 is one use, not two
+        {"ts": pytest.approx(T0 + 6000), "thread": "conv-r", "turn": "t2", "episode": "conv-r:t2", "outcome": None, "step": None},
+        {"ts": pytest.approx(T0 + 5000), "thread": "conv-q", "turn": "t4", "episode": "conv-q:t4", "outcome": None, "step": None}]}
+    assert _uses(env).json()["total"] == len(USED)                             # another claim's events never count

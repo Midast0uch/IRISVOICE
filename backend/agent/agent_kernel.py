@@ -2281,6 +2281,7 @@ class AgentKernel:
             episode = Episode(
                 session_id=getattr(self, "conversation_id", None) or _graph_sid,
                 graph_session_id=_graph_sid,
+                turn_id=getattr(self, "_der_turn_id", None),
                 task_summary=task_summary,
                 full_content=full_content,
                 tool_sequence=tool_sequence or [],

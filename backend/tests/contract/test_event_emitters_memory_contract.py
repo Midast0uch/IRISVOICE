@@ -75,6 +75,38 @@ def test_recall_events_never_enter_the_chain(store):
     assert chain.fetchall() == []
 
 
+def test_a_turn_that_used_claims_names_each_claim_it_used(store):
+    """The memory view reads "what memory gave this turn" and "every time this claim was used"
+    from links.landmark_id (MEMORY-INTERFACE section 13: before 2026-10-27 no memory event named
+    a claim). One RECALL_USED per claim, keyed to the turn, capped, never in the chain."""
+    ids = [f"lm{i}" for i in range(12)]
+    me.record_claims_used(store, thread_id="s1", task_id="s1:t1", landmark_ids=ids)
+    used = _rows(store, "RECALL_USED")
+    assert [e["links"] for e in used] == [{"landmark_id": f"lm{i}"} for i in range(me.CLAIMS_USED_MAX)]
+    assert {(e["family"], e["episode_id"], e["evidence"]) for e in used} == {("memory", "s1:t1", "none")}
+    assert all(e["payload"] == {"source": "claim"} for e in used)
+    chain = store.execute("SELECT nbl_outcome FROM memory_chain WHERE nbl_outcome LIKE 'event:RECALL%'")
+    assert chain.fetchall() == []
+
+
+def test_the_turn_end_types_the_claims_it_used_on_the_lane(monkeypatch):
+    """store_episode hands observe_landmark_use's ids to the memory_events lane, keyed
+    "<conversation>:<turn>" (the episode carries its turn)."""
+    from types import SimpleNamespace
+
+    from backend.agent import event_emit
+    from backend.memory.episodic import Episode
+    from backend.memory.interface import MemoryInterface
+
+    sent = []
+    monkeypatch.setattr(event_emit, "submit", lambda owner, fn, **kw: sent.append((fn, kw)))
+    assert "turn_id" in Episode.__dataclass_fields__
+    ep = SimpleNamespace(session_id="conv-1", turn_id="t7")
+    MemoryInterface._type_claims_used(SimpleNamespace(), ep, "session_iris", ["lmA", "lmB"])
+    assert sent == [("record_claims_used", {"conversation_id": "conv-1", "thread_id": "conv-1",
+                                            "task_id": "conv-1:t7", "landmark_ids": ["lmA", "lmB"]})]
+
+
 @pytest.fixture()
 def lm_conn():
     # Like the production Mycelium connection: usable from the lane thread.

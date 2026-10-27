@@ -656,13 +656,36 @@ def claim_uses(landmark_id: str, limit: int = OBSERVED_CAP) -> dict:
                 conv, _, turn = (r[0] if r else "").partition(":")
                 if turn and conv == thread:
                     turn_of[i] = turn
-    uses = []
+        # Since 2026-10-27 a turn that used the claim types RECALL_USED naming it (links.landmark_id, episode
+        # "<conversation>:<turn>"): the exact turn, no window. The index can miss such a use (live: a coding turn
+        # used 6 claims, 0 index rows), so both are read and a turn counts once.
+        typed: list = []
+        if {"family", "label", "links", "ts", "thread_id", "episode_id"} <= table_cols(con, "memory_events"):
+            # PLAN  … WHERE family='memory' AND label='RECALL_USED' AND json_extract(links,'$.landmark_id') = ?
+            #       -> SEARCH memory_events USING INDEX idx_memory_events_label_ts (family=? AND label=?)
+            where = ("FROM memory_events WHERE family = 'memory' AND label = 'RECALL_USED' "
+                     "AND json_extract(links, '$.landmark_id') = ?")
+            total_typed = con.execute(f"SELECT COUNT(*) {where}", (landmark_id,)).fetchone()[0]
+            typed = con.execute(f"SELECT ts, thread_id, episode_id {where} ORDER BY ts DESC LIMIT ?",
+                                (landmark_id, limit)).fetchall()
+            total += total_typed
+    uses, seen = [], {}
+    for at, thread, episode in typed:
+        conv, _, turn = (episode or "").partition(":")
+        seen[(thread, turn)] = seen.get((thread, turn), 0) + 1
+        uses.append({"ts": ts_of(at), "thread": thread, "turn": turn or None, "episode": episode,
+                     "outcome": None, "step": None})
     for i, (episode, thread, at) in enumerate(rows):
         conv, _, turn = (episode or "").partition(":")
-        uses.append({"ts": ts_of(at), "thread": thread,
-                     "turn": turn if turn and conv == thread else turn_of.get(i),
+        turn = turn if turn and conv == thread else turn_of.get(i)
+        if turn and seen.get((thread, turn)):
+            seen[(thread, turn)] -= 1   # the same use, read twice: it counts once
+            total -= 1
+            continue
+        uses.append({"ts": ts_of(at), "thread": thread, "turn": turn,
                      "episode": episode, "outcome": verdict.get(episode), "step": None})
-    return {"uses": uses, "total": total}
+    uses.sort(key=lambda u: u["ts"] or 0.0, reverse=True)
+    return {"uses": uses[:limit], "total": total}
 
 
 # ── shapes shared by strand and turn ─────────────────────────────────────────────────────────────

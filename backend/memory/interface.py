@@ -335,6 +335,23 @@ class MemoryInterface:
     # Episode Storage (Called after task completion)
     # ═══════════════════════════════════════════════════════════════════════
 
+    def _type_claims_used(self, episode: Episode, graph_sid: str, used) -> None:
+        """RECALL_USED per claim the turn used (memory_events.record_claims_used), on the
+        memory_events lane: thread = the conversation, episode = "<conversation>:<turn>".
+        Never raises - a missing event degrades the memory view, never the turn."""
+        try:
+            from types import SimpleNamespace
+
+            from backend.agent.event_emit import submit
+
+            conv = episode.session_id
+            submit(SimpleNamespace(_memory_interface=self, conversation_id=conv, session_id=graph_sid),
+                   "record_claims_used", conversation_id=conv, thread_id=conv,
+                   task_id=f"{conv}:{episode.turn_id}", landmark_ids=list(used))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[MemoryInterface] claims-used events skipped conv=%s: %s",
+                           getattr(episode, "session_id", ""), exc)
+
     def store_episode(self, episode: Episode) -> str:
         """
         Persist a completed task episode with embedding.
@@ -403,7 +420,10 @@ class MemoryInterface:
                 # The landmarks this session used: activate them and grow the
                 # edges among them (before crystallize: the new landmark is
                 # not "used" by the session that made it).
-                self._mycelium.observe_landmark_use(_graph_sid, myc_outcome)
+                _used = self._mycelium.observe_landmark_use(_graph_sid, myc_outcome)
+                # The claims this turn used, as memory events naming each one (on the lane).
+                if _used and getattr(episode, "turn_id", None):
+                    self._type_claims_used(episode, _graph_sid, _used)
                 self._mycelium.crystallize_landmark(
                     session_id=_graph_sid,
                     cumulative_score=score,
