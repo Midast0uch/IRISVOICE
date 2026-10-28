@@ -346,3 +346,78 @@ themselves, and make sure they're compressed in the memory.db like they should."
   left out: this is the difference between a flag that is OFF and a feature that is done.
 - **`decay_pass` must not prune a file the user still has on disk** unless REQ-9 AC7's budget
   forces it; `_protected_ids` covers pins and claims, not file nodes.
+
+## REQ-10: Two planes — semantic and phase (owner decision 2026-10-28)
+
+**User Story:** As IRIS I want meaning and position kept as two different measurements so
+that "similar words" and "same phase of work" never contaminate each other.
+
+**Verified:** `context_chunks` has no coordinate column (printed 2026-10-28); the phase lives
+in `memory_chain.coords_*` (4-number rows: 3,637 `coords_from` / 3,075 `coords_to` of 13,739)
+and `caducean_trajectories` (14,298 rows, x/y/ξ/u).
+
+**Acceptance Criteria:**
+- AC1: THE CHUNK VECTOR SHALL NOT carry phase. No concatenation; the fingerprint stays 1 bit
+  per dimension over 1024 dimensions (128 bytes).
+- AC2: THE SYSTEM SHALL reach a chunk's position by INCIDENCE
+  (`chunk.session_id = memory_chain.thread_id`), never by a coordinate stored on the chunk.
+- AC3: THE SYSTEM SHALL blend at the RANK: `score = cosine·(1−λ) + affinity·λ`,
+  `affinity = 1/(1+d_Σ)`, `d_Σ = w_ξ·|Δξ| + w_u·|Δu|`; x and y are REGIME labels, matched not
+  subtracted (measured: 17 and 43 distinct values, zeros on 36.5 % / 45.1 % of rows).
+- AC4: λ SHALL be per filter and gated on measured coverage (2026-10-28: turn 100.0 %,
+  global 38.6 %, research **0.0 %**). A filter with no positioned row uses λ = 0.
+- AC5: A row with no position SHALL be treated as ABSENT, not zero; the weights renormalise.
+- AC6: THE SCHEDULER SHALL NOT read live u/ξ (CT-3/CT-4); only the cognitive layer computes λ.
+- AC7: `coords_*` SHALL hold only coordinates before λ is tuned. Measured 2026-10-28: 10,102
+  `coords_from` and 10,664 `coords_to` rows hold other values (`'json'` 675×, `'markdown'`).
+
+## REQ-11: Three levels — thread, episode, chunk (prepared for the CLM)
+
+**User Story:** As IRIS I want each conversation's context to be one addressable vector so I
+can navigate history by conversation, then by task, then by payload.
+
+**Verified:** L2 exists (`episodes` 362 rows with `embedding`, `full_content`, `node_id`;
+`mycelium_episode_index` 4,526 rows linking `node_ids`/`space_ids`/`landmark_id`/
+`coordinate_hash`). L1 is absent: no table named `*thread*` or `*strand*`. Keys do not meet:
+5,262 chain threads, 8,098 chunk sessions, **1,584 in both**.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL store L1 as a DERIVED row (`thread_context`), rebuildable from chunks;
+  deleting it SHALL lose no truth.
+- AC2: THE SYSTEM SHALL give L2 the L3 codec (`episodes.vec_i8/vec_fp/vec_scale`), recomputed
+  from the stored `embedding`.
+- AC3: ALL THREE LEVELS SHALL use one codec (int8 + 128-byte fingerprint) and one scan.
+- AC4: THE L1 SCAN SHALL cost at most one tenth of the L3 scan at the same store size
+  (measured basis: 5,262 × 128 B = 673 KB against 108,314 × 128 B = 13.6 MB ≈ 20×).
+- AC5: EVERY chunk SHALL reach its thread. The measured match rate is reported; the 1,584 /
+  5,262 gap is the first work item, not a footnote.
+- AC6: A strand SHALL be a `thread_id` (`strand-<hex>`), not a new table, until strands are
+  used widely (6 strand sessions / 47 chunks today).
+
+## Handoff — the CLM needs its own spec, next
+
+Recorded 2026-10-28 (owner): "after we finish and finalize the recall spec the CLM will need a
+spec and be next."
+
+- This spec PREPARES the memory for it (REQ-11) and stops there. The editable live view,
+  placeholders, compaction policy and skill steering are **out of scope here**
+  (`CLM_MYCELIUM_DESIGN_BRIEF.md` §11 Phase 1+).
+- What the CLM spec inherits as ground: three addressable levels, one codec, incidence to the
+  phase plane, an immutable record layer, and `episodes` already holding an L2 vector.
+- What it must not re-litigate: two planes (REQ-10), the codec (REQ-4), the decay law (REQ-5).
+
+## Spec Status (2026-10-28)
+
+| REQ | state |
+|---|---|
+| 1 reach | built; `recall@10_live` now measures the DELIVERED rank |
+| 2 honest vectors | built (fallbacks labelled + counted) |
+| 3 exact words | built (FTS5 + literal-first fetch, stopword policy) |
+| 4 compression | built (int8 replace proven; fold; distil partial) |
+| 5 budget + decay | built and CALLED (maintenance pass, every 5 tasks) |
+| 6 benchmark | built (`memory_bench.py`, standards) |
+| 7 memory rank | shadow, switch OFF (measured loss: 0.72/0.75/0.56 vs 0.97/1.00/0.96) |
+| 8 observability | built |
+| 9 file recall | W1 built + live gate PASS; W2-W4 not started (need package names) |
+| 10 two planes | decided, measured, **not built** (repair first) |
+| 11 three levels | prepared in spec, **not built** (keys first) |

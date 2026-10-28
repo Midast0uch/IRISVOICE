@@ -38,10 +38,10 @@
 - [x] T20 (REQ-5 AC3): never prune a chunk that backs a live claim or a pin — DONE: pinned chunks (pin link target_type 'chunk') and chunks referenced by a LIVE claim's distilled chain row (T16's refs; an ABSORBED claim no longer protects) are never pruned, and crystallization candidates (retrieval_count >= 5) stay; tested for all three protections
 
 ## Wave 6 — Memory-native rank (REQ-7) — after Waves 2-4, on honest + compact data
-- [ ] T21 (REQ-7 AC1): features per scored row: Kyudo trust (zone → channel), Σ distance (chunk write position vs current; via the chain row of the same turn), claim evidence of the chunk's strand/turn (S125 RECALL_USED links), helped/misled history, decayed use count — `recall_reach` or a small scorer beside `_shadow_trust_rank` — RIPPLE: CT-3/CT-4 (the scheduler never reads live u/ξ; this is the cognitive layer)
-- [ ] T22 (REQ-7 AC2): shadow rank recorded beside the live rank (decision rows for the Oracle bar); never changes context while shadow
-- [ ] T23 (REQ-7 AC3): switch only when the bench AND helped/misled outcomes show it pays; off switch; landmark (CLAUDE.md step 8)
-- [ ] T24 (REQ-6 AC3): the memory eval group: tasks whose answer needs a fact taught in an EARLIER thread (seed thread → new thread asks), graded by fact, reply_s; add to `evals/tasks.json` + `run_evals.py --group memory`
+- [x] T21 (REQ-7 AC1): features per scored row: Kyudo trust (zone → channel), Σ distance (chunk write position vs current; via the chain row of the same turn), claim evidence of the chunk's strand/turn (S125 RECALL_USED links), helped/misled history, decayed use count — `backend/memory/memory_rank.py` — DONE: trust = CHANNEL_WEIGHTS[channel_for_zone(zone)]; evidence = backs a LIVE claim (T16's distilled refs); outcome = (helped-misled)/(helped+misled+1) of the strand from RECALL_HELPED/MISLED events; use = retrieval_count decayed at the law's rate, capped; sigma = affinity to the current coords_to (ABSENT when either position is unknown, never zero); features cached at TTL 300 s so the shadow never puts its queries on the answer path; zero-variance features counted (HIDDEN FAILURES)
+- [x] T22 (REQ-7 AC2): shadow rank recorded beside the live rank (decision rows for the Oracle bar); never changes context while shadow — DONE: every recall writes both top-k lists to `memory_rank_shadow` (bounded to the newest 5,000) + same/reordered counters; the surface overview exposes rank_shadow status; LIVE=False leaves the returned ranking untouched (tested)
+- [x] T23 (REQ-7 AC3): switch only when the bench AND helped/misled outcomes show it pays; off switch; landmark (CLAUDE.md step 8) — DONE (gate ran, switch stays OFF): the bench measures the memory rank vs cosine on the SAME candidates per filter: research 0.7242 vs 0.9742, turn 0.7525 vs 0.9983, global 0.5608 vs 0.9625 — the memory rank LOSES on recall@10 (the use/outcome multipliers promote popular strands over relevant ones); `memory_rank.LIVE = False` is the off switch; the shadow keeps recording both rankings in production so a better-weighted rank can be judged on real decisions. No landmark: the gate did not pass (measured 2026-10-28, evals/results/memory-bench-20261027-230234.json)
+- [x] T24 (REQ-6 AC3): the memory eval group: tasks whose answer needs a fact taught in an EARLIER thread (seed thread → new thread asks), graded by fact, reply_s; add to `evals/tasks.json` + `run_evals.py --group memory` — DONE: 3 tasks (m01 name, m02 number, m03 preference - invented facts that exist nowhere else), the runner seeds a fact in its own conversation then asks in a NEW one (a failed seed fails the task); live on mercury-3 (provider switched from the stale cerebras binding whose key 401'd): 2/3 PASS - m02 (880417) and m03 (fern-green) recalled across threads, reply_s 84/97; m01 FAILS with a finding: the ask's phrasing sends the model to TOOL steps (searching project files for a deployment config) instead of memory - when recall engages, cross-thread facts come back
 
 ## Dependency / parallelization notes
 - Wave 2 first: every later number is measured on the vectors; 9.4% noise biases all of them.
@@ -52,3 +52,29 @@
   dual-read, every recall caller.
 - New dependencies (sqlite-vec, faiss, hnswlib) are out unless the owner says yes; if the
   10× scan in the bench ever exceeds 150 ms p95, raise it as a finding, do not add one.
+
+## Wave 7 - File recall (REQ-9)
+- [x] T25 (REQ-9 AC1/AC2/AC6): ingest = node + chunks through the EXISTING writer. Identity in `file_nodes` (`file_path UNIQUE`, `last_edited` = mtime, +`content_hash`/`file_size`), payload through `fragment_and_store` (chunking, 0.92 dedup, int8 + fp, FTS triggers), `keep_float=False` -> 1,160 B/chunk instead of 5,256. Done: `backend/memory/file_ingest.py`.
+- [x] T26 (REQ-9 AC3): a changed file folds its old chunks (`folded_into`); never deletes. BUG FOUND ON THE LIVE STORE: the fold ate its own 25 of 26 chunks; fixed by excluding the ids this ingest wrote, and the test now pins "a NEW chunk must stay live".
+- [x] T27 (REQ-9 AC4): kernel file leg, session-less + zone-addressed, probed once per kernel (`agent_kernel.py` 3a-3). Live gate PASS on requirements.md (23,231 B -> 26 chunks, 0 float, 3 meaning hits, 6 FTS hits, re-ingest unchanged).
+- [x] T28 (REQ-9 AC8): bench `files` section + `compression.types.file` row (float 1.0 vs int8 1.0, delta 0.0).
+- [ ] T29 (REQ-9 W2/W3/W4): PDF/DOCX/XLSX, OCR, audio/video. BLOCKED on named packages at install (owner yes already given for the types).
+- [ ] T30 (REQ-9 AC7 + cold storage): prune file chunks by budget and re-ingest on demand while the file hash matches - the filesystem is their cold tier. OWNER APPROVED 2026-10-28.
+
+## Wave 8 - Two planes (REQ-10) - repair first
+- [ ] T31 (REQ-10 AC7): repair `coords_from`/`coords_to` so they hold only coordinates (10,102 / 10,664 rows hold 'json', 'markdown', 'rest:input:<id>' today). No metric on phase before this.
+- [ ] T32 (REQ-10 AC2): establish the incidence join on `thread_id` (measured 38.6 % global, 0 % by session). Report the match rate.
+- [ ] T33 (REQ-10 AC3/AC4/AC5): sweep lambda per filter on the bench: turn (100 % coverage) only at first; absent != zero; keep lambda only if `recall@10_live` beats 0.86 / 0.9442 / 0.8667.
+
+## Wave 9 - Three levels (REQ-11) - prepare, do not build the CLM
+- [ ] T34 (REQ-11 AC5): reconcile the 1,584 / 5,262 key gap; report the new match rate.
+- [ ] T35 (REQ-11 AC2): `episodes.vec_i8/vec_fp/vec_scale` backfilled from `embedding`; bench-verified delta <= 0.02.
+- [ ] T36 (REQ-11 AC1/AC3/AC4): `thread_context` derived table + backfill; measure the L1 scan against the 20x expectation (673 KB vs 13.6 MB).
+- [ ] T37 (REQ-11 AC4): recall path may use L1 as the region scan (REQ-1 AC6) once T36 lands.
+
+## Handoff - CLM spec is NEXT
+- The CLM (`docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md`) gets its own spec after this one is
+  finalized. It inherits: three addressable levels, one codec, incidence to the phase plane,
+  an immutable record layer, an L2 vector already in `episodes`.
+- It must not re-litigate: two planes (REQ-10), the codec (REQ-4), the Kyudo decay law (REQ-5),
+  and "no new dependency without the owner".
