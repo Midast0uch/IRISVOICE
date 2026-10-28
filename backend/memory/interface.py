@@ -659,6 +659,23 @@ class MemoryInterface:
                 )
                 with self._mycelium_write_lock:
                     self._mycelium.run_maintenance()
+                # REQ-5 AC2: the SAME cadence enforces the chunk store budget.
+                # Fire-and-forget on the integrity lane - a turn never waits for
+                # memory upkeep, and the lane keeps one ordered writer.
+                _ep = getattr(self, "episodic", None)
+                _db = getattr(_ep, "db", None) if _ep is not None else None
+                if _db is not None:
+                    try:
+                        from backend.memory import maintenance as _maint  # noqa: PLC0415
+                        from backend.utils.durability_queue import lane as _lane  # noqa: PLC0415
+
+                        _lane("memory_integrity").submit(
+                            "chunk-maintenance", _maint.maintain, _db, vacuum=False
+                        )
+                    except Exception as _m_exc:  # noqa: BLE001
+                        logger.debug(
+                            "[MemoryInterface] chunk maintenance skipped: %s", _m_exc
+                        )
         except Exception:
             pass
 
