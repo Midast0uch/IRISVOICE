@@ -443,12 +443,41 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
 
             started = time.monotonic()
             conv_id = None
+            seed_note = None
             try:
                 # A backend still busy with the previous turn can be slow here;
                 # that fails this task, never the whole run.
                 conv = _http("POST", "/api/conversations",
                              {"title": f"[eval] {task['id']}"}, timeout=90)
                 conv_id = conv.get("id") or conv.get("conversation_id")
+                # REQ-6 AC3 (T24): a memory task teaches a fact in an EARLIER
+                # thread (the seed turn, its own conversation), then asks in
+                # this NEW one. The only way to answer is memory: the facts are
+                # invented for the task and exist nowhere else. A failed seed
+                # fails the task - the fact was never taught.
+                if task.get("seed_prompt"):
+                    try:
+                        seed_conv = _http("POST", "/api/conversations",
+                                          {"title": f"[eval-seed] {task['id']}"}, timeout=90)
+                        seed_conv_id = seed_conv.get("id") or seed_conv.get("conversation_id")
+                        seed_task = {**task, "id": f"{task['id']}-seed",
+                                     "prompt": task["seed_prompt"]}
+                        seed_rec = await _run_turn(seed_task, seed_conv_id, None,
+                                                   float(task.get("seed_timeout_s", 300)))
+                        # An [IRIS error] reply is NOT a taught fact: the first
+                        # live run marked 401-error seeds "seeded" and the ask
+                        # measured nothing. The same error-reply check the ask
+                        # turn gets applies to the seed.
+                        if (seed_rec.get("reply") and not seed_rec["timed_out"]
+                                and not _is_error_reply(seed_rec["reply"])):
+                            seed_note = "seeded"
+                        else:
+                            seed_note = (f"seed failed: {seed_rec.get('ws_error') or 'no reply'}"
+                                         if not seed_rec.get("reply") or seed_rec["timed_out"]
+                                         else f"seed failed: error reply "
+                                              f"{seed_rec['reply'][:80]!r}")
+                    except Exception as exc:
+                        seed_note = f"seed failed: {type(exc).__name__}: {exc}"
                 rec = await _run_turn(task, conv_id, workdir, float(task.get("timeout_s", 900)))
             except Exception as exc:  # a broken socket is a failed task, not a crashed run
                 rec = {"reply": "", "documents": [], "event_counts": {}, "tools": [],
@@ -459,6 +488,11 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
 
             text = "\n\n".join([rec["reply"], *rec["documents"]])
             notes = []
+            if seed_note and seed_note != "seeded":
+                # a failed seed fails the task: the fact was never taught, so
+                # the ask measures nothing. A SEEDED task is not a note - notes
+                # fail tasks (passed = not notes).
+                notes.append(seed_note)
             if rec["timed_out"]:
                 notes.append("timed out")
             if rec["ws_error"]:
@@ -495,6 +529,7 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 "id": task["id"], "group": task["group"], "passed": passed,
                 "seconds": seconds, "reply_s": reply_s, "notes": notes, "conversation_id": conv_id,
                 "turn_id": rec.get("turn_id"),
+                "seed": seed_note,
                 "workdir": str(workdir) if workdir else None,
                 "tools": rec["tools"], "web_used": web_used,
                 "permissions": rec["permissions"], "questions": rec["questions"],
@@ -596,7 +631,8 @@ def _summary(results: list) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRIS execution pass-rate harness")
-    ap.add_argument("--group", action="append", choices=["coding", "research", "browser", "browser_goal"], default=[])
+    ap.add_argument("--group", action="append",
+                    choices=["coding", "research", "browser", "browser_goal", "memory"], default=[])
     ap.add_argument("--task", action="append", default=[], help="task id (repeatable)")
     ap.add_argument("--record-baseline", action="store_true")
     ap.add_argument("--record-standard", action="store_true",

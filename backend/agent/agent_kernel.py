@@ -4073,6 +4073,47 @@ class AgentKernel:
                 except Exception:
                     _ref_chunks323 = []
                 _blocks323: List[str] = []
+                # ── 3a-2: turn-start prior memory (IRIS_TURN_START_RECALL,
+                # OFF by default - A/B measured 2026-10-28). Chain rows
+                # relevant to the USER'S OWN WORDS, so a fact taught in an
+                # earlier thread is in the context before the planner invents
+                # steps (the per-step gate compares the STEP, and a question
+                # that "looks like" a tool task never pulls its taught fact
+                # in - eval m01). Same pool, same relevance gate, bounded.
+                try:
+                    from backend.agent.ontology_recall import (  # noqa: PLC0415
+                        TURN_START_MAX_CHARS,
+                        turn_start_prior_memory,
+                    )
+                    from backend.agent.ontology_recall import (  # noqa: PLC0415
+                        resolve_mycelium_conn as _pm_resolve_conn,
+                    )
+
+                    _pm_conn = _pm_resolve_conn(self._memory_interface)
+                    _pm_rows = turn_start_prior_memory(
+                        _pm_conn, text, getattr(self, "session_id", None)
+                    )
+                    _pm_lines: List[str] = []
+                    _pm_used = 0
+                    for _pm_r in _pm_rows:
+                        _pm_line = (
+                            _pm_r.get("insight")
+                            or str(_pm_r.get("result") or "")[:240]
+                        ).strip()
+                        if not _pm_line:
+                            continue
+                        if _pm_used + len(_pm_line) > TURN_START_MAX_CHARS:
+                            break
+                        _pm_lines.append(_pm_line)
+                        _pm_used += len(_pm_line)
+                    if _pm_lines:
+                        _blocks323.append(
+                            "<prior_memory>\n- "
+                            + "\n- ".join(_pm_lines)
+                            + "\n</prior_memory>"
+                        )
+                except Exception as _pm_exc:  # noqa: BLE001 - never blocks a turn
+                    logger.debug("[AgentKernel] turn-start prior memory skipped: %s", _pm_exc)
                 if _chunks:
                     _blocks323.append("\n---\n".join(_chunks))
                 if _ref_chunks323:
@@ -8377,6 +8418,53 @@ class AgentKernel:
                 )
         except Exception as _ep_exc:
             logger.debug("[AgentKernel._plan_task] episodic recall failed: %s", _ep_exc)
+
+        # Turn-start prior memory (IRIS_TURN_START_RECALL, OFF by default; A/B
+        # measured 2026-10-28). Chain rows relevant to the USER'S OWN WORDS, so
+        # a fact taught in an earlier thread is in the PLANNER's context
+        # before any step exists. The per-step gate compares the STEP the
+        # planner invents; a question that "looks like" a tool task never
+        # pulls its taught fact in that way (eval m01: the question became
+        # file-search steps and the fact never entered the context). FIRST
+        # plan only - a re-plan's recall_query is a directive, not the
+        # user's question. Same pool, same relevance gate, bounded.
+        if recall_query is None:
+            try:
+                from backend.agent.ontology_recall import (  # noqa: PLC0415
+                    TURN_START_MAX_CHARS,
+                    resolve_mycelium_conn as _pm_resolve_conn,
+                    turn_start_prior_memory,
+                )
+
+                _pm_conn = _pm_resolve_conn(self._memory_interface)
+                _pm_rows = turn_start_prior_memory(_pm_conn, text, session_id)
+                _pm_lines: List[str] = []
+                _pm_used = 0
+                for _pm_r in _pm_rows:
+                    _pm_line = (
+                        _pm_r.get("insight")
+                        or str(_pm_r.get("result") or "")[:240]
+                    ).strip()
+                    if not _pm_line:
+                        continue
+                    if _pm_used + len(_pm_line) > TURN_START_MAX_CHARS:
+                        break
+                    _pm_lines.append(_pm_line)
+                    _pm_used += len(_pm_line)
+                if _pm_lines:
+                    _pm_block = (
+                        "PRIOR MEMORY (facts IRIS recalls from earlier threads, "
+                        "relevant to this request):\n- " + "\n- ".join(_pm_lines)
+                    )
+                    episodic_context = (
+                        f"{episodic_context}\n\n{_pm_block}"
+                        if episodic_context
+                        else _pm_block
+                    )
+            except Exception as _pm_exc:  # noqa: BLE001 - never blocks planning
+                logger.debug(
+                    "[AgentKernel._plan_task] turn-start prior memory skipped: %s", _pm_exc
+                )
 
         planning_prompt = self._build_planning_prompt(
             task=text,

@@ -33,6 +33,7 @@ raise — a recall failure returns the widened/empty scope, never an error.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -417,12 +418,32 @@ def _state_distance(state: Optional[Sequence[float]], coords_from: Any) -> float
         return float("inf")
 
 
+def _shared_token_count(goal_tokens: set, row_tokens: set, prefix_match: bool) -> int:
+    """Goal tokens that also appear in the row.
+
+    ``prefix_match`` (the turn-start path only): a token counts when it is a
+    PREFIX of the other side's token (both >= 4 chars) - "name" matches the
+    stored "named", "deploy" matches "deployment". The per-step gate keeps the
+    exact match its contracts pin (prefix_match=False).
+    """
+    if not prefix_match:
+        return len(goal_tokens & row_tokens)
+    n = 0
+    for g in goal_tokens:
+        for r in row_tokens:
+            if g == r or (len(g) >= 4 and len(r) >= 4 and (g.startswith(r) or r.startswith(g))):
+                n += 1
+                break
+    return n
+
+
 def relevance_gate(
     rows: List[dict],
     goal: str,
     topic_domain: Optional[str] = None,
     state_fn=None,
     keep: int = 3,
+    prefix_match: bool = False,
 ) -> List[dict]:
     """Keep only the rows relevant to ``goal``: same topic AND token overlap.
 
@@ -430,6 +451,12 @@ def relevance_gate(
     proximity (``state_fn`` -> "x,y,xi,u" text or None; called only when more
     than one row survived) then recency (the stable sort keeps recall order on
     ties), and cut to ``keep``. Empty goal or no survivor -> []. Never raises.
+
+    ``prefix_match`` is OFF for the per-step path (its behaviour is pinned by
+    contract tests); the turn-start path turns it on because a user's question
+    and the memory's phrasing of the same fact rarely share exact word forms
+    (live 2026-10-28: "the name of" vs "is named" - 2/6 shared, 0.33 coverage,
+    rejected at the 0.4 bar).
     """
     try:
         goal_tokens = _tokens(goal)
@@ -443,7 +470,7 @@ def relevance_gate(
             text = "{} {}".format(
                 r.get("insight") or "", str(r.get("result") or "")[:_ROW_TEXT_HEAD]
             )
-            shared = len(goal_tokens & _tokens(text))
+            shared = _shared_token_count(goal_tokens, _tokens(text), prefix_match)
             if shared >= need and shared / len(goal_tokens) >= _MIN_GOAL_COVERAGE:
                 kept.append(r)
         if len(kept) > 1 and state_fn is not None:
@@ -482,6 +509,53 @@ def gated_neighborhood(
         filters.thread_id or "-",
     )
     return kept
+
+
+# ── turn-start prior memory (built 2026-10-28; OFF until the A/B says otherwise) ──
+#
+# The per-step gate above compares the STEP the planner invented with the
+# chain. A fact the user TOLD IRIS in an earlier thread therefore reaches the
+# turn only when the planner happens to phrase a memory step. Live finding
+# (eval m01, 2026-10-28): "what is the name of my staging deployment" became
+# file-search steps; the taught fact shared no tokens with THEM and never
+# entered the context - while m02/m03 passed because their planners happened
+# to phrase "recall ... from memory" steps. This recall runs ONCE at turn
+# start, gated on the USER'S OWN WORDS - the same candidate pool, the same
+# relevance gate, the same bounds - so a taught fact is in the context before
+# the planner invents anything.
+#
+# OFF by default: IRIS_TURN_START_RECALL=1 enables it. The switch flips only
+# on the A/B (the memory eval group + a coding-group sample, pass + reply_s).
+TURN_START_RECALL = os.environ.get("IRIS_TURN_START_RECALL", "").strip() not in ("", "0")
+TURN_START_KEEP = 3
+TURN_START_MAX_CHARS = 600
+
+
+def turn_start_prior_memory(conn, goal: str, thread_id: Optional[str] = None) -> List[dict]:
+    """Chain rows relevant to the USER'S question, for the turn-start context.
+
+    Same pool and gate as the per-step path; the goal is the user's text, so a
+    taught fact competes on the QUESTION's tokens, not on whatever the planner
+    later invents. [] when off, empty, or nothing relevant. Never raises.
+    """
+    if not TURN_START_RECALL or not goal or not str(goal).strip():
+        return []
+    try:
+        t0 = time.perf_counter()
+        rows = run_filtered_recall(
+            conn, RecallFilters(thread_id=thread_id, limit=CANDIDATE_POOL)
+        )
+        # prefix_match: the user's question and the memory's phrasing of the
+        # same fact rarely share exact word forms ("the name of" vs "is named")
+        kept = relevance_gate(rows, goal, None, None, TURN_START_KEEP, prefix_match=True)
+        logger.info(
+            "[turn_start_recall] cand=%d kept=%d ms=%.1f goal=%.60r",
+            len(rows), len(kept), (time.perf_counter() - t0) * 1000.0, goal,
+        )
+        return kept
+    except Exception as exc:  # noqa: BLE001 - a recall never blocks a turn
+        logger.debug("[ontology_recall] turn-start recall failed: %s", exc)
+        return []
 
 
 # ── REQ-4 AC4.3 (K3): the chain at a DECISION point ──────────────────────────
