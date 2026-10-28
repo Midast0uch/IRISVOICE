@@ -441,6 +441,26 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
             workdir = _prepare_workdir(task, run_dir) if task["group"] == "coding" else None
             before = _repo_status() if task["group"] == "coding" else set()
 
+            # Memory-group hygiene (2026-10-28, from the first A/B): each run
+            # teaches a FRESH fact. Repeated runs against the live store taught
+            # the SAME facts, and one pathological run wrote 20+ "green or
+            # blue?" chain rows that matched every later m03 ask and misled the
+            # model. A per-run suffix in the fact (task["fact"] carries
+            # "{run}") makes this run's fact unique: no earlier run's memory
+            # can answer it, and no old row can collide with the grading
+            # pattern. The task's REQUIREMENT is unchanged - recall the taught
+            # fact - only the fact's identity is per-run.
+            if task.get("fact"):
+                _fact = str(task["fact"]).replace("{run}", uuid.uuid4().hex[:4])
+                task = {
+                    **task,
+                    "seed_prompt": task["seed_prompt"].replace("{fact}", _fact),
+                    "reply_patterns": [
+                        p.replace("{fact}", _fact) for p in task.get("reply_patterns", [])
+                    ],
+                }
+                log.info("    fresh fact for %s", task["id"])
+
             started = time.monotonic()
             conv_id = None
             seed_note = None

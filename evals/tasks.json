@@ -1109,11 +1109,12 @@
    "path": "text_message",
    "timeout_s": 600,
    "seed_timeout_s": 300,
-   "seed_prompt": "Remember this for later: my staging deployment is named kestrel-blue. Just acknowledge it briefly.",
+   "seed_prompt": "Remember this for later: my staging deployment is named {fact}. Just acknowledge it briefly.",
    "prompt": "What is the name of my staging deployment? Answer with the name only.",
    "reply_patterns": [
-    "kestrel-blue"
-   ]
+    "{fact}"
+   ],
+   "fact": "kestrel-blue-{run}"
   },
   {
    "id": "m02_recall_taught_number",
@@ -1122,11 +1123,12 @@
    "path": "text_message",
    "timeout_s": 600,
    "seed_timeout_s": 300,
-   "seed_prompt": "Remember this for later: my library card number is 880417. Just acknowledge it briefly.",
+   "seed_prompt": "Remember this for later: my library card number is {fact}. Just acknowledge it briefly.",
    "prompt": "What is my library card number? Answer with the number only.",
    "reply_patterns": [
-    "880417"
-   ]
+    "{fact}"
+   ],
+   "fact": "880417"
   },
   {
    "id": "m03_recall_taught_preference",
@@ -1135,11 +1137,12 @@
    "path": "text_message",
    "timeout_s": 600,
    "seed_timeout_s": 300,
-   "seed_prompt": "Remember this for later: I prefer the color fern-green for status indicators. Just acknowledge it briefly.",
+   "seed_prompt": "Remember this for later: I prefer the color {fact} for status indicators. Just acknowledge it briefly.",
    "prompt": "Which color do I prefer for status indicators? Answer with the color only.",
    "reply_patterns": [
-    "fern-green"
-   ]
+    "{fact}"
+   ],
+   "fact": "fern-green-{run}"
   }
  ]
 }
