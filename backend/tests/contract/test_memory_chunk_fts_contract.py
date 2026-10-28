@@ -178,7 +178,8 @@ def test_exact_words_reach_a_row_the_fingerprint_cannot(kwstore):
 def test_plan_treats_a_path_or_flag_as_one_literal():
     phrases, atoms = chunk_fts._plan("what does main.py do")
     assert phrases == ['"main py"']              # phrase, not "main" OR "py"
-    assert atoms[:2] == ["what", "does"]
+    # the broad pass keeps only CONTENT atoms: "what/does/do" are function words
+    assert atoms == ["main", "py"]
 
     # a plain word ending in a full stop leaves ONE atom: not a literal
     assert chunk_fts._plan("model.") == ([], ["model"])
@@ -228,6 +229,26 @@ def test_a_literal_memory_never_saw_still_recalls_by_its_words(tmp_path):
 
     got = chunk_fts.search(con, "main.py")
     assert got == [con.execute("SELECT rowid FROM context_chunks WHERE id='a'").fetchone()[0]]
+    con.close()
+
+
+def test_stopwords_never_lead_the_broad_pass():
+    """'the' is in 86% of the store: it must not be a query term (measured
+    179 -> 6.7 ms on a prose query when it went)."""
+    assert chunk_fts._plan("what did we learn about the vector compression")[1] == [
+        "learn", "vector", "compression"]
+    # a query made ONLY of function words keeps them: no silent empty recall
+    assert chunk_fts._plan("what is it")[1] == ["what", "is", "it"]
+
+
+def test_a_literal_keeps_every_atom_of_its_span(tmp_path):
+    """A stopword inside a literal must not be dropped from its PHRASE."""
+    con = _db(tmp_path)
+    assert chunk_fts.ensure_schema(con)
+    phrases, _ = chunk_fts._plan("to.do list")
+    assert phrases == ['"to do"']
+    _insert(con, "a", "open the to.do list now")
+    assert chunk_fts.search(con, "to.do list")
     con.close()
 
 

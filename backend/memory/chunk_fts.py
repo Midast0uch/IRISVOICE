@@ -55,6 +55,22 @@ _ATOM = re.compile(r"\w{2,}", re.UNICODE)
 # into iris..recall + "0", and "v2.0" into v2 + "0". Dropping the short run would
 # hide the very punctuation that makes those spans literals.
 _SPAN_ATOM = re.compile(r"\w+", re.UNICODE)
+
+# Function words carry no recall signal and they DOMINATE the cost: "the" alone
+# is in 93,695 of 108,314 rows (86%), so a 12-atom OR spends most of its time
+# scoring rows that merely say "the". Measured 2026-10-28 on the live store:
+# dropping this set took the keyword leg 179 -> 6.7 ms, 147 -> 9.5 ms,
+# 90.7 -> 2.5 ms on prose queries. A cap on the remaining CONTENT atoms was
+# measured and is NOT needed (7-8 content atoms cost 11-17 ms) and it lost up
+# to 34% of the result set, so there is no cap here. Literal phrases never pass
+# through this set: a phrase must keep every atom its span had.
+_STOPWORDS = frozenset("""
+a an the and or but if then than that this these those of in on at to for from by with without
+is are was were be been being do does did doing have has had having i you he she it we they me my your
+our their what which who whom why how when where there here not no yes so such as into about over under
+again further can could should would will shall may might must just also very more most other some any
+each every
+""".split())
 # Punctuation that makes one whitespace-free span a LITERAL candidate.
 _LITERAL_PUNCT = re.compile(r"[._/\\:\-=@#$%~^&*+!?;,'\"()\[\]{}<>|]")
 
@@ -85,6 +101,17 @@ def _terms(text: str, limit: int = MAX_ATOMS) -> List[str]:
     return _atoms(text, limit)
 
 
+def _content_atoms(text: str, limit: int = MAX_ATOMS) -> List[str]:
+    """Atoms for the broad pass: stopwords removed, but never empty.
+
+    A query made only of function words ("what is it") keeps them, because an
+    empty MATCH would turn a question into no keyword candidates at all.
+    """
+    atoms = _atoms(text, limit)
+    kept = [a for a in atoms if a not in _STOPWORDS]
+    return kept or atoms
+
+
 def _plan(query: str) -> tuple[List[str], List[str]]:
     """(literal phrases, atoms) for one query.
 
@@ -93,6 +120,8 @@ def _plan(query: str) -> tuple[List[str], List[str]]:
     plain word leaves one atom and is NOT a literal). Every piece is quoted and
     built from unicode word runs only, so quotes, ``*``, NEAR, OR, AND, ``^``,
     ``:`` and SQL fragments cannot reach the FTS parser as operators.
+
+    The returned atoms are the BROAD pass's atoms: stopwords already removed.
     """
     q = (query or "")[:MAX_QUERY_CHARS]
     phrases: List[str] = []
@@ -111,7 +140,7 @@ def _plan(query: str) -> tuple[List[str], List[str]]:
             phrases.append(phrase)
         if len(phrases) >= MAX_LITERALS:
             break
-    return phrases, _atoms(q)
+    return phrases, _content_atoms(q)
 
 
 def _where(conn, session_id, chunk_types, zones) -> tuple[str, List[object]]:
