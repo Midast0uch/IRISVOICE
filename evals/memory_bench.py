@@ -367,6 +367,16 @@ def main() -> int:
         report["folded"] = fold_chunks.counts(con)
     except Exception:
         pass
+    # REQ-5 AC2: the per-zone store budget. The guard FAILS when a zone is
+    # over budget - the decay pass should have brought it back within.
+    try:
+        from backend.memory import chunk_decay
+
+        usage = chunk_decay.zone_usage(con)
+        report["zone_usage"] = usage
+        report["zone_budget"] = {z: list(b) for z, b in chunk_decay.ZONE_BUDGET.items()}
+    except Exception:
+        pass
     compress_report = {"int8_bytes": vector_quant.I8_BYTES + 8,
                        "fingerprint_bytes": vector_quant.FP_BYTES, "types": {}}
     for name, r in per_type.items():
@@ -449,6 +459,21 @@ def main() -> int:
         bpr = (report.get("bytes_per_chunk") or {}).get("live_vector_bytes_per_row")
         if s_bpr and bpr and bpr > s_bpr * 1.05 + 8:
             bad.append(f"vectors: {bpr} B/row > standard {s_bpr} x 1.05 + 8 (REQ-4 growth budget)")
+        # REQ-5 AC2: a zone over its budget is a FAILURE, not a warning - the
+        # decay pass (chunk_decay.decay_pass) owns bringing it back within.
+        try:
+            from backend.memory import chunk_decay
+
+            for zone, usage in (report.get("zone_usage") or {}).items():
+                budget = chunk_decay.ZONE_BUDGET.get(zone)
+                if not budget:
+                    continue
+                if usage["rows"] > budget[0]:
+                    bad.append(f"budget[{zone}]: {usage['rows']} rows > budget {budget[0]} (REQ-5)")
+                if usage["bytes"] > budget[1]:
+                    bad.append(f"budget[{zone}]: {usage['bytes']} bytes > budget {budget[1]} (REQ-5)")
+        except Exception:
+            pass
         for b in bad:
             print("REGRESSION", b)
         return 1 if bad else 0

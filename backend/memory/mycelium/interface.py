@@ -1532,6 +1532,32 @@ class MyceliumInterface:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[interface] maintenance: integrity pass failed: %s", exc)
 
+        # Step 4c - chunk decay (REQ-5 AC1): the same Kyudo law for
+        # context_chunks, on the integrity lane. The production caller the old
+        # 72-hour rule never had: chunks no recall uses fade at the speed the
+        # memory grows, use slows the fade, MISLED speeds it, and the per-zone
+        # budget is enforced in the same pass. Off the answer path (this cycle
+        # runs between tasks), bounded (MAX_EVAL / MAX_PRUNE per pass).
+        try:
+            from backend.memory import chunk_decay
+            from backend.utils.durability_queue import lane
+
+            box: dict = {}
+            mem_lane = lane(chunk_decay.DECAY_LANE)
+            if mem_lane.submit("chunk-decay", chunk_decay.decay_pass, box, self._conn):
+                mem_lane.flush(timeout=120)
+                report = box.get("result") or {}
+                if report.get("pruned"):
+                    logger.info("[interface] maintenance: chunk decay pruned=%s by_zone=%s",
+                                report.get("pruned"), report.get("by_zone"))
+                if "error" in report:
+                    logger.warning("[interface] maintenance: chunk decay failed: %s",
+                                   report["error"])
+            else:
+                logger.warning("[interface] maintenance: chunk decay refused (queue full)")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interface] maintenance: chunk decay failed: %s", exc)
+
         try:
             rendered = self._renderer.render_dirty_sections()
             logger.debug(

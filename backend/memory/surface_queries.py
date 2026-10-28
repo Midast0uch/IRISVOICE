@@ -340,7 +340,7 @@ def overview() -> dict:
         # values (this backend since it started), not store contents: a fallback
         # or FTS miss that is not visible here is a silent one (HIDDEN FAILURES).
         try:
-            from backend.memory import chunk_fts, distil_claims, fold_chunks, recall_reach
+            from backend.memory import chunk_fts, chunk_decay, distil_claims, fold_chunks, recall_reach
             from backend.memory.embedding import FALLBACK_CALLERS, FALLBACK_COUNTERS
             from backend.memory.embedding_sidecar import RETRIES
 
@@ -354,6 +354,8 @@ def overview() -> dict:
                 # REQ-4 AC2/AC3: what the compression arm did (store contents)
                 "folded": fold_chunks.counts(con),
                 "distilled": distil_claims.counts(con),
+                # REQ-5 AC2: the per-zone budget state (rows/bytes vs budget)
+                "zone_usage": chunk_decay.zone_usage(con),
             }
         except Exception as exc:  # noqa: BLE001 - the surface must still draw
             out["recall"] = {"error": str(exc)}

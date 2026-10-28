@@ -1269,55 +1269,35 @@ class EpisodicStore:
         )
         return results
 
-    def cleanup_stale_chunks(
-        self,
-        session_id: Optional[str] = None,
-        max_age_hours: float = 72.0,
-        min_retrievals: int = 0,
-    ) -> int:
+    def cleanup_stale_chunks(self, *, dry_run: bool = False) -> int:
+        """REQ-5 AC1: chunk decay by the ONE Kyudo law (backend/memory/chunk_decay.py).
+
+        Before 2026-10-27 this was a fixed 72-hour age rule with no production
+        caller. It is now the named entry for the law pass: strength decays by
+        ``rate x m_zone x m_outcome x active_days x a(retrieval_count)`` - use
+        (RECALL_USED/HELPED) slows it, MISLED speeds it, the zone's trust
+        channel sets the rate - and the same pass enforces the per-zone store
+        budget. Crystallization candidates, pinned chunks and chunks backing a
+        live claim are never pruned (AC3). Runs on the integrity lane; every
+        prune is typed MEMORY_PRUNED with its reason.
+
+        Returns the number of rows deleted (0 on a refused lane or failure).
         """
-        Pacman decay: remove chunks that are old AND have low usage.
-
-        PACMAN.md says coordinates "decay when unused." This method
-        prunes context_chunks that have not been retrieved (retrieval_count
-        <= min_retrievals) and are older than max_age_hours.
-
-        Chunks adjacent to crystallization candidates (retrieval_count >=
-        _CRYSTALLIZE_THRESHOLD) are never pruned regardless of age.
-
-        Returns:
-            Number of rows deleted.
-        """
-        where_clauses = [
-            "retrieval_count <= ?",
-            "datetime(timestamp) < datetime('now', ? || ' hours')",
-            "retrieval_count < ?",  # never prune crystallization candidates
-        ]
-        params: List[Any] = [
-            min_retrievals,
-            f"-{max_age_hours}",
-            self._CRYSTALLIZE_THRESHOLD,
-        ]
-        if session_id:
-            where_clauses.append("session_id = ?")
-            params.append(session_id)
-
         try:
-            # One writer: the deleted count is returned, so count the rows
-            # first (flush: queued chunk writes must be counted), then queue
-            # the delete.
-            app_flush()
-            _where = ' AND '.join(where_clauses)
-            deleted = self.db.execute(
-                f"SELECT COUNT(*) FROM context_chunks WHERE {_where}", params
-            ).fetchone()[0]
-            app_write(self.db, f"DELETE FROM context_chunks WHERE {_where}", params)
-            if deleted:
-                logger.info(
-                    f"[EpisodicStore] Pacman decay: pruned {deleted} stale chunks "
-                    f"(age>{max_age_hours}h, retrievals<={min_retrievals})"
-                )
-            return deleted
+            from backend.memory import chunk_decay
+            from backend.utils.durability_queue import lane
+
+            box: dict = {}
+            mem_lane = lane(chunk_decay.DECAY_LANE)
+            if not mem_lane.submit("chunk-decay", chunk_decay.decay_pass, box, self.db,
+                                   dry_run=dry_run):
+                logger.warning("[EpisodicStore] chunk decay refused (queue full)")
+                return 0
+            mem_lane.flush(timeout=300)
+            result = box.get("result") or {}
+            if "error" in result:
+                logger.warning("[EpisodicStore] chunk decay failed: %s", result["error"])
+            return int(result.get("pruned") or 0)
         except Exception as e:
             logger.warning(f"[EpisodicStore] cleanup_stale_chunks error: {e}")
             return 0
