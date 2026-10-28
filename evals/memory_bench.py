@@ -422,6 +422,15 @@ def main() -> int:
         report["folded"] = fold_chunks.counts(con)
     except Exception:
         pass
+    # ── FILE MEMORY (REQ-9 AC8) ───────────────────────────────────────────
+    # Reported, not assumed: nodes, live chunks, stored text bytes against the
+    # owner's budget, and the counters (ingested / unchanged / failed / folded).
+    try:  # noqa: SIM105 - a missing table must not fail the whole bench
+        from backend.memory import file_ingest  # noqa: PLC0415
+
+        report["files"] = file_ingest.report(con)
+    except Exception as _f_exc:  # noqa: BLE001
+        report["files"] = {"error": repr(_f_exc)}
     # REQ-5 AC2: the per-zone store budget. The guard FAILS when a zone is
     # over budget - the decay pass should have brought it back within.
     try:

@@ -4122,6 +4122,47 @@ class AgentKernel:
                         + "\n---\n".join(_ref_chunks323)
                         + "\n</reference_memory>"
                     )
+                # ── 3a-3: file memory (REQ-9 AC4) ──────────────────────────
+                # A file is an ADDRESS, not a conversation. The recall above is
+                # keyed on session_id, so file chunks - which belong to no
+                # session - are invisible to it. This leg is therefore
+                # session-less and zone-addressed on purpose. It is probed once
+                # per kernel: with no file chunks in the store it costs nothing.
+                _file_present = getattr(self, "_file_memory_present", None)
+                if _file_present is None:
+                    try:
+                        _file_present = bool(
+                            self._memory_interface.episodic.db.execute(
+                                "SELECT 1 FROM context_chunks"
+                                " WHERE chunk_type = 'file' LIMIT 1"
+                            ).fetchone()
+                        )
+                    except Exception:  # noqa: BLE001 - a probe never blocks a turn
+                        _file_present = False
+                    self._file_memory_present = _file_present
+                if _file_present:
+                    _file_chunks: List[str] = []
+                    try:
+                        _file_chunks = (
+                            self._memory_interface.episodic.retrieve_context_chunks(
+                                query=text,
+                                session_id=None,
+                                limit=3,
+                                min_similarity=0.25,
+                                zones=["trusted"],
+                                chunk_types=["file"],
+                                max_context_tokens=max(1, _ctx_budget323 // 4),
+                            )
+                            or []
+                        )
+                    except Exception as _f_exc:  # noqa: BLE001 - never blocks a turn
+                        logger.debug("[AgentKernel] file memory skipped: %s", _f_exc)
+                    if _file_chunks:
+                        _blocks323.append(
+                            "<file_memory>\n"
+                            + "\n---\n".join(_file_chunks)
+                            + "\n</file_memory>"
+                        )
                 if _blocks323:
                     chunk_text = "\n---\n".join(_blocks323)
                     # Inject as a pseudo-exchange so role alternation stays valid

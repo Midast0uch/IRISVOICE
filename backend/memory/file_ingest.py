@@ -190,7 +190,7 @@ def ingest(store, path: str, *, session_id: Optional[str] = None,
     COUNTERS["chunks"] += len(ids)
 
     if ids:
-        report["folded"] = _fold_previous(conn, resolved, ids[0])
+        report["folded"] = _fold_previous(conn, resolved, ids[0], ids)
         COUNTERS["folded"] += report["folded"]
     COUNTERS["ingested"] += 1
     logger.info("[file_ingest] path=%s chunks=%d folded=%d bytes=%d truncated=%s",
@@ -214,22 +214,28 @@ def _upsert_node(conn, resolved: str, digest: str, size: int, mtime: float) -> N
     )
 
 
-def _fold_previous(conn, resolved: str, head_id: str) -> int:
-    """Fold the chunks of the superseded version into the new head (REQ-9 AC3)."""
+def _fold_previous(conn, resolved: str, head_id: str, keep_ids: list) -> int:
+    """Fold the chunks of the superseded version into the new head (REQ-9 AC3).
+
+    `keep_ids` are the rows this ingest JUST wrote. They must be excluded, or the
+    fold eats its own version - found on the live store 2026-10-28: a 26-chunk
+    ingest folded 25 of its own chunks and only one stayed reachable.
+    """
+    marks = ",".join("?" for _ in keep_ids)
     stale = conn.execute(
-        """SELECT id FROM context_chunks
-           WHERE chunk_type = ? AND tool_name = ? AND folded_into IS NULL
-             AND id <> ?""",
-        (CHUNK_TYPE, resolved, head_id),
+        f"""SELECT id FROM context_chunks
+            WHERE chunk_type = ? AND tool_name = ? AND folded_into IS NULL
+              AND id NOT IN ({marks})""",
+        (CHUNK_TYPE, resolved, *keep_ids),
     ).fetchall()
     if not stale:
         return 0
-    marks = ",".join("?" for _ in stale)
+    old_marks = ",".join("?" for _ in stale)
     _write(
         conn,
         f"""UPDATE context_chunks SET folded_into = ?
             WHERE chunk_type = ? AND tool_name = ? AND folded_into IS NULL
-              AND id IN ({marks})""",
+              AND id IN ({old_marks})""",
         (head_id, CHUNK_TYPE, resolved, *[r[0] for r in stale]),
     )
     return len(stale)

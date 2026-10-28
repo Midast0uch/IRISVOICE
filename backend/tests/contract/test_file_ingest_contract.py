@@ -104,6 +104,14 @@ def test_ct_f3_changed_bytes_fold_the_old_chunks(store, tmp_path):
     assert old <= set(rows), "REQ-9 AC3: the old rows survive the fold"
     for rid in old:
         assert rows[rid][5] is not None, "old chunk must be folded into the new head"
+    # The fold must not eat the version it just wrote (live-store bug 2026-10-28:
+    # a 26-chunk ingest folded 25 of its own chunks, leaving one reachable).
+    fresh = set(rows) - old
+    assert fresh, "the new version must add its own rows"
+    for rid in fresh:
+        assert rows[rid][5] is None, "a NEW chunk must stay live, never folded"
+    heads = {rows[rid][5] for rid in old}
+    assert len(heads) == 1 and heads.pop() in fresh, "old rows fold into the new head"
     assert rep["folded"] >= len(old)
 
 

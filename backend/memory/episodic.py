@@ -1053,8 +1053,10 @@ class EpisodicStore:
         Retrieve the most semantically relevant context chunks for a query.
 
         Implements PACMAN.md metabolism:
-          - Semantic match (cosine similarity) — 80% of final score
-          - Recency bonus (age-weighted decay) — 20% of final score
+          - Semantic match (cosine similarity) — the dominant term
+          - Recency bonus (age-weighted decay) — measured 2026-10-28 at 5% of the
+            final score with a 168h half-life (`_RECENCY_WEIGHT`), because the
+            old 20% / 24h put the delivered rank 0.21 below exact search
             Chunks older than _RECENCY_HALF_LIFE_HOURS contribute half
             their maximum recency bonus.  Decay is continuous, not stepped.
           - retrieval_count incremented on every hit so high-frequency chunks
