@@ -211,7 +211,25 @@ def fit_consumer(
     ``acting`` names the ONE answer that changes behaviour (consumer_bar.
     ACTING_ANSWER). When given, the entry also carries that answer's precision
     and Wilson LB at the calibrated threshold: the side that actually acts, so
-    the bar cannot be carried by the side that changes nothing."""
+    the bar cannot be carried by the side that changes nothing.
+
+    REQ-7 AC7.2 NO MIXED CURVES (2026-10-22): a consumer can hold rows on two
+    references - an OUTCOME (`outside_label`, what actually happened) and
+    PARITY (`correct`, whether d1 agreed with the incumbent reviewer). They
+    answer different questions and must never share a curve: measured live,
+    review_verdict read 0.7114 on its 1471 outcome rows and 0.6242 when 576
+    parity rows were blended in - parity alone demoted it. When ANY outcome
+    rows exist the fit uses ONLY those; the dropped parity count is reported
+    in `mixed_dropped` so the trade is visible. A consumer with no outcome
+    rows keeps every row, byte-identical to before."""
+    outcome_rows = [r for r in rows if r.get("outside_label") is not None]
+    source = "parity"
+    if outcome_rows:
+        mixed_dropped = len(rows) - len(outcome_rows)
+        rows = outcome_rows
+        source = "outcome"
+    else:
+        mixed_dropped = 0  # nothing was dropped: there was no other curve
     data = sorted(
         ((float(r["confidence"]), bool(r["correct"]), r.get("chosen"))
          for r in rows),
@@ -232,7 +250,11 @@ def fit_consumer(
                 "precision_at_t": None, "wilson_lb": None},
         "classes": {"correct": a, "wrong": b},
         "fitted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "label_source": LABEL_SOURCE,
+        "label_source": (
+            "step outcome (verified_label)" if source == "outcome" else LABEL_SOURCE
+        ),
+        "reference": source,
+        "mixed_dropped": mixed_dropped,
     }
     if len(data) < MIN_FIT_ROWS or a == 0 or b == 0:
         return entry  # nothing honest to fit; the bar's own clauses name why

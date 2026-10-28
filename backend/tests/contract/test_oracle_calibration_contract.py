@@ -428,6 +428,70 @@ def test_fit_consumer_refuses_to_fit_what_it_cannot_score():
     assert e["knots"] == [] and e["threshold"] is None and e["oof"]["auroc"] is None
 
 
+class TestNoMixedCurves:
+    """REQ-7 AC7.2, measured live 2026-10-22: review_verdict read 0.7114 on its
+    1471 outcome rows and 0.6242 when 576 PARITY rows were blended in - rows
+    whose `correct` means "d1 agreed with the incumbent reviewer", a different
+    and weaker question. Parity alone demoted the consumer. The fit must use
+    the outcome curve alone whenever outcome rows exist."""
+
+    @staticmethod
+    def _rows():
+        """120 clean outcome rows (confident = right) + 200 parity rows whose
+        agreement signal is INVERTED, so any blend would sink the curve."""
+        out = []
+        for i in range(120):
+            ok = i < 100
+            out.append({
+                "confidence": 0.95 if ok else 0.45,
+                "correct": ok,
+                "outside_label": ok,
+                "label_source": "outcome",
+            })
+        for i in range(200):
+            # parity rows: NO relation between confidence and `correct`, so
+            # their own curve sits at chance while the outcome curve is clean.
+            out.append({
+                "confidence": 0.55 + (i % 7) * 0.05,
+                "correct": i % 2 == 0,
+                "outside_label": None,
+                "label_source": "incumbent",
+            })
+        return out
+
+    def test_parity_rows_cannot_drag_an_outcome_curve(self):
+        rows = self._rows()
+        mixed = fit_consumer(rows)
+        only = fit_consumer([r for r in rows if r["outside_label"] is not None])
+        assert mixed["oof"]["auroc"] == only["oof"]["auroc"], (
+            "a parity row changed the outcome curve"
+        )
+        assert mixed["rows_distinct"] == 120
+        assert mixed["mixed_dropped"] == 200
+        assert mixed["reference"] == "outcome"
+
+    def test_the_blend_would_have_changed_the_answer(self):
+        """The guard above is only meaningful if the blend actually moves the
+        number: fit the parity rows alone and show the two curves disagree."""
+        rows = self._rows()
+        parity_only = fit_consumer(
+            [r for r in rows if r["outside_label"] is None])
+        outcome_only = fit_consumer(
+            [r for r in rows if r["outside_label"] is not None])
+        assert outcome_only["oof"]["auroc"] is not None
+        assert parity_only["oof"]["auroc"] is not None
+        assert parity_only["oof"]["auroc"] < outcome_only["oof"]["auroc"]
+
+    def test_a_consumer_with_no_outcome_rows_is_unchanged(self):
+        """No outcome rows -> keep every row (byte-identical to before)."""
+        rows = [{"confidence": 0.9 if i % 2 else 0.4, "correct": i % 2 == 0}
+                for i in range(120)]
+        e = fit_consumer(rows)
+        assert e["rows_distinct"] == 120
+        assert e["mixed_dropped"] == 0
+        assert e["reference"] == "parity"
+
+
 # -- 5. The runtime loader ----------------------------------------------------
 
 class TestRuntimeLoader:
