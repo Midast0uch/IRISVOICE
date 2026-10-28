@@ -222,11 +222,16 @@ def main() -> int:
         session = largest if f.get("session") == "largest" else None
         allowed = _mask(meta, f, backend, session)
         n_allowed = int(allowed.sum())
+        # THE PRICE OF 1.0: score every row the filter allows, exactly. The
+        # slice is built once per filter (a boolean index copies), so the timed
+        # part is the matmul + sort the exact path would really pay.
+        sub = mat[allowed]
         newest = [i for i in order if allowed[i]][:200]
         newest50 = newest[:50]
         r_old, r_new, ms_old, ms_new = [], [], [], []
         r_mem = []
         r_live = []
+        ms_exact = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
             q /= max(float(np.linalg.norm(q)), 1e-9)
@@ -256,6 +261,11 @@ def main() -> int:
                 + _recency(meta[i][4]) * LIVE_RECENCY_WEIGHT
             ))[:K]
             r_live.append(len(truth & set(live_top)) / len(truth))
+            # recall for an exact scan is 1.0 BY DEFINITION (truth is its own
+            # output); what is unknown is the price, so that is what is timed.
+            _t = time.perf_counter()
+            np.argsort(-(sub @ q))[:K]
+            ms_exact.append((time.perf_counter() - _t) * 1e3)
             # REQ-7 (T23 gate): the memory-native rank on the SAME candidates -
             # trust, claim evidence, helped/misled, decayed use, Sigma. The
             # switch pays only if this beats the cosine rank (r_new).
@@ -277,6 +287,8 @@ def main() -> int:
             "recall@10_old": round(statistics.mean(r_old), 4) if r_old else None,
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
             "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
+            "exact_scan_ms_p50": round(_pct(ms_exact, 50), 2) if ms_exact else None,
+            "exact_scan_ms_p95": round(_pct(ms_exact, 95), 2) if ms_exact else None,
             "recall@10_memory_rank": (round(statistics.mean([x for x in r_mem if x is not None]), 4)
                                        if any(x is not None for x in r_mem) else None),
             "candidate_ms_new_p50": round(_pct(ms_new, 50), 2) if ms_new else None,
