@@ -166,3 +166,98 @@ def test_exact_words_reach_a_row_the_fingerprint_cannot(kwstore):
         query, session_id="sess-k", limit=600, min_similarity=-1.1
     )
     assert "zebra protocol alpha" in with_words
+
+
+# ── FETCH POLICY (2026-10-28) ────────────────────────────────────────────────
+# Measured on the live store: bm25 cannot rank the chunk that carries a term
+# ONCE above the thousands that carry it many times, and per-term budgets made
+# it worse (0.475 -> 0.400/0.500). The fix is what gets FETCHED: a literal is
+# matched as a phrase, which cuts the carrier set from "py" (31,000) to
+# "main.py" (2,494) and runs 10x faster.
+
+def test_plan_treats_a_path_or_flag_as_one_literal():
+    phrases, atoms = chunk_fts._plan("what does main.py do")
+    assert phrases == ['"main py"']              # phrase, not "main" OR "py"
+    assert atoms[:2] == ["what", "does"]
+
+    # a plain word ending in a full stop leaves ONE atom: not a literal
+    assert chunk_fts._plan("model.") == ([], ["model"])
+    # a flag keeps its underscore: the index tokenizer splits it into a phrase,
+    # and the trailing "=0" is a token of its own, so the phrase carries it
+    assert chunk_fts._plan("IRIS_TURN_START_RECALL=0")[0] == [
+        '"iris_turn_start_recall 0"']
+    # punctuation with no word run is not a literal and yields no atoms
+    assert chunk_fts._plan("!!! ---") == ([], [])
+
+
+def test_unicode_terms_keep_their_letters(tmp_path):
+    """The old ASCII pattern cut "café" to "caf" and "naïve" to "na"+"ve"."""
+    con = _db(tmp_path)
+    assert chunk_fts.ensure_schema(con)
+    _insert(con, "fr", "le café est ouvert aujourd'hui")
+
+    assert chunk_fts._terms("café naïve") == ["café", "naïve"]
+    assert chunk_fts.search(con, "café")
+    # the fragment the old splitter produced was a dead term - it must stay dead
+    assert chunk_fts.search(con, "caf") == []
+    con.close()
+
+
+def test_a_literal_fills_the_budget_before_a_common_word(tmp_path):
+    con = _db(tmp_path)
+    assert chunk_fts.ensure_schema(con)
+    for i in range(60):
+        _insert(con, f"py{i}", f"python helper number {i} for py work")
+    for i in range(3):
+        _insert(con, f"main{i}", f"entry point of main.py, branch {i}")
+
+    main_rows = {con.execute("SELECT rowid FROM context_chunks WHERE id=?", (f"main{i}",)).fetchone()[0]
+                 for i in range(3)}
+    before = chunk_fts.COUNTERS.get("literal_queries", 0)
+    got = chunk_fts.search(con, "main.py", limit=50)
+    assert set(got[:3]) == main_rows            # the literal leads the budget
+    assert len(got) == 50                       # the plain word tops it up
+    assert chunk_fts.COUNTERS.get("literal_queries", 0) == before + 1
+    con.close()
+
+
+def test_a_literal_memory_never_saw_still_recalls_by_its_words(tmp_path):
+    con = _db(tmp_path)
+    assert chunk_fts.ensure_schema(con)
+    _insert(con, "a", "the importer reads main once")
+
+    got = chunk_fts.search(con, "main.py")
+    assert got == [con.execute("SELECT rowid FROM context_chunks WHERE id='a'").fetchone()[0]]
+    con.close()
+
+
+def test_operator_words_stay_terms(tmp_path):
+    con = _db(tmp_path)
+    assert chunk_fts.ensure_schema(con)
+    _insert(con, "or", "alpha or beta")
+    _insert(con, "gamma", "gamma delta")
+
+    got = chunk_fts.search(con, "OR")
+    assert got == [con.execute("SELECT rowid FROM context_chunks WHERE id='or'").fetchone()[0]]
+    con.close()
+
+
+@pytest.mark.parametrize("query", [
+    '"', "*", "NEAR(a b)", "OR", "AND NOT", "^main", "foo:bar", "col:value",
+    "'; DROP TABLE context_chunks;--", "\x00bad", "a" * 10_000,
+    " ".join(["term"] * 100), "", "   ", "!!!", "café naïve", "日本語のテキスト",
+    "main.py" * 500,
+])
+def test_adversarial_queries_return_a_list_and_never_raise(tmp_path, query):
+    """Quotes, operators, injection, nulls, 10k length: none may reach the parser."""
+    con = _db(tmp_path)
+    assert chunk_fts.ensure_schema(con)
+    _insert(con, "a", "a safe row")
+
+    errors = chunk_fts.COUNTERS["error"]
+    got = chunk_fts.search(con, query)
+    assert isinstance(got, list)
+    assert chunk_fts.COUNTERS["error"] == errors        # nothing had to be caught
+    assert con.execute("SELECT count(*) FROM context_chunks").fetchone()[0] == 1
+    con.close()
+

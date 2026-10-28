@@ -29,6 +29,7 @@ COUNTERS: Dict[str, int] = {
     "hits": 0,           # FTS recalls that returned at least one row
     "missing": 0,        # index absent (the store predates it or the build failed)
     "error": 0,          # MATCH/IO error - recall continued by meaning
+    "literal_queries": 0,  # queries that carried a literal (path/name/flag)
     "backfill_started": 0,
     "backfill_done": 0,
 }
@@ -38,19 +39,112 @@ COUNTERS: Dict[str, int] = {
 KEYWORD_CANDIDATES = 50
 RRF_K = 60               # standard reciprocal-rank constant
 
-_TERM = re.compile(r"[A-Za-z0-9_]{2,}")
+# ── HOW A QUERY BECOMES A MATCH (measured 2026-10-28) ────────────────────────
+# bm25 cannot rank a chunk that carries a term ONCE against thousands that carry
+# it many times: tf is identical for every carrier of the query's own token, the
+# length penalty leans towards short rows, and the source row settled around the
+# 90th percentile of its carrier list (measured: 1604 of 1708 for "test_roman.py",
+# 2257 of 2494 for "main.py"). Two strategies were measured on the live store and
+# REJECTED: per-term candidate budgets (strict 0.475 -> 0.400/0.500, 12x the
+# queries) and bm25 with b=0 (0.525 at a 500-row pool). The fetch changed instead:
+# a literal ("main.py", "IRIS_TURN_START_RECALL=0") is matched as a PHRASE, which
+# cuts the carrier set from ~32,000 ("py" alone) to 2,494 and is 10x faster
+# (0.65 ms vs 8.3 ms). Plain words still OR together.
+_ATOM = re.compile(r"\w{2,}", re.UNICODE)
+# The literal DECISION uses 1-char runs too: "IRIS_TURN_START_RECALL=0" splits
+# into iris..recall + "0", and "v2.0" into v2 + "0". Dropping the short run would
+# hide the very punctuation that makes those spans literals.
+_SPAN_ATOM = re.compile(r"\w+", re.UNICODE)
+# Punctuation that makes one whitespace-free span a LITERAL candidate.
+_LITERAL_PUNCT = re.compile(r"[._/\\:\-=@#$%~^&*+!?;,'\"()\[\]{}<>|]")
+
+MAX_QUERY_CHARS = 2000   # a 10k query must not reach the parser
+MAX_ATOMS = 12           # terms per MATCH expression
+MAX_LITERALS = 4         # phrases per MATCH expression
 
 
-def _terms(text: str, limit: int = 12) -> List[str]:
-    """Query terms for MATCH. Quoted, so FTS operators in the text are inert."""
-    seen: List[str] = []
-    for m in _TERM.finditer(text or ""):
-        t = m.group(0).lower()
-        if t not in seen:
-            seen.append(t)
-        if len(seen) >= limit:
+def _atoms(text: str, limit: int = MAX_ATOMS) -> List[str]:
+    """Word runs, lowercased, deduped, capped. ``\\w`` is unicode-aware.
+
+    The previous ASCII pattern ``[A-Za-z0-9_]{2,}`` cut "café" into "caf" and
+    "naïve" into "na" + "ve" - terms that match thousands of unrelated rows and
+    never match the diacritic-folded text the index actually holds.
+    """
+    out: List[str] = []
+    for m in _ATOM.finditer((text or "")[:MAX_QUERY_CHARS]):
+        a = m.group(0).lower()
+        if a not in out:
+            out.append(a)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _terms(text: str, limit: int = MAX_ATOMS) -> List[str]:
+    """Query terms for MATCH. Kept under this name: callers and benches use it."""
+    return _atoms(text, limit)
+
+
+def _plan(query: str) -> tuple[List[str], List[str]]:
+    """(literal phrases, atoms) for one query.
+
+    A literal is one whitespace-free span that carries punctuation AND still
+    splits into two or more atoms ("main.py" -> "main py"; a trailing "." on a
+    plain word leaves one atom and is NOT a literal). Every piece is quoted and
+    built from unicode word runs only, so quotes, ``*``, NEAR, OR, AND, ``^``,
+    ``:`` and SQL fragments cannot reach the FTS parser as operators.
+    """
+    q = (query or "")[:MAX_QUERY_CHARS]
+    phrases: List[str] = []
+    for span in q.split():
+        if not _LITERAL_PUNCT.search(span):
+            continue
+        parts: List[str] = []
+        for m in _SPAN_ATOM.finditer(span):
+            a = m.group(0).lower()
+            if a not in parts:
+                parts.append(a)
+        if len(parts) < 2:
+            continue
+        phrase = '"%s"' % " ".join(parts)
+        if phrase not in phrases:
+            phrases.append(phrase)
+        if len(phrases) >= MAX_LITERALS:
             break
-    return seen
+    return phrases, _atoms(q)
+
+
+def _where(conn, session_id, chunk_types, zones) -> tuple[str, List[object]]:
+    """The shared filter tail for both matches, plus its params."""
+    sql: List[str] = []
+    params: List[object] = []
+    # REQ-4 AC2: a folded near-duplicate is not a candidate. The probe keeps a
+    # store that predates the column working (meaning only, no error counted).
+    try:
+        if "folded_into" in {r[1] for r in conn.execute("PRAGMA table_info(context_chunks)")}:
+            sql.append("AND context_chunks.folded_into IS NULL")
+    except Exception:  # noqa: BLE001 - the filter is an optimisation, not a gate
+        pass
+    if session_id:
+        sql.append("AND context_chunks.session_id = ?")
+        params.append(session_id)
+    if chunk_types:
+        sql.append("AND context_chunks.chunk_type IN (%s)" % ",".join("?" * len(chunk_types)))
+        params.extend(chunk_types)
+    if zones:
+        sql.append("AND context_chunks.zone IN (%s)" % ",".join("?" * len(zones)))
+        params.extend(zones)
+    return " ".join(sql), params
+
+
+def _rows(conn, match: str, where: str, params: List[object], limit: int) -> List[int]:
+    sql = (
+        "SELECT context_chunks_fts.rowid FROM context_chunks_fts "
+        "JOIN context_chunks ON context_chunks.rowid = context_chunks_fts.rowid "
+        "WHERE context_chunks_fts MATCH ? %s "
+        "ORDER BY bm25(context_chunks_fts) LIMIT ?" % where
+    )
+    return [int(r[0]) for r in conn.execute(sql, [match] + params + [int(limit)]).fetchall()]
 
 
 def ensure_schema(conn) -> bool:
@@ -138,38 +232,32 @@ def backfill(conn) -> int:
 def search(conn, query: str, *, session_id: Optional[str] = None,
            chunk_types: Optional[List[str]] = None, zones: Optional[List[str]] = None,
            limit: int = KEYWORD_CANDIDATES) -> List[int]:
-    """Rowids ranked by FTS5 bm25 within the same filter. [] when unavailable."""
-    terms = _terms(query)
-    if not terms:
+    """Rowids ranked by FTS5 bm25 within the same filter. [] when unavailable.
+
+    The literal pass runs first: if the query names a path, a file or a flag, the
+    rows that carry that literal fill the candidate budget before any plain word
+    is allowed to flood it. The plain-word pass tops up only when the literal pass
+    did not fill the budget, so a query with no literal pays for one query and a
+    query whose literal is rare keeps its precision.
+    """
+    phrases, atoms = _plan(query)
+    if not phrases and not atoms:
         return []
     COUNTERS["queries"] += 1
-    match = " OR ".join('"%s"' % t for t in terms)
-    sql = [
-        "SELECT context_chunks_fts.rowid FROM context_chunks_fts",
-        "JOIN context_chunks ON context_chunks.rowid = context_chunks_fts.rowid",
-        "WHERE context_chunks_fts MATCH ?",
-    ]
-    params: List[object] = [match]
-    # REQ-4 AC2: a folded near-duplicate is not a candidate. The probe keeps a
-    # store that predates the column working (meaning only, no error counted).
     try:
-        if "folded_into" in {r[1] for r in conn.execute("PRAGMA table_info(context_chunks)")}:
-            sql.append("AND context_chunks.folded_into IS NULL")
-    except Exception:  # noqa: BLE001 - the filter is an optimisation, not a gate
-        pass
-    if session_id:
-        sql.append("AND context_chunks.session_id = ?")
-        params.append(session_id)
-    if chunk_types:
-        sql.append("AND context_chunks.chunk_type IN (%s)" % ",".join("?" * len(chunk_types)))
-        params.extend(chunk_types)
-    if zones:
-        sql.append("AND context_chunks.zone IN (%s)" % ",".join("?" * len(zones)))
-        params.extend(zones)
-    sql.append("ORDER BY bm25(context_chunks_fts) LIMIT ?")
-    params.append(int(limit))
-    try:
-        rows = [int(r[0]) for r in conn.execute(" ".join(sql), params).fetchall()]
+        where, params = _where(conn, session_id, chunk_types, zones)
+        rows: List[int] = []
+        if phrases:
+            COUNTERS["literal_queries"] += 1
+            rows = _rows(conn, " OR ".join(phrases), where, params, limit)
+        if len(rows) < limit and atoms:
+            seen = set(rows)
+            for rid in _rows(conn, " OR ".join('"%s"' % a for a in atoms), where, params, limit):
+                if rid not in seen:
+                    seen.add(rid)
+                    rows.append(rid)
+                if len(rows) >= limit:
+                    break
     except Exception as exc:  # noqa: BLE001 - AC4: meaning only, counted
         COUNTERS["missing" if "no such table" in str(exc).lower() else "error"] += 1
         logger.debug("[chunk_fts] keyword recall skipped: %s", exc)
