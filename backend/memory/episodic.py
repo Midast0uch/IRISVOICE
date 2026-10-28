@@ -1098,7 +1098,10 @@ class EpisodicStore:
         # delete), so unfold() puts it back and this filter alone changes.
         where_clauses.append("folded_into IS NULL")
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
-        _cols = "id, content, embedding, timestamp, embedding_backend, zone, vec_i8, vec_scale"
+        # session_id + retrieval_count feed the memory-native rank's features
+        # (REQ-7 AC1: strand outcomes, use with decay)
+        _cols = ("id, content, embedding, timestamp, embedding_backend, zone, vec_i8, "
+                 "vec_scale, session_id, retrieval_count")
 
         # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
         # by fingerprint across EVERY row the filter allows, plus the newest 50 the old
@@ -1166,6 +1169,7 @@ class EpisodicStore:
 
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
         zone_of: Dict[str, Optional[str]] = {}
+        _rank_info: Dict[str, Dict] = {}
         for row in rows:
             try:
                 # REQ-4 AC1: score the int8 code when the float is gone (4x less
@@ -1186,7 +1190,14 @@ class EpisodicStore:
 
                 # Recency weight: exponential decay, half-life = _RECENCY_HALF_LIFE_HOURS
                 try:
-                    ts = _dt.datetime.fromisoformat(row[3].replace("Z", "+00:00").rstrip("+00:00").split("+")[0])
+                    # fromisoformat parses the offset itself; the old
+                    # .rstrip("+00:00") treated a SUFFIX as a character set and
+                    # mangled any timestamp ending in '0' or ':' ("10:00:00" ->
+                    # "2026-10-27 1" -> unparseable -> age 0 -> MAXIMUM recency,
+                    # the oldest chunk winning the recency bonus).
+                    ts = _dt.datetime.fromisoformat(str(row[3]).replace("Z", "+00:00"))
+                    if ts.tzinfo is not None:
+                        ts = ts.astimezone(_dt.timezone.utc).replace(tzinfo=None)
                     age_hours = max(0.0, (now_utc - ts).total_seconds() / 3600.0)
                 except Exception:
                     age_hours = 0.0
@@ -1198,12 +1209,32 @@ class EpisodicStore:
                 )
                 scored.append((combined, row[1], row[0]))
                 zone_of[row[0]] = row[5]
+                # REQ-7 AC1: the memory-native rank's per-row features
+                _rank_info[row[0]] = {
+                    "zone": row[5], "session": row[8],
+                    "retrieval_count": row[9], "timestamp": row[3],
+                }
             except Exception:
                 continue
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:limit]
         _shadow_trust_rank(scored, zone_of, limit)
+
+        # REQ-7: the memory-native rank (trust, claim evidence, helped/misled,
+        # decayed use, Sigma affinity) - SHADOW beside the live rank until the
+        # bench and the outcomes say it pays (memory_rank.LIVE is the switch).
+        try:
+            from backend.memory import memory_rank
+
+            if memory_rank.LIVE:
+                scored, _features = memory_rank.rank_rows(self.db, scored, _rank_info)
+            else:
+                memory_rank.shadow(self.db, scored, _rank_info, limit,
+                                   session_id=session_id, query=query)
+        except Exception as _mr_exc:  # noqa: BLE001 - a rank never blocks retrieval
+            logger.debug("[EpisodicStore] memory rank skipped: %s", _mr_exc)
+
+        top = scored[:limit]
 
         # Token-aware cap: if a model context window is provided, keep only as
         # many top chunks as fit, reserving headroom for the prompt + response.

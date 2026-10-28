@@ -340,7 +340,8 @@ def overview() -> dict:
         # values (this backend since it started), not store contents: a fallback
         # or FTS miss that is not visible here is a silent one (HIDDEN FAILURES).
         try:
-            from backend.memory import chunk_fts, chunk_decay, distil_claims, fold_chunks, recall_reach
+            from backend.memory import (chunk_fts, chunk_decay, distil_claims, fold_chunks,
+                                        memory_rank, recall_reach)
             from backend.memory.embedding import FALLBACK_CALLERS, FALLBACK_COUNTERS
             from backend.memory.embedding_sidecar import RETRIES
 
@@ -356,6 +357,8 @@ def overview() -> dict:
                 "distilled": distil_claims.counts(con),
                 # REQ-5 AC2: the per-zone budget state (rows/bytes vs budget)
                 "zone_usage": chunk_decay.zone_usage(con),
+                # REQ-7 AC2: the memory-native rank's shadow state
+                "rank_shadow": memory_rank.status(),
             }
         except Exception as exc:  # noqa: BLE001 - the surface must still draw
             out["recall"] = {"error": str(exc)}

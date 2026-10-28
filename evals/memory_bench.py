@@ -89,9 +89,9 @@ def _load(con):
     from backend.memory import vector_quant
 
     ids, meta, vecs = [], [], []
-    for rid, sid, ctype, zone, backend, ts, blob, code, scale in con.execute(
-            "SELECT rowid, session_id, chunk_type, zone, embedding_backend, timestamp, embedding, "
-            "vec_i8, vec_scale FROM context_chunks "
+    for rid, sid, ctype, zone, backend, ts, rc, blob, code, scale in con.execute(
+            "SELECT rowid, session_id, chunk_type, zone, embedding_backend, timestamp, "
+            "retrieval_count, embedding, vec_i8, vec_scale FROM context_chunks "
             "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL" + _fold_filter(con)):
         if blob and not len(blob) % 4:
             vec = np.frombuffer(blob, dtype="<f4")
@@ -100,7 +100,7 @@ def _load(con):
         if vec is None or len(vec) != vector_quant.DIM:
             continue
         ids.append(rid)
-        meta.append((sid, ctype, zone, backend, ts or ""))
+        meta.append((sid, ctype, zone, backend, ts or "", int(rc or 0)))
         vecs.append(vec)
     mat = np.stack(vecs).astype(np.float32)
     mat /= np.maximum(np.linalg.norm(mat, axis=1, keepdims=True), 1e-9)
@@ -109,7 +109,7 @@ def _load(con):
 
 def _mask(meta, f, backend, session):
     out = np.zeros(len(meta), dtype=bool)
-    for i, (sid, ctype, zone, b, _ts) in enumerate(meta):
+    for i, (sid, ctype, zone, b, _ts, _rc) in enumerate(meta):
         out[i] = (b == backend and (not f.get("chunk_types") or ctype in f["chunk_types"])
                   and (not f.get("zones") or zone in f["zones"]) and (session is None or sid == session))
     return out
@@ -201,6 +201,7 @@ def main() -> int:
         newest = [i for i in order if allowed[i]][:200]
         newest50 = newest[:50]
         r_old, r_new, ms_old, ms_new = [], [], [], []
+        r_mem = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
             q /= max(float(np.linalg.norm(q)), 1e-9)
@@ -219,11 +220,28 @@ def main() -> int:
             new_top = sorted(cand, key=lambda i: -sims[i])[:K]
             r_old.append(len(truth & set(old_top)) / len(truth))
             r_new.append(len(truth & set(new_top)) / len(truth))
+            # REQ-7 (T23 gate): the memory-native rank on the SAME candidates -
+            # trust, claim evidence, helped/misled, decayed use, Sigma. The
+            # switch pays only if this beats the cosine rank (r_new).
+            try:
+                from backend.memory import memory_rank
+
+                scored = [(float(sims[i]), f"r{i}", f"r{i}") for i in cand]
+                info = {f"r{i}": {"zone": meta[i][2], "session": meta[i][0],
+                                  "retrieval_count": meta[i][5], "timestamp": meta[i][4]}
+                        for i in cand}
+                ranked, _feats = memory_rank.rank_rows(con, scored, info)
+                mem_top = [int(r[2][1:]) for r in ranked[:K]]
+                r_mem.append(len(truth & set(mem_top)) / len(truth))
+            except Exception:
+                r_mem.append(None)
         report["filters"][name] = {
             "rows": n_allowed,
             "reach_old": round(min(200, n_allowed) / max(n_allowed, 1), 4), "reach_new": 1.0,
             "recall@10_old": round(statistics.mean(r_old), 4) if r_old else None,
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
+            "recall@10_memory_rank": (round(statistics.mean([x for x in r_mem if x is not None]), 4)
+                                       if any(x is not None for x in r_mem) else None),
             "candidate_ms_new_p50": round(_pct(ms_new, 50), 2) if ms_new else None,
             "candidate_ms_new_p95": round(_pct(ms_new, 95), 2) if ms_new else None,
             "session": session,
