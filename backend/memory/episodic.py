@@ -156,12 +156,21 @@ class EpisodicStore:
     _FRAG_DEDUP_THRESHOLD: float = 0.92
 
     # Age-weighted scoring: recency weight decays over this many hours.
-    # At 24h a chunk contributes 50% of its max recency bonus.
-    _RECENCY_HALF_LIFE_HOURS: float = 24.0
+    # At 168h (a week) a chunk contributes 50% of its max recency bonus.
+    # Measured 2026-10-28: at 24h the blend cost 0.21 of delivered recall@6
+    # (0.771 vs 0.981 on the research filter); 168h at the same 0.05 weight
+    # reads 0.867. A LONGER half-life at the old 0.20 weight was worse than
+    # 24h (0.607) - a broad mid-range recency gradient injects noise.
+    _RECENCY_HALF_LIFE_HOURS: float = 168.0
 
     # Fraction of final score that comes from recency vs. cosine similarity.
-    # 0.20 = 20% recency bonus, 80% semantic match.
-    _RECENCY_WEIGHT: float = 0.20
+    # 0.05 = 5% recency bonus, 95% semantic match. Measured 2026-10-28 on the
+    # live store (120 queries x 3 filters, delivered 6-slot window):
+    #   weight 0.20 -> research 0.771 / turn 0.883 / global 0.790
+    #   weight 0.05 -> research 0.867 / turn 0.957 / global 0.896
+    # The spec's own target is exact-cosine search, so the old weight put the
+    # delivered rank 0.21 below the target it was supposed to meet.
+    _RECENCY_WEIGHT: float = 0.05
 
     # Chunks retrieved this many times are promoted to crystallization candidates.
     _CRYSTALLIZE_THRESHOLD: int = 5

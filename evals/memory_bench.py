@@ -23,6 +23,7 @@ Results: evals/results/memory-bench-<stamp>.json; compared with evals/standards.
 from __future__ import annotations
 
 import argparse
+import datetime as _dt
 import json
 import random
 import re
@@ -38,6 +39,29 @@ sys.path.insert(0, str(ROOT))
 import numpy as np  # noqa: E402
 
 from backend.memory import chunk_fts, recall_reach  # noqa: E402
+
+# The DELIVERED rank blends recency into the score (episodic.py:_RECENCY_*).
+# Import the shipped constants instead of copying them: a benchmark that
+# duplicates the formula silently stops measuring the code it describes.
+try:  # noqa: SIM105 - the bench must still run if the module cannot import
+    from backend.memory.episodic import EpisodicStore as _EpisodicStore  # noqa: E402
+    LIVE_RECENCY_WEIGHT = float(_EpisodicStore._RECENCY_WEIGHT)
+    LIVE_HALF_LIFE_H = float(_EpisodicStore._RECENCY_HALF_LIFE_HOURS)
+except Exception:  # noqa: BLE001
+    LIVE_RECENCY_WEIGHT, LIVE_HALF_LIFE_H = 0.05, 168.0
+
+
+def _recency(ts) -> float:
+    """1/(1+age_h/half_life) - the shape episodic.py applies to every row."""
+    try:
+        t = _dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if t.tzinfo is not None:
+            t = t.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        age = max(0.0, (_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+                        - t).total_seconds() / 3600.0)
+    except Exception:  # noqa: BLE001 - a bad timestamp must not stop the bench
+        age = 0.0
+    return 1.0 / (1.0 + age / LIVE_HALF_LIFE_H)
 
 FILTERS = {
     # the three production callers (research_memory.py:482, agent_kernel.py:4046, recall_decoder.py:436)
@@ -202,6 +226,7 @@ def main() -> int:
         newest50 = newest[:50]
         r_old, r_new, ms_old, ms_new = [], [], [], []
         r_mem = []
+        r_live = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
             q /= max(float(np.linalg.norm(q)), 1e-9)
@@ -220,6 +245,17 @@ def main() -> int:
             new_top = sorted(cand, key=lambda i: -sims[i])[:K]
             r_old.append(len(truth & set(old_top)) / len(truth))
             r_new.append(len(truth & set(new_top)) / len(truth))
+            # THE DELIVERED RANK (2026-10-28): episodic.py does not return the
+            # cosine order - it blends a recency bonus. Until this column the
+            # bench only measured reach with an IDEAL (cosine) ranker, so
+            # recall@10_new was a ceiling, not the number the model receives.
+            # The constants are imported, never copied, so this column cannot
+            # drift from the code it measures.
+            live_top = sorted(cand, key=lambda i: -(
+                float(sims[i]) * (1.0 - LIVE_RECENCY_WEIGHT)
+                + _recency(meta[i][4]) * LIVE_RECENCY_WEIGHT
+            ))[:K]
+            r_live.append(len(truth & set(live_top)) / len(truth))
             # REQ-7 (T23 gate): the memory-native rank on the SAME candidates -
             # trust, claim evidence, helped/misled, decayed use, Sigma. The
             # switch pays only if this beats the cosine rank (r_new).
@@ -240,6 +276,7 @@ def main() -> int:
             "reach_old": round(min(200, n_allowed) / max(n_allowed, 1), 4), "reach_new": 1.0,
             "recall@10_old": round(statistics.mean(r_old), 4) if r_old else None,
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
+            "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
             "recall@10_memory_rank": (round(statistics.mean([x for x in r_mem if x is not None]), 4)
                                        if any(x is not None for x in r_mem) else None),
             "candidate_ms_new_p50": round(_pct(ms_new, 50), 2) if ms_new else None,
