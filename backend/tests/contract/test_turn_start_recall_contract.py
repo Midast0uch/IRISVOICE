@@ -47,10 +47,12 @@ def chain_store(tmp_path):
     con.close()
 
 
-def test_off_by_default_nothing_is_injected(chain_store):
-    assert not ontology_recall.TURN_START_RECALL, (
-        "the switch ships OFF; it flips only on the A/B evidence"
+def test_the_off_switch_ships_and_stops_injection(chain_store, monkeypatch):
+    assert ontology_recall.TURN_START_RECALL, (
+        "ON by default since the 2026-10-28 A/B (owner decision); "
+        "IRIS_TURN_START_RECALL=0 is the off switch"
     )
+    monkeypatch.setattr(ontology_recall, "TURN_START_RECALL", False)
     assert turn_start_prior_memory(chain_store, USER_QUESTION) == []
 
 

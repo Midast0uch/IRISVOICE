@@ -524,9 +524,11 @@ def gated_neighborhood(
 # relevance gate, the same bounds - so a taught fact is in the context before
 # the planner invents anything.
 #
-# OFF by default: IRIS_TURN_START_RECALL=1 enables it. The switch flips only
-# on the A/B (the memory eval group + a coding-group sample, pass + reply_s).
-TURN_START_RECALL = os.environ.get("IRIS_TURN_START_RECALL", "").strip() not in ("", "0")
+# ON by default (owner decision 2026-10-28, on the A/B: deterministic
+# delivery - kept=3/3/1, the fact in the planner context, clean direct
+# answers - and a 5/5 coding sample with no standards regression). The env var
+# is the OFF switch: IRIS_TURN_START_RECALL=0 disables it.
+TURN_START_RECALL = os.environ.get("IRIS_TURN_START_RECALL", "1").strip() not in ("", "0")
 TURN_START_KEEP = 3
 TURN_START_MAX_CHARS = 600
 
