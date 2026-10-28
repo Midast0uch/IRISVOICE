@@ -226,6 +226,72 @@ silently corrupt the research path, where no row has a position at all.
 ends are nodes. A chunk is a payload: chunk → position is **incidence**. Adding
 143k chunk nodes would change what the graph means.
 
+## Three levels (REQ-11) — conversation context as a vector, for CLM later
+
+Owner question 2026-10-28: can each conversation's context become a vector tied to
+its thread and strands, with history attached, staying dynamic - prepared now so
+the CLM (`docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md`) can be built later?
+
+**Yes, and the middle level already exists.** `episodes` (362 rows) carries
+`embedding` + `embedding_backend`, `full_content`, `task_summary`, `tool_sequence`,
+`node_id`; `mycelium_episode_index` (4,526 rows) already links each episode to
+`node_ids`, `space_ids`, `landmark_id`, `coordinate_hash`. What is missing is not
+a concept, it is (a) one codec across the levels, (b) a level above episodes, and
+(c) keys that actually meet.
+
+| level | what it is | table | vector today |
+|---|---|---|---|
+| L1 thread | one conversation / strand | **none** (only the `thread_id` column in `memory_chain`, `session_id` in chunks) | absent |
+| L2 episode | one task or strand of work | `episodes` (+ `mycelium_episode_index`) | float32 `embedding`, uncompressed, not fingerprint-indexed |
+| L3 chunk | one payload | `context_chunks` | int8 + fingerprint (the proven codec) |
+
+**Measured key reality (2026-10-28):** `memory_chain` has **5,262** threads,
+`context_chunks` has **8,098** sessions, and only **1,584** ids appear in both
+(30.1 % of threads, 19.6 % of sessions). So the hierarchy cannot be joined
+reliably today - this is preparation item 1. Strands exist as ids
+(`strand-<hex>`, `STRAND_LEARNING_FORGOTTEN` is already a recall-scoping marker,
+2 emitted) but are rare: 6 strand sessions / 47 chunks. Treat a strand as a
+thread id, not a new table, until it is used widely.
+
+**What to prepare now (no CLM, no policy, no editable view).**
+
+1. **Reconcile the keys** so every conversation has one address and a chunk can
+   reach its thread without a heuristic. (The same repair the two-plane work
+   needs: `thread_id`, not `session_id`.)
+2. **Give L2 the same codec as L3** - additive, recomputable:
+   `episodes.vec_i8`, `episodes.vec_fp`, `episodes.vec_scale`.
+3. **Add L1** - one derived row per conversation, never authoritative:
+
+```sql
+CREATE TABLE thread_context (
+  thread_id    TEXT PRIMARY KEY,
+  first_ts     REAL, last_ts REAL,
+  n_chunks     INTEGER NOT NULL DEFAULT 0,
+  n_episodes   INTEGER NOT NULL DEFAULT 0,
+  coords_from  TEXT, coords_to TEXT,      -- phase of the first/last positioned row
+  centroid_i8  BLOB, centroid_fp BLOB, centroid_scale REAL,
+  digest_ref   TEXT,                      -- memory_chain.insight, not a copy
+  updated_at   REAL NOT NULL
+);
+```
+
+Derived and refreshed as chunks arrive, so the history stays dynamic and the
+record layer stays immutable - the brief's own rule (§7.1). Nothing here is new
+truth: delete the table and it can be rebuilt from chunks.
+
+**Why it pays immediately, before any CLM work.** Fingerprints are 128 B per
+row, so a level-1 scan reads **5,262 x 128 B = 673 KB** against **108k x 128 B =
+13.6 MB** for chunks - about **20x less memory per query**, sub-millisecond. That
+is REQ-1 AC6 ("scan by region") arriving early: the region is the conversation.
+Recall becomes: query -> L1 fingerprint scan -> best T threads -> the existing
+chunk scan inside them -> the phase blend (REQ-10, lambda per path).
+
+**What is explicitly NOT prepared here.** The CLM's editable live view,
+placeholders, compaction policy, and skill steering stay out
+(`CLM_MYCELIUM_DESIGN_BRIEF.md` §11 Phase 1+). The memory only has to be able to
+answer "what was this conversation about" cheaply and addressably - which is
+what these three levels are.
+
 ## Ripple-Effect Map
 
 | Area / File | Change? | Classification | Why / Evidence |
