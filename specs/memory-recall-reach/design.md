@@ -162,6 +162,70 @@ must be a second, session-less call on zones (the memory-native answer) or file 
 to the ingesting session (the cheap answer). The bench's `files` filter measures the first
 before the call site changes.
 
+## Two planes (REQ-10) — semantic and phase, joined by incidence
+
+Owner decision 2026-10-28: two planes, never one geometry. They answer different
+questions and must keep different meanings.
+
+| plane | carrier | dimensions | question it answers | index |
+|---|---|---|---|---|
+| **S — semantic** | `context_chunks.vec_i8` / `vec_fp` | 1024-d from LFM | which text is near this text | fingerprint scan (unchanged) |
+| **P — phase** | `memory_chain.coords_*`, `caducean_trajectories` | x, y, ξ, u | where in the work was this | the chain's own order |
+
+They are joined by **incidence**, not by a new edge: a chunk belongs to the
+position of the chain row in its thread (`chunk.session_id = chain.thread_id`).
+No coordinate is copied onto the chunk, and no chunk becomes a graph node.
+
+```
+   plane S (cloud)                       plane P (path)
+   chunk a  ──incidence──▶  position p1 ──path──▶ p2 ──incidence──▶ chunk b
+   chunk c  ──incidence──▶  p1
+```
+
+**Why not one plane.** Concatenating (x, y, ξ, u) into the 1024-d vector makes the
+four dimensions 0.4 % of the norm (so cosine ignores them), changes the 128-byte
+fingerprint that *is* the index, and puts live u/ξ inside a vector the phase
+scheduler must never read (CT-3/CT-4). A learned projection needs training data
+and turns ξ from an angle into an uninterpretable latent.
+
+**The rank, not the vector.** Candidates stay semantic; the scored set blends:
+
+```
+score = cosine · (1 − λ) + affinity · λ
+affinity = 1 / (1 + d_Σ),  d_Σ = w_ξ·|Δξ| + w_u·|Δu|   (x, y are REGIME, matched not subtracted)
+```
+
+Measured anisotropy (2026-10-28, 14,298 trajectories): x has **17** distinct
+values (zero on 36.5 %), y **43**, ξ **520**, u **679**. A symmetric Euclidean Σ
+would be dominated by integer jumps in x/y and blind to phase.
+
+**Coverage gates λ, per path — measured, not assumed:**
+
+| live filter | chunks with a position | λ allowed |
+|---|---|---|
+| turn (`agent_kernel.py:4046`, session_iris) | 3,620 / 3,620 = **100.0 %** | yes, tune it |
+| global (no production caller) | 55,327 / 143,265 = 38.6 % | only with absent≠zero handling |
+| research (`research_memory.py:482`) | 0 / 1,782 = **0.0 %** | **no** — every row would be "absent" |
+
+A row with no position is **absent, not zero**: it carries no phase term, and the
+weights renormalise over what the row actually has. A single global λ would
+silently corrupt the research path, where no row has a position at all.
+
+**Prerequisites before λ is tuned at all** (found 2026-10-28):
+1. `coords_from` / `coords_to` hold non-coordinates — only 3,637 / 3,075 of
+   13,739 rows are 4 numbers; the rest hold `'json'` (675×), `'markdown'`,
+   `'text'`, `'rest:input:<id>'`. Repair before measuring, or λ fits a file format.
+2. The join is `thread_id`, not `session_id`: every coordinate-shaped chain row
+   has `session_id = NULL`, so the session join returns 0 of 143,265.
+3. 3,075 positioned rows spread over only **480** distinct positions, so the
+   phase plane is coarse; a distance smaller than one position step is noise.
+
+**Vocabulary.** `mycelium_edges` (400 rows) connects `from_node_id` →
+`to_node_id` with `score`, traversal/hit/miss counts and its own decay
+(`tool_choice` 389, `informed` 11). Edge is the right word **only** when both
+ends are nodes. A chunk is a payload: chunk → position is **incidence**. Adding
+143k chunk nodes would change what the graph means.
+
 ## Ripple-Effect Map
 
 | Area / File | Change? | Classification | Why / Evidence |
