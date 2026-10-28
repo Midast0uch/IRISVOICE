@@ -35,7 +35,7 @@ flowchart LR
   FP --> U[candidate union]
   KW --> U
   NEW --> U
-  U --> EX[exact score<br/>cosine 0.8 + recency 0.2]
+  U --> EX[exact score<br/>cosine-dominant blend<br/>w=0.05, 168h, measured]
   EX --> LIVE[live rank -> context]
   EX --> NAT[memory-native rank SHADOW<br/>trust, Sigma distance, claim evidence,<br/>helped/misled, use - REQ-7]
   NAT -. Oracle bar + bench .-> LIVE
@@ -124,6 +124,43 @@ TEXT; `memory_chain.distilled` used as specified.
 | search | not published; recomputes embeddings on the search path | "0.025 ms P50, 0.075 ms P99" (undefined baseline) | candidate stage p50 / p95: research 2.1 / 9.5 ms, turn 5.4 / 20.6 ms, whole store 13 / 41 ms; 10× 171 / 236 ms |
 | recall | "no accuracy loss" (no recall figures) | "+35% on LoCoMo" (LLM judge) | recall@10 vs exact search: 0.975 / 0.901 / 0.96 (was 0.14 / 0.054 / 0.029) |
 | beyond retrieval | - | time index | position (Σ), proven claims, trust + decay, use feedback |
+
+## File recall (REQ-9) — identity in the graph, payload in chunks
+
+A file is not a new store. It is an ADDRESS the memory already has (`file_nodes`) plus text
+the memory already knows how to keep (`context_chunks`). The whole feature is a bridge
+between the two, which is why it adds no table, no second write path and no new index.
+
+```mermaid
+flowchart LR
+  P[user file<br/>path] --> H[hash + size + mtime<br/>one read, capped 5 MB]
+  H --> N{file_nodes<br/>file_path UNIQUE}
+  N -->|new or changed| X[extractor<br/>by sniffed type + ext]
+  N -->|same hash| S[no-op, counted]
+  X --> F[fragment_and_store<br/>chunk + int8 + fp<br/>keep_float=False]
+  F --> C[context_chunks<br/>chunk_type=file<br/>tool_name=path]
+  C --> T[FTS trigger<br/>same transaction]
+  X -->|changed| OLD[fold previous chunks<br/>folded_into=new head]
+  X -->|failed| R[reference-only node<br/>failure counted by reason]
+```
+
+**Why the pieces are where they are**
+
+| Decision | Why (from the code, not preference) |
+|---|---|
+| Identity in `file_nodes` | `file_path UNIQUE` already dedups by path; `last_edited` is the mtime; `language`, `confidence`, `decay_rate` already exist. Adding two columns (hash, size) is cheaper than a table and keeps one address per file. |
+| Payload through `fragment_and_store` | it already chunks at 2,048 with overlap, dedups at 0.92, writes int8 + fingerprint and goes through `app_write`. A second writer would drift from every one of those. |
+| FTS with no hook | the three triggers on `context_chunks` index any insert in the same transaction. Verified on the live schema. |
+| `tool_name` = path | the column already means "which source produced this chunk"; a file is a source. No migration. |
+| `chunk_type = "file"` | no CHECK constraint on the column; a new value needs no schema change. |
+| Fold, never delete | `folded_into` is the existing compression operator; a changed file is the same "compress where outcomes agree" the DER loop uses, and it keeps the undo trail. |
+| No float on file rows | the bench proves int8 loses 0.0 recall@10 on every type; 5,256 B/row of text+float would spend the 100 MB budget five times faster than 1,160 B. |
+
+**Not built in W1, decided for W2:** the session filter cannot see a file (a file is not a
+conversation). The turn recall at `agent_kernel.py:4037-4049` passes a session; the file leg
+must be a second, session-less call on zones (the memory-native answer) or file chunks pinned
+to the ingesting session (the cheap answer). The bench's `files` filter measures the first
+before the call site changes.
 
 ## Ripple-Effect Map
 

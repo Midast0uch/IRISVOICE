@@ -881,6 +881,7 @@ class EpisodicStore:
         chunk_type: str = "context_fragment",
         zone: Optional[str] = None,
         tool_name: Optional[str] = None,
+        keep_float: bool = True,
     ) -> List[str]:
         """
         Digest raw text into overlapping vector chunks and store in context_chunks.
@@ -971,7 +972,10 @@ class EpisodicStore:
                                session_id, chunk_type, exc)
 
             chunk_id = str(uuid.uuid4())
-            embedding_blob = _pack_embedding(embedding)
+            # REQ-9 AC6: a caller that proved int8 == float for its chunk type (the
+            # bench reads delta 0.0 on every type) may decline the 4 KB float. The
+            # int8 code + fingerprint below are the recall forms either way.
+            embedding_blob = _pack_embedding(embedding) if keep_float else None
             # REQ-4 AC1: write the compact forms with the row, so every chunk
             # written from now on can lose its float without a backfill.
             try:

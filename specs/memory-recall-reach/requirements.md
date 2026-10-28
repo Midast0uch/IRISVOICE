@@ -58,7 +58,11 @@ Built 2026-10-27: `backend/memory/recall_reach.py`, `episodic.py` reach path.
   dimension, the sign of each component; 128 bytes at 1024-d) in RAM, bounded to FP_MAX_ROWS.
 - AC2: WHEN a recall runs THEN THE SYSTEM SHALL score exactly the M = 200 rows nearest the
   query by fingerprint within the filter (session, chunk types, zones, same embedding backend)
-  plus the newest 50 rows of the filter, with the existing score (cosine 0.8 + recency 0.2).
+  plus the newest 50 rows of the filter, with the existing blend (cosine × (1 − w) + recency
+  × w). **Measured 2026-10-28: w = 0.05, half-life 168 h** (`episodic.py:160-174`). At the
+  old 0.20 / 24 h the DELIVERED rank sat 0.21 below the exact-cosine target (0.771 / 0.883 /
+  0.790 vs 0.9742 / 0.9983 / 0.9625). The bench now reports `recall@10_live` beside
+  `recall@10_new`, so this AC is checked against what the model receives, not a ceiling.
 - AC3: WHEN chunks are written after the index was built THEN THE SYSTEM SHALL add them at
   the next recall, each row once.
 - AC4: WHILE the index warms or IF it fails THEN THE SYSTEM SHALL use the newest-200 path and
@@ -238,7 +242,107 @@ can tune M, the budgets and the weights from measurement.
 - Sector births (owner-gated).
 - GPU search.
 
-## Open Questions
-- Should int8 replace float vectors in the store (REQ-4 AC1) or sit beside them until the
-  bench proves it on every chunk type? (default: beside, then replace per type.)
-- Store budget numbers per zone (REQ-5 AC2): set from the first bench + growth measurement.
+## Open Questions — RESOLVED FROM THE CODE (2026-10-28)
+
+Both were answerable from the code and the bench, not from preference. Left here with the
+answer and the evidence so the next agent does not re-open them.
+
+1. **int8 beside float, or replace?** → **Replace, per chunk type, and it is already done.**
+   `vector_quant.py:9-19` states the float is kept "only while the bench shows int8 loses more
+   than 0.02 recall@10 for that [type]". `evals/memory_bench.py` reports delta 0.0 on every
+   type (document_data 0.8433 = 0.8433, context_fragment 0.9317 = 0.9317, der_output 0.855 =
+   0.855, der_failure, research_summary), and the live store has `embedding` NULL on all
+   143,239 rows with `vec_i8` on all of them. REQ-4 AC1 stands as written. New writes must not
+   pay for a float that stores nothing (see REQ-9 AC6).
+2. **Store budget numbers per zone?** → **Already in the code: `chunk_decay.ZONE_BUDGET`** =
+   trusted (160,000 rows / 320 MB), tool (40,000 / 80 MB), reference (25,000 / 55 MB) —
+   measured 2026-10-27 × 1.5 headroom, with `decay_pass` pruning oldest-unused-first and
+   `_protected_ids` keeping pins and live claims. The spec must cite these numbers, not invent
+   them. **Finding:** the pass exists but has no production caller, and the bench READS the
+   budget (`memory_bench.py:432,523`) without asserting against it. REQ-5 AC2's guard is the
+   missing half — tracked, not silently assumed done.
+
+## Addendum: File Recall (REQ-9, owner request 2026-10-28)
+
+*(Numbered REQ-9: REQ-8 is Observability above. This addendum was first written as REQ-8 and
+collided with it.)*
+
+Owner requirement: "make sure we can recall all file types and the content in the files
+themselves, and make sure they're compressed in the memory.db like they should."
+
+### Measured state (2026-10-28, live store D:\IRIS\store\memory.db)
+- **No file-ingestion path exists.** No table, tool or API takes an arbitrary user file,
+  extracts its text and stores it. `document_data` (83,831 chunks, 58% of the store, 85 MB of
+  text) holds the AGENT'S OWN rendered documents (reports, research docs, cards; columns
+  `fmt/kind/title/capture_path/har_path`), not user files. `documents` and `document_chunks`
+  do not exist.
+- **The identity table already exists**: `file_nodes` (5,246 rows) keys files by
+  `file_path UNIQUE` with `language`, `last_edited` (REAL epoch), `edit_count`, `confidence`,
+  `decay_rate`, `project_id`, `topology_primitive`. It is the Mycelium coordinate node for a
+  file. It has no content hash and no size column.
+- **The write path already exists**: `EpisodicStore.fragment_and_store(content, session_id,
+  chunk_type, zone, tool_name)` (`episodic.py:877`) splits into overlapping ≤2,048-char
+  windows, dedups at cosine ≥ 0.92, writes int8 + fingerprint, and goes through `app_write`.
+- **FTS needs no hook**: `context_chunks_fts` is external-content FTS5 with three triggers
+  (`context_chunks_fts_ai/ad/au`), so any insert through the writer is indexed in the same
+  transaction. Verified against the live schema.
+- **`chunk_type` has no CHECK constraint** — a new value is legal without a migration.
+- **Vector compression is already done**: 143,239/143,239 rows carry `vec_i8` + `vec_fp` +
+  `vec_scale` (1,160 B/row vs 4,096 B float32); `embedding` is NULL on every row.
+- **Text is stored raw** (134 MB, mean 937 B/chunk, cap 2,048 chars) — FTS5 indexes it.
+- Recall is type-blind: any text that becomes a `context_chunks` row is reachable through the
+  same fingerprint + FTS path (reach 0.9742/0.9983/0.9625, words 0.625).
+
+### Requirements (EARS)
+- **REQ-9 AC1** — WHEN a user file is ingested, THE SYSTEM SHALL identify it in `file_nodes`
+  by absolute path (upsert on `file_path`), recording the file's content hash, size and
+  mtime, and SHALL produce its text as `context_chunks` rows with `chunk_type = "file"`,
+  `tool_name = <absolute path>` and the zone the file is trusted with.
+- **REQ-9 AC2** — THE SYSTEM SHALL write file text through the EXISTING chunk writer
+  (`fragment_and_store`), so chunking, dedup, int8 + fingerprint, the FTS trigger and the
+  fingerprint delta all apply with no second write path.
+- **REQ-9 AC3** — WHEN a stored file's hash changes THEN THE SYSTEM SHALL ingest the new text
+  and FOLD the superseded chunks (`folded_into` = the new head), never delete them; WHEN the
+  file is gone THEN THE SYSTEM SHALL fold its chunks and mark the node stale.
+- **REQ-9 AC4** — WHEN recall runs, THE SYSTEM SHALL return file chunks through the same
+  candidate union (fingerprint M=200 + newest 50 + FTS 50) and the same blend, with no special
+  casing; a file chunk competes with conversation memory on one measured rank.
+- **REQ-9 AC5** — IF a file cannot be decoded or extracted THEN THE SYSTEM SHALL record the
+  failure (counted by reason, logged with the path, never a silent empty ingest) and SHALL
+  store the reference-only record so the user still sees the file exists.
+- **REQ-9 AC6** — WHEN a file chunk is written THEN THE SYSTEM SHALL NOT store the float32
+  vector: int8 + fingerprint only (REQ-4 AC1 is proven at delta 0.0 for every chunk type).
+  At 5 MB/file this is 1,160 B/chunk instead of 5,256 B/chunk.
+- **REQ-9 AC7** — THE SYSTEM SHALL keep file text inside the owner's budget (~100 MB total,
+  5 MB per file, owner 2026-10-28): a file over the per-file cap is truncated at extraction
+  and the truncation is recorded on the node, never silent.
+- **REQ-9 AC8** — THE SYSTEM SHALL report in the bench a `files` section: files known, chunks
+  produced, extraction failures by reason, bytes of stored file text, and `recall@10_live`
+  over a file-content query set.
+
+### Decisions Locked (owner, 2026-10-28)
+- **File types: ALL of it** — UTF-8 text, PDF/DOCX/XLSX, images via OCR, audio/video via
+  transcription. This is the owner's yes to the extraction dependencies; each package is named
+  before install (SAFETY RAILS).
+- **Storage: BOTH forms, distinct** — a file record (`file_nodes`: path, type, size, mtime,
+  hash) AND extracted-text chunks in `context_chunks`. The distinction is visible: a hit with
+  no chunks is a reference-only hit and says so.
+- **Text stays raw** — FTS5 needs it; bounded by the zone budget.
+
+### Waves
+- **W1 — UTF-8 text** (stdlib only): code, md, json, yaml, csv, log, txt. Node upsert + hash
+  + chunks through `fragment_and_store` + fold on change + bench `files` section.
+- **W2 — PDF/DOCX/XLSX**: named packages (pypdf, python-docx, openpyxl — confirm at install).
+- **W3 — Images (OCR)**: the app's vision adapter, or a named OCR package.
+- **W4 — Audio/video**: transcription. `backend/audio/parakeet_worker.py` is named by a test
+  but absent from the tree (pre-existing failure) — resolve or route around it.
+
+### Risks and findings raised by this addendum
+- **Turn-level reach needs one call-site decision.** File chunks are not a conversation, so a
+  filter keyed on `session_id = <the turn's session>` cannot see them; the `global` filter can
+  but has no production caller. W1 must either (a) address files by zone with a session-less
+  recall leg at `agent_kernel.py:4037-4049`, or (b) pin file chunks to the ingesting session.
+  (a) is the memory-native answer (a file is an address, not a conversation). Not silently
+  left out: this is the difference between a flag that is OFF and a feature that is done.
+- **`decay_pass` must not prune a file the user still has on disk** unless REQ-9 AC7's budget
+  forces it; `_protected_ids` covers pins and claims, not file nodes.
