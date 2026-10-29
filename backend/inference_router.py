@@ -146,6 +146,18 @@ async def _call_api(
         )
 
     api_key = inf.api_key
+    if not api_key:
+        # REQ-5: provider credentials live in the OS keyring (cred_ref == the
+        # provider id) and the flat field is EMPTY by design after migration.
+        # Reading only the flat field made every migrated provider answer 401
+        # with a perfectly valid key (found 2026-10-28: the key was in the
+        # keyring, the endpoint was corrected, and every call still said 401).
+        try:
+            from backend.agent.inference.keyring import get_secret
+
+            api_key = get_secret(getattr(inf, "provider", "")) or ""
+        except Exception:  # noqa: BLE001 - a missing key must not crash the turn
+            api_key = ""
     api_base = inf.api_base_url
 
     if not api_base:
