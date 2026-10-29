@@ -177,14 +177,19 @@ class EpisodicStore:
     _RECENCY_BAND: float = 0.002
 
     # Why recency reads the wall clock and not the chain (measured 2026-10-28).
-    # The idea was right - Immortus already carries the ordered 4D layer, so age
-    # could be "chain events since". Measured on 8,000 chunks against 13,739 chain
-    # rows: Spearman rho(age_hours, chain_events_since) = 0.9935. The two axes are
-    # the same ordering; switching would reorder ~0.7% of pairs and add a chain
-    # join plus a bisect per candidate to the answer path. They differ only where
-    # activity density differs (a burst packs many events into few hours), which is
-    # not enough to move recall@10. Kept the cheaper source; re-measure if the chain
-    # ever becomes the only clock (e.g. imported history with no timestamps).
+    # The idea was right - Immortus already carries the ordered 4D layer - so it was
+    # given a fair A/B in the bench, not just a correlation: same ranker, same
+    # candidates, the clock swapped (h_events calibrated from the store's density).
+    #   research  live 0.9658 = 0.9658   shipped 0.9950 > 0.9925
+    #   turn      live 0.9867 > 0.9842   shipped 0.9967 > 0.9933
+    #   global    live 0.9692 < 0.9700   shipped 0.9892 > 0.9850
+    # The events clock is never better in any filter that matters, and the reason is
+    # structural: a chunk newer than the last chain row has distance 0, so every
+    # such chunk gets the SAME maximum recency - the clock goes flat exactly at the
+    # newest end, which is where recency is supposed to discriminate. Fixing that
+    # means falling back to the wall clock for the tail, i.e. keeping both clocks.
+    # Re-measure only if the chain becomes the only clock (imported history with no
+    # timestamps).
 
     # Chunks retrieved this many times are promoted to crystallization candidates.
     _CRYSTALLIZE_THRESHOLD: int = 5

@@ -60,6 +60,46 @@ def _shipped_score(sims, rec):
     return np.floor(np.asarray(sims, dtype=np.float64) / LIVE_BAND) * 10.0 + rec
 
 
+def _ts_epoch(text):
+    try:
+        t = _dt.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+        if t.tzinfo is not None:
+            t = t.astimezone(_dt.timezone.utc).replace(tzinfo=None)
+        return (_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+                - t).total_seconds()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _load_chain_clock(con):
+    """The Immortus clock: how many chain events have happened since a moment.
+
+    Half-life is calibrated in EVENTS from the store's own density, so the two
+    clocks are comparable: h_events = half_life_hours x (chain rows / span hours).
+    """
+    try:
+        times = [r[0] for r in con.execute(
+            "SELECT created_at FROM memory_chain ORDER BY created_at")]
+    except Exception:  # noqa: BLE001
+        return [], 1.0
+    if len(times) < 2:
+        return times, 1.0
+    span_h = max((times[-1] - times[0]) / 3600.0, 1.0)
+    return times, max(LIVE_HALF_LIFE_H * len(times) / span_h, 1.0)
+
+
+def _recency_events(age_s, chain_times, h_events):
+    """1/(1 + events_since/h_events) - the same shape, a different clock."""
+    if age_s is None or not chain_times:
+        return 0.0
+    import bisect as _bisect
+
+    cut = chain_times[-1] - age_s
+    i = _bisect.bisect_right(chain_times, cut) - 1
+    dist = (len(chain_times) - 1 - i) if i >= 0 else len(chain_times)
+    return 1.0 / (1.0 + dist / h_events)
+
+
 def _recency(ts) -> float:
     """1/(1+age_h/half_life) - the shape episodic.py applies to every row."""
     try:
@@ -254,6 +294,10 @@ def main() -> int:
     # exactly and used as truth (REQ-6 AC1: measure the thing that runs).
     _rec_all = np.asarray([_recency(m[4]) for m in meta], dtype=np.float32)
     _pos_all, _ref_pos = _load_positions(con)
+    _chain, _h_events = _load_chain_clock(con)
+    _rec_ev = np.asarray(
+        [_recency_events(_ts_epoch(m[4]), _chain, _h_events) for m in meta],
+        dtype=np.float64)
     # newest-first order for the OLD path (timestamp DESC, as the SQL did)
     order = sorted(range(len(meta)), key=lambda i: meta[i][4], reverse=True)
 
@@ -294,6 +338,8 @@ def main() -> int:
         r_ceil = {_m: [] for _m in (200, 500, 1000)}
         r_shipped = []
         r_phase = {_l: [] for _l in PHASE_LAMBDAS}
+        r_live_ev = []
+        r_ship_ev = []
         ms_exact = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
@@ -340,6 +386,18 @@ def main() -> int:
                 np.argsort(-_ship[allowed])[:K]].tolist())
             if _truth_ship:
                 r_shipped.append(len(_truth_ship & set(live_top)) / len(_truth_ship))
+
+            # SAME ranker, the IMMORTUS clock instead of the wall clock. Measured
+            # against each clock's own exact truth and against cosine, so the two
+            # are compared on the same footing.
+            _ship_ev = _shipped_score(sims, _rec_ev)
+            _top_ev = sorted(cand, key=lambda i: -float(
+                _ship_ev[i]))[:K]
+            _truth_ev = set(np.flatnonzero(allowed)[
+                np.argsort(-_ship_ev[allowed])[:K]].tolist())
+            r_live_ev.append(len(truth & set(_top_ev)) / len(truth))
+            if _truth_ev:
+                r_ship_ev.append(len(_truth_ev & set(_top_ev)) / len(_truth_ev))
             # REQ-10: the DELIVERED rank blended with phase affinity. A row with
             # no position keeps its pure blend score (absent is not zero), which
             # is why a 0 % coverage filter is unaffected rather than corrupted.
@@ -376,6 +434,10 @@ def main() -> int:
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
             "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
             "recall@10_shipped": round(statistics.mean(r_shipped), 4) if r_shipped else None,
+            "recall@10_live_events": (round(statistics.mean(r_live_ev), 4)
+                                      if r_live_ev else None),
+            "recall@10_shipped_events": (round(statistics.mean(r_ship_ev), 4)
+                                         if r_ship_ev else None),
             "recall@10_phase": {f"{_l:.2f}": round(statistics.mean(r_phase[_l]), 4)
                                 for _l in PHASE_LAMBDAS if r_phase[_l]},
             "phase_coverage": round(
