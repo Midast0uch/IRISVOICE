@@ -1,4 +1,4 @@
-"""Memory benchmark: how much of IRIS's memory recall can reach, how well, how fast
+﻿"""Memory benchmark: how much of IRIS's memory recall can reach, how well, how fast
 (specs/memory-recall-reach REQ-6). Read-only on the live app store.
 
     python evals/memory_bench.py                 # 120 real queries, the three live recall filters
@@ -128,7 +128,7 @@ def _recency(ts) -> float:
     return 1.0 / (1.0 + age / LIVE_HALF_LIFE_H)
 
 
-# ── REQ-10: the phase plane, measured as a rank blend ────────────────────────
+# â”€â”€ REQ-10: the phase plane, measured as a rank blend â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 PHASE_LAMBDAS = (0.05, 0.10)
 _PI = 3.141592653589793
 
@@ -224,7 +224,7 @@ def _load(con):
     for rid, sid, ctype, zone, backend, ts, rc, blob, code, scale in con.execute(
             "SELECT rowid, session_id, chunk_type, zone, embedding_backend, timestamp, "
             "retrieval_count, embedding, vec_i8, vec_scale FROM context_chunks "
-            "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL" + _fold_filter(con)):
+            "WHERE (embedding IS NOT NULL OR vec_i8 IS NOT NULL)" + _fold_filter(con)):
         if blob and not len(blob) % 4:
             vec = np.frombuffer(blob, dtype="<f4")
         else:
@@ -270,7 +270,7 @@ _WORD_PATTERNS = (
 def _words_cases(con, limit: int = 40, seed: int = 11) -> list:
     rows = con.execute(
         "SELECT rowid, content FROM context_chunks "
-        "WHERE embedding IS NOT NULL OR vec_i8 IS NOT NULL" + _fold_filter(con) +
+        "WHERE (embedding IS NOT NULL OR vec_i8 IS NOT NULL)" + _fold_filter(con) +
         " ORDER BY rowid DESC LIMIT 20000"
     ).fetchall()
     random.Random(seed).shuffle(rows)
@@ -288,6 +288,53 @@ def _words_cases(con, limit: int = 40, seed: int = 11) -> list:
             cases.append((int(rid), token))
             break
     return cases
+
+
+def _candidate_union(con, query_text, near, session, f, newest50, pos):
+    """The SHIPPED candidate union for one query: the newest-200 slice, the
+    fingerprint scan, and the exact-word leg. REQ-3 AC2 / REQ-12 AC7 (T44).
+
+    Returns (positions in the score matrix, keyword rowids). The keyword ids
+    come back because the store reserves ONE delivered slot for the best of
+    them; measuring without this leg understated the number the model receives.
+    """
+    try:
+        kw = set(chunk_fts.search(con, query_text, session_id=session,
+                                  chunk_types=f.get("chunk_types"),
+                                  zones=f.get("zones")) or [])
+    except Exception:  # noqa: BLE001 - meaning-only, as in the store
+        kw = set()
+    cand = (set(newest50) | {pos[r] for r in near if r in pos}
+            | {pos[r] for r in kw if r in pos})
+    return cand, kw
+
+
+def _ceiling_at(fp, con, qm, session, f, newest50, pos, sims, truth, m):
+    """recall@K when the fingerprint scan is capped at `m` - the point's own M.
+
+    T44: the old code reused the DEFAULT (M=1000) list for the M=200 point, so
+    the ceiling curve was flat and understated the price of a smaller scan.
+    """
+    near = fp.candidates(con, qm.vector, qm.backend, session_id=session,
+                         chunk_types=f.get("chunk_types"), zones=f.get("zones"),
+                         m=m) or []
+    cand = set(newest50) | {pos[r] for r in near if r in pos}
+    return len(truth & set(sorted(cand, key=lambda i: -sims[i])[:K])) / len(truth)
+
+
+def _live_top(cand, kw_ids, ids, sims, rec, k=K):
+    """The delivered order, with the single reserved keyword slot (T38).
+
+    Relevance decides membership and freshness decides order; a keyword hit
+    that the blend pushed below the cut still takes the LAST slot, never two.
+    """
+    ordered = sorted(cand, key=lambda i: -float(_shipped_score(sims[i], rec[i])))
+    top = ordered[:k]
+    if kw_ids and len(ordered) >= k and not ({int(ids[i]) for i in top} & kw_ids):
+        surv = [i for i in ordered if int(ids[i]) in kw_ids]
+        if surv:
+            top[k - 1] = surv[0]
+    return top
 
 
 def main() -> int:
@@ -344,7 +391,7 @@ def main() -> int:
         sub = mat[allowed]
         newest = [i for i in order if allowed[i]][:200]
         newest50 = newest[:50]
-        r_old, r_new, ms_old, ms_new = [], [], [], []
+        r_old, r_new, ms_old, ms_new, ms_union = [], [], [], [], []
         r_mem = []
         r_live = []
         # CEILING vs M: the candidate stage's reach is what caps recall@10. Same
@@ -357,7 +404,7 @@ def main() -> int:
         r_ship_ev = []
         r_ndcg = []
         ms_exact = []
-        for qm in qmeta:
+        for qi, qm in enumerate(qmeta):
             q = np.asarray(qm.vector, dtype=np.float32)
             q /= max(float(np.linalg.norm(q)), 1e-9)
             sims = mat @ q
@@ -369,17 +416,18 @@ def main() -> int:
             ms_old.append((time.perf_counter() - t) * 1e3)
             t = time.perf_counter()
             near = fp.candidates(con, qm.vector, qm.backend, session_id=session,
-                                 chunk_types=f.get("chunk_types"), zones=f.get("zones")) or []
+                                 chunk_types=f.get("chunk_types"),
+                                 zones=f.get("zones")) or []
             ms_new.append((time.perf_counter() - t) * 1e3)
-            cand = set(newest50) | {pos[r] for r in near if r in pos}
+            # The union price is measured apart from the fingerprint scan: a
+            # regression in the scan must not hide behind the exact-word cost.
+            t = time.perf_counter()
+            cand, _kw_ids = _candidate_union(
+                con, qs[qi], near, session, f, newest50, pos)
+            ms_union.append((time.perf_counter() - t) * 1e3)
             for _m in r_ceil:
-                _near = near if _m == 200 else (
-                    fp.candidates(con, qm.vector, qm.backend, session_id=session,
-                                  chunk_types=f.get("chunk_types"), zones=f.get("zones"),
-                                  m=_m) or [])
-                _c = set(newest50) | {pos[r] for r in _near if r in pos}
-                r_ceil[_m].append(
-                    len(truth & set(sorted(_c, key=lambda i: -sims[i])[:K])) / len(truth))
+                r_ceil[_m].append(_ceiling_at(
+                    fp, con, qm, session, f, newest50, pos, sims, truth, _m))
             new_top = sorted(cand, key=lambda i: -sims[i])[:K]
             r_old.append(len(truth & set(old_top)) / len(truth))
             r_new.append(len(truth & set(new_top)) / len(truth))
@@ -393,8 +441,7 @@ def main() -> int:
             # ORDER inside the delivered set. Choosing what to show and choosing
             # what to show first are different questions; conflating them is what
             # cost 3 points on research and 1.8 on global.
-            live_top = sorted(cand, key=lambda i: -float(
-                _shipped_score(sims[i], _recency(meta[i][4]))))[:K]
+            live_top = _live_top(cand, _kw_ids, ids, sims, _rec_all)
             r_live.append(len(truth & set(live_top)) / len(truth))
             r_ndcg.append(_ndcg(truth, live_top, K))
             # THE 1.0 THAT MATTERS: truth is the SHIPPED scorer applied to every
@@ -473,10 +520,11 @@ def main() -> int:
                                        if any(x is not None for x in r_mem) else None),
             "candidate_ms_new_p50": round(_pct(ms_new, 50), 2) if ms_new else None,
             "candidate_ms_new_p95": round(_pct(ms_new, 95), 2) if ms_new else None,
+            "candidate_ms_union_p95": round(_pct(ms_union, 95), 2) if ms_union else None,
             "session": session,
         }
 
-    # ── KEYWORD SET (REQ-3 AC2 / T13) ─────────────────────────────────────
+    # â”€â”€ KEYWORD SET (REQ-3 AC2 / T13) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # GLOBAL on purpose: a filter makes the meaning path look good (a token taken
     # from a row embeds NEAR that row, and a small session fits inside the 200
     # candidates). The question this set answers is the one that failed live: can
@@ -560,7 +608,7 @@ def main() -> int:
         report["scale"] = {"rows": int(big._n), "scan_ms_p50": round(_pct(times, 50), 2),
                            "scan_ms_p95": round(_pct(times, 95), 2)}
 
-    # ── COMPRESSION (REQ-4 AC1 / T14) ─────────────────────────────────────
+    # â”€â”€ COMPRESSION (REQ-4 AC1 / T14) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # int8 keeps the direction; the question is whether SCORING the code instead
     # of the float costs recall. Candidates are the ones recall actually uses,
     # so only precision changes. Measured per chunk type, because AC1 keeps the
@@ -614,7 +662,7 @@ def main() -> int:
         report["folded"] = fold_chunks.counts(con)
     except Exception:
         pass
-    # ── FILE MEMORY (REQ-9 AC8) ───────────────────────────────────────────
+    # â”€â”€ FILE MEMORY (REQ-9 AC8) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Reported, not assumed: nodes, live chunks, stored text bytes against the
     # owner's budget, and the counters (ingested / unchanged / failed / folded).
     try:  # noqa: SIM105 - a missing table must not fail the whole bench
@@ -668,7 +716,10 @@ def main() -> int:
     std = json.loads(std_path.read_text(encoding="utf-8")) if std_path.exists() else {}
     if a.record_standard:
         std["memory"] = {"source": out.name, "filters": {
-            k: {"recall@10_new": v["recall@10_new"], "candidate_ms_new_p95": v["candidate_ms_new_p95"]}
+            k: {"recall@10_new": v["recall@10_new"],
+                "recall@10_live": v["recall@10_live"],
+                "candidate_ms_new_p95": v["candidate_ms_new_p95"],
+                "candidate_ms_union_p95": v["candidate_ms_union_p95"]}
             for k, v in report["filters"].items()},
             "words": {k: report["words"][k]
                       for k in ("cases", "reach_new", "any_hit_new",
@@ -688,6 +739,13 @@ def main() -> int:
             # tolerance: recall may fall 0.02 (query embedding noise across runs); the scan p95 may double + 5 ms
             if s.get("recall@10_new") is not None and (v["recall@10_new"] or 0) < s["recall@10_new"] - 0.02:
                 bad.append(f"{k}: recall@10 {v['recall@10_new']} < standard {s['recall@10_new']} - 0.02")
+            # REQ-12 AC7 (T44): the number the MODEL receives - shipped scorer,
+            # shipped candidate union (fingerprint + exact words + newest), the
+            # single keyword slot. reach_new can stay flat while this falls.
+            if s.get("recall@10_live") is not None and (
+                    v["recall@10_live"] or 0) < s["recall@10_live"] - 0.02:
+                bad.append(f"{k}: recall@10_live {v['recall@10_live']} "
+                           f"< standard {s['recall@10_live']} - 0.02")
             if s.get("candidate_ms_new_p95") and (v["candidate_ms_new_p95"] or 0) > 2 * s["candidate_ms_new_p95"] + 5:
                 bad.append(f"{k}: candidate p95 {v['candidate_ms_new_p95']} ms > 2 x {s['candidate_ms_new_p95']} + 5")
         # REQ-3: exact words must keep reaching their source row. A fall of more

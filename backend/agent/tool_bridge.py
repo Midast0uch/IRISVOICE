@@ -521,6 +521,40 @@ def _is_tool_result_envelope(content: str) -> bool:
     return is_tool_result_envelope(content)
 
 
+def _recall_memory_payload(episodic, query: str, since=None, until=None,
+                           tool_name=None, limit: int = 5,
+                           min_score: float = 0.40) -> Dict:
+    """REQ-13 AC1: the three memory layers for one `recall_memory` call.
+
+    chunks  - episodic text, bounded by the time/tool filters
+    chain   - the Immortus rows relevant to the QUESTION (taught facts)
+    episodes- prior similar tasks
+    Each leg fails soft: a broken layer returns [] and logs, never raises.
+    """
+    chunks, chain, episodes = [], [], []
+    try:
+        chunks = episodic.retrieve_context_chunks(
+            query, session_id=None, limit=limit,
+            since=since, until=until, tool_name=tool_name,
+        ) or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ToolBridge] recall_memory chunks failed: %s", exc)
+    try:
+        episodes = episodic.retrieve_similar(
+            task=query, limit=3, min_score=min_score
+        ) or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ToolBridge] recall_memory episodes failed: %s", exc)
+    try:
+        from backend.agent.ontology_recall import turn_start_prior_memory
+
+        chain = turn_start_prior_memory(episodic.db, query) or []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ToolBridge] recall_memory chain failed: %s", exc)
+    return {"success": True, "chunks": chunks, "chain": chain,
+            "episodes": episodes, "results": episodes}
+
+
 class AgentToolBridge:
     """
     Bridges all IRIS capabilities to the agent system.
@@ -889,9 +923,19 @@ class AgentToolBridge:
                 "name": "recall_memory",
                 "description": (
                     "Search long-term episodic memory for relevant past context, "
-                    "solutions, or patterns. Use when you need prior knowledge for the current sub-task."
+                    "solutions, or patterns. Use when you need prior knowledge for the current sub-task. "
+                    "Returns chunks (episodic text), chain (earlier turns and taught facts), "
+                    "and episodes (prior similar tasks)."
                 ),
-                "parameters": {"query": {"type": "string", "description": "What to search for"}},
+                "parameters": {
+                    "query": {"type": "string", "description": "What to search for"},
+                    "since": {"type": "string", "description": (
+                        "Optional lower time bound: ISO date/time or epoch seconds.")},
+                    "until": {"type": "string", "description": (
+                        "Optional upper time bound: ISO date/time or epoch seconds.")},
+                    "tool_name": {"type": "string", "description": (
+                        "Optional: only chunks produced by this tool.")},
+                },
                 "category": "memory",
                 "server": "internal",
             },
@@ -2495,7 +2539,12 @@ class AgentToolBridge:
                 return result
 
             if tool_name == "recall_memory":
-                query = params.get("query", "")
+                query = str(params.get("query") or "").strip()
+                if not query:
+                    return {"success": False, "error": "query is required"}
+                since = params.get("since") or None
+                until = params.get("until") or None
+                tool_filter = params.get("tool_name") or None
                 _retrieval_limit = 5
                 _retrieval_score = 0.40
                 try:
@@ -2506,20 +2555,22 @@ class AgentToolBridge:
                         _retrieval_score = 0.65
                 except Exception:
                     pass
-                results = []
                 _mi = getattr(self, "_memory_interface", None)
                 if _mi is None:
                     try:
                         from backend.memory import get_memory_interface
 
                         _mi = get_memory_interface()
-                    except Exception:  # noqa: BLE001 — memory is optional
+                    except Exception:  # noqa: BLE001 - memory is optional
                         _mi = None
-                if _mi and hasattr(_mi, "episodic"):
-                    results = _mi.episodic.retrieve_similar(
-                        task=query, limit=_retrieval_limit, min_score=_retrieval_score
-                    ) or []
-                return {"success": True, "results": results}
+                _episodic = getattr(_mi, "episodic", None) if _mi is not None else None
+                if _episodic is None:
+                    return {"success": True, "chunks": [], "chain": [],
+                            "episodes": [], "results": []}
+                return _recall_memory_payload(
+                    _episodic, query, since=since, until=until,
+                    tool_name=tool_filter, limit=_retrieval_limit,
+                    min_score=_retrieval_score)
 
             if tool_name == "improve_self":
                 result = await self._execute_research_tool(params, session_id)

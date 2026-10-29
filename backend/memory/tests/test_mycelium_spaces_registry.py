@@ -132,13 +132,16 @@ def test_an_eighth_space_works_end_to_end(conn, monkeypatch):
     # resonance participation is declared
     assert NEW in mi._spaces.resonance_spaces
 
-    # the render order is respected: a section is written at ITS position
-    mi._store.upsert_node("domain", [0.0, 0.9, 0.9], "web", 0.8)
+    # the render order is respected: a section is written at ITS position.
+    # NOTE (2026-10-29, T46): `domain` is an EXTERNAL space; REQ-13 AC2 weights
+    # it at 0.30, below the 0.4 floor, so its nodes never reach the profile. The
+    # ordering property is the same with `style` (USER lock, render_order 4).
+    mi._store.upsert_node("style", [0.0, 0.9, 0.9], "plain", 0.8)
     mi._renderer.render_dirty_sections()
     rows = dict(conn.execute("SELECT space_id, render_order FROM mycelium_profile").fetchall())
-    assert rows[NEW] == 0 and rows["domain"] == 1
+    assert rows[NEW] == 0 and rows["style"] == 4
     sections = mi._renderer.get_readable_profile().split("\n\n")
-    assert len(sections) >= 2                        # the new space AND the domain section
+    assert len(sections) >= 2                        # the new space AND the style section
     assert sections[0].startswith("a test space")    # render_order 0 comes first
 
 

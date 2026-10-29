@@ -3974,7 +3974,9 @@ class AgentKernel:
             sum(len(m.get("content") or "") for m in messages) // self._CHARS_PER_TOKEN
         )
 
-    def _assemble_direct_context(self, text: str, context: List[Dict]) -> List[Dict]:
+    def _assemble_direct_context(
+        self, text: str, context: List[Dict], session_id: Optional[str] = None
+    ) -> List[Dict]:
         """
         Build the message list for _respond_direct using all three memory layers
         from the Context Engineering spec (CONTEXT_ENGINEERING.md Â§1â€“3):
@@ -4020,6 +4022,9 @@ class AgentKernel:
                     ]
         except Exception as _ep_exc:
             loud_error(_ep_exc, "episodic.assemble_episodic_context")
+
+        # ── Layer 1b: the gated Mycelium profile (REQ-13 AC4) ──────────────
+        episodic_prefix.extend(self._mycelium_profile_messages(text, session_id))
 
         # â”€â”€ Layer 3: Option B â€” DB-backed semantic context (Pacman retrieval) â”€â”€
         # Instead of a blind rolling-window crop, we retrieve the most relevant
@@ -4117,6 +4122,32 @@ class AgentKernel:
                     logger.debug("[AgentKernel] turn-start prior memory skipped: %s", _pm_exc)
                 if _chunks:
                     _blocks323.append("\n---\n".join(_chunks))
+                # REQ-12 AC5 (T43): a fact taught in ANOTHER conversation must
+                # reach this one. Bounded to trusted user chunks; the session
+                # recall above still leads and duplicates are dropped.
+                try:
+                    _x_chunks323 = (
+                        self._memory_interface.episodic.retrieve_context_chunks(
+                            query=text,
+                            session_id=None,
+                            limit=3,
+                            min_similarity=0.45,
+                            chunk_types=["context_fragment"],
+                            zones=["trusted"],
+                        )
+                        or []
+                    )
+                except Exception as _x_exc:  # noqa: BLE001 - never blocks a turn
+                    logger.debug("[AgentKernel] cross-session memory skipped: %s", _x_exc)
+                    _x_chunks323 = []
+                _seen323 = set(_chunks)
+                _x_new323 = [c for c in _x_chunks323 if c not in _seen323]
+                if _x_new323:
+                    _blocks323.append(
+                        "<cross_session_memory>\n"
+                        + "\n---\n".join(_x_new323)
+                        + "\n</cross_session_memory>"
+                    )
                 if _ref_chunks323:
                     _blocks323.append(
                         "<reference_memory>\n"
@@ -4375,6 +4406,7 @@ class AgentKernel:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         tools: Optional[bool] = None,
+        session_id: Optional[str] = None,
     ) -> str:
         """
         Respond directly to the user without planning or tool execution.
@@ -4388,7 +4420,7 @@ class AgentKernel:
 
         Returns: response text string.
         """
-        messages = self._assemble_direct_context(text, context)
+        messages = self._assemble_direct_context(text, context, session_id=session_id)
         messages = self._sanitize_messages(messages)
 
         # Resolve inference behaviour settings
@@ -7118,6 +7150,60 @@ class AgentKernel:
             result = _re.sub(pattern, "[filtered]", result)
         return result
 
+    def _mycelium_profile_messages(
+        self, text: str, session_id: Optional[str]
+    ) -> List[Dict[str, str]]:
+        """The gated Mycelium profile as a user/assistant pair (REQ-13 AC4).
+
+        ``_build_system_prompt()`` does NOT carry Layer 1. Read the package
+        through the public API so the renderer's floor/trust/resonance gate
+        applies and the task-class space subset is chosen; a mature graph only.
+        Never raises: an empty list means "no profile this turn".
+        """
+        try:
+            if self._memory_interface is None or not session_id:
+                return []
+            pkg, ok = self._memory_interface.get_task_context_package(text, session_id)
+            prof = getattr(pkg, "mycelium_path", "") if ok else ""
+            if not (prof and prof.strip()):
+                return []
+            return [
+                {"role": "user",
+                 "content": f"<mycelium_profile>\n{prof.strip()}\n</mycelium_profile>"},
+                {"role": "assistant",
+                 "content": "Understood — I have that profile."},
+            ]
+        except Exception as exc:  # noqa: BLE001 - never blocks a turn
+            logger.debug("[AgentKernel] mycelium profile skipped: %s", exc)
+            return []
+
+    def _context_package_fields(self, context_package) -> Dict[str, str]:
+        """The package fields the planning prompt reads (REQ-13 AC4).
+
+        ``tier1_directives`` is hardcoded "" in MyceliumInterface, so Layer 1 is
+        the package's ``mycelium_path`` (zone header + encoded path + gated
+        partial profile). Reading the empty field dropped Layer 1 entirely.
+        """
+        fields = {"tier1": "", "preds": "", "strategy_hint": "",
+                  "failure_warnings": "None"}
+        if context_package is None:
+            return fields
+        fields["tier1"] = getattr(context_package, "mycelium_path", "") or ""
+        try:
+            fields["preds"] = context_package.get_tier2_predictions() or ""
+        except Exception:
+            pass
+        try:
+            hint = str(context_package.topology_primitive) or ""
+            fields["strategy_hint"] = "" if hint == "unknown" else hint
+        except Exception:
+            pass
+        try:
+            fields["failure_warnings"] = context_package.get_tier3_failures() or "None"
+        except Exception:
+            fields["failure_warnings"] = "None"
+        return fields
+
     def _build_planning_prompt(
         self,
         task: str,
@@ -8392,18 +8478,13 @@ class AgentKernel:
         tier1 = ""
         preds = ""
         strategy_hint = ""
+        failure_warnings = "None"
         if context_package is not None:
-            tier1 = getattr(context_package, "tier1_directives", "") or ""
-            try:
-                preds = context_package.get_tier2_predictions() or ""
-            except Exception:
-                pass
-            try:
-                strategy_hint = str(context_package.topology_primitive) or ""
-                if strategy_hint == "unknown":  # no topology is no hint
-                    strategy_hint = ""
-            except Exception:
-                pass
+            _pkg_fields = self._context_package_fields(context_package)
+            tier1 = _pkg_fields["tier1"]
+            preds = _pkg_fields["preds"]
+            strategy_hint = _pkg_fields["strategy_hint"]
+            failure_warnings = _pkg_fields["failure_warnings"]
 
         # Build the CAPABILITIES block.
         #
@@ -8486,6 +8567,7 @@ class AgentKernel:
                     _pm_line = (
                         _pm_r.get("insight")
                         or str(_pm_r.get("result") or "")[:240]
+                        or str(_pm_r.get("content") or "")[:240]
                     ).strip()
                     if not _pm_line:
                         continue
@@ -8508,10 +8590,38 @@ class AgentKernel:
                     "[AgentKernel._plan_task] turn-start prior memory skipped: %s", _pm_exc
                 )
 
+            # REQ-12 AC5 (T43): the chain leg only sees chain rows. A fact stored
+            # as a trusted user chunk in ANOTHER conversation is reached here,
+            # bounded to 3 chunks in the trusted zone.
+            try:
+                _xs_chunks = (
+                    self._memory_interface.episodic.retrieve_context_chunks(
+                        query=text, session_id=None, limit=3,
+                        min_similarity=0.45,
+                        chunk_types=["context_fragment"], zones=["trusted"],
+                    ) or []
+                )
+            except Exception as _xs_exc:  # noqa: BLE001 - never blocks planning
+                logger.debug(
+                    "[AgentKernel._plan_task] cross-session chunk recall skipped: %s",
+                    _xs_exc,
+                )
+                _xs_chunks = []
+            if _xs_chunks:
+                _xs_block = (
+                    "PRIOR USER FACTS (from other conversations):\n- "
+                    + "\n- ".join(_xs_chunks)
+                )
+                episodic_context = (
+                    f"{episodic_context}\n\n{_xs_block}"
+                    if episodic_context else _xs_block
+                )
+
         planning_prompt = self._build_planning_prompt(
             task=text,
             tier1_directives=tier1,
             behavior_preds=preds,
+            failure_warnings=failure_warnings,
             task_class=task_class,
             strategy_hint=strategy_hint,
             context=context,
@@ -9137,6 +9247,20 @@ class AgentKernel:
         except Exception as _eo_err:  # noqa: BLE001 - an observer never blocks a turn
             logger.debug("[AgentKernel] event oracle observe skipped: %r", _eo_err)
 
+        # REQ-12 AC1 (T42): the user's own words enter the Immortus chain as a
+        # role='user' row, on the fragment lane. Turn entry is the one place both
+        # the direct and the DER path pass through.
+        try:
+            from backend.agent.mcm_protocol.actions.pacman_fragment import (
+                submit_user_turn_entry as _submit_user_turn_entry,
+            )
+
+            _submit_user_turn_entry(
+                getattr(self, "_memory_interface", None), _conv_id, text,
+            )
+        except Exception as _ut_err:  # noqa: BLE001 - memory bookkeeping never blocks
+            logger.debug("[AgentKernel] user turn chain append skipped: %r", _ut_err)
+
         # Reset thinking from any previous call so stale data never leaks
         self._pending_thinking = ""
 
@@ -9328,6 +9452,7 @@ class AgentKernel:
                     context,
                     chunk_callback=_wrapped_chunk_cb,
                     reasoning_callback=reasoning_callback,
+                    session_id=session_id,
                 )
                 _t_llm_end = time.perf_counter()
                 logger.info(
@@ -9361,7 +9486,6 @@ class AgentKernel:
             # MCM orchestrator handles fragmentation + compression check when available.
             try:
                 if response:
-                    _turn = f"User: {text}\nAssistant: {response}"
                     # Trust-routing W2: route to 'reference' when this turn
                     # touched external/web sources; else keep default 'trusted'.
                     _zone = self._pacman_zone_for_turn()
@@ -9374,19 +9498,18 @@ class AgentKernel:
                             zone=_zone,
                         )
                         metrics.pacman_store += 1
-                    elif (
-                        self._memory_interface is not None
-                        and hasattr(self._memory_interface, "episodic")
-                        and hasattr(
-                            self._memory_interface.episodic, "fragment_and_store"
-                        )
+                    # REQ-12 AC3 (T42): the USER's own words are stored as a turn
+                    # pair on BOTH paths, on the fragment lane, bypassing
+                    # _is_fragment_candidate (which drops normal conversation).
+                    from backend.agent.mcm_protocol.actions.pacman_fragment import (
+                        submit_turn_pair as _submit_turn_pair,
+                    )
+
+                    if _submit_turn_pair(
+                        getattr(self, "_memory_interface", None),
+                        session_id or self.session_id,
+                        text, response, zone=_zone,
                     ):
-                        self._memory_interface.episodic.fragment_and_store(
-                            _turn,
-                            session_id=session_id or self.session_id,
-                            chunk_type="context_fragment",
-                            zone=_zone,
-                        )
                         metrics.pacman_store += 1
             except Exception as _pac_exc:
                 loud_error(_pac_exc, "pacman fragment_and_store")
@@ -9449,6 +9572,7 @@ class AgentKernel:
                     text, context,
                     chunk_callback=_wrapped_chunk_cb,
                     reasoning_callback=reasoning_callback,
+                    session_id=session_id,
                 )
             logger.info("[AgentKernel] DER active â€” deferring complex request")
             return "Still working on your previous request â€” one moment."
@@ -9685,6 +9809,7 @@ class AgentKernel:
                             text, context,
                             chunk_callback=chunk_callback,
                             reasoning_callback=reasoning_callback,
+                            session_id=session_id,
                         )
                         logger.info(
                             "[AgentKernel] trivial plan -> direct answer "
@@ -10003,6 +10128,21 @@ class AgentKernel:
                 _der_response = self._process_structured_response(
                     _der_response, turn_id=task_id, conversation_id=_conv_id
                 )
+                # REQ-12 AC3 (T42): the DER path never stored the turn pair. Store
+                # it here, on the same fragment lane the direct path uses.
+                try:
+                    from backend.agent.mcm_protocol.actions.pacman_fragment import (
+                        submit_turn_pair as _submit_turn_pair,
+                    )
+
+                    _submit_turn_pair(
+                        getattr(self, "_memory_interface", None),
+                        session_id or self.session_id,
+                        text, _der_response,
+                        zone=self._pacman_zone_for_turn(),
+                    )
+                except Exception as _tp_err:  # noqa: BLE001 - never blocks a reply
+                    logger.debug("[AgentKernel] DER turn pair store skipped: %r", _tp_err)
                 return _der_response
 
         # If DER produced empty/failed response, return error instead of
@@ -11494,6 +11634,37 @@ Respond with a JSON object:
                             )
                     except Exception as _nb_exc:
                         loud_error(_nb_exc, "ontology_recall_neighborhood")
+
+                    # REQ-12 AC3 (T48, 2026-10-29): the step's own CHUNK memory.
+                    # The neighborhood above is chain rows typed by node_type +
+                    # domain, and an episode is not a fact: neither carries a
+                    # taught USER statement. That lives in a context_fragment
+                    # chunk (the turn pair), so the step that must answer recalls
+                    # it HERE, on the node that needs it - not in the planner.
+                    # Bounded to 3 x 300 chars, trusted only, cross-conversation.
+                    try:
+                        _ep_store = getattr(self._memory_interface, "episodic", None)
+                        _step_goal = getattr(item, "description", "") or ""
+                        if _ep_store is not None and _step_goal:
+                            _ch_rows = _ep_store.retrieve_context_chunks(
+                                _step_goal,
+                                session_id=None,
+                                limit=3,
+                                min_similarity=0.35,
+                                chunk_types=["context_fragment"],
+                                zones=["trusted"],
+                            ) or []
+                            _ch_txt = "\n- ".join(
+                                str(c).strip()[:300].replace("\n", " ")
+                                for c in _ch_rows if str(c).strip()
+                            )
+                            if _ch_txt:
+                                _prior_ch = getattr(item, "coordinate_signal", "") or ""
+                                item.coordinate_signal = (
+                                    _prior_ch + "\nRELEVANT MEMORY:\n- " + _ch_txt
+                                ).strip()
+                    except Exception as _ch_exc:
+                        loud_error(_ch_exc, "step_chunk_recall")
 
                     # â”€â”€ REQ-3 T8 AC1/AC3: the node's compressed memory record is
                     # a FIRST-CLASS step input (not opt-in). If this item carries

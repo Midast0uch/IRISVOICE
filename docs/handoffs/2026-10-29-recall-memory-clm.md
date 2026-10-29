@@ -2,7 +2,45 @@
 
 Session owner: Midas. Read this before touching recall, memory writes, the profile or CLM.
 
-## 0. TL;DR for the next agent
+> **AUDIT CORRECTION (2026-10-29, `pin_7cee599c0fc3` superseding `pin_c26f13059c2f`):**
+> A full code + benchmark audit found critical errors in §§0, 2, 4, and 5 of this handoff.
+> Read `specs/memory-recall-reach/` (`REQ-12`, `Design Key Decisions 7–11`, `Tasks Wave 10: T38–T45`)
+> and follow **Section 5A (Corrected Next Actions)** below instead of the original §§0, 4, 5:
+> 1. **`self._memory_interface` is NOT `None` on the WS path:** `iris_gateway.py:6169` calls
+>    `get_agent_kernel` (`agent_kernel.py:22857-22886`), which calls `set_memory_interface`
+>    and initializes `self._mcm_orch` (`:1937`). Because `self._mcm_orch` is NOT `None`,
+>    `agent_kernel.py:9368` takes `if self._mcm_orch is not None:` (skipping the `elif`
+>    `fragment_and_store` branch!) and calls `pacman_fragment.execute` (`pacman_fragment.py:217-253`),
+>    which receives only `response_text` (never `User: {text}`) and drops every conversational
+>    turn (`< 80` chars or lacking `_DER_SIGNALS`). And on the DER path (`agent_kernel.py:9888`),
+>    no turn-pair fragment is stored at turn end at all.
+> 2. **Writing `context_chunks` with `session_id` alone CANNOT fix `m03`:** `m01`–`m03`
+>    (`evals/run_evals.py:188, 478-501`) seed in one WS `session_id` and ask in a new
+>    conversation with a **new `session_id`**. `agent_kernel.py:4046` passes
+>    `session_id=self.session_id` (a hard `WHERE session_id = ?` filter in `episodic.py:1138`),
+>    and `_plan_task` (`:8450-8519`) never calls `retrieve_context_chunks` at all (`m01`/`m02`
+>    pass via `turn_start_prior_memory` on `memory_chain`).
+> 3. **Three bugs in commit `ff66a54a` (`ontology_recall.py` / `agent_kernel.py`):**
+>    (a) `relevance_gate` (`ontology_recall.py:474`) checks `insight` and `result` only,
+>    ignoring `r.get("content")`; (b) `turn_start_prior_memory` (`:562`) sorts `role == "user"`
+>    **after** `relevance_gate` already truncated to `TURN_START_KEEP = 3` (`:489`);
+>    (c) `_plan_task` (`agent_kernel.py:8486`) omits `_pm_r.get("content")`.
+> 4. **Recall engine bugs (`episodic.py`):**
+>    - Commit `26fb26a0` (`episodic.py:1309-1312`: `scored = _kw_rows + _rest`) places all 50
+>      FTS `OR`-query hits ahead of all 1,000 semantic candidates before slicing `scored[:limit]`,
+>      evicting high-cosine matches whenever 6+ chunks match any word in the query.
+>    - Commit `cb41c577` (`episodic.py:1179-1256`) filters `since`/`until`/`tool_name` in Python
+>      after the global top-1000 scan and logs up to 1,000 `WARNING` lines per query (`:1254`).
+>    - Commit `1bd926ed` (`FP_CANDIDATES = 1000`) runs 3.22M pure-Python `_cosine` loop
+>      iterations and fetches `content` for 1,050 rows per call.
+> 5. **Benchmark & standard flaws (`evals/memory_bench.py`, `evals/standards.json`):**
+>    - `memory_bench.py:370-410` never runs FTS or `_kw_rows + _rest` in `FILTERS`, so
+>      `recall@10_live` (`0.9917`) did not measure the shipped code.
+>    - `ceiling_by_m` (`:376`) reused `near` (`m=1000`) for `_m == 200`.
+>    - `standards.json` (`0d5b61da`) was recorded with `--words 10` instead of default
+>      `--words 40` and does not guard `recall@10_live`.
+
+## 0. TL;DR for the next agent (original, superseded by Audit Correction above)
 
 - The **recall engine is done and measured**: delivered 0.9917 / 0.9975 / 0.9917 against exact
   search, candidate ceiling 1.0 / 1.0 / 0.9950. Do not re-tune it.
@@ -124,6 +162,58 @@ fingerprint → cosine). "color"/"colour" is irrelevant to an embedding.
    (`render_order is None`). Never dump `get_readable_profile()` into the prompt.
 8. **Then CLM** (`specs/clm-memory/`): migrate `_emit_fan_traces` (the only writer of
    `der_fan_traces`, 13,886 rows) **before** deleting `dcp.py`.
+
+## 5A. Corrected Next Actions — Execute Wave 10 of `specs/memory-recall-reach/` (`T38`–`T48`)
+
+1. **`T38` — Fix keyword promotion (`episodic.py:1306-1312`):** Replace `scored = _kw_rows + _rest`
+   with a single-slot guarantee: when `limit > 0`, `_kw_ids` is non-empty, and no row in
+   `scored[:limit]` is in `_kw_ids`, replace `scored[limit - 1]` with the highest-scoring
+   `_kw_ids` survivor; remove the dead `chunk_fts.fuse_by_rank` call on unsorted `argpartition`
+   output (`:1202`). Prove with `CT-W10-1` in `test_memory_chunk_fts_contract.py`.
+2. **`T39` — Fix bounded filters (`episodic.py:1205-1256`):** Include `where_sql` in the
+   `WHERE rowid IN (...)` query, fetch up to `FP_CANDIDATES` rows matching `where_sql` when
+   `_bounded` is True, and delete the per-row `logger.warning` at `:1254`. Prove with `CT-W10-2`
+   in `test_recall_filter_arguments.py`.
+3. **`T40` — Two-phase vectorized rescore (`episodic.py:1205-1305`):** Phase 1 fetches candidate
+   metadata + `vec_i8, vec_scale, embedding` (without `content`) and computes cosine similarity
+   in one numpy `mat @ q`; Phase 2 fetches `id, content` only for the `<= limit` winning rows.
+   Prove with `CT-W10-3`.
+4. **`T41` — Short user facts & supersede-on-dedup (`episodic.py:152, 959-1005`):** Use
+   `_USER_CHUNK_MIN_CHARS = 10` for `chunk_type == "context_fragment"`, and when a new
+   `context_fragment` has cosine `>= 0.92` with an older chunk, insert the new chunk and fold
+   (`folded_into = new_id`) the older one. Prove with `CT-W10-5`.
+5. **`T42` — Dual-path user turn persistence (`agent_kernel.py:9127, 9368, 9888`, `pacman_fragment.py:217-253`):**
+   Append a `role='user'`, `node_type='user_turn'` row to `memory_chain` (`content` + `insight`)
+   on turn entry, and submit `_turn = f"User: {text}\nAssistant: {response}"` to
+   `fragment_and_store(..., chunk_type="context_fragment", keep_float=False)` on BOTH direct and
+   DER turn completion (without `_is_fragment_candidate` dropping it).
+6. **`T43` — Fix cross-conversation recall (`ontology_recall.py:474, 489, 562`, `agent_kernel.py:4046, 8482-8489`):**
+   Include `r.get("content")` in `relevance_gate`, sort by `(role == "user", -created_at)`
+   BEFORE slicing to `TURN_START_KEEP`, include `_pm_r.get("content")` in `_plan_task`, and add
+   a bounded cross-session trusted `context_fragment` recall leg (`session_id=None`,
+   `chunk_types=["context_fragment"]`, `zones=["trusted"]`, `limit=3`, `min_similarity=0.45`).
+   Prove with `CT-W10-4`.
+7. **`T44` — Purge chain harness rows & fix `memory_bench.py` / `standards.json`:** Purge
+   `eval-*` rows from `memory_chain` in `scripts/purge_harness_chunks.py`; fix `ceiling_by_m`
+   (`:376`), SQL parens (`:227, :273`), and FTS + single-slot ranking in `memory_bench.py`;
+   guard `recall@10_live` in `standards.json` and re-record at default `--words 40` (`CT-W10-6`).
+8. **`T45` — Upgrade active `recall_memory` tool (`tool_registry.py:994`, `tool_bridge.py:889, 2497`):**
+   Accept `query` plus optional `since`, `until`, `tool_name` and return `chunks`
+   (`retrieve_context_chunks(query, session_id=None, since=since, until=until, tool_name=tool_name, limit=5)`),
+   `chain` (`turn_start_prior_memory`), and `episodes` (`retrieve_similar`) instead of only
+   `episodes.task_summary`. Prove with `CT-W10-7`.
+9. **`T46` & `T47` — Gated Mycelium profile read (`profile.py:452-750`, `mycelium/interface.py:725-741, 836-855`, `agent_kernel.py:3999, 8395, 8511`):**
+   Contrary to `pin_a78b6885f704`'s claim that `get_profile_section` has 0 callers,
+   `_context_parts` (`mycelium/interface.py:836-855`) ALREADY calls it by `spaces_for_class`
+   and `render_order` (`toolpath` excluded), but (a) `ProfileRenderer` does not filter by
+   `confidence_floor`, weight by `channel_weight(write_lock) * freshness(decay_rate)` (`_EXTERNAL`
+   capped at `0.30` with `3×` decay), filter to resonant nodes, or lazily render dirty/missing
+   sections on read, and (b) `agent_kernel.py:8396` (`_plan_task`) reads dead `tier1_directives=""`
+   instead of `context_package.mycelium_path` and `get_tier3_failures()`. Fix in place and wire
+   both `_plan_task` and `_assemble_direct_context`. Prove with `CT-W10-8` and `CT-W10-9`.
+10. **`T48` — Live verification (`BT-W10-1`, `BT-W10-2`):** Run `python evals/run_evals.py --group memory`
+    (3/3 PASS on `m01`, `m02`, `m03`) and the 3-thread conflict probe (newest wins). Then proceed
+    to `specs/clm-memory/`.
 
 ## 6. Files
 

@@ -94,27 +94,33 @@
   "recorded_at": "2026-09-30T06:51:24",
   "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards",
   "memory": {
-    "source": "memory-bench-20261028-223219.json",
+    "source": "memory-bench-20261029-122323.json",
     "filters": {
       "research": {
         "recall@10_new": 1.0,
-        "candidate_ms_new_p95": 2.71
+        "recall@10_live": 0.9608,
+        "candidate_ms_new_p95": 1.9,
+        "candidate_ms_union_p95": 130.38
       },
       "turn_trusted_tool": {
         "recall@10_new": 1.0,
-        "candidate_ms_new_p95": 3.01
+        "recall@10_live": 0.9833,
+        "candidate_ms_new_p95": 1.85,
+        "candidate_ms_union_p95": 137.69
       },
       "global": {
-        "recall@10_new": 0.995,
-        "candidate_ms_new_p95": 5.04
+        "recall@10_new": 0.9958,
+        "recall@10_live": 0.9725,
+        "candidate_ms_new_p95": 4.56,
+        "candidate_ms_union_p95": 151.41
       }
     },
     "words": {
-      "cases": 10,
-      "reach_new": 0.9,
+      "cases": 40,
+      "reach_new": 0.825,
       "any_hit_new": 1.0,
       "unique_reach_new": 1.0,
-      "candidate_ms_p95": 61.89
+      "candidate_ms_p95": 57.78
     },
     "compression": {
       "der_output": {

@@ -10,6 +10,7 @@ sections that describe the user's working style, preferences, and environment.
 
 import json
 import logging
+import math
 import re
 import time
 import uuid
@@ -22,11 +23,22 @@ from .landmark import Landmark, LandmarkIndex, _jaccard, add_landmark_evidence
 from .store import CoordNode, CoordinateStore
 from .spaces import (
     CLUSTER_MAX_NODES,
+    DEFAULT_DECAY_RATE,
     MERGE_OVERLAP_THRESHOLD,
     domain_from_coordinate,
 )
 
 logger = logging.getLogger(__name__)
+
+# REQ-13 AC2: what a node contributes to the profile is its confidence WEIGHTED
+# by the trust of the space that wrote it and its freshness. An external source
+# may inform the profile, never dominate it: it enters at 0.30 and fades 3x
+# faster than a user/system claim. (HyphaChannel: EXTERNAL 1 .. SYSTEM 4.)
+_EXTERNAL, _VERIFIED, _USER, _SYSTEM = 1, 2, 3, 4
+PROFILE_CHANNEL_WEIGHT: Dict[int, float] = {
+    _SYSTEM: 1.0, _USER: 1.0, _VERIFIED: 0.8, _EXTERNAL: 0.30,
+}
+PROFILE_EXTERNAL_DECAY_MULT: float = 3.0
 
 # Minimum activation_count for absorbed-only nodes to survive a merge (Req 10.3)
 _ABSORBED_NODE_MIN_ACTIVATIONS: int = 2
@@ -483,7 +495,7 @@ class ProfileRenderer:
             nodes = self._store.get_nodes_by_space(space_id)
             prose = self._render_space(space_id, nodes)
             if prose:
-                self._upsert_section(space_id, prose, nodes)
+                self._upsert_section(space_id, prose, self._profile_nodes(space_id, nodes))
                 rendered += 1
 
         if rendered:
@@ -492,12 +504,28 @@ class ProfileRenderer:
         return rendered
 
     def get_profile_section(self, space_id: str) -> Optional[str]:
-        """Return the prose string for a single space, or None if not generated."""
+        """Return the prose string for a single space, or None if not generated.
+
+        REQ-13 AC2: renders LAZILY when the row is missing or dirty, so a read
+        never returns stale prose and a caller does not need a render pass first.
+        A space that is never rendered (toolpath) always returns None.
+        """
         cursor = self._conn.execute(
-            "SELECT prose FROM mycelium_profile WHERE space_id = ?", (space_id,)
+            "SELECT prose, dirty FROM mycelium_profile WHERE space_id = ?", (space_id,)
         )
         row = cursor.fetchone()
-        return row[0] if row else None
+        if row is not None and not row[1] and row[0]:
+            return row[0]
+        if space_id not in self._store.spaces.render_order:
+            return None
+        nodes = self._store.get_nodes_by_space(space_id)
+        if not nodes:
+            return None
+        prose = self._render_space(space_id, nodes)
+        if prose:
+            self._upsert_section(space_id, prose, self._profile_nodes(space_id, nodes))
+            app_flush()
+        return prose or None
 
     def get_readable_profile(self) -> str:
         """
@@ -513,14 +541,47 @@ class ProfileRenderer:
             """
         )
         rows = cursor.fetchall()
-        parts = [row[1] for row in rows if row[1]]
+        rendered = self._store.spaces.render_order
+        parts = [row[1] for row in rows if row[1] and row[0] in rendered]
         return "\n\n".join(parts)
 
     # ------------------------------------------------------------------
     # Space-specific render methods (Req 10.6–10.9)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Gating (REQ-13 AC2/AC3)
+    # ------------------------------------------------------------------
+
+    def _effective_confidence(self, node: CoordNode, space) -> float:
+        """Confidence after the space's trust weight and freshness decay."""
+        lock = space.write_lock if space is not None else _SYSTEM
+        weight = PROFILE_CHANNEL_WEIGHT.get(lock, 1.0)
+        rate = space.decay_rate if space is not None else DEFAULT_DECAY_RATE
+        if lock <= _EXTERNAL:
+            rate *= PROFILE_EXTERNAL_DECAY_MULT
+        ts = node.last_accessed or node.updated_at or node.created_at
+        age_days = max(0.0, (time.time() - float(ts)) / 86400.0) if ts else 0.0
+        return float(node.confidence) * weight * math.exp(-rate * age_days)
+
+    def _profile_nodes(self, space_id: str, nodes: List[CoordNode]) -> List[CoordNode]:
+        """The nodes that may enter the profile for ``space_id``.
+
+        A space is rendered only when it has a render_order AND takes part in
+        resonance (toolpath has neither); a node below its space's
+        confidence_floor after weighting is dropped.
+        """
+        spaces = self._store.spaces
+        space = spaces.get(space_id)
+        if space is None or space.render_order is None:
+            return []
+        if space_id not in spaces.resonance_spaces:
+            return []
+        floor = space.confidence_floor
+        return [n for n in nodes if self._effective_confidence(n, space) >= floor]
+
     def _render_space(self, space_id: str, nodes: List[CoordNode]) -> str:
+        nodes = self._profile_nodes(space_id, nodes)
         if not nodes:
             return ""
         render_fn = {

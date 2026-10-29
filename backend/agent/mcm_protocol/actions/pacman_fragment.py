@@ -222,6 +222,72 @@ def _is_fragment_candidate(text: str) -> bool:
     return any(kw in text_lower for kw in _DER_SIGNALS)
 
 
+def submit_user_turn_entry(mi, session_id: str, user_text: str) -> bool:
+    """REQ-12 AC1 (T42): put the user's own statement on the Immortus chain.
+
+    Runs on the fragment lane, never the answer path. The row is typed
+    ``user_turn`` with ``role='user'``; the text lands in ``insight`` and the
+    legacy ``content`` column, bounded by the S12 cap so a long paste cannot
+    grow the store.
+    """
+    _text = (user_text or "").strip()
+    if mi is None or not _text:
+        return False
+    _sid = session_id or "unknown"
+
+    def _job() -> None:
+        try:
+            from backend.gateway.iris_ffi import (
+                _bound_chain_result,
+                ffi_immortus_chain_append,
+            )
+
+            ffi_immortus_chain_append(
+                thread_id=_sid,
+                result="",
+                insight=_bound_chain_result(_text),
+                content=_bound_chain_result(_text),
+                role="user",
+                node_type="user_turn",
+                nbl_outcome="event:USER_TURN",
+            )
+        except Exception as exc:  # noqa: BLE001 - bookkeeping never escalates
+            logger.error("[pacman_fragment] USER TURN chain append failed: %r", exc)
+
+    return _submit_fragment_job(_job, label="user_turn_chain")
+
+
+def submit_turn_pair(
+    mi, session_id: str, user_text: str, assistant_text: str,
+    zone: str | None = None,
+) -> bool:
+    """REQ-12 AC3 (T42): store the turn pair as a context chunk on BOTH paths.
+
+    ``_is_fragment_candidate`` only lets DER-shaped output through; a normal
+    conversation turn never qualified, so the user's facts were never stored.
+    This path bypasses that gate deliberately. ``keep_float=False`` follows the
+    REQ-4 AC1 finding (every type cleared the int8 bench; the float is dead).
+    """
+    if mi is None or not user_text or not assistant_text:
+        return False
+    _turn = f"User: {user_text}\nAssistant: {assistant_text}"
+    _sid = session_id or "unknown"
+
+    def _job() -> None:
+        try:
+            store = getattr(mi, "episodic", None)
+            if store is None:
+                return
+            store.fragment_and_store(
+                _turn, session_id=_sid, chunk_type="context_fragment",
+                zone=zone, keep_float=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - bookkeeping never escalates
+            logger.error("[pacman_fragment] TURN PAIR store failed: %r", exc)
+
+    return _submit_fragment_job(_job, label="turn_pair")
+
+
 def execute(ctx: dict, params: dict) -> dict:
     """
     ctx keys read:    mi, session_id, response_text, tool_name

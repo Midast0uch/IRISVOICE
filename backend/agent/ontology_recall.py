@@ -389,7 +389,15 @@ def run_filtered_recall(conn, filters: RecallFilters, scope_out=None) -> list:
 # Candidate pool read from the chain per step. The gate may keep at most
 # ``keep`` of them (3, as before): a larger pool only widens what the gate can
 # find, it never widens what the step carries.
-CANDIDATE_POOL = 24
+#
+# 24 -> 96 (2026-10-29, Wave 10 T48, measured): one turn writes ~25 chain rows
+# (turn/event/step/NARRATED bookkeeping), so a fact taught one turn earlier was
+# already OUTSIDE a 24-row newest-first window when the next turn asked for it.
+# Measured on the live store: the m01 teach row sat at position 26 of 26 at ask
+# time, the pool returned 0 relevant rows, and the memory gate scored 1/3. At 96
+# the same fact is in the pool and the recall costs ~2.7 ms (fetch 0.8 + gate
+# 1.9); at 200 it costs ~4.3 ms. 96 keeps ~3 turns of history at that price.
+CANDIDATE_POOL = 96
 _MIN_SHARED_TOKENS = 2      # a row must share this many goal tokens (or all, if fewer)
 _MIN_GOAL_COVERAGE = 0.4    # ... and cover this fraction of the goal's tokens
 _ROW_TEXT_HEAD = 240        # chars of ``result`` read for the match
@@ -471,8 +479,13 @@ def relevance_gate(
         for r in rows:
             if topic_domain and r.get("topic_domain") != topic_domain:
                 continue
-            text = "{} {}".format(
-                r.get("insight") or "", str(r.get("result") or "")[:_ROW_TEXT_HEAD]
+            # REQ-12 AC4 (T43): a user_turn row carries its text in `content`
+            # (and `insight`). Omitting `content` made a taught fact invisible
+            # to the gate whenever only the legacy column held it.
+            text = "{} {} {}".format(
+                r.get("content") or "",
+                r.get("insight") or "",
+                str(r.get("result") or "")[:_ROW_TEXT_HEAD],
             )
             shared = _shared_token_count(goal_tokens, _tokens(text), prefix_match)
             if shared >= need and shared / len(goal_tokens) >= _MIN_GOAL_COVERAGE:
@@ -553,13 +566,22 @@ def turn_start_prior_memory(conn, goal: str, thread_id: Optional[str] = None) ->
         )
         # prefix_match: the user's question and the memory's phrasing of the
         # same fact rarely share exact word forms ("the name of" vs "is named")
-        kept = relevance_gate(rows, goal, None, None, TURN_START_KEEP, prefix_match=True)
+        # REQ-12 AC4 (T43): the gate must rank the WHOLE relevant set, not cut it
+        # to 3 before the user/recency sort - the old order sliced first and then
+        # sorted, so a user fact outside the first 3 was lost (m03).
+        kept = relevance_gate(
+            rows, goal, None, None, max(TURN_START_KEEP, len(rows)),
+            prefix_match=True,
+        )
         # A taught fact is the USER'S OWN statement. A plan step that merely
         # repeats the question must never outrank it: on m03 the two kept rows
         # were 'Recall the user's preferred color...' while the fact row
         # ('my preferred colour is fern-green-8aa5') was dropped, so the model
         # answered 'the tool returned no information' (measured 2026-10-28).
+        # Newest first inside each role, then user rows first, THEN slice.
+        kept.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
         kept.sort(key=lambda r: 0 if str(r.get("role") or "") == "user" else 1)
+        kept = kept[:TURN_START_KEEP]
         logger.info(
             "[turn_start_recall] cand=%d kept=%d ms=%.1f goal=%.60r",
             len(rows), len(kept), (time.perf_counter() - t0) * 1000.0, goal,

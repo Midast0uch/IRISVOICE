@@ -166,6 +166,9 @@ class EpisodicStore:
     _CHUNK_MAX_CHARS: int = EMBED_MAX_CHARS
     _CHUNK_OVERLAP:   int = EMBED_OVERLAP_CHARS  # trailing chars re-included
     _CHUNK_MIN_CHARS: int = 50    # skip near-empty slivers
+    # REQ-12 AC2: a user statement is a fact. A name, a colour or a number is
+    # shorter than the 50-char sliver floor, so user turns get their own floor.
+    _USER_CHUNK_MIN_CHARS: int = 10
 
     # Lower than episode DEDUP so we deduplicate near-identical fragment repeats
     # but still allow similar-but-distinct chunks (e.g. same topic, different details).
@@ -924,7 +927,9 @@ class EpisodicStore:
         This is the Pacman mechanism (PACMAN.md §Biological Fragmentation):
         content is split into fixed-size chunks with overlap, each embedded and
         stored with zone classification matching PACMAN.md Dimension 1.
-        Duplicates at >= _FRAG_DEDUP_THRESHOLD are silently skipped.
+        A byte-identical repeat at >= _FRAG_DEDUP_THRESHOLD is skipped. A
+        context_fragment whose text CHANGED but stays near-duplicate supersedes
+        the older row (it is folded into the new one), so a re-taught fact wins.
         Uses batch insert (executemany) for efficiency.
 
         Args:
@@ -962,30 +967,67 @@ class EpisodicStore:
 
         stored_ids: List[str] = []
         batch_rows: List[Tuple] = []
+        # REQ-12 AC2: new chunk id -> the older near-duplicates it supersedes.
+        supersede: Dict[str, List[str]] = {}
 
         for chunk in chunks:
             chunk = chunk.strip()
-            if len(chunk) < self._CHUNK_MIN_CHARS:
+            # REQ-12 AC2: a user turn keeps a 10-char floor (a name is a fact);
+            # every other chunk type keeps the sliver floor.
+            _min_chars = (
+                self._USER_CHUNK_MIN_CHARS
+                if chunk_type == "context_fragment"
+                else self._CHUNK_MIN_CHARS
+            )
+            if len(chunk) < _min_chars:
                 continue
 
             meta = self._embed.encode_with_meta(chunk)
             embedding = meta.vector
             chunk_backend = meta.backend
 
-            # Dedup: compare against recent chunks in this session
+            # Dedup: compare against recent chunks in this session.
+            # REQ-12 AC2: a near-duplicate context_fragment whose TEXT changed is
+            # SUPERSEDED - the newest statement is stored and the older row is
+            # folded into it, so a re-taught fact updates instead of being
+            # silently skipped. An identical repeat is still skipped (nothing to
+            # update). Other chunk types keep the skip.
+            dup_ids: List[str] = []
+            exact_repeat = False
             try:
-                rows = self.db.execute(
-                    """SELECT id, embedding, embedding_backend, vec_i8, vec_scale FROM context_chunks
-                       WHERE session_id = ? AND chunk_type = ?
-                       ORDER BY timestamp DESC LIMIT 50""",
-                    (session_id, chunk_type),
-                ).fetchall()
-                is_dup = False
+                # REQ-12 AC2 (T48, 2026-10-29): a taught fact must supersede the
+                # SAME fact from an EARLIER CONVERSATION. Scoping the window to
+                # this session meant a re-taught colour could never fold the
+                # previous run's near-identical row, so five "fern-green-XXXX"
+                # chunks competed and the answer averaged them ("Green - though
+                # one tool result reported blue"). A context_fragment therefore
+                # compares against the newest fragments of the whole store;
+                # every other chunk type keeps the per-session window.
+                if chunk_type == "context_fragment":
+                    rows = self.db.execute(
+                        """SELECT id, content, embedding, embedding_backend, vec_i8, vec_scale
+                           FROM context_chunks
+                           WHERE chunk_type = ? AND folded_into IS NULL
+                           ORDER BY timestamp DESC LIMIT 50""",
+                        (chunk_type,),
+                    ).fetchall()
+                else:
+                    rows = self.db.execute(
+                        """SELECT id, content, embedding, embedding_backend, vec_i8, vec_scale
+                           FROM context_chunks
+                           WHERE session_id = ? AND chunk_type = ? AND folded_into IS NULL
+                           ORDER BY timestamp DESC LIMIT 50""",
+                        (session_id, chunk_type),
+                    ).fetchall()
                 for row in rows:
                     try:
+                        if chunk_type == "context_fragment" and row[1] == chunk:
+                            dup_ids = [row[0]]
+                            exact_repeat = True
+                            break
                         # REQ-4 AC1: the float may be gone; the int8 code stands for it
-                        stored_emb = vector_quant.vector_of(row[1], row[3], row[4])
-                        stored_backend = row[2] or BACKEND_BGE
+                        stored_emb = vector_quant.vector_of(row[2], row[4], row[5])
+                        stored_backend = row[3] or BACKEND_BGE
                         if stored_emb:
                             try:
                                 sim = compare_embeddings(
@@ -993,18 +1035,24 @@ class EpisodicStore:
                                     stored_emb, stored_backend,
                                 )
                                 if sim >= self._FRAG_DEDUP_THRESHOLD:
-                                    is_dup = True
-                                    stored_ids.append(row[0])
-                                    break
+                                    dup_ids.append(row[0])
+                                    if chunk_type != "context_fragment":
+                                        break
                             except CrossSpaceComparisonError:
                                 continue
                     except Exception:
                         continue
-                if is_dup:
-                    continue
             except Exception as exc:  # dedup failure is non-fatal; store anyway
                 logger.warning("[EpisodicStore] dedup read failed session=%s type=%s: %r",
                                session_id, chunk_type, exc)
+
+            if dup_ids and chunk_type != "context_fragment":
+                stored_ids.append(dup_ids[0])
+                continue
+            if exact_repeat:
+                # byte-identical repeat: nothing new to remember
+                stored_ids.append(dup_ids[0])
+                continue
 
             chunk_id = str(uuid.uuid4())
             # REQ-9 AC6: a caller that proved int8 == float for its chunk type (the
@@ -1020,6 +1068,9 @@ class EpisodicStore:
             batch_rows.append((chunk_id, session_id, chunk_type, _zone, chunk,
                                embedding_blob, chunk_backend, tool_name, _fp, _i8, _scale))
             stored_ids.append(chunk_id)
+            if dup_ids:
+                # a changed near-duplicate: the older row folds into this one
+                supersede[chunk_id] = dup_ids
 
         # Batch insert all non-duplicate chunks
         # Session-326: locked-DB retry — a burst of concurrent DER writers
@@ -1067,6 +1118,34 @@ class EpisodicStore:
                         locked_retry(_row326, label="episodic.fragment_row")
                     except Exception as e2:
                         logger.warning(f"[EpisodicStore] individual chunk store error: {e2}")
+
+        # REQ-12 AC2: the newest statement wins. Fold each older near-duplicate
+        # into the row just written (a reference, not a delete) so the superseded
+        # value stops competing in recall. Never folds a pinned chunk (REQ-4 AC2)
+        # and never crosses a Kyudo zone.
+        if supersede:
+            try:
+                from backend.memory.fold_chunks import pinned_chunk_ids
+
+                _pinned = pinned_chunk_ids(self.db)
+            except Exception:
+                _pinned = set()
+            for new_id, old_ids in supersede.items():
+                _foldable = [oid for oid in old_ids if oid not in _pinned]
+                if not _foldable:
+                    continue
+                try:
+                    app_write(
+                        self.db,
+                        "UPDATE context_chunks SET folded_into = ? "
+                        f"WHERE id IN ({','.join('?' * len(_foldable))}) "
+                        "AND folded_into IS NULL AND zone = ?",
+                        tuple([new_id] + _foldable + [_zone]),
+                    )
+                except Exception as exc:  # noqa: BLE001 - the new row still stands
+                    logger.warning(
+                        "[EpisodicStore] supersede fold failed new=%s: %r",
+                        new_id[:8], exc)
 
         logger.debug(
             f"[EpisodicStore] fragment_and_store: {len(stored_ids)} chunks "
@@ -1164,15 +1243,25 @@ class EpisodicStore:
         where_clauses.append("folded_into IS NULL")
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
         # session_id + retrieval_count feed the memory-native rank's features
-        # (REQ-7 AC1: strand outcomes, use with decay)
-        _cols = ("id, content, embedding, timestamp, embedding_backend, zone, vec_i8, "
-                 "vec_scale, session_id, retrieval_count, tool_name, rowid")
+        # (REQ-7 AC1: strand outcomes, use with decay). REQ-12 AC6: `content`
+        # is NOT selected here - Phase 2 fetches it for the <= limit winning
+        # rows only, so scoring never reads ~1 MB of text per recall.
+        _cols = ("id, timestamp, embedding_backend, zone, vec_i8, vec_scale, "
+                 "embedding, session_id, retrieval_count, tool_name, rowid")
+        _C_ID, _C_TS, _C_BACKEND, _C_ZONE = 0, 1, 2, 3
+        _C_I8, _C_SCALE, _C_EMB, _C_SESSION = 4, 5, 6, 7
+        _C_RC, _C_TOOL, _C_ROWID = 8, 9, 10
 
-        # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
-        # by fingerprint across EVERY row the filter allows, plus the newest 50 the old
-        # path saw. Before, only the newest 200 were scored (research recall: 200 of
-        # 1,777 summaries). None = the index is warming or failed: the old path runs.
+        _since_t, _until_t = _ts_text(since), _ts_text(until)
+        _bounded = bool(_since_t or _until_t or tool_name)
+
+        # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 1,000
+        # nearest by fingerprint across EVERY row the filter allows, plus the newest
+        # 50 the old path saw. Before, only the newest 200 were scored (research
+        # recall: 200 of 1,777 summaries). None = the index is warming or failed:
+        # the old path runs.
         rows = None
+        _kw_ids: set = set()
         try:
             from backend.memory import recall_reach
 
@@ -1181,11 +1270,11 @@ class EpisodicStore:
                 chunk_types=chunk_types, zones=zones,
             )
             if _near is not None:
-                # REQ-3 AC2: the exact words join the candidate union by RANK
-                # (reciprocal rank fusion), never by raw score - bm25 and cosine
-                # are not comparable. The exact scorer below is still the judge;
-                # this only decides WHICH rows are scored (the union, bounded to
-                # M + KEYWORD_CANDIDATES + 50).
+                # REQ-3 AC2: the exact words join the candidate UNION (a direct
+                # deduplicated union - RRF ordering was lost on the unsorted
+                # fingerprint list). The exact scorer below is still the judge;
+                # this only decides WHICH rows are scored.
+                _union: List[int] = [int(r) for r in _near]
                 try:
                     from backend.agent import write_counters
                     from backend.memory import chunk_fts
@@ -1194,26 +1283,42 @@ class EpisodicStore:
                         self.db, query, session_id=session_id,
                         chunk_types=chunk_types, zones=zones,
                     )
-                    _kw_ids = set(_kw or [])
-                    if _kw:
-                        _new = [r for r in _kw if r not in set(_near)]
-                        if _new:
-                            write_counters.bump("memory.keyword.new_candidates", len(_new))
-                        _near = chunk_fts.fuse_by_rank(_near, _kw)
+                    _kw_ids = {int(r) for r in (_kw or [])}
+                    _new = [r for r in _kw_ids if r not in set(_union)]
+                    if _new:
+                        write_counters.bump("memory.keyword.new_candidates", len(_new))
+                    _union.extend(_new)
                 except Exception as _kw_exc:  # noqa: BLE001 - AC4: meaning only
                     logger.debug("[EpisodicStore] keyword candidates skipped: %s", _kw_exc)
-                rows = self.db.execute(
-                    f"SELECT {_cols} FROM context_chunks {where_sql} ORDER BY timestamp DESC LIMIT 50",
+
+                # REQ-1 AC7: a selective since/until/tool_name bound must reach
+                # beyond the unfiltered global top-M. When bounded, the newest
+                # FP_CANDIDATES rows OF THE BOUND replace the newest-50 floor, so
+                # the bound is applied in SQL, never by a per-row Python filter.
+                _floor_limit = (
+                    int(recall_reach.FP_CANDIDATES) if _bounded else 50
+                )
+                _floor = [int(r[0]) for r in self.db.execute(
+                    f"SELECT rowid FROM context_chunks {where_sql} "
+                    f"ORDER BY timestamp DESC LIMIT {_floor_limit}",
                     params_list,
-                ).fetchall()
-                _seen = {r[0] for r in rows}
-                for _part in range(0, len(_near), 500):
-                    _ids = _near[_part:_part + 500]
-                    rows += [r for r in self.db.execute(
+                ).fetchall()]
+                _rowid_order = list(dict.fromkeys(_floor + _union))
+
+                # REQ-12 AC6 Phase 1: metadata + vectors, never `content`.
+                _inner = " AND ".join(where_clauses)
+                rows = []
+                _seen_rowids: set = set()
+                for _part in range(0, len(_rowid_order), 500):
+                    _ids = _rowid_order[_part:_part + 500]
+                    for _r in self.db.execute(
                         f"SELECT {_cols} FROM context_chunks "
-                        f"WHERE rowid IN ({','.join('?' * len(_ids))}) AND folded_into IS NULL",
-                        _ids,
-                    ).fetchall() if r[0] not in _seen]
+                        f"WHERE rowid IN ({','.join('?' * len(_ids))}) AND {_inner}",
+                        _ids + params_list,
+                    ).fetchall():
+                        if int(_r[_C_ROWID]) not in _seen_rowids:
+                            _seen_rowids.add(int(_r[_C_ROWID]))
+                            rows.append(_r)
         except Exception as e:
             logger.warning(f"[EpisodicStore] reach path failed, newest-200 path: {e}")
             rows = None
@@ -1236,39 +1341,55 @@ class EpisodicStore:
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
         zone_of: Dict[str, Optional[str]] = {}
         _rank_info: Dict[str, Dict] = {}
-        _is_kw = {}
-        _since_t, _until_t = _ts_text(since), _ts_text(until)
-        _bounded = bool(_since_t or _until_t or tool_name)
+        _is_kw: Dict[str, bool] = {}
 
-        def _in_bounds(r) -> bool:
-            if _since_t and str(r[3] or '') < _since_t:
-                return False
-            if _until_t and str(r[3] or '') > _until_t:
-                return False
-            if tool_name and r[-2] != tool_name:
-                return False
-            return True
-
+        # REQ-12 AC6: decode every candidate vector once, then score the whole
+        # candidate set with ONE numpy mat-vec multiply. The old loop ran
+        # ~3.22M Python generator steps per call at M=1000.
+        _decoded: List[Tuple[Any, Any]] = []
         for row in rows:
-            if _bounded and not _in_bounds(row):
-                logger.warning("[EpisodicStore] row skipped by bounds id=%s ts=%r tool=%r",
-                               row[0], row[3], row[-2])
+            stored_backend = row[_C_BACKEND] or BACKEND_BGE
+            # AC5 (REQ-1): never compare vectors of different embedding spaces
+            if query_backend and stored_backend and query_backend != stored_backend:
                 continue
+            # REQ-4 AC1: the float wins when present (it is the exact form),
+            # otherwise the int8 code stands for it.
+            vec = vector_quant.float_of(row[_C_EMB])
+            if vec is None:
+                vec = vector_quant.decompress(row[_C_I8], row[_C_SCALE])
+            if vec is None or len(vec) == 0:
+                continue
+            _decoded.append((row, vec))
+
+        _sims: Dict[int, float] = {}
+        if _decoded:
+            import numpy as _np
+
+            _q = _np.asarray(query_embedding, dtype=_np.float64)
+            _q_norm = float(_np.linalg.norm(_q))
+            # Group by dimension: a legacy row of another size keeps its own
+            # (zero) similarity instead of breaking the matrix.
+            _by_dim: Dict[int, list] = {}
+            for _row, _vec in _decoded:
+                _by_dim.setdefault(len(_vec), []).append((_row, _vec))
+            for _dim, _group in _by_dim.items():
+                if _dim != len(query_embedding) or _q_norm == 0.0:
+                    for _row, _vec in _group:
+                        _sims[int(_row[_C_ROWID])] = 0.0
+                    continue
+                _mat = _np.vstack([_np.asarray(_v, dtype=_np.float64) for _, _v in _group])
+                _norms = _np.linalg.norm(_mat, axis=1)
+                _dots = _mat @ _q
+                with _np.errstate(divide="ignore", invalid="ignore"):
+                    _vals = _dots / (_norms * _q_norm)
+                _vals[_norms == 0.0] = 0.0
+                for (_row, _vec), _sim in zip(_group, _vals.tolist()):
+                    _sims[int(_row[_C_ROWID])] = float(_sim)
+
+        for row, _vec in _decoded:
             try:
-                # REQ-4 AC1: score the int8 code when the float is gone (4x less
-                # I/O per row, unchanged space - the code is the same direction)
-                stored_emb = vector_quant.vector_of(row[2], row[6], row[7])
-                if stored_emb is None or len(stored_emb) == 0:
-                    continue
-                stored_backend = row[4] or BACKEND_BGE
-                try:
-                    sim = compare_embeddings(
-                        query_embedding, query_backend,
-                        stored_emb, stored_backend,
-                    )
-                except CrossSpaceComparisonError:
-                    continue
-                if sim < min_similarity:
+                sim = _sims.get(int(row[_C_ROWID]))
+                if sim is None or sim < min_similarity:
                     continue
 
                 # Recency weight: exponential decay, half-life = _RECENCY_HALF_LIFE_HOURS
@@ -1278,7 +1399,7 @@ class EpisodicStore:
                     # mangled any timestamp ending in '0' or ':' ("10:00:00" ->
                     # "2026-10-27 1" -> unparseable -> age 0 -> MAXIMUM recency,
                     # the oldest chunk winning the recency bonus).
-                    ts = _dt.datetime.fromisoformat(str(row[3]).replace("Z", "+00:00"))
+                    ts = _dt.datetime.fromisoformat(str(row[_C_TS]).replace("Z", "+00:00"))
                     if ts.tzinfo is not None:
                         ts = ts.astimezone(_dt.timezone.utc).replace(tzinfo=None)
                     age_hours = max(0.0, (now_utc - ts).total_seconds() / 3600.0)
@@ -1292,24 +1413,30 @@ class EpisodicStore:
                 combined = (
                     math.floor(sim / self._RECENCY_BAND) * 10.0 + recency
                 )
-                scored.append((combined, row[1], row[0]))
-                _is_kw[row[0]] = int(row[-1]) in _kw_ids
-                zone_of[row[0]] = row[5]
+                cid = row[_C_ID]
+                scored.append((combined, "", cid))
+                _is_kw[cid] = int(row[_C_ROWID]) in _kw_ids
+                zone_of[cid] = row[_C_ZONE]
                 # REQ-7 AC1: the memory-native rank's per-row features
-                _rank_info[row[0]] = {
-                    "zone": row[5], "session": row[8],
-                    "retrieval_count": row[9], "timestamp": row[3],
+                _rank_info[cid] = {
+                    "zone": row[_C_ZONE], "session": row[_C_SESSION],
+                    "retrieval_count": row[_C_RC], "timestamp": row[_C_TS],
                 }
             except Exception:
                 continue
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        # REQ-3 AC2: the word leg may bring a row in. Without this a keyword
-        # hit whose vector points away from the query falls off the limit.
-        if limit and any(_is_kw.values()):
-            _kw_rows = [x for x in scored if _is_kw.get(x[2])]
-            _rest = [x for x in scored if not _is_kw.get(x[2])]
-            scored = _kw_rows + _rest
+        # REQ-3 AC2: at most ONE slot is reserved for a keyword hit. The old
+        # `scored = _kw_rows + _rest` put up to 50 FTS OR-hits ahead of every
+        # semantic candidate, so 6+ BM25 matches with sim >= 0.25 filled the
+        # whole limit window and evicted the real answers.
+        if limit and _kw_ids and len(scored) >= limit:
+            if not ({x[2] for x in scored[:limit]} & _kw_ids):
+                _kw_survivors = [x for x in scored if _is_kw.get(x[2])]
+                if _kw_survivors:
+                    # positional, deliberately NOT re-sorted: the guarantee is
+                    # that the last slot carries the best keyword hit.
+                    scored[limit - 1] = _kw_survivors[0]
         _shadow_trust_rank(scored, zone_of, limit)
 
         # REQ-7: the memory-native rank (trust, claim evidence, helped/misled,
@@ -1327,6 +1454,21 @@ class EpisodicStore:
             logger.debug("[EpisodicStore] memory rank skipped: %s", _mr_exc)
 
         top = scored[:limit]
+
+        # REQ-12 AC6 Phase 2: fetch `content` ONLY for the winning rows (<= limit
+        # ids), not for every candidate.
+        if top:
+            try:
+                _ph = ",".join("?" * len(top))
+                _content_of = dict(self.db.execute(
+                    f"SELECT id, content FROM context_chunks WHERE id IN ({_ph})",
+                    [cid for _, _, cid in top],
+                ).fetchall())
+            except Exception as _pc_exc:  # noqa: BLE001 - never fail a recall here
+                logger.warning("[EpisodicStore] content fetch failed: %s", _pc_exc)
+                _content_of = {}
+            top = [(s, _content_of[cid], cid) for s, _, cid in top
+                   if cid in _content_of]
 
         # Token-aware cap: if a model context window is provided, keep only as
         # many top chunks as fit, reserving headroom for the prompt + response.

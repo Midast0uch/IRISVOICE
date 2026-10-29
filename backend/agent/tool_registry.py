@@ -994,9 +994,19 @@ def register_builtin_tools() -> None:
             name="recall_memory",
             description=(
                 "Search long-term episodic memory for relevant past context, "
-                "solutions, or patterns. Use when you need prior knowledge for the current sub-task."
+                "solutions, or patterns. Use when you need prior knowledge for the current sub-task. "
+                "Returns chunks (episodic text), chain (earlier turns and taught facts), "
+                "and episodes (prior similar tasks)."
             ),
-            parameters={"query": {"type": "string", "description": "What to search for"}},
+            parameters={
+                "query": {"type": "string", "description": "What to search for"},
+                "since": {"type": "string", "description": (
+                    "Optional lower time bound: ISO date/time or epoch seconds.")},
+                "until": {"type": "string", "description": (
+                    "Optional upper time bound: ISO date/time or epoch seconds.")},
+                "tool_name": {"type": "string", "description": (
+                    "Optional: only chunks produced by this tool.")},
+            },
             category="memory", executor="memory", permission_tier="read_only",
             parallel_safe=True, critical=True,
         ),

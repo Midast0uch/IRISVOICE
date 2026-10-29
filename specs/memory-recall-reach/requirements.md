@@ -23,6 +23,12 @@
 - **No new dependency without the owner** (CLAUDE.md): numpy (installed) and SQLite's own
   FTS5 only; sqlite-vec / faiss / hnswlib need an explicit owner yes.
 - Sector births stay owner-gated (only after a Kyudo reorganization; MEMORY-INTERFACE §13).
+- **Audit Remediation (2026-10-29, `pin_7cee599c0fc3` superseding `pin_c26f13059c2f`):**
+  1. **Keyword hits never evict the semantic top-K** (`episodic.py:1309-1312`): `scored = _kw_rows + _rest` placed up to 50 FTS OR-query hits ahead of all 1,000 semantic candidates before slicing `scored[:limit]`. At most ONE slot (the last slot of `limit`) may be reserved for the top-scoring keyword/literal hit when no keyword hit is already in `scored[:limit]`.
+  2. **Bounded filters (`since`, `until`, `tool_name`) filter at candidate selection, never via per-row warning spam** (`episodic.py:1179-1256`): push `since`/`until`/`tool_name` into SQL candidate selection and remove the per-row `logger.warning` at `episodic.py:1254`.
+  3. **Two-phase vectorized rescore at `FP_CANDIDATES = 1000`** (`episodic.py:1205-1305`, `vector_quant.py:89-100`, `embedding.py:407-417`): fetch lightweight candidate columns (`rowid, id, timestamp, embedding_backend, zone, session_id, retrieval_count, tool_name, vec_i8, vec_scale, embedding`) without `content`, score in one vectorized numpy matmul, and fetch `content` only for the `limit` winning rows.
+  4. **True root cause of missing user statements and `m03`** (`iris_gateway.py:6169`, `agent_kernel.py:1937, 4046, 8486, 9368, 9888, 22886`, `pacman_fragment.py:217-253`, `ontology_recall.py:474, 489, 562`): `self._memory_interface` is NOT `None` on the WS path — `get_agent_kernel` wires it and creates `self._mcm_orch`, which routes `post_turn` into `pacman_fragment.execute` (dropping conversational turns and ignoring user text), while DER turn completion never stores the user-assistant turn pair at all. Furthermore, `agent_kernel.py:4046` filters `context_chunks` by `session_id = self.session_id` (single-session) and `_plan_task` never calls `retrieve_context_chunks`, so cross-conversation recall (`m01`–`m03`) requires both (a) persisting user statements to `memory_chain` (`role='user'`) and `context_chunks` (with a lower user-turn minimum length) and (b) fixing `ontology_recall.relevance_gate` (`:474`) and `_plan_task` (`:8486`) to read `content`, rank `role == 'user'` + newest before slicing `TURN_START_KEEP`, and add a cross-session trusted user-fact chunk leg.
+  5. **Benchmark honesty (`evals/memory_bench.py`, `evals/standards.json`)**: `memory_bench.py` must measure the actual shipped `retrieve_context_chunks` ranking (including FTS merge), fix `ceiling_by_m` (`:376`), parenthesize `WHERE (embedding IS NOT NULL OR vec_i8 IS NOT NULL)` (`:227, :273`), guard `recall@10_live` in `standards.json`, and record the standard at the default `--words 40` load (never `--words 10`).
 
 ## Introduction
 IRIS stores 146,653 context chunks with 1024-d vectors (~600 MB, 52% of the 1.16 GB store),
@@ -87,6 +93,10 @@ Built 2026-10-27: `backend/memory/recall_reach.py`, `episodic.py` reach path.
   SHALL scan by REGION first - Kyudo zone, then sector root, then strand - so a query reads
   only the fingerprints of the regions its filter and position allow (memory-native
   partitioning, not a generic ANN graph).
+- AC7: WHEN `since`, `until`, or `tool_name` filter arguments are supplied to
+  `retrieve_context_chunks` THEN THE SYSTEM SHALL apply those bounds in SQL candidate selection
+  (and `WHERE rowid IN (...)` fetches) so selective bounds remain reachable beyond the global
+  top-M, and SHALL NOT emit per-row `logger.warning` lines when filtering rows (`episodic.py:1205-1256`).
 
 **Measured (2026-10-27, `evals/memory_bench.py`, 120 real chat queries, truth = exact cosine
 over every row of the filter):**
@@ -137,7 +147,10 @@ lookups are B-tree + Python token overlap (`episodic.py:322-381`, `ontology_reca
 - AC1: THE SYSTEM SHALL keep an FTS5 index over chunk text in the app store (SQLite's own,
   no new dependency), filled on write through the one writer and backfilled on a lane.
 - AC2: WHEN a recall runs THEN THE SYSTEM SHALL fuse the keyword ranking and the meaning
-  ranking by rank (not raw score), so either can bring a row into the scored set.
+  ranking by rank (not raw score) to form the candidate union, and IF `limit > 0` and no
+  keyword candidate appears in the top `limit` after semantic+recency scoring THEN THE SYSTEM
+  SHALL reserve at most ONE slot (replacing `scored[limit - 1]` with the highest-scoring
+  keyword candidate) — NEVER placing all keyword candidates ahead of `_rest` (`episodic.py:1309-1312`).
 - AC3: THE SYSTEM SHALL weigh the fused rank by the memory's own signals (REQ-7) in shadow
   until the benchmark shows the weighting pays.
 - AC4: IF the FTS index is missing or broken THEN THE SYSTEM SHALL recall by meaning alone
@@ -202,14 +215,16 @@ candidate p50/p95, 10× scan, bytes per chunk, store size; standards in
 - AC1: THE SYSTEM SHALL measure, on the live store read-only with real chat queries: recall@10
   against exact cosine over the whole filter, reach, candidate latency p50/p95, a 10× scan,
   bytes per chunk, store size - per live recall filter.
-- AC1b: THE SYSTEM SHALL ALSO measure **recall@10_shipped** - the same candidate path scored
-  against the SHIPPED ranker (cosine × (1 − w) + recency × w) applied to every row of the
-  filter. Cosine truth caps the delivered number by construction while the blend exists, so
-  it cannot express "1.0". Measured 2026-10-28 at M=500: shipped truth reads **research
-  0.9975 / turn 1.0000 / global 0.9900**, against cosine truth 0.8767 / 0.9475 / 0.8817 for
-  the same delivered rank. Both columns are reported; neither replaces the other.
-- AC2: THE SYSTEM SHALL compare each run with the recorded standard and report a regression
-  (recall@10 below standard − 0.02, candidate p95 above 2 × standard + 5 ms).
+- AC1b: THE SYSTEM SHALL ALSO measure **recall@10_shipped** and **recall@10_live** over the
+  EXACT delivered ranking of `retrieve_context_chunks` (including the FTS candidate union and
+  the single-slot keyword guarantee, with `ceiling_by_m` passing `m=_m` explicitly for every
+  `M` and parenthesized `WHERE (embedding IS NOT NULL OR vec_i8 IS NOT NULL) AND folded_into IS NULL`).
+  Cosine truth caps the delivered number by construction while the blend exists, so it cannot
+  express "1.0". Both columns are reported; neither replaces the other.
+- AC2: THE SYSTEM SHALL compare each run (at the default `--queries 120 --words 40` load, never
+  a reduced `--words 10` sample) with the recorded standard in `evals/standards.json` and report
+  a regression when `recall@10_new`, `recall@10_live`, or `words.reach_new` falls below
+  `standard − 0.02`, or when candidate/rescore p95 exceeds `2 × standard + 5 ms`.
 - AC3: THE SYSTEM SHALL add an end-to-end memory eval group to `evals/run_evals.py`: tasks
   whose answer needs something taught in an EARLIER thread (multi-session, LoCoMo-style but on
   IRIS's real loop), graded by fact, with reply_s.
@@ -415,30 +430,192 @@ can navigate history by conversation, then by task, then by payload.
 - AC6: A strand SHALL be a `thread_id` (`strand-<hex>`), not a new table, until strands are
   used widely (6 strand sessions / 47 chunks today).
 
+**Edge Cases:** an empty thread (0 chunks -> no L1 row); a thread with only non-coordinate chain
+rows (`chain_linked = 0`); `episodes` row with NULL or corrupt `embedding` (skipped, counted).
+
+## REQ-12: Cross-Conversation User Fact Persistence, Chain Relevance, and Vectorized Rescore
+
+**User Story:** As IRIS I want facts and preferences the user teaches me in any conversation to
+be stored with the user's own words and recalled accurately across conversations — with newest
+facts superseding stale ones and without 3.2M-iteration Python loops on the answer path — so
+that cross-thread memory (`m01`–`m03`) and live turn latency both hold.
+
+**Verified:** REAL GAPS traced 2026-10-29 (`pin_7cee599c0fc3`):
+- `backend/iris_gateway.py:6169` + `backend/agent/agent_kernel.py:1937, 22886`: `_memory_interface`
+  and `_mcm_orch` are wired on every conversation kernel (`_memory_interface` is NOT `None`).
+- `backend/agent/agent_kernel.py:9368-9390` + `backend/agent/mcm_protocol/actions/pacman_fragment.py:217-253`:
+  on the direct path, `self._mcm_orch.post_turn` intercepts fragmentation, receives only
+  `response_text` (omitting `User: {text}`), and drops conversational turns (`< 80` chars or no
+  `_DER_SIGNALS`). On the DER path (`agent_kernel.py:9888-10006`), turn completion never stores
+  the user-assistant turn pair at all.
+- `backend/memory/episodic.py:152, 959, 968`: `_CHUNK_MIN_CHARS = 50` drops short user facts
+  (`"my name is Bob"` = 14 chars).
+- `backend/agent/ontology_recall.py:474-489, 557-562` + `backend/agent/agent_kernel.py:8486-8489`:
+  `relevance_gate` ignores `r.get("content")`; `turn_start_prior_memory` sorts `role == "user"`
+  AFTER `relevance_gate` already truncated to `TURN_START_KEEP = 3`; `_plan_task` ignores
+  `_pm_r.get("content")`.
+- `backend/agent/agent_kernel.py:4046`: `retrieve_context_chunks` passes `session_id=self.session_id`,
+  which is a hard single-session filter (`episodic.py:1138`), and `_plan_task` (`:8450-8519`)
+  never queries `context_chunks`.
+- `backend/memory/episodic.py:1205-1305` + `backend/memory/vector_quant.py:89-100` +
+  `backend/memory/embedding.py:407-417`: scoring `FP_CANDIDATES = 1000` fetches `content` for
+  all 1,050 rows and runs pure-Python `_cosine` over `.tolist()` floats (`3.22M` loop iterations).
+
+**Acceptance Criteria:**
+- AC1: WHEN a user turn completes on either the direct path (`agent_kernel.py:9363`) or the DER
+  path (`agent_kernel.py:9888`) THEN THE SYSTEM SHALL persist the `User: <text>\nAssistant: <reply>`
+  turn pair to `context_chunks` (`chunk_type="context_fragment"`, zone from `_pacman_zone_for_turn()`)
+  on the background fragment lane (`pacman_fragment._submit_fragment_job`), regardless of whether
+  `_mcm_orch` is present or whether the text contains `_DER_SIGNALS`.
+- AC2: WHEN `fragment_and_store` is called with `chunk_type == "context_fragment"` THEN THE
+  SYSTEM SHALL apply a minimum chunk length of 10 characters (`_USER_CHUNK_MIN_CHARS = 10`)
+  instead of `_CHUNK_MIN_CHARS = 50`, and WHEN a new chunk in the same or later session has
+  cosine similarity `>= _FRAG_DEDUP_THRESHOLD` (`0.92`) with an older chunk THEN THE SYSTEM
+  SHALL fold or supersede the older chunk rather than silently dropping a re-taught fact.
+- AC3: WHEN a user message enters `process_text_message` (`agent_kernel.py:9127`) THEN THE
+  SYSTEM SHALL append a `role="user"` row to `memory_chain` on a durability lane carrying the
+  user's statement in `content` and `insight` (bounded to S12), `thread_id = _conv_id`, and
+  `node_type = "user_turn"`, so cross-conversation chain recall sees what the user actually said
+  rather than only DER plan-step descriptions.
+- AC4: WHEN `ontology_recall.relevance_gate` (`ontology_recall.py:444-490`) scores candidate
+  chain rows THEN THE SYSTEM SHALL include `r.get("content")` in the matched text alongside
+  `insight` and `result`, and WHEN `turn_start_prior_memory` (`ontology_recall.py:540-570`)
+  ranks survivors THEN THE SYSTEM SHALL sort by `(role == "user", created_at DESC)` BEFORE
+  slicing to `TURN_START_KEEP` so a newer user-taught fact always outranks both plan-step
+  echoes and older superseded values, and `_plan_task` (`agent_kernel.py:8486`) SHALL include
+  `_pm_r.get("content")` when formatting `PRIOR MEMORY`.
+- AC5: WHEN `turn_start_prior_memory` or `_assemble_direct_context` recalls prior memory across
+  conversations THEN THE SYSTEM SHALL also query `retrieve_context_chunks` with `session_id=None`,
+  `chunk_types=["context_fragment"]`, `zones=["trusted"]`, `limit=3` (or merge into `<prior_memory>`)
+  so embedding-based semantic recall (e.g., `"color"` vs `"colour"`) reaches taught facts across
+  sessions on both the direct and DER planning paths.
+- AC6: WHEN `retrieve_context_chunks` scores candidates (`episodic.py:1205-1305`) THEN THE
+  SYSTEM SHALL execute a two-phase vectorized rescore: Phase 1 fetches candidate metadata and
+  `vec_i8`/`vec_scale`/`embedding` (excluding `content`) and computes cosine similarity via one
+  vectorized numpy matrix-vector multiply; Phase 2 fetches `content` ONLY for the `limit`
+  surviving rows.
+- AC7: WHEN `scripts/purge_harness_chunks.py` runs THEN THE SYSTEM SHALL also purge harness
+  `eval-*` / `de-*` / `ct-*` / `s365*` rows from `memory_chain` so stale harness plan steps do
+  not crowd `CANDIDATE_POOL` in `memory_chain`.
+- AC8: WHEN `evals/run_evals.py --group memory` runs (`m01`, `m02`, `m03`) AND when a conflict
+  test teaches fact A in thread 1, fact B in thread 2, and asks in thread 3 THEN THE SYSTEM
+  SHALL pass 3/3 (`m01`, `m02`, `m03`) and return fact B (newest wins).
+
+**Edge Cases:** an empty or error reply (`[IRIS error:` — never persisted as a turn pair); a
+10-character user statement (`"I am Alice"` — stored, not dropped by the 50-char floor); a
+user re-teaching a preference in a new thread (newest row wins over older high-overlap step
+rows); `vec_i8` NULL on a legacy row during vectorized rescore (falls back to float `embedding`
+blob seamlessly).
+
+## REQ-13: Active Memory Reasoning (`recall_memory` Tool) and Gated Mycelium Profile Read
+
+**User Story:** As IRIS I want my active `recall_memory` tool to search chunks, chain facts, and
+episodes (with time-window and source filters), and I want my Mycelium coordinate profile to be
+gated by task class, write-lock trust weight, confidence floor, and resonance and delivered to
+both planning and direct turns, so that I can reason about what I know and who the user is
+without blind spots or unfiltered prose dumps.
+
+**Verified:** REAL GAPS traced 2026-10-29 (`pin_7cee599c0fc3`, superseding `pin_a78b6885f704` and
+`docs/handoffs/2026-10-29-recall-memory-clm.md` §§5, 8):
+- **Active `recall_memory` tool gap (`backend/agent/tool_bridge.py:889-896, 2497-2522`,
+  `backend/agent/tool_registry.py:994-1001`):**
+  1. When the planner creates a memory-lookup step (such as on `m03`) and dispatches
+     `recall_memory`, `tool_bridge.py:2519` calls ONLY `_mi.episodic.retrieve_similar(task=query)`
+     (`episodes` table — 362 rows, returning `task_summary` and `tool_sequence` without
+     `full_content`). It NEVER calls `retrieve_context_chunks` (53,569 rows) or
+     `ontology_recall.turn_start_prior_memory` (13,987 `memory_chain` rows), which is why the
+     model answered `"the tool returned no information"`.
+  2. Commit `cb41c577` added `since`, `until`, and `tool_name` to `retrieve_context_chunks`, but
+     `recall_memory` in `tool_registry.py:999` and `tool_bridge.py:894, 2497` exposes only
+     `query` — leaving `since`, `until`, and `tool_name` with **0 production callers** (AGENTS.md
+     Hidden Failures Rule 3).
+- **Mycelium profile read gap (`backend/memory/mycelium/interface.py:67-109, 725-741, 836-855`,
+  `backend/memory/mycelium/profile.py:452-750`, `backend/memory/mycelium/spaces.py:66-160`,
+  `backend/agent/agent_kernel.py:3307, 3982, 8395-8407, 8511-8519`):**
+  1. Contrary to Handoff §8's claim that `get_profile_section()` has 0 callers,
+     `MyceliumInterface._context_parts()` (`interface.py:836-855`) ALREADY calls
+     `self._renderer.get_profile_section(space_id)` gated by `space_subset = spaces_for_class(task_class)`
+     (`:785`) and `render_order` (`:843`, excluding `toolpath`), and places `partial_profile`
+     into `ContextPackage.mycelium_path` (`:725-729`).
+  2. However, **three defects prevent that gated profile from working or reaching the model**:
+     - **Defect A (`agent_kernel.py:8395-8406, 8511-8519`):** `_plan_task` reads only
+       `context_package.tier1_directives` (which is hardcoded to `""` at `interface.py:732`!)
+       and ignores `context_package.mycelium_path` AND `context_package.get_tier3_failures()`.
+       And `_assemble_direct_context` (`agent_kernel.py:3982`) assumes `_build_system_prompt()`
+       (`:3307`) injects Mycelium when `_build_system_prompt()` has zero Mycelium code.
+     - **Defect B (`profile.py:452-501`):** `get_profile_section` only reads `mycelium_profile`,
+       which is populated only when `run_maintenance` runs every 5 tasks; dirty or unrendered
+       spaces return `None`.
+     - **Defect C (`profile.py:523-750`):** `ProfileRenderer._render_space` renders all nodes in
+       a space without filtering by `space.confidence_floor`, without weighting by
+       `channel_weight(space.write_lock) * freshness(space.decay_rate)` (`domain` has
+       `write_lock = _EXTERNAL`, capped at `0.30` with `3×` decay, yet `_render_domain` at
+       `:563` treats raw `proficiency >= 0.8` as "Expert" at face value), and without filtering
+       to resonant nodes.
+
+**Acceptance Criteria:**
+- AC1: WHEN the `recall_memory` tool (`backend/agent/tool_registry.py:994-1001`,
+  `backend/agent/tool_bridge.py:889-896, 2497-2522`) is registered and executed THEN THE SYSTEM
+  SHALL accept `query` plus optional `since`, `until`, and `tool_name` parameters, and SHALL
+  return a dictionary containing `chunks` (up to 5 results from `retrieve_context_chunks(query, session_id=None, since=since, until=until, tool_name=tool_name, limit=5)`),
+  `chain` (up to 3 results from `turn_start_prior_memory`), and `episodes` (up to 3 results from
+  `retrieve_similar`).
+- AC2: WHEN `ProfileRenderer` (`backend/memory/mycelium/profile.py:452-750`) or
+  `MyceliumInterface._context_parts` (`backend/memory/mycelium/interface.py:836-855`) renders
+  profile sections for a `task_class` and navigated path THEN THE SYSTEM SHALL:
+  (a) include only spaces with `render_order is not None` (`toolpath` excluded) and
+  `task_class in space.task_classes`,
+  (b) filter nodes to alive nodes with `confidence >= space.confidence_floor` (and resonant with
+  the navigated path when `space.resonance` is True),
+  (c) weight each node by `confidence * channel_weight(space.write_lock) * freshness(space.decay_rate)`
+  (where `_EXTERNAL` is capped at `0.30` with `3×` decay), and
+  (d) omit any section whose mean weighted score is below `space.confidence_floor`.
+- AC3: WHEN `MyceliumInterface._context_parts` (`backend/memory/mycelium/interface.py:836-855`)
+  requests a profile section for an eligible space whose `mycelium_profile` row is absent or has
+  `dirty = 1` THEN THE SYSTEM SHALL render the gated prose from `mycelium_nodes` on demand (and
+  queue the `mycelium_profile` upsert via `app_write`) instead of returning `None`.
+- AC4: WHEN `AgentKernel._plan_task` (`backend/agent/agent_kernel.py:8395-8407, 8511-8519`)
+  builds the planning prompt from `context_package` THEN THE SYSTEM SHALL pass
+  `context_package.mycelium_path` (bounded) and `failure_warnings=context_package.get_tier3_failures()`
+  into `_build_planning_prompt`, and WHEN `AgentKernel._assemble_direct_context`
+  (`agent_kernel.py:3999-4023`) builds the direct-response context and Mycelium is mature THEN
+  THE SYSTEM SHALL include the gated `partial_profile` for the classified `task_class` (never an
+  unfiltered `get_readable_profile()` dump).
+
+**Edge Cases:** `toolpath` space (`render_order=None` -> never rendered in any prompt);
+`capability` space on `quick_edit` or `code_task` (excluded by `task_classes`); `domain` node
+with raw `proficiency = 0.90` but low `_EXTERNAL`-weighted confidence below `confidence_floor`
+(omitted or downgraded, never rendered as unconditional "Expert"); `recall_memory` called with
+`since`/`until`/`tool_name` when no chunks match (returns empty `chunks: []` cleanly, never raises).
+
 ## Handoff — the CLM needs its own spec, next
 
 Recorded 2026-10-28 (owner): "after we finish and finalize the recall spec the CLM will need a
 spec and be next."
 
-- This spec PREPARES the memory for it (REQ-11) and stops there. The editable live view,
-  placeholders, compaction policy and skill steering are **out of scope here**
-  (`CLM_MYCELIUM_DESIGN_BRIEF.md` §11 Phase 1+).
+- This spec PREPARES the memory for it (REQ-11) and fixes the recall/write/read blockers
+  (REQ-12, REQ-13), then stops there. The editable live view, placeholders, compaction policy
+  and skill steering are **out of scope here** (`CLM_MYCELIUM_DESIGN_BRIEF.md` §11 Phase 1+).
 - What the CLM spec inherits as ground: three addressable levels, one codec, incidence to the
-  phase plane, an immutable record layer, and `episodes` already holding an L2 vector.
+  phase plane, an immutable record layer, `episodes` already holding an L2 vector, user turns
+  persisted to both `memory_chain` and `context_chunks`, and an active `recall_memory` tool +
+  gated profile read that reach all three layers.
 - What it must not re-litigate: two planes (REQ-10), the codec (REQ-4), the decay law (REQ-5).
 
-## Spec Status (2026-10-28)
+## Spec Status (2026-10-29, post-audit amendment)
 
 | REQ | state |
 |---|---|
-| 1 reach | built; `recall@10_live` now measures the DELIVERED rank |
+| 1 reach | built; **AC7 (`since`/`until`/`tool_name` pushdown + remove warning spam) in Wave 10** |
 | 2 honest vectors | built (fallbacks labelled + counted) |
-| 3 exact words | built (FTS5 + literal-first fetch, stopword policy) |
+| 3 exact words | built; **AC2 single-slot keyword cap (fix `_kw_rows + _rest` eviction) in Wave 10** |
 | 4 compression | built (int8 replace proven; fold; distil partial) |
 | 5 budget + decay | built and CALLED (maintenance pass, every 5 tasks) |
-| 6 benchmark | built (`memory_bench.py`, standards) |
+| 6 benchmark | built; **AC1b/AC2 bench fidelity + `--words 40` standard re-record in Wave 10** |
 | 7 memory rank | shadow, switch OFF (measured loss: 0.72/0.75/0.56 vs 0.97/1.00/0.96) |
 | 8 observability | built |
-| 9 file recall | W1 built + live gate PASS; W2-W4 not started (need package names) |
-| 10 two planes | decided, measured, **not built** (repair first) |
-| 11 three levels | prepared in spec, **not built** (keys first) |
+| 9 file recall | W1 + W2 (.pdf/.docx/.xlsx) + cold tier built; W3/W4 (OCR, audio) deferred |
+| 10 two planes | decided, measured, closed negative (λ = 0 kept) |
+| 11 three levels | L1 `thread_context` + L2 `episodes` codec built; L1 region scan deferred (< 150 ms bar) |
+| 12 user fact persistence + m03 + vectorized rescore | **NEW (Wave 10 — execute next before CLM)** |
+| 13 active `recall_memory` tool + gated Mycelium profile read | **NEW (Wave 10 — execute next before CLM)** |

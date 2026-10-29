@@ -675,6 +675,9 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
         "mediator", "mediator_source",
         # REQ-18 AC4 (T19): typed node + both domain axes.
         "node_type", "topic_domain", "execution_domain",
+        # REQ-12 AC1/AC4 (T42/T43): who spoke. `content` already exists on the
+        # legacy shape; a coordinate-shape store gets it here.
+        "role", "content",
     ):
         if _col in existing:
             continue
@@ -991,9 +994,11 @@ class _PythonFallbackEngine:
             vals.append(kwargs.get("role") or "agent")
         if "content" in cols:
             # Legacy NOT NULL column. Every reader reads `result`; copying the
-            # same text here stored each row twice (S12).
+            # same text here stored each row twice (S12). A caller may pass
+            # `content` explicitly for the ONE row that carries the user's own
+            # statement (REQ-12 AC1, role='user'), bounded by the same S12 cap.
             insert_cols.append("content")
-            vals.append("")
+            vals.append(kwargs.get("content") or "")
         from backend.memory.db import app_write
 
         # One writer: queued on the native writer when it owns this file (the
@@ -1564,6 +1569,10 @@ class IrisCoreEngine:
         node_type: Optional[str] = None,
         topic_domain: Optional[str] = None,
         execution_domain: Optional[str] = None,
+        # REQ-12 AC1 (T42): the ONE row that carries the user's own statement
+        # needs role='user' and its text in the legacy `content` column.
+        role: Optional[str] = None,
+        content: Optional[str] = None,
     ) -> bool:
         # PYTHON ENGINE FIRST for this one call — deliberately inverted vs
         # every other method on this class.
@@ -1602,6 +1611,8 @@ class IrisCoreEngine:
                 node_type=node_type,
                 topic_domain=topic_domain,
                 execution_domain=execution_domain,
+                role=role,
+                content=content,
             )
             return rc == 0
         # Native SECOND, not first — a degraded write (mediator + ontology
@@ -1935,6 +1946,8 @@ def ffi_immortus_chain_append(
     node_type: Optional[str] = None,
     topic_domain: Optional[str] = None,
     execution_domain: Optional[str] = None,
+    role: Optional[str] = None,
+    content: Optional[str] = None,
 ) -> int:
     """Append an entry to the Immortus chain. No-op if engine not loaded.
 
@@ -1944,6 +1957,8 @@ def ffi_immortus_chain_append(
     REQ-18 AC4 (T19): ``node_type`` / ``topic_domain`` / ``execution_domain``
     ride the same row so recall (REQ-20) and aggregation (REQ-21) key on the
     typed node without a join.
+    REQ-12 AC1 (T42): ``role`` / ``content`` carry the user's own statement
+    (role='user'). ``content`` defaults to "" (S12: a row is stored once).
     """
     if _engine is None:
         return -1
@@ -1955,6 +1970,7 @@ def ffi_immortus_chain_append(
         mediator=mediator, mediator_source=mediator_source,
         node_type=node_type, topic_domain=topic_domain,
         execution_domain=execution_domain,
+        role=role, content=content,
     )
 
 

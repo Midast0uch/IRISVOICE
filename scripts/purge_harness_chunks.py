@@ -11,9 +11,17 @@ import sys
 
 sys.path.insert(0, r"C:\dev\IRISVOICE")
 
-DB = r"D:\IRIS\store\memory.db"
+from backend.memory.config import resolve_memory_store_path  # noqa: E402
+
+DB = str(resolve_memory_store_path())
 WHERE = ("session_id LIKE 'de-%' OR session_id LIKE 'eval-%' "
          "OR session_id LIKE 's365%' OR session_id LIKE 'ct-%' OR session_id IN ('r1','g1')")
+# T44 (REQ-12 AC7): the same harness ids also sit in the Immortus chain, where
+# they crowd the recall candidate pool (24 rows) with eval transcripts. The
+# chain keys on thread_id, not session_id.
+CHAIN_WHERE = ("thread_id LIKE 'de-%' OR thread_id LIKE 'eval-%' "
+               "OR thread_id LIKE 's365%' OR thread_id LIKE 'ct-%' "
+               "OR thread_id IN ('r1','g1')")
 
 
 def main(apply: bool) -> dict:
@@ -31,13 +39,24 @@ def main(apply: bool) -> dict:
     ids = [r[0] for r in con.execute(
         f"SELECT rowid FROM context_chunks WHERE {WHERE}")]
     out["tagged"] = len(ids)
+    try:
+        chain_ids = [r[0] for r in con.execute(
+            f"SELECT rowid FROM memory_chain WHERE {CHAIN_WHERE}")]
+    except Exception:  # noqa: BLE001 - table may not exist in an older store
+        chain_ids = []
+    out["tagged_chain"] = len(chain_ids)
     if not apply:
         out["would_delete"] = len(ids)
+        out["would_delete_chain"] = len(chain_ids)
         return out
 
     for part in range(0, len(ids), 500):
         chunk = ids[part:part + 500]
         app_write(con, f"DELETE FROM context_chunks WHERE rowid IN "
+                       f"({','.join('?' * len(chunk))})", chunk)
+    for part in range(0, len(chain_ids), 500):
+        chunk = chain_ids[part:part + 500]
+        app_write(con, f"DELETE FROM memory_chain WHERE rowid IN "
                        f"({','.join('?' * len(chunk))})", chunk)
     # derived rows for the same sessions go too (thread_context is rebuildable)
     try:

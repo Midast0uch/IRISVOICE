@@ -839,8 +839,11 @@ class MyceliumInterface:
             render_order = self._spaces.render_order
 
             target_spaces = space_subset if space_subset else list(render_order)
+            # REQ-13 AC3: a space without a render position (toolpath) or outside
+            # the resonance set never enters the prompt profile.
+            resonant = self._spaces.resonance_spaces
             ordered_spaces = sorted(
-                (s for s in target_spaces if s in render_order),
+                (s for s in target_spaces if s in render_order and s in resonant),
                 key=lambda s: render_order[s],
             )
             sections = []

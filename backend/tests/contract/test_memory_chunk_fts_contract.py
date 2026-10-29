@@ -282,3 +282,74 @@ def test_adversarial_queries_return_a_list_and_never_raise(tmp_path, query):
     assert con.execute("SELECT count(*) FROM context_chunks").fetchone()[0] == 1
     con.close()
 
+
+
+# ── WAVE 10 (2026-10-29): at most ONE keyword slot, never the whole window ───
+# REQ-3 AC2 / T38. The old `scored = _kw_rows + _rest` put up to 50 FTS OR-hits
+# ahead of every semantic candidate. With 12 keyword rows at cosine 0.30 and 6
+# semantic rows at 0.90, `limit=6` returned SIX keyword rows and zero answers.
+# This test fails on that code and passes on the single-slot guarantee.
+
+def _w10_kw_store(tmp_path):
+    import numpy as _np
+    from backend.memory import recall_reach, vector_quant
+    from backend.memory.embedding import Embedding
+    from backend.memory.episodic import EpisodicStore
+
+    st = EpisodicStore(db_path=str(tmp_path / "kw10.db"), biometric_key=b"\0" * 32)
+    q = _np.zeros(1024, dtype=_np.float32)
+    q[0] = 1.0
+    e1 = _np.zeros(1024, dtype=_np.float32)
+    e1[1] = 1.0
+    e2 = _np.zeros(1024, dtype=_np.float32)
+    e2[2] = 1.0
+    semantic = _np.sqrt(1.0 - 0.90 ** 2) * e1 + 0.90 * q     # cosine 0.90
+    keyword = _np.sqrt(1.0 - 0.30 ** 2) * e2 + 0.30 * q      # cosine 0.30
+
+    class _Stub:
+        @staticmethod
+        def encode_with_meta(text):
+            return Embedding(vector=q.tolist(), backend=BACKEND_LFM,
+                             chunk_count=1, truncated=False)
+
+    st._embed = _Stub()
+
+    def _add(cid, content, ts, vec):
+        fp, i8, scale = vector_quant.compress(vec)
+        st.db.execute(
+            "INSERT INTO context_chunks (id, session_id, chunk_type, zone, content,"
+            " embedding_backend, retrieval_count, timestamp, vec_i8, vec_fp, vec_scale)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (cid, "s", "context_fragment", "trusted", content, BACKEND_LFM, 0, ts,
+             i8, fp, scale))
+
+    for i in range(1, 7):      # the real answers
+        _add(f"sem{i}", f"semantic answer row {i}",
+             f"2026-10-20 00:00:0{i}", semantic)
+    for i in range(1, 13):     # exact-word rows, far weaker on meaning
+        _add(f"kw{i}", f"zebra protocol note {i}",
+             f"2026-10-10 00:00:{i:02d}", keyword)
+    st.db.commit()
+
+    idx = recall_reach.index_for(st.db_path, lambda: st.db)
+    import time as _time
+    t0 = _time.time()
+    while not idx._ready and _time.time() - t0 < 30.0:
+        _time.sleep(0.05)
+    assert idx._ready
+    return st
+
+
+def test_one_keyword_slot_never_evicts_the_semantic_top_k(tmp_path):
+    st = _w10_kw_store(tmp_path)
+    hits = st.retrieve_context_chunks(query="zebra protocol", limit=6)
+
+    assert len(hits) == 6
+    kw_hits = [h for h in hits if "zebra" in h]
+    sem_hits = [h for h in hits if "semantic" in h]
+    assert len(kw_hits) == 1, "at most ONE slot may be reserved for a keyword hit"
+    assert len(sem_hits) == 5, "the other limit-1 slots stay pure semantic winners"
+    # the newest five semantic rows win inside their band
+    assert set(sem_hits) == {f"semantic answer row {i}" for i in range(2, 7)}
+    # the single keyword slot carries the highest-scoring keyword survivor
+    assert kw_hits == ["zebra protocol note 12"]

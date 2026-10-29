@@ -62,6 +62,14 @@ set(IRIS_SOURCES
 
 add_library(iris_core SHARED ${SQLITE3_SOURCES} ${IRIS_SOURCES})
 
+# The app schema carries FTS5 (context_chunks_fts plus INSERT/UPDATE/DELETE
+# triggers on context_chunks). This bundled SQLite was compiled WITHOUT FTS5,
+# so the native writer's connection could not fire those triggers: every
+# INSERT INTO context_chunks failed inside the writer (counted as a failed
+# write, error only on stderr) while the Python connection, whose build has
+# FTS5, stored the row. Enabled at the target so sqlite3.c sees it.
+target_compile_definitions(iris_core PRIVATE SQLITE_ENABLE_FTS5)
+
 target_include_directories(iris_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3
     ${re2_SOURCE_DIR}
@@ -86,6 +94,7 @@ target_include_directories(iris_core_bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3
     ${re2_SOURCE_DIR}
 )
+target_compile_definitions(iris_core_bench PRIVATE SQLITE_ENABLE_FTS5)
 target_link_libraries(iris_core_bench PRIVATE re2::re2)
 if(WIN32)
     target_link_libraries(iris_core_bench PRIVATE psapi)
