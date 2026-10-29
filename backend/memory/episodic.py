@@ -163,14 +163,18 @@ class EpisodicStore:
     # 24h (0.607) - a broad mid-range recency gradient injects noise.
     _RECENCY_HALF_LIFE_HOURS: float = 168.0
 
-    # Fraction of final score that comes from recency vs. cosine similarity.
-    # 0.05 = 5% recency bonus, 95% semantic match. Measured 2026-10-28 on the
-    # live store (120 queries x 3 filters, delivered 6-slot window):
-    #   weight 0.20 -> research 0.771 / turn 0.883 / global 0.790
-    #   weight 0.05 -> research 0.867 / turn 0.957 / global 0.896
-    # The spec's own target is exact-cosine search, so the old weight put the
-    # delivered rank 0.21 below the target it was supposed to meet.
+    # Fraction of final score that came from recency in the OLD absolute blend.
+    # Kept as the reference point the bench compares against; it no longer
+    # decides the order (see _RECENCY_BAND).
     _RECENCY_WEIGHT: float = 0.05
+
+    # Comparative recency (2026-10-28, owner): order by a COSINE BAND first, then
+    # by freshness INSIDE the band. Two rows whose meaning is within 1% are a tie
+    # that age may break; a clear semantic winner is never displaced by a newer,
+    # worse row. The old absolute blend added w*recency to every row, so it
+    # reordered pairs whose cosine differed by up to w/(1-w) ~ 0.05 - dense at the
+    # top-k boundary - and cost 14 points against pure-cosine truth.
+    _RECENCY_BAND: float = 0.002
 
     # Chunks retrieved this many times are promoted to crystallization candidates.
     _CRYSTALLIZE_THRESHOLD: int = 5
@@ -1218,9 +1222,11 @@ class EpisodicStore:
                     age_hours = 0.0
                 recency = 1.0 / (1.0 + age_hours / self._RECENCY_HALF_LIFE_HOURS)
 
+                # Band * 10 + recency: ONE comparable float for every consumer
+                # (shadow rank, memory rank) that orders band-first. recency is
+                # in (0, 1], so bands never overlap.
                 combined = (
-                    sim     * (1.0 - self._RECENCY_WEIGHT)
-                    + recency * self._RECENCY_WEIGHT
+                    math.floor(sim / self._RECENCY_BAND) * 10.0 + recency
                 )
                 scored.append((combined, row[1], row[0]))
                 zone_of[row[0]] = row[5]

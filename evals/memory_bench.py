@@ -47,8 +47,17 @@ try:  # noqa: SIM105 - the bench must still run if the module cannot import
     from backend.memory.episodic import EpisodicStore as _EpisodicStore  # noqa: E402
     LIVE_RECENCY_WEIGHT = float(_EpisodicStore._RECENCY_WEIGHT)
     LIVE_HALF_LIFE_H = float(_EpisodicStore._RECENCY_HALF_LIFE_HOURS)
+    LIVE_BAND = float(_EpisodicStore._RECENCY_BAND)
 except Exception:  # noqa: BLE001
-    LIVE_RECENCY_WEIGHT, LIVE_HALF_LIFE_H = 0.05, 168.0
+    LIVE_RECENCY_WEIGHT, LIVE_HALF_LIFE_H, LIVE_BAND = 0.05, 168.0, 0.01
+
+
+def _shipped_score(sims, rec):
+    """The ranker episodic.py actually applies: cosine band first, recency inside.
+
+    Scalar or numpy in, same shape out. One definition for the bench and the code.
+    """
+    return np.floor(np.asarray(sims, dtype=np.float64) / LIVE_BAND) * 10.0 + rec
 
 
 def _recency(ts) -> float:
@@ -318,17 +327,15 @@ def main() -> int:
             # recall@10_new was a ceiling, not the number the model receives.
             # The constants are imported, never copied, so this column cannot
             # drift from the code it measures.
-            live_top = sorted(cand, key=lambda i: -(
-                float(sims[i]) * (1.0 - LIVE_RECENCY_WEIGHT)
-                + _recency(meta[i][4]) * LIVE_RECENCY_WEIGHT
-            ))[:K]
+            live_top = sorted(cand, key=lambda i: -float(
+                _shipped_score(sims[i], _recency(meta[i][4]))))[:K]
             r_live.append(len(truth & set(live_top)) / len(truth))
             # THE 1.0 THAT MATTERS: truth is the SHIPPED scorer applied to every
             # row of the filter, not pure cosine. "recall 1.0" then means the
             # candidate stage loses nothing the shipped ranker would have chosen,
             # which is the only definition that can reach 1.0 while keeping the
             # recency blend. Cosine truth caps it by design.
-            _ship = sims * (1.0 - LIVE_RECENCY_WEIGHT) + _rec_all * LIVE_RECENCY_WEIGHT
+            _ship = _shipped_score(sims, _rec_all)
             _truth_ship = set(np.flatnonzero(allowed)[
                 np.argsort(-_ship[allowed])[:K]].tolist())
             if _truth_ship:

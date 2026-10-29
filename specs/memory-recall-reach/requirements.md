@@ -58,15 +58,21 @@ Built 2026-10-27: `backend/memory/recall_reach.py`, `episodic.py` reach path.
   dimension, the sign of each component; 128 bytes at 1024-d) in RAM, bounded to FP_MAX_ROWS.
 - AC2: WHEN a recall runs THEN THE SYSTEM SHALL score exactly the M rows nearest the
   query by fingerprint within the filter (session, chunk types, zones, same embedding backend)
-  plus the newest 50 rows of the filter, with the existing blend (cosine × (1 − w) + recency
-  × w). **M = 500 since 2026-10-28** (was 200; the value is a measured lever, not a constant
-  of nature): recall@10 200 → 500 = research 0.9742 → 0.9950, turn 0.9983 → **1.0000**,
-  global 0.9650 → 0.9875; at M = 1000 research reaches **1.0000** and global 0.9975. The
-  scan is O(rows) regardless of M; only the exact rescore grows. **Measured 2026-10-28:
-  w = 0.05, half-life 168 h** (`episodic.py:160-174`). At the old 0.20 / 24 h the DELIVERED
-  rank sat 0.21 below the exact-cosine target (0.771 / 0.883 / 0.790 vs 0.9742 / 0.9983 /
-  0.9625). The bench reports `recall@10_live` beside `recall@10_new`, so this AC is checked
-  against what the model receives, not a ceiling.
+  plus the newest 50 rows of the filter, with **comparative recency**: order by a cosine
+  BAND first, then by freshness inside the band (`_RECENCY_BAND = 0.002`, half-life 168 h).
+  A near-tie in meaning is broken by age; a clear semantic winner is never displaced.
+  **Measured 2026-10-28 (120 queries, M = 500):**
+
+  | ranker | live (vs exact cosine) | shipped (vs the ranker applied exactly) |
+  |---|---|---|
+  | absolute blend w=0.05 | 0.8767 / 0.9475 / 0.8817 | 0.9975 / 1.0000 / 0.9900 |
+  | band 0.01 | 0.8833 / 0.9442 / 0.9167 | 0.9983 / 0.9975 / 0.9825 |
+  | **band 0.002 (shipped)** | **0.9658 / 0.9867 / 0.9692** | 0.9950 / 0.9967 / 0.9892 |
+  | band -> 0 | = ceiling 0.9950 / 1.0000 / 0.9875 | - (no recency) |
+
+  So the band width is the dial between "agrees with exact search" and "recency decides".
+  At 0.002 both hold above 0.96, which is the owner's "we can have both". M = 500 (was 200:
+  0.9742 / 0.9983 / 0.9650 -> 0.9950 / 1.0000 / 0.9875).
 - AC3: WHEN chunks are written after the index was built THEN THE SYSTEM SHALL add them at
   the next recall, each row once.
 - AC4: WHILE the index warms or IF it fails THEN THE SYSTEM SHALL use the newest-200 path and
