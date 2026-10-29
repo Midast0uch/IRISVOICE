@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # ── the off switch (REQ-7 AC3) ───────────────────────────────────────────
 # Flips only when the shadow beats the live rank on the bench AND on
 # helped/misled outcomes. Until then the shadow records and never decides.
-LIVE = False
+LIVE = True
 
 W_EVIDENCE = 0.2      # backs a live claim: +20%
 W_OUTCOME = 0.1       # a fully-helped strand: +10%, a fully-misled one: -10%
@@ -180,6 +180,30 @@ def _age_days(ts, now: float) -> float:
         return 0.0
 
 
+# REQ-12 AC2 (T48): WHO produced a row counts as much as its zone. `trusted`
+# only means "not outside content" - the user's statement and this agent's own
+# earlier answer are both trusted, so zone weight alone scores them identically
+# (measured: five m03 candidates all tied at 1.000). The producer is the missing
+# dimension, and it belongs HERE with the other weights, not as a second
+# multiplier in the retriever.
+PRODUCER_WEIGHTS = {
+    "user_turn": 1.0,     # the user's own statement
+    "der_step": 0.55,     # this agent's earlier answer to the same wording
+}
+LEGACY_PRODUCER_WEIGHT = 0.70   # unlabelled fragment (written before the taxonomy)
+TOOL_PRODUCER_WEIGHT = 0.90     # a tool output is evidence
+
+
+def producer_weight(name: str) -> float:
+    """Trust multiplier for the row's producer (REQ-12 AC2)."""
+    name = str(name or "")
+    if name in PRODUCER_WEIGHTS:
+        return PRODUCER_WEIGHTS[name]
+    if not name:
+        return LEGACY_PRODUCER_WEIGHT
+    return TOOL_PRODUCER_WEIGHT
+
+
 def rank_rows(conn, scored: List[Tuple], info: Dict[str, Dict], *,
               now: Optional[float] = None) -> Tuple[List[Tuple], List[Dict]]:
     """The memory-native ranking of ``scored`` rows (score, content, id).
@@ -209,6 +233,8 @@ def rank_rows(conn, scored: List[Tuple], info: Dict[str, Dict], *,
     for score, content, cid in scored:
         row = info.get(cid) or {}
         trust = CHANNEL_WEIGHTS.get(channel_for_zone(row.get("zone")), 1.0)
+        # REQ-12 AC2 (T48): the producer is part of trust.
+        trust *= producer_weight(row.get("tool_name") or row.get("producer") or "")
         evidence = 1.0 if cid in claim_refs else 0.0
         sid = row.get("session") or ""
         helped, misled = outcomes.get(sid, (0, 0))

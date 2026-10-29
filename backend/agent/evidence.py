@@ -190,6 +190,73 @@ def _working_mem(memory_interface: Any, session_id: str, limit: int = 3) -> List
         return []
 
 
+def _user_half(text: str) -> str:
+    """The USER's words from a stored turn pair ("User: …\\nAssistant: …").
+
+    A turn pair is two statements by two producers. Marking the whole row
+    ``user_turn`` made the label lie: the block said "the user stated" over the
+    agent's own answer, so the step read its earlier refusal as the user's words
+    and repeated it ("… I couldn't recall it …" became the top memory row).
+    """
+    t = (text or "").replace("\r", "")
+    if t.startswith("User:"):
+        t = t[len("User:"):]
+    cut = t.find("\nAssistant:")
+    if cut != -1:
+        t = t[:cut]
+    return t.strip()
+
+
+def _memory_facts(goal: str, memory_interface: Any, limit: int = 8) -> str:
+    """What was actually SAID, with its producer (REQ-12 AC2, T48).
+
+    The step prompt is built from this block - ``item.coordinate_signal`` is not
+    in it (``assemble_evidence`` replaced it: see this module's docstring), so a
+    fact appended there never reaches the model.
+
+    ``trusted`` only means "not outside content". The label says whether the row
+    is the user's own statement, this agent's earlier answer, or a tool output,
+    so the step can weigh them instead of treating an echo as evidence.
+    """
+    episodic = getattr(memory_interface, "episodic", None)
+    if episodic is None or not (goal or "").strip():
+        return ""
+    try:
+        rows = episodic.retrieve_context_chunks(
+            goal,
+            session_id=None,
+            limit=limit,
+            min_similarity=0.35,
+            chunk_types=["context_fragment"],
+            zones=["trusted"],
+            with_meta=True,
+        ) or []
+    except Exception as exc:  # noqa: BLE001 - memory never blocks a step
+        logger.debug("[evidence] memory facts failed: %s", exc)
+        return ""
+    labels = {"user_statement": "the user stated", "agent_step": "your earlier answer"}
+    parts: List[str] = []
+    used = 0
+    for row in sorted(rows, key=lambda r: 0 if r.get("producer") == "user_statement" else 1):
+        producer = row.get("producer")
+        raw = str(row.get("content") or "")
+        if producer == "user_statement":
+            # only the user's own words: never the agent's reply, which may be
+            # the very refusal this step is trying to avoid repeating. Split
+            # BEFORE collapsing newlines or the "Assistant:" marker is lost.
+            raw = _user_half(raw)
+        text = raw.strip().replace("\n", " ")
+        if not text:
+            continue
+        label = labels.get(producer, str(producer or "memory"))
+        item = f"[{label}] {text[:240]}"
+        if used + len(item) > 420:      # bounded: ~100 tokens, like the rest
+            break
+        parts.append(item)
+        used += len(item)
+    return " | ".join(parts)
+
+
 def assemble_evidence(
     goal: str,
     session_id: str,
@@ -219,6 +286,7 @@ def assemble_evidence(
         contracts = _contracts(memory_interface, session_id)
         wm = _working_mem(memory_interface, session_id)
         state = _safe_state_summary(session_id)
+        facts = _memory_facts(goal, memory_interface)
 
         lines: List[str] = ["```evidence"]
         lines.append("PREDICTED NEXT : " + (", ".join(predicted) if predicted else "n/a"))
@@ -228,6 +296,8 @@ def assemble_evidence(
         lines.append(
             "WORKING MEM    : " + (" | ".join(wm) if wm else "n/a")
         )
+        if facts:
+            lines.append("MEMORY         : " + facts)
         lines.append(f"(u,xi)         : {state}")
         lines.append("```")
         return "\n".join(lines)

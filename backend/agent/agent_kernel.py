@@ -11653,10 +11653,29 @@ Respond with a JSON object:
                                 min_similarity=0.35,
                                 chunk_types=["context_fragment"],
                                 zones=["trusted"],
+                                with_meta=True,
                             ) or []
+                            # REQ-12 AC2 (T48): `trusted` only means "not outside
+                            # content". Each row carries its PRODUCER, so the step
+                            # can weigh the user's statement above this agent's
+                            # own earlier answer instead of treating them alike.
+                            _LABELS = {
+                                "user_statement": "the user stated",
+                                "agent_step": "your earlier answer",
+                            }
+                            _ch_rows = sorted(
+                                _ch_rows,
+                                key=lambda r: 0 if r.get("producer") == "user_statement" else 1,
+                            )
                             _ch_txt = "\n- ".join(
-                                str(c).strip()[:300].replace("\n", " ")
-                                for c in _ch_rows if str(c).strip()
+                                "[{}] {}".format(
+                                    _LABELS.get(
+                                        r.get("producer"),
+                                        str(r.get("producer") or "memory").replace("tool:", "tool "),
+                                    ),
+                                    str(r.get("content") or "").strip()[:300].replace("\n", " "),
+                                )
+                                for r in _ch_rows if str(r.get("content") or "").strip()
                             )
                             if _ch_txt:
                                 _prior_ch = getattr(item, "coordinate_signal", "") or ""

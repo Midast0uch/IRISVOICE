@@ -333,6 +333,57 @@ def _is_error_reply(text: str) -> bool:
     return not head or any(head.startswith(m) or m in head[:80] for m in _ERROR_REPLY_MARKERS)
 
 
+def _retire_taught_facts(fact_template: str) -> int:
+    """Delete EARLIER runs' copies of this task's fact from the app store.
+
+    The memory group is a RECALL test. Each run teaches a fact into the same
+    persistent store and never retired the previous one, so the store piled up
+    near-identical facts (measured 2026-10-29: 14 live `fern-green`, 11
+    `kestrel-blue`, 20 `880417`) and the gate's result depended on how many
+    prior runs existed - six runs on one commit gave 2/3, 2/3, 1/3, 0/3, 1/3,
+    1/3. m02's fact is a FIXED number, so it could never be anything else.
+
+    The template identifies the fact: `kestrel-blue-{run}` and
+    `fern-green-{run}` keep a stable prefix; `880417` is the whole fact.
+    Never raises - a failed retirement only makes the run noisier.
+    """
+    prefix = fact_template.split("{run}")[0] or fact_template
+    if len(prefix) < 5:
+        return 0
+    like = f"%{prefix}%"
+    try:
+        # `python evals\run_evals.py` puts evals/ on sys.path, not the repo root.
+        _root = str(Path(__file__).resolve().parents[1])
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+
+        from backend.memory.config import resolve_memory_store_path
+        from backend.memory.db import app_flush, app_write
+        from backend.memory.episodic import EpisodicStore
+
+        st = EpisodicStore(db_path=str(resolve_memory_store_path()),
+                           biometric_key=b"\0" * 32)
+        removed = 0
+        ids = [r[0] for r in st.db.execute(
+            "SELECT rowid FROM context_chunks WHERE content LIKE ?", (like,))]
+        for i in range(0, len(ids), 500):
+            part = ids[i:i + 500]
+            app_write(
+                st.db,
+                "DELETE FROM context_chunks WHERE rowid IN "
+                f"({','.join('?' * len(part))})", part)
+            removed += len(part)
+        app_write(
+            st.db,
+            "DELETE FROM memory_chain WHERE insight LIKE ? OR result LIKE ? "
+            "OR content LIKE ?", (like, like, like))
+        app_flush(10.0)
+        return removed
+    except Exception as exc:  # noqa: BLE001 - never fail a run for hygiene
+        log.warning("retire facts failed for %r: %r", fact_template, exc)
+        return 0
+
+
 def _check_patterns(task: dict, text: str) -> list:
     missing = []
     for pattern in task.get("reply_patterns") or []:
@@ -460,6 +511,9 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                     ],
                 }
                 log.info("    fresh fact for %s", task["id"])
+                _retired = _retire_taught_facts(str(task["fact"]))
+                if _retired:
+                    log.info("    retired %d earlier %s rows", _retired, task["id"])
 
             started = time.monotonic()
             conv_id = None

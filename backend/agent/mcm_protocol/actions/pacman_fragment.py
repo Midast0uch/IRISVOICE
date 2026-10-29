@@ -281,6 +281,11 @@ def submit_turn_pair(
             store.fragment_and_store(
                 _turn, session_id=_sid, chunk_type="context_fragment",
                 zone=zone, keep_float=False,
+                # REQ-12 AC2 (T48): the producer IS the difference between the
+                # user's statement and this agent's own earlier answer. Both are
+                # context_fragment/trusted, so without this marker recall cannot
+                # tell them apart and a step answers from its own echo.
+                tool_name="user_turn",
             )
         except Exception as exc:  # noqa: BLE001 - bookkeeping never escalates
             logger.error("[pacman_fragment] TURN PAIR store failed: %r", exc)
@@ -338,7 +343,12 @@ def execute(ctx: dict, params: dict) -> dict:
                     session_id=session_id,
                     chunk_type=chunk_type,
                     zone=zone,
-                    tool_name=tool_name or None,
+                    # REQ-12 AC2 (T48): record the PRODUCER. A step fragment
+                    # with no tool used to be indistinguishable from a user
+                    # turn (both context_fragment/trusted), so recall could not
+                    # tell the user's statement from this agent's own earlier
+                    # answer - and the step answered from its own echo.
+                    tool_name=tool_name or "der_step",
                 )
                 logger.debug(
                     "[pacman_fragment] stored %s fragment (%d chars)",

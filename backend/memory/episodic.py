@@ -8,6 +8,7 @@ Embeddings are stored as binary (struct.pack format) with transparent JSON fallb
 
 import json
 import logging
+import re
 import uuid
 import math
 import struct
@@ -29,6 +30,57 @@ from backend.memory.reindex import get_reindex_manager
 from backend.memory import vector_quant
 
 logger = logging.getLogger(__name__)
+
+
+# ── Fact identity (REQ-12 AC2) ───────────────────────────────────────────────
+# A re-taught fact must REPLACE the old one. Cosine cannot decide that: the two
+# live colour statements ("…fern-green-1a63…" / "…fern-green-ba25…") embed at
+# 0.8854, under the 0.92 fold threshold, so re-taught values accumulated (10+
+# live colour fragments and the memory eval answered their average).
+#
+# The rule is identity, not similarity: two statements are the SAME fact when
+# they read identically except at VALUE positions, where a value is a token
+# that carries a digit, or a token that directly follows a copula ("is named",
+# "is 880417", "= blue"). Two different questions that merely share a template
+# differ at non-value positions, so they never fold.
+_VALUE_COPULAS = frozenset({
+    "is", "are", "was", "were", "=", "named", "called", "equals",
+})
+_FACT_MIN_TOKENS = 8          # shorter sentences have no stable template
+_FACT_MAX_DIFF = 3            # a re-taught fact changes a value, not a clause
+_FACT_MIN_SAME = 0.85         # share of positions that must be identical
+
+
+def _fact_tokens(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _is_value_position(tokens: List[str], i: int) -> bool:
+    """True when position ``i`` holds a value (what a re-teach replaces)."""
+    tok = tokens[i]
+    if any(ch.isdigit() for ch in tok):
+        return True
+    return i > 0 and tokens[i - 1] in _VALUE_COPULAS
+
+
+def _same_fact_text(a: str, b: str) -> bool:
+    """Two statements of the same fact with a different value."""
+    ta, tb = _fact_tokens(a), _fact_tokens(b)
+    if len(ta) < _FACT_MIN_TOKENS or len(tb) < _FACT_MIN_TOKENS:
+        return False
+    if abs(len(ta) - len(tb)) > 1:
+        return False
+    n = min(len(ta), len(tb))
+    diff = [i for i in range(n) if ta[i] != tb[i]]
+    if not diff or len(diff) > _FACT_MAX_DIFF:
+        return False
+    if (n - len(diff)) / n < _FACT_MIN_SAME:
+        return False
+    # every difference must be a VALUE position on at least one side, in the
+    # same place: "…is 880417" -> "…is 999111", never two different questions.
+    return all(
+        _is_value_position(ta, i) or _is_value_position(tb, i) for i in diff
+    )
 
 
 def _pack_embedding(vec: List[float]) -> bytes:
@@ -1025,6 +1077,16 @@ class EpisodicStore:
                             dup_ids = [row[0]]
                             exact_repeat = True
                             break
+                        # REQ-12 AC2 (T48): the SAME fact with a new VALUE is a
+                        # supersede even when cosine stays under the threshold
+                        # (measured 0.8854 on the live colour statements). This
+                        # runs first and needs no embedding.
+                        if (
+                            chunk_type == "context_fragment"
+                            and _same_fact_text(chunk, str(row[1] or ""))
+                        ):
+                            dup_ids.append(row[0])
+                            continue
                         # REQ-4 AC1: the float may be gone; the int8 code stands for it
                         stored_emb = vector_quant.vector_of(row[2], row[4], row[5])
                         stored_backend = row[3] or BACKEND_BGE
@@ -1165,7 +1227,8 @@ class EpisodicStore:
         since: Optional[Any] = None,
         until: Optional[Any] = None,
         tool_name: Optional[str] = None,
-    ) -> List[str]:
+        with_meta: bool = False,
+    ) -> List[Any]:
         """
         Retrieve the most semantically relevant context chunks for a query.
 
@@ -1421,6 +1484,8 @@ class EpisodicStore:
                 _rank_info[cid] = {
                     "zone": row[_C_ZONE], "session": row[_C_SESSION],
                     "retrieval_count": row[_C_RC], "timestamp": row[_C_TS],
+                    # REQ-12 AC2 (T48): the rank weights the producer.
+                    "tool_name": row[_C_TOOL],
                 }
             except Exception:
                 continue
@@ -1464,9 +1529,22 @@ class EpisodicStore:
                     f"SELECT id, content FROM context_chunks WHERE id IN ({_ph})",
                     [cid for _, _, cid in top],
                 ).fetchall())
+                # REQ-12 AC2 (T48): provenance travels with the text. `trusted`
+                # only means "not outside content" - it says nothing about
+                # whether a row is the user's statement, this agent's own
+                # earlier answer, or a tool output. The consumer weights it.
+                _meta_of = {
+                    _r[0]: (_r[1], _r[2])
+                    for _r in self.db.execute(
+                        f"SELECT id, chunk_type, tool_name FROM context_chunks "
+                        f"WHERE id IN ({_ph})",
+                        [cid for _, _, cid in top],
+                    ).fetchall()
+                }
             except Exception as _pc_exc:  # noqa: BLE001 - never fail a recall here
                 logger.warning("[EpisodicStore] content fetch failed: %s", _pc_exc)
                 _content_of = {}
+                _meta_of = {}
             top = [(s, _content_of[cid], cid) for s, _, cid in top
                    if cid in _content_of]
 
@@ -1488,6 +1566,28 @@ class EpisodicStore:
             top = _kept
 
         results = [content for _, content, _ in top]
+
+        if with_meta:
+            # The consumer decides what to trust: the producer taxonomy is
+            # returned with the text, so the prompt can say "your earlier
+            # answer" vs "the user said" instead of guessing from wording.
+            def _producer(_cid):
+                _ct, _tn = (_meta_of.get(_cid) or ("", None))
+                if _tn == "user_turn":
+                    return "user_statement"
+                if _tn == "der_step" or _tn is None:
+                    return "agent_step"
+                return f"tool:{_tn}"
+
+            return [
+                {
+                    "content": content,
+                    "chunk_type": (_meta_of.get(cid) or ("", None))[0],
+                    "producer": _producer(cid),
+                    "score": float(score),
+                }
+                for score, content, cid in top
+            ]
 
         # Increment retrieval_count for returned chunks (usage tracking for decay/crystallization)
         retrieved_ids = [chunk_id for _, _, chunk_id in top]

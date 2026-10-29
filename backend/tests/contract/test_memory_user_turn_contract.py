@@ -28,7 +28,10 @@ class _Stub:
         elif "kestrel" in text:
             v[3] = 1.0
         else:
-            v[4] = 1.0
+            # A bag of characters, not one shared slot: two unrelated texts must
+            # not look like a cosine duplicate, or the fold eats a real row.
+            for i, ch in enumerate(text[:200]):
+                v[(ord(ch) + i) % 1024] += 1.0
         v /= np.linalg.norm(v)
         return Embedding(vector=v.tolist(), backend=BACKEND_LFM,
                          chunk_count=1, truncated=False)
@@ -180,3 +183,145 @@ def test_turn_entry_and_pair_are_noops_without_memory():
     assert pf.submit_user_turn_entry(None, "s1", "hello there") is False
     assert pf.submit_turn_pair(None, "s1", "hello there", "hi") is False
     assert pf.submit_turn_pair(object(), "s1", "", "hi") is False
+
+
+# ── CT-W10-11 (T48): fact identity, not cosine similarity ───────────────────
+
+def test_fact_identity_table():
+    """Supersede is an IDENTITY question: same statement, new value.
+
+    Cosine cannot answer it (the live colour pair embeds at 0.8854, under the
+    0.92 threshold), so the rule compares positions and accepts a difference
+    only at a VALUE position - a token carrying a digit, or a token that
+    directly follows a copula.
+    """
+    from backend.memory.episodic import _same_fact_text
+
+    cases = [
+        # (description, a, b, same fact?)
+        ("colour re-teach",
+         "User: I prefer the color fern-green-1a63 for status indicators. "
+         "Just acknowledge it briefly.",
+         "User: I prefer the color fern-green-ba25 for status indicators. "
+         "Just acknowledge it briefly.", True),
+        ("card number re-teach",
+         "User: my library card number is 880417. Assistant: saved.",
+         "User: my library card number is 999111. Assistant: saved.", True),
+        ("natural colour word after a copula",
+         "my favourite colour is blue for status chips",
+         "my favourite colour is green for status chips", True),
+        ("two different questions sharing a template",
+         "User: What is my library card number? Answer with the number only.",
+         "User: Which color do I prefer for status indicators? "
+         "Answer with the color only.", False),
+        ("two different facts",
+         "User: my library card number is 880417 and it lives in the blue wallet.",
+         "User: my staging deployment is named kestrel and it lives in eu-west.",
+         False),
+        ("the same text is not a re-teach",
+         "my library card number is 880417 and it is saved",
+         "my library card number is 880417 and it is saved", False),
+        ("too short to have a template",
+         "my name is Ada", "my name is Bob", False),
+    ]
+    for name, a, b, want in cases:
+        assert _same_fact_text(a, b) is want, name
+
+
+def test_a_retaught_value_folds_below_the_cosine_threshold(monkeypatch, tmp_path):
+    """The fold must not depend on cosine: with the comparison forced to 0.5
+    (well under the 0.92 threshold) the re-taught value still supersedes."""
+    import backend.memory.episodic as ep
+    from backend.memory.episodic import EpisodicStore
+
+    st = EpisodicStore(db_path=str(tmp_path / "fold.db"), biometric_key=b"\0" * 32)
+    st._embed = _Stub()
+    monkeypatch.setattr(ep, "compare_embeddings", lambda *a, **k: 0.5)
+
+    old = ("User: I prefer the color fern-green-1a63 for status indicators. "
+           "Just acknowledge it briefly.")
+    new = ("User: I prefer the color fern-green-ba25 for status indicators. "
+           "Just acknowledge it briefly.")
+    st.fragment_and_store(old, session_id="conv-old", chunk_type="context_fragment")
+    st.fragment_and_store(new, session_id="conv-new", chunk_type="context_fragment")
+
+    rows = st.db.execute(
+        "SELECT id, content, folded_into FROM context_chunks ORDER BY timestamp"
+    ).fetchall()
+    assert len(rows) == 2
+    old_id, old_txt, old_folded = rows[0]
+    new_id, _new_txt, new_folded = rows[1]
+    assert "1a63" in old_txt
+    assert new_folded is None, "the newest value stays live"
+    assert old_folded == new_id, "the re-taught value must supersede the old one"
+    assert _live(st) == 1
+
+
+# ── CT-W10-12 (T48): recall returns the PRODUCER, not just the text ─────────
+
+def test_recall_carries_the_producer_taxonomy(store):
+    """`trusted` means "not outside content", nothing more. The consumer needs
+    to know whether a row is the user's statement, this agent's own earlier
+    answer, or a tool output - otherwise it answers from its own echo."""
+    store.fragment_and_store(
+        "User: my library card number is 880417. Assistant: saved.",
+        session_id="s", chunk_type="context_fragment", tool_name="user_turn")
+    store.fragment_and_store(
+        "[Step 1: Recall my library card number from memory] I cannot provide it.",
+        session_id="s", chunk_type="context_fragment", tool_name="der_step")
+    store.fragment_and_store(
+        "[Step 1: grep 880417 in config.json] match on line 12",
+        session_id="s", chunk_type="der_output", tool_name="run_command")
+
+    rows = store.retrieve_context_chunks(
+        "Recall my library card number from memory",
+        session_id=None, limit=3, min_similarity=-1.0, with_meta=True)
+
+    producers = {r["producer"] for r in rows}
+    assert "user_statement" in producers
+    assert "agent_step" in producers
+    assert "tool:run_command" in producers
+    for r in rows:
+        assert r["content"] and r["chunk_type"]
+
+
+def test_recall_still_returns_plain_text_by_default(store):
+    store.fragment_and_store(
+        "User: my library card number is 880417. Assistant: saved.",
+        session_id="s", chunk_type="context_fragment", tool_name="user_turn")
+
+    rows = store.retrieve_context_chunks(
+        "my library card number", session_id=None, limit=3, min_similarity=-1.0)
+
+    assert rows and all(isinstance(r, str) for r in rows)
+
+
+def test_a_step_fragment_without_a_tool_is_marked_der_step(tmp_path):
+    """The write-side half: a step output must not look like a user turn."""
+    from types import SimpleNamespace
+
+    from backend.agent.mcm_protocol.actions import pacman_fragment as pf
+    from backend.memory.episodic import EpisodicStore
+
+    class _Stub:
+        @staticmethod
+        def encode_with_meta(text):
+            from backend.memory.embedding import Embedding
+
+            return Embedding(vector=[0.1] * 1024, backend="stub",
+                             chunk_count=1, truncated=False)
+
+    st = EpisodicStore(db_path=str(tmp_path / "step.db"), biometric_key=b"\0" * 32)
+    st._embed = _Stub()
+    mi = SimpleNamespace(episodic=st)
+
+    pf.execute({"mi": mi, "session_id": "s", "tool_name": "",
+                "response_text": (
+                    "[Step 1] def parse(x): return x  # function completed, "
+                    "the file was written and the result is ready for review")},
+               {})
+    pf._FRAGMENT_QUEUE.join()
+
+    row = st.db.execute("SELECT content, tool_name FROM context_chunks").fetchone()
+    assert row is not None, "the step fragment must be stored"
+    assert row[1] == "der_step"
