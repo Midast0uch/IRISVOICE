@@ -231,6 +231,10 @@ def main() -> int:
         r_old, r_new, ms_old, ms_new = [], [], [], []
         r_mem = []
         r_live = []
+        # CEILING vs M: the candidate stage's reach is what caps recall@10. Same
+        # fingerprint scan, different top-M, so the curve is the honest answer to
+        # "can the ceiling rise without an exact scan?"
+        r_ceil = {_m: [] for _m in (200, 500, 1000)}
         ms_exact = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
@@ -247,6 +251,14 @@ def main() -> int:
                                  chunk_types=f.get("chunk_types"), zones=f.get("zones")) or []
             ms_new.append((time.perf_counter() - t) * 1e3)
             cand = set(newest50) | {pos[r] for r in near if r in pos}
+            for _m in r_ceil:
+                _near = near if _m == 200 else (
+                    fp.candidates(con, qm.vector, qm.backend, session_id=session,
+                                  chunk_types=f.get("chunk_types"), zones=f.get("zones"),
+                                  m=_m) or [])
+                _c = set(newest50) | {pos[r] for r in _near if r in pos}
+                r_ceil[_m].append(
+                    len(truth & set(sorted(_c, key=lambda i: -sims[i])[:K])) / len(truth))
             new_top = sorted(cand, key=lambda i: -sims[i])[:K]
             r_old.append(len(truth & set(old_top)) / len(truth))
             r_new.append(len(truth & set(new_top)) / len(truth))
@@ -289,6 +301,8 @@ def main() -> int:
             "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
             "exact_scan_ms_p50": round(_pct(ms_exact, 50), 2) if ms_exact else None,
             "exact_scan_ms_p95": round(_pct(ms_exact, 95), 2) if ms_exact else None,
+            "ceiling_by_m": {str(_m): round(statistics.mean(r_ceil[_m]), 4)
+                             for _m in r_ceil if r_ceil[_m]},
             "recall@10_memory_rank": (round(statistics.mean([x for x in r_mem if x is not None]), 4)
                                        if any(x is not None for x in r_mem) else None),
             "candidate_ms_new_p50": round(_pct(ms_new, 50), 2) if ms_new else None,
