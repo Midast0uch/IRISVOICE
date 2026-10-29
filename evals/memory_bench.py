@@ -63,6 +63,50 @@ def _recency(ts) -> float:
         age = 0.0
     return 1.0 / (1.0 + age / LIVE_HALF_LIFE_H)
 
+
+# ── REQ-10: the phase plane, measured as a rank blend ────────────────────────
+PHASE_LAMBDAS = (0.05, 0.10)
+_PI = 3.141592653589793
+
+
+def _parse_coords(value):
+    try:
+        _x, _y, _xi, _u = (float(v) for v in str(value).split(","))
+        return _xi, _u
+    except Exception:  # noqa: BLE001 - quarantined rows read as absent
+        return None
+
+
+def _load_positions(con):
+    """rowid -> (xi, u) by INCIDENCE (chunk.session_id = chain.thread_id)."""
+    by_thread = {}
+    for tid, coords in con.execute(
+            "SELECT thread_id, coords_to FROM memory_chain WHERE coords_to LIKE '%,%,%,%'"):
+        p = _parse_coords(coords)
+        if p is not None:
+            by_thread[tid] = p
+    pos = {}
+    if by_thread:
+        for rid, sid in con.execute("SELECT rowid, session_id FROM context_chunks"):
+            p = by_thread.get(sid)
+            if p is not None:
+                pos[rid] = p
+    row = con.execute("SELECT coords_to FROM memory_chain WHERE coords_to LIKE '%,%,%,%' "
+                      "ORDER BY created_at DESC LIMIT 1").fetchone()
+    return pos, (_parse_coords(row[0]) if row else None)
+
+
+def _affinity(p, ref):
+    """1 - distance on the CONTINUOUS axes only (xi, u). None = ABSENT, not zero.
+
+    x and y are regime labels (17 and 43 distinct values measured 2026-10-28),
+    so they are never subtracted.
+    """
+    if p is None or ref is None:
+        return None
+    d = abs(p[0] - ref[0]) / _PI + abs(p[1] - ref[1]) / 2.0
+    return max(0.0, 1.0 - min(1.0, d))
+
 FILTERS = {
     # the three production callers (research_memory.py:482, agent_kernel.py:4046, recall_decoder.py:436)
     "research": {"chunk_types": ["research_summary"], "zones": ["reference"]},
@@ -200,6 +244,7 @@ def main() -> int:
     # The recency term for EVERY row, so the SHIPPED scorer can be applied
     # exactly and used as truth (REQ-6 AC1: measure the thing that runs).
     _rec_all = np.asarray([_recency(m[4]) for m in meta], dtype=np.float32)
+    _pos_all, _ref_pos = _load_positions(con)
     # newest-first order for the OLD path (timestamp DESC, as the SQL did)
     order = sorted(range(len(meta)), key=lambda i: meta[i][4], reverse=True)
 
@@ -239,6 +284,7 @@ def main() -> int:
         # "can the ceiling rise without an exact scan?"
         r_ceil = {_m: [] for _m in (200, 500, 1000)}
         r_shipped = []
+        r_phase = {_l: [] for _l in PHASE_LAMBDAS}
         ms_exact = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
@@ -287,6 +333,15 @@ def main() -> int:
                 np.argsort(-_ship[allowed])[:K]].tolist())
             if _truth_ship:
                 r_shipped.append(len(_truth_ship & set(live_top)) / len(_truth_ship))
+            # REQ-10: the DELIVERED rank blended with phase affinity. A row with
+            # no position keeps its pure blend score (absent is not zero), which
+            # is why a 0 % coverage filter is unaffected rather than corrupted.
+            _aff = {i: _affinity(_pos_all.get(int(ids[i])), _ref_pos) for i in cand}
+            for _lam in PHASE_LAMBDAS:
+                _pt = sorted(cand, key=lambda i: -(
+                    (float(sims[i]) * (1.0 - _lam) + _aff[i] * _lam)
+                    if _aff[i] is not None else float(sims[i])))[:K]
+                r_phase[_lam].append(len(truth & set(_pt)) / len(truth))
             # recall for an exact scan is 1.0 BY DEFINITION (truth is its own
             # output); what is unknown is the price, so that is what is timed.
             _t = time.perf_counter()
@@ -314,6 +369,11 @@ def main() -> int:
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
             "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
             "recall@10_shipped": round(statistics.mean(r_shipped), 4) if r_shipped else None,
+            "recall@10_phase": {f"{_l:.2f}": round(statistics.mean(r_phase[_l]), 4)
+                                for _l in PHASE_LAMBDAS if r_phase[_l]},
+            "phase_coverage": round(
+                sum(1 for _i in np.flatnonzero(allowed) if int(ids[_i]) in _pos_all)
+                / max(n_allowed, 1), 3),
             "exact_scan_ms_p50": round(_pct(ms_exact, 50), 2) if ms_exact else None,
             "exact_scan_ms_p95": round(_pct(ms_exact, 95), 2) if ms_exact else None,
             "ceiling_by_m": {str(_m): round(statistics.mean(r_ceil[_m]), 4)
