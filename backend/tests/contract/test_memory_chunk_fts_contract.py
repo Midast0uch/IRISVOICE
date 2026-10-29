@@ -155,7 +155,7 @@ def test_exact_words_reach_a_row_the_fingerprint_cannot(kwstore):
     con.execute("INSERT INTO context_chunks_fts(context_chunks_fts) VALUES('delete-all')")
     con.commit()
     without = st.retrieve_context_chunks(
-        query, session_id="sess-k", limit=600, min_similarity=-1.1
+            query, session_id="sess-k", limit=10, min_similarity=-1.1
     )
     assert "zebra protocol alpha" not in without
 
@@ -163,7 +163,7 @@ def test_exact_words_reach_a_row_the_fingerprint_cannot(kwstore):
     con.execute("INSERT INTO context_chunks_fts(context_chunks_fts) VALUES('rebuild')")
     con.commit()
     with_words = st.retrieve_context_chunks(
-        query, session_id="sess-k", limit=600, min_similarity=-1.1
+            query, session_id="sess-k", limit=10, min_similarity=-1.1
     )
     assert "zebra protocol alpha" in with_words
 

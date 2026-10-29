@@ -1132,6 +1132,7 @@ class EpisodicStore:
         query_embedding = meta.vector
         query_backend = meta.backend
 
+        _kw_ids = set()  # rowids the keyword leg returns (REQ-3 AC2)
         where_clauses: List[str] = []
         params_list: List[Any] = []
         if session_id:
@@ -1235,7 +1236,6 @@ class EpisodicStore:
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
         zone_of: Dict[str, Optional[str]] = {}
         _rank_info: Dict[str, Dict] = {}
-        _kw_ids = set()
         _is_kw = {}
         _since_t, _until_t = _ts_text(since), _ts_text(until)
         _bounded = bool(_since_t or _until_t or tool_name)
