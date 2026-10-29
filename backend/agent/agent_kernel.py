@@ -4099,6 +4099,7 @@ class AgentKernel:
                         _pm_line = (
                             _pm_r.get("insight")
                             or str(_pm_r.get("result") or "")[:240]
+                            or str(_pm_r.get("content") or "")[:240]
                         ).strip()
                         if not _pm_line:
                             continue

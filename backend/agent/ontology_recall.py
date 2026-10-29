@@ -157,6 +157,10 @@ def filtered_chain_recall(
             for c in (
                 "chain_id", "result", "node_type", "topic_domain",
                 "execution_domain", "insight", "created_at", "coords_from",
+                # the user's own statement lives in ``content`` - without it a
+                # taught fact ("my preferred colour is fern-green") is invisible
+                # to recall, because only the plan STEP rows carry ``insight``.
+                "content", "role",
             )
             if c in cols
         ]
@@ -550,6 +554,12 @@ def turn_start_prior_memory(conn, goal: str, thread_id: Optional[str] = None) ->
         # prefix_match: the user's question and the memory's phrasing of the
         # same fact rarely share exact word forms ("the name of" vs "is named")
         kept = relevance_gate(rows, goal, None, None, TURN_START_KEEP, prefix_match=True)
+        # A taught fact is the USER'S OWN statement. A plan step that merely
+        # repeats the question must never outrank it: on m03 the two kept rows
+        # were 'Recall the user's preferred color...' while the fact row
+        # ('my preferred colour is fern-green-8aa5') was dropped, so the model
+        # answered 'the tool returned no information' (measured 2026-10-28).
+        kept.sort(key=lambda r: 0 if str(r.get("role") or "") == "user" else 1)
         logger.info(
             "[turn_start_recall] cand=%d kept=%d ms=%.1f goal=%.60r",
             len(rows), len(kept), (time.perf_counter() - t0) * 1000.0, goal,
