@@ -94,56 +94,56 @@
   "recorded_at": "2026-09-30T06:51:24",
   "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards",
   "memory": {
-    "source": "memory-bench-20261028-222523.json",
+    "source": "memory-bench-20261028-223219.json",
     "filters": {
       "research": {
         "recall@10_new": 1.0,
-        "candidate_ms_new_p95": 2.5
+        "candidate_ms_new_p95": 2.71
       },
       "turn_trusted_tool": {
         "recall@10_new": 1.0,
-        "candidate_ms_new_p95": 2.29
+        "candidate_ms_new_p95": 3.01
       },
       "global": {
-        "recall@10_new": 0.9975,
-        "candidate_ms_new_p95": 8.83
+        "recall@10_new": 0.995,
+        "candidate_ms_new_p95": 5.04
       }
     },
     "words": {
       "cases": 10,
-      "reach_new": 0.8,
+      "reach_new": 0.9,
       "any_hit_new": 1.0,
       "unique_reach_new": 1.0,
-      "candidate_ms_p95": 161.85
+      "candidate_ms_p95": 61.89
     },
     "compression": {
       "der_output": {
-        "recall@10_float": 0.9742,
-        "recall@10_int8": 0.9742,
+        "recall@10_float": 0.93,
+        "recall@10_int8": 0.93,
         "delta": 0.0,
         "keep_float": false
       },
       "document_data": {
-        "recall@10_float": 0.9708,
-        "recall@10_int8": 0.9708,
+        "recall@10_float": 0.9825,
+        "recall@10_int8": 0.9825,
         "delta": 0.0,
         "keep_float": false
       },
       "context_fragment": {
-        "recall@10_float": 0.9875,
-        "recall@10_int8": 0.9875,
+        "recall@10_float": 0.9624,
+        "recall@10_int8": 0.9624,
         "delta": 0.0,
         "keep_float": false
       },
       "der_failure": {
-        "recall@10_float": 0.7688,
-        "recall@10_int8": 0.7688,
+        "recall@10_float": 0.8136,
+        "recall@10_int8": 0.8136,
         "delta": 0.0,
         "keep_float": false
       },
       "research_summary": {
-        "recall@10_float": 0.7115,
-        "recall@10_int8": 0.7115,
+        "recall@10_float": 0.7343,
+        "recall@10_int8": 0.7343,
         "delta": 0.0,
         "keep_float": false
       },
