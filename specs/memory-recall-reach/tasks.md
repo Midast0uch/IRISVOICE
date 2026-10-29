@@ -88,3 +88,12 @@ Boxes above are stale in three places. True state:
 - [ ] T32 incidence join, T34 key gap, T37 L1-as-region-scan: NOT done. Measured only (T32: 100% turn, 38.6% global); no production code uses L1 or the incidence join yet.
 - [ ] T4b scan-by-region: DEFERRED, bar met (10x scan p95 115.98 ms < 150 ms).
 - [ ] T29 file W2-W4 (blocked on packages), T30 file cold tier (approved, not built).
+
+## Status correction 2 (2026-10-28, later)
+- [x] T29 (REQ-9): W2 DONE - .pdf (pypdf), .docx (python-docx), .xlsx (openpyxl) extract, all through the one ingest path. W3 (OCR) and W4 (audio/video) remain: no OCR binary, no transcription route chosen.
+- [x] T30 (REQ-9 AC7): DONE - prune_to_budget evicts whole files to the budget, ensure() rebuilds from disk. Files are a cache; the filesystem is their cold tier.
+- [x] T34 (REQ-11 AC5): RESOLVED - the gap is population (6,514 eval-harness sessions vs 3,678 payload-free chain threads). thread_context.chain_linked records it: 376 of 8,098 sessions carry a real coordinate.
+- [x] T32 (REQ-10 AC2): CLOSED BY MEASUREMENT - the incidence join exists and is measured (100% turn, 376 sessions with coordinates). Not wired into recall because T33 rejected the blend it would feed.
+- [x] T33 (REQ-10 AC3): CLOSED NEGATIVE - lambda 0.05 costs global 7.8 points.
+- [x] T4b + T37 (REQ-1 AC6 / REQ-11 AC4): CLOSED AS NOT NEEDED NOW - region scan exists as data (L1, 17.7x) but the 10x scan p95 is 115.98 ms, under the 150 ms bar. Wiring L1 into recall today would be unused code; revisit at ~1M chunks.
+- [ ] T29 W3/W4 only (OCR, audio) remain open in REQ-9.
