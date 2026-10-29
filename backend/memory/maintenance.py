@@ -76,6 +76,17 @@ def maintain(conn, *, dry_run: bool = False, vacuum: bool = False) -> dict:
         box: dict = {}
         chunk_decay.decay_pass(box, conn, dry_run=dry_run)
         report["decay"] = box.get("result") or {}
+        # REQ-9 AC7: file text is a cache. The filesystem holds the truth while
+        # the hash matches, so file chunks are evicted to the budget and rebuilt
+        # on demand (file_ingest.ensure) instead of competing with conversation.
+        if not dry_run:
+            try:
+                from backend.memory import file_ingest  # noqa: PLC0415
+
+                report["files_evicted"] = file_ingest.prune_to_budget(conn)
+            except Exception as _f_exc:  # noqa: BLE001
+                report["files_evicted"] = 0
+                logger.debug("[maintenance] file eviction skipped: %r", _f_exc)
         if vacuum:
             report["reclaim"] = reclaim(conn, dry_run=dry_run)
         report["after"] = measure(conn)

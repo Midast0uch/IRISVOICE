@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS thread_context (
   centroid_fp    BLOB,
   centroid_scale REAL,
   digest_ref     TEXT,
+  chain_linked   INTEGER NOT NULL DEFAULT 0,
   updated_at     REAL NOT NULL
 )
 """
@@ -39,6 +40,9 @@ CREATE TABLE IF NOT EXISTS thread_context (
 
 def ensure_schema(conn) -> None:
     conn.execute(DDL)
+    _cols = {r[1] for r in conn.execute("PRAGMA table_info(thread_context)").fetchall()}
+    if _cols and "chain_linked" not in _cols:
+        conn.execute("ALTER TABLE thread_context ADD COLUMN chain_linked INTEGER NOT NULL DEFAULT 0")
     cols = {r[1] for r in conn.execute("PRAGMA table_info(episodes)").fetchall()}
     if cols:
         for name, decl in (("vec_i8", "BLOB"), ("vec_fp", "BLOB"), ("vec_scale", "REAL")):
@@ -84,6 +88,13 @@ def backfill(conn, *, dry_run: bool = True, episodes: bool = False) -> dict:
 
     sessions = conn.execute(
         "SELECT session_id, COUNT(*) FROM context_chunks GROUP BY session_id").fetchall()
+    # REQ-11 AC5: the key gap is a POPULATION difference, not a broken join.
+    # Measured 2026-10-28: 5,262 chain threads vs 8,098 chunk sessions, 1,584 in
+    # both; the chunk-only sessions are eval harness runs, the chain-only threads
+    # are events with no payload. Record which is which instead of guessing later.
+    linked = {r[0] for r in conn.execute(
+        "SELECT DISTINCT thread_id FROM memory_chain WHERE coords_to LIKE '%,%,%,%'")}
+    rep["chain_linked"] = 0
     for sid, n in sessions:
         rows = conn.execute(
             """SELECT vec_i8, vec_scale, timestamp FROM context_chunks
@@ -104,18 +115,21 @@ def backfill(conn, *, dry_run: bool = True, episodes: bool = False) -> dict:
         if i8 is not None:
             rep["with_vector"] += 1
             rep["centroid_bytes"] += len(i8) + len(fp) + 8
+        _linked = int(sid in linked)
+        rep["chain_linked"] += _linked
         if not dry_run:
             _write(
                 conn,
                 """INSERT INTO thread_context
                      (thread_id, first_ts, last_ts, n_chunks, centroid_i8, centroid_fp,
-                      centroid_scale, updated_at)
-                   VALUES (?,?,?,?,?,?,?,?)
+                      centroid_scale, chain_linked, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(thread_id) DO UPDATE SET
                      last_ts = excluded.last_ts, n_chunks = excluded.n_chunks,
                      centroid_i8 = excluded.centroid_i8, centroid_fp = excluded.centroid_fp,
-                     centroid_scale = excluded.centroid_scale, updated_at = excluded.updated_at""",
-                (sid, first_ts, last_ts, n, i8, fp, scale, time.time()),
+                     centroid_scale = excluded.centroid_scale,
+                     chain_linked = excluded.chain_linked, updated_at = excluded.updated_at""",
+                (sid, first_ts, last_ts, n, i8, fp, scale, _linked, time.time()),
             )
 
     if episodes:

@@ -33,6 +33,7 @@ TOTAL_BUDGET = 100 * 1024 * 1024  # owner, 2026-10-28: ~100 MB of file text
 # Counters are read by the bench (REQ-9 AC8); nothing here is silent.
 COUNTERS: Dict[str, int] = {
     "ingested": 0, "unchanged": 0, "failed": 0, "truncated": 0, "chunks": 0, "folded": 0,
+    "evicted": 0, "too_short": 0,
 }
 
 _LANGUAGE = {
@@ -86,8 +87,14 @@ def ensure_schema(conn) -> None:
 def extract_text(data: bytes, path: str) -> Tuple[str, bool]:
     """Decoded text and whether the source was cut. Raises `ExtractionError`."""
     ext = Path(path).suffix.lower()
+    extractor = _EXT_EXTRACTORS.get(ext)
+    if extractor is not None:
+        try:
+            return extractor(data, path)
+        except Exception as exc:  # noqa: BLE001 - a bad file is a counted failure
+            raise ExtractionError(f"{ext} extraction failed: {exc}") from exc
     if ext in _BINARY_EXT:
-        raise ExtractionError(f"no extractor for {ext} in W1")
+        raise ExtractionError(f"no extractor for {ext}")
     if b"\x00" in data[:8192]:
         raise ExtractionError("binary content")
     try:
@@ -97,8 +104,56 @@ def extract_text(data: bytes, path: str) -> Tuple[str, bool]:
         return data.decode("utf-8", errors="replace"), False
 
 
-# extension -> extractor(data, path) -> text. One entry per wave; no registry class.
-_EXTRACTORS: Dict[str, Callable[[bytes, str], Tuple[str, bool]]] = {}
+def _extract_pdf(data: bytes, path: str) -> Tuple[str, bool]:
+    import io
+
+    import pypdf
+
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    pages = [(page.extract_text() or "") for page in reader.pages]
+    return "\n".join(p.strip() for p in pages if p.strip()), False
+
+
+def _extract_docx(data: bytes, path: str) -> Tuple[str, bool]:
+    import io
+
+    import docx
+
+    document = docx.Document(io.BytesIO(data))
+    parts = [p.text for p in document.paragraphs if p.text.strip()]
+    for table in document.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+    return "\n".join(parts), False
+
+
+def _extract_xlsx(data: bytes, path: str) -> Tuple[str, bool]:
+    import io
+
+    import openpyxl
+
+    book = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    parts = []
+    try:
+        for sheet in book.worksheets:
+            parts.append(f"# sheet: {sheet.title}")
+            for row in sheet.iter_rows(values_only=True):
+                cells = [str(c) for c in row if c is not None]
+                if cells:
+                    parts.append(" | ".join(cells))
+    finally:
+        book.close()
+    return "\n".join(parts), False
+
+
+# extension -> extractor(data, path) -> text. One entry per format; no registry class.
+_EXT_EXTRACTORS: Dict[str, Callable[[bytes, str], Tuple[str, bool]]] = {
+    ".pdf": _extract_pdf,
+    ".docx": _extract_docx,
+    ".xlsx": _extract_xlsx,
+}
 
 
 def _write(conn, sql: str, params=()) -> None:
@@ -110,7 +165,7 @@ def _write(conn, sql: str, params=()) -> None:
 
 
 def ingest(store, path: str, *, session_id: Optional[str] = None,
-           zone: str = ZONE_DEFAULT) -> dict:
+           zone: str = ZONE_DEFAULT, force: bool = False) -> dict:
     """Ingest one file. Returns a report dict; never raises for a bad file.
 
     `store` is an EpisodicStore (it owns the chunk writer and the connection).
@@ -155,7 +210,7 @@ def ingest(store, path: str, *, session_id: Optional[str] = None,
     row = conn.execute(
         "SELECT content_hash, file_size FROM file_nodes WHERE file_path = ?", (resolved,)
     ).fetchone()
-    if row and row[0] == digest and row[1] == st.st_size:
+    if not force and row and row[0] == digest and row[1] == st.st_size:
         COUNTERS["unchanged"] += 1
         report["status"] = "unchanged"
         return report
@@ -188,6 +243,14 @@ def ingest(store, path: str, *, session_id: Optional[str] = None,
     )
     report["chunks"] = len(ids)
     COUNTERS["chunks"] += len(ids)
+
+    if not ids:
+        # A file whose text is under the chunk floor stores no row. Never report
+        # that as a quiet success: name it and count it (REQ-9 AC5 spirit).
+        COUNTERS["too_short"] += 1
+        report.update(status="too_short", reason="text below the chunk floor")
+        logger.info("[file_ingest] too_short path=%s chars=%d", resolved, len(text))
+        return report
 
     if ids:
         report["folded"] = _fold_previous(conn, resolved, ids[0], ids)
@@ -249,6 +312,50 @@ def stored_text_bytes(conn) -> int:
         (CHUNK_TYPE,),
     ).fetchone()
     return int(row[0] or 0)
+
+
+def prune_to_budget(conn, keep_bytes: Optional[int] = None) -> int:
+    """REQ-9 AC7 cold tier: the filesystem is the storage for file text.
+
+    A file's chunks can be REBUILT from disk while the file's hash still matches,
+    so they are a cache, not an archive. Over the budget, evict whole files,
+    least-recently-touched first, and let `ensure()` bring one back on demand.
+    """
+    keep = TOTAL_BUDGET if keep_bytes is None else keep_bytes
+    total = stored_text_bytes(conn)
+    if total <= keep:
+        return 0
+    removed = 0
+    rows = conn.execute(
+        """SELECT tool_name, COALESCE(SUM(LENGTH(content)), 0), MAX(timestamp)
+           FROM context_chunks WHERE chunk_type = ? AND folded_into IS NULL
+           GROUP BY tool_name ORDER BY 3 ASC""", (CHUNK_TYPE,)).fetchall()
+    for path, nbytes, _ts in rows:
+        if total <= keep:
+            break
+        if not path:
+            continue
+        n = conn.execute(
+            "SELECT COUNT(*) FROM context_chunks WHERE chunk_type = ? AND tool_name = ?",
+            (CHUNK_TYPE, path)).fetchone()[0]
+        _write(conn, "DELETE FROM context_chunks WHERE chunk_type = ? AND tool_name = ?",
+               (CHUNK_TYPE, path))
+        total -= int(nbytes)
+        removed += int(n)
+        COUNTERS["evicted"] += int(n)
+        logger.info("[file_ingest] evicted path=%s chunks=%d (cold tier)", path, n)
+    return removed
+
+
+def ensure(store, path: str, **kwargs) -> dict:
+    """Bring a file back from the cold tier: re-ingest when its chunks are gone."""
+    resolved = str(Path(path).expanduser().resolve())
+    live = store.db.execute(
+        """SELECT 1 FROM context_chunks WHERE chunk_type = ? AND tool_name = ?
+           AND folded_into IS NULL LIMIT 1""", (CHUNK_TYPE, resolved)).fetchone()
+    if live:
+        return {"path": resolved, "status": "present", "chunks": 0, "folded": 0}
+    return ingest(store, path, force=True, **kwargs)
 
 
 def report(conn) -> dict:
