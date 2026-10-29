@@ -191,6 +191,12 @@ candidate p50/p95, 10× scan, bytes per chunk, store size; standards in
 - AC1: THE SYSTEM SHALL measure, on the live store read-only with real chat queries: recall@10
   against exact cosine over the whole filter, reach, candidate latency p50/p95, a 10× scan,
   bytes per chunk, store size - per live recall filter.
+- AC1b: THE SYSTEM SHALL ALSO measure **recall@10_shipped** - the same candidate path scored
+  against the SHIPPED ranker (cosine × (1 − w) + recency × w) applied to every row of the
+  filter. Cosine truth caps the delivered number by construction while the blend exists, so
+  it cannot express "1.0". Measured 2026-10-28 at M=500: shipped truth reads **research
+  0.9975 / turn 1.0000 / global 0.9900**, against cosine truth 0.8767 / 0.9475 / 0.8817 for
+  the same delivered rank. Both columns are reported; neither replaces the other.
 - AC2: THE SYSTEM SHALL compare each run with the recorded standard and report a regression
   (recall@10 below standard − 0.02, candidate p95 above 2 × standard + 5 ms).
 - AC3: THE SYSTEM SHALL add an end-to-end memory eval group to `evals/run_evals.py`: tasks

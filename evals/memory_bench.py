@@ -197,6 +197,9 @@ def main() -> int:
     ids, meta, mat = _load(con)
     load_s = time.perf_counter() - t0
     pos = {int(r): i for i, r in enumerate(ids)}
+    # The recency term for EVERY row, so the SHIPPED scorer can be applied
+    # exactly and used as truth (REQ-6 AC1: measure the thing that runs).
+    _rec_all = np.asarray([_recency(m[4]) for m in meta], dtype=np.float32)
     # newest-first order for the OLD path (timestamp DESC, as the SQL did)
     order = sorted(range(len(meta)), key=lambda i: meta[i][4], reverse=True)
 
@@ -235,6 +238,7 @@ def main() -> int:
         # fingerprint scan, different top-M, so the curve is the honest answer to
         # "can the ceiling rise without an exact scan?"
         r_ceil = {_m: [] for _m in (200, 500, 1000)}
+        r_shipped = []
         ms_exact = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
@@ -273,6 +277,16 @@ def main() -> int:
                 + _recency(meta[i][4]) * LIVE_RECENCY_WEIGHT
             ))[:K]
             r_live.append(len(truth & set(live_top)) / len(truth))
+            # THE 1.0 THAT MATTERS: truth is the SHIPPED scorer applied to every
+            # row of the filter, not pure cosine. "recall 1.0" then means the
+            # candidate stage loses nothing the shipped ranker would have chosen,
+            # which is the only definition that can reach 1.0 while keeping the
+            # recency blend. Cosine truth caps it by design.
+            _ship = sims * (1.0 - LIVE_RECENCY_WEIGHT) + _rec_all * LIVE_RECENCY_WEIGHT
+            _truth_ship = set(np.flatnonzero(allowed)[
+                np.argsort(-_ship[allowed])[:K]].tolist())
+            if _truth_ship:
+                r_shipped.append(len(_truth_ship & set(live_top)) / len(_truth_ship))
             # recall for an exact scan is 1.0 BY DEFINITION (truth is its own
             # output); what is unknown is the price, so that is what is timed.
             _t = time.perf_counter()
@@ -299,6 +313,7 @@ def main() -> int:
             "recall@10_old": round(statistics.mean(r_old), 4) if r_old else None,
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
             "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
+            "recall@10_shipped": round(statistics.mean(r_shipped), 4) if r_shipped else None,
             "exact_scan_ms_p50": round(_pct(ms_exact, 50), 2) if ms_exact else None,
             "exact_scan_ms_p95": round(_pct(ms_exact, 95), 2) if ms_exact else None,
             "ceiling_by_m": {str(_m): round(statistics.mean(r_ceil[_m]), 4)
