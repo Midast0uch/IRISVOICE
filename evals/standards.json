@@ -94,56 +94,62 @@
   "recorded_at": "2026-09-30T06:51:24",
   "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards",
   "memory": {
-    "source": "memory-bench-20261027-184146.json",
+    "source": "memory-bench-20261028-222523.json",
     "filters": {
       "research": {
-        "recall@10_new": 0.9742,
-        "candidate_ms_new_p95": 3.21
+        "recall@10_new": 1.0,
+        "candidate_ms_new_p95": 2.5
       },
       "turn_trusted_tool": {
-        "recall@10_new": 0.9983,
-        "candidate_ms_new_p95": 2.57
+        "recall@10_new": 1.0,
+        "candidate_ms_new_p95": 2.29
       },
       "global": {
-        "recall@10_new": 0.9633,
-        "candidate_ms_new_p95": 10.25
+        "recall@10_new": 0.9975,
+        "candidate_ms_new_p95": 8.83
       }
     },
     "words": {
-      "cases": 40,
-      "reach_new": 0.55,
+      "cases": 10,
+      "reach_new": 0.8,
       "any_hit_new": 1.0,
       "unique_reach_new": 1.0,
-      "candidate_ms_p95": 164.69
+      "candidate_ms_p95": 161.85
     },
     "compression": {
       "der_output": {
-        "recall@10_float": 0.845,
-        "recall@10_int8": 0.845,
+        "recall@10_float": 0.9742,
+        "recall@10_int8": 0.9742,
         "delta": 0.0,
         "keep_float": false
       },
       "document_data": {
-        "recall@10_float": 0.8575,
-        "recall@10_int8": 0.8575,
+        "recall@10_float": 0.9708,
+        "recall@10_int8": 0.9708,
         "delta": 0.0,
         "keep_float": false
       },
       "context_fragment": {
-        "recall@10_float": 0.9292,
-        "recall@10_int8": 0.9292,
+        "recall@10_float": 0.9875,
+        "recall@10_int8": 0.9875,
         "delta": 0.0,
         "keep_float": false
       },
       "der_failure": {
-        "recall@10_float": 0.75,
-        "recall@10_int8": 0.75,
+        "recall@10_float": 0.7688,
+        "recall@10_int8": 0.7688,
         "delta": 0.0,
         "keep_float": false
       },
       "research_summary": {
-        "recall@10_float": 0.5,
-        "recall@10_int8": 0.5,
+        "recall@10_float": 0.7115,
+        "recall@10_int8": 0.7115,
+        "delta": 0.0,
+        "keep_float": false
+      },
+      "file": {
+        "recall@10_float": 1.0,
+        "recall@10_int8": 1.0,
         "delta": 0.0,
         "keep_float": false
       }
