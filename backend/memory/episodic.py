@@ -118,6 +118,22 @@ def _shadow_trust_rank(scored: list, zone_of: dict, limit: int) -> None:
         logger.debug("[EpisodicStore] shadow trust rank skipped: %s", exc)
 
 
+def _ts_text(value):
+    """A time bound as the store TEXT form 'YYYY-MM-DD HH:MM:SS' (fixed width)."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    import datetime as _dtm
+    try:
+        if isinstance(value, (int, float)):
+            return _dtm.datetime.utcfromtimestamp(
+                float(value)).strftime("%Y-%m-%d %H:%M:%S")
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:  # noqa: BLE001 - a bad bound must not fail the recall
+        return None
+
+
 class EpisodicStore:
     """
     Persistent vector-searchable store of every completed task.
@@ -1067,6 +1083,9 @@ class EpisodicStore:
         chunk_types: Optional[List[str]] = None,
         zones: Optional[List[str]] = None,
         max_context_tokens: Optional[int] = None,
+        since: Optional[Any] = None,
+        until: Optional[Any] = None,
+        tool_name: Optional[str] = None,
     ) -> List[str]:
         """
         Retrieve the most semantically relevant context chunks for a query.
@@ -1126,6 +1145,17 @@ class EpisodicStore:
             placeholders = ",".join("?" * len(zones))
             where_clauses.append(f"zone IN ({placeholders})")
             params_list.extend(zones)
+        if tool_name:
+            where_clauses.append("tool_name = ?")
+            params_list.append(tool_name)
+        _since = _ts_text(since)
+        if _since:
+            where_clauses.append("timestamp >= ?")
+            params_list.append(_since)
+        _until = _ts_text(until)
+        if _until:
+            where_clauses.append("timestamp <= ?")
+            params_list.append(_until)
 
         # REQ-4 AC2: a folded near-duplicate is not a candidate - its canonical
         # row carries the content. The fold keeps the row (a reference, not a
@@ -1135,7 +1165,7 @@ class EpisodicStore:
         # session_id + retrieval_count feed the memory-native rank's features
         # (REQ-7 AC1: strand outcomes, use with decay)
         _cols = ("id, content, embedding, timestamp, embedding_backend, zone, vec_i8, "
-                 "vec_scale, session_id, retrieval_count")
+                 "vec_scale, session_id, retrieval_count, tool_name")
 
         # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
         # by fingerprint across EVERY row the filter allows, plus the newest 50 the old
@@ -1204,7 +1234,23 @@ class EpisodicStore:
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
         zone_of: Dict[str, Optional[str]] = {}
         _rank_info: Dict[str, Dict] = {}
+        _since_t, _until_t = _ts_text(since), _ts_text(until)
+        _bounded = bool(_since_t or _until_t or tool_name)
+
+        def _in_bounds(r) -> bool:
+            if _since_t and str(r[3] or '') < _since_t:
+                return False
+            if _until_t and str(r[3] or '') > _until_t:
+                return False
+            if tool_name and r[-1] != tool_name:
+                return False
+            return True
+
         for row in rows:
+            if _bounded and not _in_bounds(row):
+                logger.warning("[EpisodicStore] row skipped by bounds id=%s ts=%r tool=%r",
+                               row[0], row[3], row[-1])
+                continue
             try:
                 # REQ-4 AC1: score the int8 code when the float is gone (4x less
                 # I/O per row, unchanged space - the code is the same direction)
