@@ -1165,7 +1165,7 @@ class EpisodicStore:
         # session_id + retrieval_count feed the memory-native rank's features
         # (REQ-7 AC1: strand outcomes, use with decay)
         _cols = ("id, content, embedding, timestamp, embedding_backend, zone, vec_i8, "
-                 "vec_scale, session_id, retrieval_count, tool_name")
+                 "vec_scale, session_id, retrieval_count, tool_name, rowid")
 
         # REACH (specs/memory-recall-reach REQ-1): the rows scored are the 200 nearest
         # by fingerprint across EVERY row the filter allows, plus the newest 50 the old
@@ -1193,6 +1193,7 @@ class EpisodicStore:
                         self.db, query, session_id=session_id,
                         chunk_types=chunk_types, zones=zones,
                     )
+                    _kw_ids = set(_kw or [])
                     if _kw:
                         _new = [r for r in _kw if r not in set(_near)]
                         if _new:
@@ -1234,6 +1235,8 @@ class EpisodicStore:
         scored: List[Tuple[float, str, str]] = []  # (combined_score, content, id)
         zone_of: Dict[str, Optional[str]] = {}
         _rank_info: Dict[str, Dict] = {}
+        _kw_ids = set()
+        _is_kw = {}
         _since_t, _until_t = _ts_text(since), _ts_text(until)
         _bounded = bool(_since_t or _until_t or tool_name)
 
@@ -1242,14 +1245,14 @@ class EpisodicStore:
                 return False
             if _until_t and str(r[3] or '') > _until_t:
                 return False
-            if tool_name and r[-1] != tool_name:
+            if tool_name and r[-2] != tool_name:
                 return False
             return True
 
         for row in rows:
             if _bounded and not _in_bounds(row):
                 logger.warning("[EpisodicStore] row skipped by bounds id=%s ts=%r tool=%r",
-                               row[0], row[3], row[-1])
+                               row[0], row[3], row[-2])
                 continue
             try:
                 # REQ-4 AC1: score the int8 code when the float is gone (4x less
@@ -1290,6 +1293,7 @@ class EpisodicStore:
                     math.floor(sim / self._RECENCY_BAND) * 10.0 + recency
                 )
                 scored.append((combined, row[1], row[0]))
+                _is_kw[row[0]] = int(row[-1]) in _kw_ids
                 zone_of[row[0]] = row[5]
                 # REQ-7 AC1: the memory-native rank's per-row features
                 _rank_info[row[0]] = {
@@ -1300,6 +1304,12 @@ class EpisodicStore:
                 continue
 
         scored.sort(key=lambda x: x[0], reverse=True)
+        # REQ-3 AC2: the word leg may bring a row in. Without this a keyword
+        # hit whose vector points away from the query falls off the limit.
+        if limit and any(_is_kw.values()):
+            _kw_rows = [x for x in scored if _is_kw.get(x[2])]
+            _rest = [x for x in scored if not _is_kw.get(x[2])]
+            scored = _kw_rows + _rest
         _shadow_trust_rank(scored, zone_of, limit)
 
         # REQ-7: the memory-native rank (trust, claim evidence, helped/misled,
