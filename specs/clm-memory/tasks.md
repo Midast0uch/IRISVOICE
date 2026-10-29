@@ -58,8 +58,11 @@ The predecessor spec (`memory-recall-reach`) is closed; this spec owns the view.
 ## Open questions for the implementing agent (answer from the code first)
 1. Where does the live view actually get assembled per backend today (DCP + the kernel's
    `_build_context`), and can an editable layer sit there without touching the planner?
-2. Does `dcp.py` already drop blocks, and does it leave anything behind? (If it silently
-   drops, wave 2 starts there.)
+2. `dcp.py` (205 lines) is BEING REMOVED, not extended: its `_dedup()`/`_purge_errors()`
+   hard-code the shrink policy, and Wave 2 replaces them with offload + placeholders.
+   Before deleting it, capture what it owns: `_emit_fan_traces()` writes
+   `der_fan_traces` (13,886 rows) and is that table's only writer. Migrate the emitter
+   onto the offload path FIRST, prove the table still grows, and only then remove the file.
 3. Which tokenizer per backend is authoritative, and is it already loaded?
 4. `pin_store.py` vs `mycelium_pins` (0 rows): which is the app's pin surface?
 5. What is the chain's existing label vocabulary for a view edit - can we add labels

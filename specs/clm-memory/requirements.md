@@ -31,6 +31,15 @@ This spec builds the other half: the editable view on top of that record.
   cannot show its number is not finished.
 - **Prepared ground is not re-litigated**: two planes (REQ-10), the codec (REQ-4 of the
   recall spec), the Kyudo decay law (REQ-5), the three levels (REQ-11).
+- **DCP IS REMOVED, NOT ADAPTED** (owner, 2026-10-28): "we are basically removing dcp.py
+  for clm". `backend/agent/dcp.py` (205 lines) hard-codes the shrink policy - `_dedup()`
+  drops duplicate tool messages and `_purge_errors()` drops error messages, called at
+  `agent_kernel.py:4269`. The CLM view replaces that POLICY; it does not extend it.
+  **What must not be lost with it**: `DCP._emit_fan_traces()` writes `der_fan_traces`
+  (13,886 rows live). Those rows are the record of what was pruned, and the writer is the
+  only one that path has. The removal is therefore a MIGRATION of the emitter onto the
+  offload path (CLM-2), not a deletion. Requirement: no drop may happen without its
+  emitter, and `der_fan_traces` keeps receiving rows after DCP is gone.
 
 ## Requirements
 

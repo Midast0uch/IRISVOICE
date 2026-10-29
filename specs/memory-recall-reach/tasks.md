@@ -78,3 +78,13 @@
   an immutable record layer, an L2 vector already in `episodes`.
 - It must not re-litigate: two planes (REQ-10), the codec (REQ-4), the Kyudo decay law (REQ-5),
   and "no new dependency without the owner".
+
+## Status correction (2026-10-28, end of session)
+Boxes above are stale in three places. True state:
+- [x] T33 (REQ-10 lambda): DONE and NEGATIVE. Measured with the mapping fixed (ids[i] is the rowid; the loop is all indices). Coverage research 0.000 / turn 1.000 / global 0.291; recall@10_shipped global 0.9900 -> 0.9125 at lambda 0.05 and 0.8333 at 0.10. Lambda stays 0. Pin pin_c3e628e03c86.
+- [x] T35 (episodes codec): DONE. 362/362 rows carry vec_i8 + vec_fp + vec_scale (backend/memory/levels.py, commit 837a44eb).
+- [x] T36 (thread_context): DONE. 8,098 rows covering all 143,265 chunks in 2.7 s; L1 fingerprint scan 1,036,544 B vs 18,337,920 B = 17.7x.
+- [~] T31 (coords): PARTIAL. Non-coordinate values quarantined to coords_*_raw (165 from, 947 to); 3,637 / 3,075 real positions kept. Empty strings remain; the true coordinates of the 947 rows are NOT recoverable - they were overwritten before this session.
+- [ ] T32 incidence join, T34 key gap, T37 L1-as-region-scan: NOT done. Measured only (T32: 100% turn, 38.6% global); no production code uses L1 or the incidence join yet.
+- [ ] T4b scan-by-region: DEFERRED, bar met (10x scan p95 115.98 ms < 150 ms).
+- [ ] T29 file W2-W4 (blocked on packages), T30 file cold tier (approved, not built).
