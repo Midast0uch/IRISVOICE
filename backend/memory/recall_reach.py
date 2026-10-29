@@ -34,7 +34,14 @@ logger = logging.getLogger(__name__)
 
 FP_MAX_ROWS = 1_000_000      # ~146 MB; above it the newest rows are kept
 FP_BATCH = 5_000             # rows per read while building (one read never holds the store long)
-FP_CANDIDATES = 200          # rows handed to exact scoring (the old path scored 200 too)
+FP_CANDIDATES = 500          # rows handed to exact scoring. Was 200, which capped
+# recall@10: measured 2026-10-28 over 120 queries (evals/memory_bench.py):
+#   M=200 -> research 0.9742 / turn 0.9983 / global 0.9650
+#   M=500 -> research 0.9950 / turn 1.0000 / global 0.9875
+#   M=1000 -> research 1.0000 / turn 1.0000 / global 0.9975
+# The scan is O(rows) either way; only the exact rescore grows (500 x 1024 dims
+# is ~0.5M MACs), so the ceiling is bought cheaply. 1000 is the next step once
+# the int8 codes live in the RAM index (146 MB) instead of being fetched.
 _WORDS = 16                  # uint64 words per 1024-bit fingerprint
 
 _INDEXES: Dict[str, "ChunkFingerprints"] = {}

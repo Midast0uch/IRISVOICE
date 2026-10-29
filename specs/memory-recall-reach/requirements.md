@@ -56,13 +56,17 @@ Built 2026-10-27: `backend/memory/recall_reach.py`, `episodic.py` reach path.
 **Acceptance Criteria:**
 - AC1: THE SYSTEM SHALL keep, per store, a fingerprint of every chunk vector (1 bit per
   dimension, the sign of each component; 128 bytes at 1024-d) in RAM, bounded to FP_MAX_ROWS.
-- AC2: WHEN a recall runs THEN THE SYSTEM SHALL score exactly the M = 200 rows nearest the
+- AC2: WHEN a recall runs THEN THE SYSTEM SHALL score exactly the M rows nearest the
   query by fingerprint within the filter (session, chunk types, zones, same embedding backend)
   plus the newest 50 rows of the filter, with the existing blend (cosine × (1 − w) + recency
-  × w). **Measured 2026-10-28: w = 0.05, half-life 168 h** (`episodic.py:160-174`). At the
-  old 0.20 / 24 h the DELIVERED rank sat 0.21 below the exact-cosine target (0.771 / 0.883 /
-  0.790 vs 0.9742 / 0.9983 / 0.9625). The bench now reports `recall@10_live` beside
-  `recall@10_new`, so this AC is checked against what the model receives, not a ceiling.
+  × w). **M = 500 since 2026-10-28** (was 200; the value is a measured lever, not a constant
+  of nature): recall@10 200 → 500 = research 0.9742 → 0.9950, turn 0.9983 → **1.0000**,
+  global 0.9650 → 0.9875; at M = 1000 research reaches **1.0000** and global 0.9975. The
+  scan is O(rows) regardless of M; only the exact rescore grows. **Measured 2026-10-28:
+  w = 0.05, half-life 168 h** (`episodic.py:160-174`). At the old 0.20 / 24 h the DELIVERED
+  rank sat 0.21 below the exact-cosine target (0.771 / 0.883 / 0.790 vs 0.9742 / 0.9983 /
+  0.9625). The bench reports `recall@10_live` beside `recall@10_new`, so this AC is checked
+  against what the model receives, not a ceiling.
 - AC3: WHEN chunks are written after the index was built THEN THE SYSTEM SHALL add them at
   the next recall, each row once.
 - AC4: WHILE the index warms or IF it fails THEN THE SYSTEM SHALL use the newest-200 path and
