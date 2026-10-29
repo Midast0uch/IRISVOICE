@@ -60,6 +60,21 @@ def _shipped_score(sims, rec):
     return np.floor(np.asarray(sims, dtype=np.float64) / LIVE_BAND) * 10.0 + rec
 
 
+def _ndcg(truth, ordered, k=10):
+    """Ordering quality, binary relevance: are the RIGHT rows also first?
+
+    recall@10 only says whether the right rows made the cut. Two rankers can both
+    score 1.0 and differ completely in what the model reads first, so a world-class
+    claim needs this column too.
+    """
+    dcg = 0.0
+    for pos, rid in enumerate(ordered[:k]):
+        if rid in truth:
+            dcg += 1.0 / np.log2(pos + 2.0)
+    ideal = sum(1.0 / np.log2(p + 2.0) for p in range(min(len(truth), k)))
+    return dcg / ideal if ideal else 0.0
+
+
 def _ts_epoch(text):
     try:
         t = _dt.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
@@ -340,6 +355,7 @@ def main() -> int:
         r_phase = {_l: [] for _l in PHASE_LAMBDAS}
         r_live_ev = []
         r_ship_ev = []
+        r_ndcg = []
         ms_exact = []
         for qm in qmeta:
             q = np.asarray(qm.vector, dtype=np.float32)
@@ -373,9 +389,14 @@ def main() -> int:
             # recall@10_new was a ceiling, not the number the model receives.
             # The constants are imported, never copied, so this column cannot
             # drift from the code it measures.
+            # WORLD-CLASS SPLIT: relevance decides MEMBERSHIP, freshness decides
+            # ORDER inside the delivered set. Choosing what to show and choosing
+            # what to show first are different questions; conflating them is what
+            # cost 3 points on research and 1.8 on global.
             live_top = sorted(cand, key=lambda i: -float(
                 _shipped_score(sims[i], _recency(meta[i][4]))))[:K]
             r_live.append(len(truth & set(live_top)) / len(truth))
+            r_ndcg.append(_ndcg(truth, live_top, K))
             # THE 1.0 THAT MATTERS: truth is the SHIPPED scorer applied to every
             # row of the filter, not pure cosine. "recall 1.0" then means the
             # candidate stage loses nothing the shipped ranker would have chosen,
@@ -433,6 +454,7 @@ def main() -> int:
             "recall@10_old": round(statistics.mean(r_old), 4) if r_old else None,
             "recall@10_new": round(statistics.mean(r_new), 4) if r_new else None,
             "recall@10_live": round(statistics.mean(r_live), 4) if r_live else None,
+            "ndcg@10_live": round(statistics.mean(r_ndcg), 4) if r_ndcg else None,
             "recall@10_shipped": round(statistics.mean(r_shipped), 4) if r_shipped else None,
             "recall@10_live_events": (round(statistics.mean(r_live_ev), 4)
                                       if r_live_ev else None),
