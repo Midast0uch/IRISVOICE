@@ -67,12 +67,17 @@ Built 2026-10-27: `backend/memory/recall_reach.py`, `episodic.py` reach path.
   |---|---|---|
   | absolute blend w=0.05 | 0.8767 / 0.9475 / 0.8817 | 0.9975 / 1.0000 / 0.9900 |
   | band 0.01 | 0.8833 / 0.9442 / 0.9167 | 0.9983 / 0.9975 / 0.9825 |
-  | **band 0.002 (shipped)** | **0.9658 / 0.9867 / 0.9692** | 0.9950 / 0.9967 / 0.9892 |
-  | band -> 0 | = ceiling 0.9950 / 1.0000 / 0.9875 | - (no recency) |
+  | band 0.002, M=500 | 0.9658 / 0.9867 / 0.9692 | 0.9950 / 0.9967 / 0.9892 |
+  | band 0.002, M=1000 | 0.9700 / 0.9858 / 0.9775 | 1.0000 / 0.9975 / 0.9983 |
+  | band 0.001, M=1000 | 0.9875 / 0.9933 / 0.9850 | 1.0000 / 1.0000 / 0.9983 |
+  | **band 0.0005, M=1000 (shipped)** | **0.9917 / 0.9975 / 0.9908** | **1.0000 / 1.0000 / 0.9992** |
+  | band -> 0 | = ceiling (below) | - (no recency) |
 
-  So the band width is the dial between "agrees with exact search" and "recency decides".
-  At 0.002 both hold above 0.96, which is the owner's "we can have both". M = 500 (was 200:
-  0.9742 / 0.9983 / 0.9650 -> 0.9950 / 1.0000 / 0.9875).
+  Ceiling at M=1000: **1.0000 / 1.0000 / 0.9975**. NDCG@10 at the shipped setting:
+  0.9947 / 0.9984 / 0.9941. The band width is the dial between agreement with exact
+  search and how much freshness decides; 0.0005 is the knee, past which the term is
+  cosmetic. A keyword hit is guaranteed a place in the delivered set regardless of
+  its vector (REQ-3 AC2). M = 500 (was 200: 0.9742 / 0.9983 / 0.9650).
 - AC3: WHEN chunks are written after the index was built THEN THE SYSTEM SHALL add them at
   the next recall, each row once.
 - AC4: WHILE the index warms or IF it fails THEN THE SYSTEM SHALL use the newest-200 path and

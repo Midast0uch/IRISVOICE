@@ -190,7 +190,7 @@ class EpisodicStore:
     # worse row. The old absolute blend added w*recency to every row, so it
     # reordered pairs whose cosine differed by up to w/(1-w) ~ 0.05 - dense at the
     # top-k boundary - and cost 14 points against pure-cosine truth.
-    _RECENCY_BAND: float = 0.002
+    _RECENCY_BAND: float = 0.0005
 
     # Why recency reads the wall clock and not the chain (measured 2026-10-28).
     # The idea was right - Immortus already carries the ordered 4D layer - so it was
