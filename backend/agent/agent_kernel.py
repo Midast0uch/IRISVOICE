@@ -4421,6 +4421,23 @@ class AgentKernel:
         Returns: response text string.
         """
         messages = self._assemble_direct_context(text, context, session_id=session_id)
+        # OBSERVABILITY (2026-10-29, T48): name the path that answered and how
+        # much memory reached it. Without this line a pass/fail cannot be
+        # attributed to a layer - the memory gate was read three times against
+        # the wrong one.
+        try:
+            _tags = ("<memory>", "<context_memory>", "<mycelium_profile>",
+                     "<cross_session_memory>", "<prior_memory>", "<file_memory>")
+            _mem_blocks = sum(
+                1 for m in messages
+                if any(t in (m.get("content") or "") for t in _tags)
+            )
+            logger.info(
+                "[TURN-PATH] session=%s path=direct mem_blocks=%d msgs=%d",
+                session_id, _mem_blocks, len(messages),
+            )
+        except Exception:  # noqa: BLE001 - observability never blocks a reply
+            pass
         messages = self._sanitize_messages(messages)
 
         # Resolve inference behaviour settings
@@ -9250,6 +9267,7 @@ class AgentKernel:
         # REQ-12 AC1 (T42): the user's own words enter the Immortus chain as a
         # role='user' row, on the fragment lane. Turn entry is the one place both
         # the direct and the DER path pass through.
+        self._turn_mem_prompts = 0   # OBSERVABILITY (T48): per-turn path line
         try:
             from backend.agent.mcm_protocol.actions.pacman_fragment import (
                 submit_user_turn_entry as _submit_user_turn_entry,
@@ -10143,6 +10161,14 @@ class AgentKernel:
                     )
                 except Exception as _tp_err:  # noqa: BLE001 - never blocks a reply
                     logger.debug("[AgentKernel] DER turn pair store skipped: %r", _tp_err)
+                try:
+                    logger.info(
+                        "[TURN-PATH] session=%s path=der mem_prompts=%d reply=%d",
+                        session_id, int(getattr(self, "_turn_mem_prompts", 0)),
+                        len(_der_response or ""),
+                    )
+                except Exception:  # noqa: BLE001 - observability never blocks
+                    pass
                 return _der_response
 
         # If DER produced empty/failed response, return error instead of
@@ -17265,6 +17291,11 @@ Respond with a JSON object:
                 + f"STEP {item.step_number}: {item.description}\n\n"
                 "Complete this step. Respond with the result only."
             ).strip()
+            # OBSERVABILITY (2026-10-29, T48): did THIS step prompt carry the
+            # memory-of-facts line? Counted per turn and reported with the path.
+            if "MEMORY         :" in (evidence_str or ""):
+                self._turn_mem_prompts = int(
+                    getattr(self, "_turn_mem_prompts", 0)) + 1
             # THINKING RUNS ON THE BRAIN (2026-08-16). This is the tool-less
             # step path â€” there is no tool to execute, only reasoning â€” so it
             # belongs to the reasoning binding. It used to run on
@@ -18395,6 +18426,19 @@ Respond with a JSON object:
         except Exception:  # noqa: BLE001 - measurement never blocks a node
             _close_probe = None
         try:
+            # REQ-12 AC2 (T48): the tool steps are the ones that answer, and
+            # this is the only executor they use. Give the node the earlier
+            # statements with their producer, so a taught fact is available
+            # without asking a tool to go and find it.
+            try:
+                from backend.agent.evidence import _memory_facts as _mf
+
+                _step_facts = _mf(goal, getattr(self, "_memory_interface", None))
+            except Exception:  # noqa: BLE001 - memory never blocks a step
+                _step_facts = ""
+            if _step_facts:
+                self._turn_mem_prompts = int(
+                    getattr(self, "_turn_mem_prompts", 0)) + 1
             _node_ctx = NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
@@ -18402,6 +18446,7 @@ Respond with a JSON object:
             conv_id=self.conversation_id or "", helper_role=_helper,
             on_result=_on_result, choose_tool=_choose_tool,
             sees=_sees, look=_look,
+            memory_facts=_step_facts,
             # the step's own criterion, its parent step, the reviewer's reason
             expected=str(getattr(item, "expected_output", "") or ""),
             parent_goal=str(getattr(item, "parent_description", "") or ""),

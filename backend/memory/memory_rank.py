@@ -188,9 +188,9 @@ def _age_days(ts, now: float) -> float:
 # multiplier in the retriever.
 PRODUCER_WEIGHTS = {
     "user_turn": 1.0,     # the user's own statement
-    "der_step": 0.55,     # this agent's earlier answer to the same wording
+    "der_step": 0.50,     # this agent's earlier answer to the same wording
 }
-LEGACY_PRODUCER_WEIGHT = 0.70   # unlabelled fragment (written before the taxonomy)
+LEGACY_PRODUCER_WEIGHT = 0.50   # unlabelled fragment = a step echo (pre-taxonomy)
 TOOL_PRODUCER_WEIGHT = 0.90     # a tool output is evidence
 
 

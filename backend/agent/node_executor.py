@@ -172,6 +172,11 @@ class NodeContext:
     max_tokens: int = 8192
     result_chars: int = 8000
     conv_id: str = ""
+    # REQ-12 AC2 (T48): what was SAID before that bears on this step, with its
+    # producer ("the user stated" / "your earlier answer" / a tool). This is the
+    # executor every DER step actually uses; the tool-less path was the only one
+    # that carried memory, so a taught fact never reached a tool step.
+    memory_facts: str = ""
     # Owner decision: the Oracle advises and records shadow rows in node
     # loops. Called with (tool, params) for every Brain call; must not block.
     on_call: Optional[Callable[[str, dict], None]] = None
@@ -564,7 +569,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": _relative(
             _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars,
-                          ctx.expected, ctx.parent_goal, ctx.review_note), ctx.workdir)},
+                          ctx.expected, ctx.parent_goal, ctx.review_note)
+            + (("\n\nMEMORY (earlier statements, with their source):\n"
+                + ctx.memory_facts) if ctx.memory_facts else ""), ctx.workdir)},
     ]
     tools = _with_close_args(ctx.tools)
     malformed = 0

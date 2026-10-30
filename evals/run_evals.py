@@ -384,6 +384,46 @@ def _retire_taught_facts(fact_template: str) -> int:
         return 0
 
 
+def _retire_eval_chats() -> int:
+    """Delete the harness's own synthetic chat threads before a memory run.
+
+    The chat store keeps each conversation's assistant reply, so an OLDER eval
+    thread still holds a wrong answer ("Green (specifically fern-green)") and
+    the memory surface reads those turns. Recorded in
+    ``scripts/clean_eval_memory.py`` from a live run: m03's ask answered "green"
+    from three old eval chats after the memory chain was already clean.
+
+    The memory gate must be answerable from MEMORY alone, so the chat store is
+    cleared too. Eval threads are synthetic (titles "[eval]" / "[eval-seed]");
+    real user threads never carry that prefix. Never raises.
+    """
+    db = Path(__file__).resolve().parents[1] / "data" / "conversations.db"
+    if not db.exists():
+        return 0
+    try:
+        import sqlite3
+
+        con = sqlite3.connect(str(db))
+        try:
+            n = con.execute(
+                "SELECT count(*) FROM messages WHERE conversation_id IN "
+                "(SELECT id FROM conversations WHERE title LIKE '[eval%')"
+            ).fetchone()[0]
+            if not n:
+                return 0
+            con.execute(
+                "DELETE FROM messages WHERE conversation_id IN "
+                "(SELECT id FROM conversations WHERE title LIKE '[eval%')")
+            con.execute("DELETE FROM conversations WHERE title LIKE '[eval%'")
+            con.commit()
+            return int(n)
+        finally:
+            con.close()
+    except Exception as exc:  # noqa: BLE001 - never fail a run for hygiene
+        log.warning("retire eval chats failed: %r", exc)
+        return 0
+
+
 def _check_patterns(task: dict, text: str) -> list:
     missing = []
     for pattern in task.get("reply_patterns") or []:
@@ -481,6 +521,13 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
     _http("POST", "/api/projects", {"projects": eval_projects})
     current_mode = None
     results = list(done)
+    # Retire the harness's OLD synthetic chats ONCE, before the group starts.
+    # (Deleting a conversation mid-run once appeared to break the turn context:
+    # three back-to-back memory groups on the same code all scored 0/3.)
+    if any(t.get("fact") for t in tasks):
+        _pre = _retire_eval_chats()
+        if _pre:
+            log.info("retired %d eval chat messages before the run", _pre)
     try:
         for i, task in enumerate(tasks, 1):
             if task["mode"] != current_mode:
