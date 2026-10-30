@@ -69,7 +69,10 @@ models:
         # and returns the fitted threshold on the RAW confidence scale. No
         # fitted curve for an identity is still the fail-closed state (None).
       # Per-consumer overrides sit ON TOP of the backend threshold (REQ-13).
-      thresholds: {}
+      thresholds:
+        # route_v2 (2026-10-30): shadow-only memory route; the bar is the
+        # standard 0.90. No enforcement unless it is explicitly enabled.
+        route_v2: 0.90
     optional: true   # decision paths degrade to the legacy heuristics if missing
 
   - id: "executor"

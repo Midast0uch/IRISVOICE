@@ -155,7 +155,8 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     # 19 - 2 dead + 1 new + 1 tool_approval - 1 mode (owner removal, 2026-10-10)
     # + 1 browser_next (2026-10-11, now with a call site)
     # - 1 use_thinking (owner removal, 2026-10-13)
-    assert len(de.CONSUMER_JOBS) == 18
+    # + 1 route_v2 (2026-10-30, shadow-only memory route)
+    assert len(de.CONSUMER_JOBS) == 19
     assert "mode" not in de.CONSUMER_JOBS
 
 
@@ -250,7 +251,7 @@ def test_consumers_grew_by_exactly_two():
     guard in node_executor). TIER_REFUSE_ONLY: it may only reject a call, and
     its correction budget bounds it."""
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {
-        "depth_route", "call_closing", "tool_approval"}
+        "depth_route", "call_closing", "tool_approval", "route_v2"}
     # owner-directed removals: `mode` (2026-10-10) and `use_thinking` (2026-10-13)
     assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {"mode", "use_thinking"}
     assert "tool_approval" in de.TIER_REFUSE_ONLY

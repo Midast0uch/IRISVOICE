@@ -531,7 +531,7 @@ def _recall_memory_payload(episodic, query: str, since=None, until=None,
     episodes- prior similar tasks
     Each leg fails soft: a broken layer returns [] and logs, never raises.
     """
-    chunks, chain, episodes = [], [], []
+    chunks, chain, episodes, pins = [], [], [], []
     try:
         chunks = episodic.retrieve_context_chunks(
             query, session_id=None, limit=limit,
@@ -551,8 +551,57 @@ def _recall_memory_payload(episodic, query: str, since=None, until=None,
         chain = turn_start_prior_memory(episodic.db, query) or []
     except Exception as exc:  # noqa: BLE001
         logger.warning("[ToolBridge] recall_memory chain failed: %s", exc)
+    # The app's structured memory is `mycelium_pins` (pin_store.PinStore), not
+    # a new store. It was written through app_write (the ONE writer) and was
+    # never in this payload, so a pinned fact could not be recalled by the
+    # native tool. Read-only here; a broken pin leg returns [].
+    try:
+        from backend.memory.pin_store import PinStore
+
+        pins = [
+            {"pin": pin.to_dict(), "score": round(float(score), 2)}
+            for pin, score in PinStore(conn=episodic.db).search(query, limit=limit)
+        ]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ToolBridge] recall_memory pins failed: %s", exc)
     return {"success": True, "chunks": chunks, "chain": chain,
-            "episodes": episodes, "results": episodes}
+            "episodes": episodes, "pins": pins, "results": episodes}
+
+
+def _remember_memory_payload(conn, attribute: str, value: str,
+                             session_id: str = "") -> Dict:
+    """Store one structured fact in the app pin store (`mycelium_pins`).
+
+    The native write primitive is `PinStore`, which goes through `app_write` -
+    the ONE writer queue, the same one the FFI native writer uses. This helper
+    never opens a second connection. A re-taught attribute updates the existing
+    pin (newest wins) instead of piling up duplicates.
+    """
+    attr = str(attribute or "").strip()
+    val = str(value or "").strip()
+    if not attr:
+        return {"success": False, "error": "attribute is required"}
+    if not val:
+        return {"success": False, "error": "value is required"}
+    attr, val = attr[:120], val[:2000]
+    try:
+        from backend.memory.pin_store import PinStore
+
+        store = PinStore(conn=conn)
+        title = f"fact:{attr}"
+        existing = store.get_by_title(title)
+        if existing is not None:
+            store.update(existing.pin_id, content=val, pin_type="note",
+                         tags=["fact", "remember"])
+            return {"success": True, "pin_id": existing.pin_id,
+                    "attribute": attr, "value": val, "updated": True}
+        pin_id = store.add(title=title, content=val, pin_type="note",
+                           tags=["fact", "remember"])
+        return {"success": True, "pin_id": pin_id, "attribute": attr,
+                "value": val, "updated": False}
+    except Exception as exc:  # noqa: BLE001 - a failed write reports, never raises
+        logger.warning("[ToolBridge] remember failed: %s", exc)
+        return {"success": False, "error": f"memory write failed: {exc}"}
 
 
 class AgentToolBridge:
@@ -925,7 +974,8 @@ class AgentToolBridge:
                     "Search long-term episodic memory for relevant past context, "
                     "solutions, or patterns. Use when you need prior knowledge for the current sub-task. "
                     "Returns chunks (episodic text), chain (earlier turns and taught facts), "
-                    "and episodes (prior similar tasks)."
+                    "episodes (prior similar tasks), and pins (explicit notes the user or "
+                    "you saved to memory)."
                 ),
                 "parameters": {
                     "query": {"type": "string", "description": "What to search for"},
@@ -935,6 +985,23 @@ class AgentToolBridge:
                         "Optional upper time bound: ISO date/time or epoch seconds.")},
                     "tool_name": {"type": "string", "description": (
                         "Optional: only chunks produced by this tool.")},
+                },
+                "category": "memory",
+                "server": "internal",
+            },
+            {
+                "name": "remember",
+                "description": (
+                    "Store a durable fact the user stated (attribute + value) so "
+                    "recall_memory can return it later. Use for explicit 'remember "
+                    "this' facts, preferences, names, and codes. Do not use for "
+                    "reminders or tasks."
+                ),
+                "parameters": {
+                    "attribute": {"type": "string", "description": (
+                        "What the fact is about, e.g. 'library card number'.")},
+                    "value": {"type": "string", "description": (
+                        "The exact value to store, e.g. '880417'.")},
                 },
                 "category": "memory",
                 "server": "internal",
@@ -2571,6 +2638,29 @@ class AgentToolBridge:
                     _episodic, query, since=since, until=until,
                     tool_name=tool_filter, limit=_retrieval_limit,
                     min_score=_retrieval_score)
+
+            if tool_name == "remember":
+                attribute = str(params.get("attribute") or "").strip()
+                value = str(params.get("value") or "").strip()
+                _mi = getattr(self, "_memory_interface", None)
+                if _mi is None:
+                    try:
+                        from backend.memory import get_memory_interface
+
+                        _mi = get_memory_interface()
+                    except Exception:  # noqa: BLE001 - memory is optional
+                        _mi = None
+                _episodic = getattr(_mi, "episodic", None) if _mi is not None else None
+                if _episodic is None:
+                    return {"success": False, "error": "memory is not available"}
+                result = _remember_memory_payload(
+                    _episodic.db, attribute, value, session_id)
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure",
+                    params, result, plan_title=plan_title,
+                )
+                return result
 
             if tool_name == "improve_self":
                 result = await self._execute_research_tool(params, session_id)

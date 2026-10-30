@@ -159,24 +159,12 @@ class TestCtDe1Shapes:
         assert CONSUMERS == (
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
-            "mode", "web_intent",
+            "web_intent",
             "escalate_incomplete", "needs_action",
-            # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
-            # (no production caller since 2026-10-02) and `has_gaps` (no live
-            # site) are REMOVED. Nothing else changed.
-            # Session 364 (owner request): the DEPTH consumer. `sufficient` and
-            # `done` ask whether the objective is COVERED; `depth_met` asks
-            # whether it is done to the DEPTH the success criteria require -
-            # the "the Brain settles for half work" complaint, made measurable.
             "depth_met",
-            # STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface
-            # AC9.1 sanctioned exceptions 2 and 3, the ONLY permitted additions):
-            # `depth_route` had five live kernel call sites and a writer but was
-            # absent from CONSUMERS, so its rows were never reported (T1.9); and
-            # `call_closing` is the new per-call closing question (REQ-10), which
-            # is permanently MEASUREMENT-ONLY (REFUSED_CONSUMERS). Nothing else
-            # changed and nothing was removed.
             "depth_route", "call_closing",
+            "tool_approval",
+            "route_v2",
         )
 
     def test_meta_channel_keys_on_engine_decision(self):

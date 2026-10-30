@@ -171,6 +171,8 @@ class TestCtDe7Registry:
             "depth_route", "call_closing",
             # 2026-10-18 (owner): the pre-call guard consumer.
             "tool_approval",
+            # 2026-10-30: the shadow-only memory route comparator.
+            "route_v2",
         )
         # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
         # (no production caller since 2026-10-02) and `has_gaps` (no live site)

@@ -139,7 +139,10 @@ CHITCHAT_ACKS = (
 ACTION_VERBS = (
     "search", "google", "lookup", "look up", "find", "open", "launch", "start",
     "create", "make", "build", "generate", "write", "send", "email",
-    "message", "text", "call", "schedule", "remind", "set", "add",
+    # "text" REMOVED 2026-10-30: it is usually a NOUN ("remembered text",
+    # "the text on the page"). "send a text" is caught by "send"; the noun
+    # match sent a memory seed to DER.
+    "message", "call", "schedule", "remind", "set", "add",
     "delete", "remove", "update", "edit", "change", "list", "play", "show me",
     "book", "order", "buy", "download", "upload", "post", "tweet",
     "run", "execute", "deploy", "install", "configure", "toggle",
@@ -157,6 +160,49 @@ ACTION_VERBS = (
     "analyze", "compare", "calculate", "convert", "test",
 )
 
+# A verb is a WORD, not a substring. The old `any(verb in t ...)` match sent
+# "staging deployment" to DER on "deploy", "context" on "text", and "prefix" on
+# "fix" (the last is why WORK_VERBS already uses boundaries). One compiled
+# alternation, longest first, so multi-word verbs ("look up", "show me") win.
+#
+# Inflected forms are generated explicitly: a word boundary alone would MISS
+# "deploying" / "creating" / "running" and send a real action request to the
+# direct path (the old substring match caught them). Nouns are NOT generated
+# ("deployment" stays a noun).
+def _action_verb_forms() -> set[str]:
+    forms: set[str] = set()
+    for verb in ACTION_VERBS:
+        forms.add(verb)
+        if " " in verb:            # phrase: no single-word inflection
+            continue
+        forms.update({verb + "s", verb + "ed", verb + "ing"})
+        if verb.endswith("e"):     # make -> making, create -> creating
+            stem = verb[:-1]
+            forms.update({stem + "ing", stem + "ed"})
+        elif len(verb) <= 4 and verb[-1] not in "aeiou":
+            # CVC doubling: run -> running, set -> setting, add -> adding.
+            forms.add(verb + verb[-1] + "ing")
+            forms.add(verb + verb[-1] + "ed")
+    return forms
+
+
+_ACTION_VERB_RE = re.compile(
+    r"\b(?:"
+    + "|".join(re.escape(v) for v in sorted(_action_verb_forms(), key=len, reverse=True))
+    + r")\b"
+)
+
+
+def has_action_verb(text: str) -> bool:
+    """True when an ACTION_VERB (or an inflected form) appears as a whole word.
+
+    Word boundaries in both directions: ``"deployment"`` does NOT match
+    ``"deploy"``, and ``"context"`` does NOT match ``"text"``. Inflections are
+    generated, so ``"deploying"``, ``"creating"`` and ``"running"`` do match.
+    Free and pure.
+    """
+    return bool(_ACTION_VERB_RE.search((text or "").lower()))
+
 
 # Follow-up / anaphora markers — signal the user is continuing a PRIOR task
 # ("now do it for the sales team", "yes, schedule that", "what about the
@@ -170,6 +216,47 @@ FOLLOWUP_MARKERS = (
     "proceed", "confirm", "that one", "the other one", "the same",
 )
 ANAPHORA_PRONOUNS = ("it", "that", "this", "them", "they", "those", "these", "him", "her")
+
+# A continuation marker is EVIDENCE only when it can mean "continue the task".
+# Strong phrases are unambiguous on their own; weak words ("with the",
+# "for the", "now", "also") appear inside ordinary questions ("Answer with the
+# number only") and must not divert a fresh question to DER without a task in
+# the recent context. This is the seam that misrouted two T48 memory asks.
+# "what about" / "how about" are WEAK on purpose: "what about the weather?"
+# is a fresh question when no task precedes it. A phrase that only makes sense
+# as a continuation ("do it", "go ahead", "the same") stands on its own.
+_STRONG_FOLLOWUP_MARKERS = (
+    "do it", "go ahead", "proceed", "confirm", "that one", "the other one",
+    "the same", "instead", "again",
+)
+_WEAK_FOLLOWUP_MARKERS = tuple(
+    m for m in FOLLOWUP_MARKERS if m not in _STRONG_FOLLOWUP_MARKERS
+)
+
+# Word boundaries, not substrings: "planet" is not a plan, "toolbar" is not a
+# tool, "stepper" is not a step, "multitask" is not a task.
+_PRIOR_TASK_RE = re.compile(
+    r"\b(?:plan|tool|step|task|i'll|i will|i've|working on)\b"
+)
+
+
+def _prior_task_context(context) -> bool:
+    """Does the recent context show an assistant plan/tool/task turn?
+
+    Scans the last four messages (not only the tail) so a one-message coda
+    ("anything else?") does not erase the task that preceded it. Never raises.
+    """
+    try:
+        for msg in list(context or [])[-4:]:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            c = (msg.get("content") or "").lower()
+            if _PRIOR_TASK_RE.search(c):
+                return True
+    except Exception:
+        return False
+    return False
+
 
 # Explicit tool-request prefixes (REQ-1 AC5 / ask_first policy).
 TOOL_PREFIXES = ("tool:", "run:", "execute:", "plan:")
@@ -309,29 +396,146 @@ def is_followup_to_task(text: str, context) -> bool:
         return False
     # Anaphora: a pronoun with no noun is almost always a continuation.
     words = set(t.split())
-    if words & set(ANAPHORA_PRONOUNS) and not any(
-        v in t for v in ACTION_VERBS
-    ):
+    # Anaphora is EVIDENCE only when a task actually precedes it. Without this
+    # guard, "Remember this ... Just acknowledge it briefly." matched "it"+"for"
+    # and ran DER (141 s), and "what does this error mean?" was a false
+    # follow-up. A pronoun with no prior task is a fresh question.
+    if (_prior_task_context(context) and words & set(ANAPHORA_PRONOUNS)
+            and not has_action_verb(text)):
         # "do it", "change that", "what about them" — continuation.
         if any(m in t for m in ("do", "change", "update", "edit", "what about",
                                 "how about", "send", "for", "with", "the")):
             return True
-    # Explicit continuation/confirmation markers.
-    if any(t.startswith(m) or f" {m} " in f" {t} " for m in FOLLOWUP_MARKERS):
+    # Unambiguous continuation phrases stand on their own.
+    if any(t.startswith(m) or f" {m} " in f" {t} " for m in _STRONG_FOLLOWUP_MARKERS):
         return True
-    # Prior task context: if the last assistant turn was a plan/tool result,
-    # a short user reply is overwhelmingly a follow-up, not a new question.
-    if context:
-        try:
-            last = context[-1] if isinstance(context, (list, tuple)) else None
-            if isinstance(last, dict) and last.get("role") == "assistant":
-                c = (last.get("content") or "")
-                if any(k in c.lower() for k in ("plan", "tool", "step", "task", "i'll", "i will")):
-                    if len(t.split()) <= 12:
-                        return True
-        except Exception:
-            pass
+    # Weak markers ("with the", "for the", "now", "also") are continuation
+    # evidence only when a task actually precedes them.
+    if _prior_task_context(context) and any(
+        t.startswith(m) or f" {m} " in f" {t} " for m in _WEAK_FOLLOWUP_MARKERS
+    ):
+        return True
+    # Prior task context: a short reply after a plan/tool result is a follow-up.
+    if _prior_task_context(context) and len(t.split()) <= 12:
+        return True
     return False
+
+
+# ── Memory-recall questions (T48) ─────────────────────────────────────────
+# The app's memory store holds the USER's own statements (the turn pair is
+# written with `tool_name="user_turn"`). A question about those statements is a
+# recall, not an action, and it must reach the DIRECT path - that is the path
+# that assembles every memory leg (session + cross-session + file + prior).
+# These are pure Tier 0 rules: no store read, no model call.
+_WH_OPENERS = ("what", "which", "who", "when", "where", "why", "how")
+_MEMORY_STRONG_OPENERS = (
+    "do you remember", "do you recall", "do you know my",
+    "did i tell you", "did i mention", "did i say",
+    "have i told you", "have i mentioned", "what did i",
+    "what was my", "what were my", "what is my", "what's my",
+    "where is my", "where's my", "who is my", "who's my",
+    "when is my", "when's my",
+)
+_REQUEST_OPENERS = ("can you", "could you", "would you", "will you", "please")
+_PREFERENCE_VERBS = (
+    "prefer", "like", "want", "use", "choose", "chose", "favorite", "favourite",
+)
+_MEMORY_WORDS = ("remember", "recall", "said", "told", "mentioned", "stored")
+
+
+def is_memory_question(text: str) -> bool:
+    """Is this a question about something the user already stated/stored?
+
+    The memory system's recall unit is the user's own turn pair. A recall
+    question therefore belongs on the direct path, whose assembly includes the
+    cross-session leg; the DER step only carries a thin 8-row memory block.
+
+    This rule runs BEFORE the action-verb and follow-up layers so two measured
+    misroutes cannot happen again:
+      * a noun that contains a verb ("staging deployment" -> "deploy"), and
+      * a generic marker inside an instruction ("Answer with the number only"
+        -> "with the" -> follow-up).
+
+    Conservative on purpose: it needs a question shape AND a first-person /
+    memory signal, and a request to DO something ("can you search my email")
+    stays an action. Never raises; free and pure.
+    """
+    t = (text or "").lower().strip()
+    if not t or t.startswith(TOOL_PREFIXES):
+        return False
+    first = t.split()[0] if t.split() else ""
+    strong = any(t.startswith(o) for o in _MEMORY_STRONG_OPENERS)
+    is_question = "?" in t or first in _WH_OPENERS or strong
+    if not is_question:
+        return False
+    # A request to act is an action even when it mentions "my" data.
+    if any(t.startswith(o) for o in _REQUEST_OPENERS) and has_action_verb(t):
+        return False
+    if strong:
+        return True
+    # An action verb means the user wants work done, not a fact recalled.
+    if has_action_verb(t):
+        return False
+    if re.search(r"\b(?:my|our)\b", t):
+        return True
+    if any(re.search(rf"\b{re.escape(w)}\b", t) for w in _MEMORY_WORDS):
+        return True
+    has_first_person = re.search(r"\b(?:i|me|we|us)\b", t) is not None
+    return has_first_person and any(
+        re.search(rf"\b{re.escape(p)}\b", t) for p in _PREFERENCE_VERBS
+    )
+
+
+# A memory WRITE is the user telling IRIS to keep a fact. The write itself
+# already happens at turn entry + completion; the router only needs to keep it
+# OFF the planning loop. The seed turns ("Remember this for later: ... Just
+# acknowledge it briefly.") were running DER for ~141 s because "it" + "for"
+# matched the anaphora follow-up branch. A write is not a follow-up task.
+_MEMORY_WRITE_OPENERS = (
+    "remember this", "remember that", "remember for", "note that",
+    "keep in mind", "save this", "store this", "don't forget",
+    "do not forget", "make a note",
+)
+
+
+def is_memory_write(text: str) -> bool:
+    """Is this an instruction to REMEMBER a fact (not a question)?"""
+    t = (text or "").lower().strip()
+    if not t or "?" in t or t.startswith(TOOL_PREFIXES):
+        return False
+    return any(t.startswith(o) for o in _MEMORY_WRITE_OPENERS)
+
+
+# A broad self-query is not similarity-matched to one fact ("what do you know
+# about me" has no lexical overlap with "my card number is ..."). It needs a
+# RECENT-FACTS leg, not a narrower similarity threshold. Pure Tier 0.
+_BROAD_MEMORY_PHRASES = (
+    "what do you know about me", "what have you learned about me",
+    "tell me about myself", "what do you remember about me",
+    "what have i told you",
+)
+
+
+def is_broad_memory_question(text: str) -> bool:
+    """Is this a broad 'what do you know about me' recall question?"""
+    t = (text or "").lower().strip()
+    # Phrase-based: "Tell me about myself." is a request, not a "?" question.
+    return any(p in t for p in _BROAD_MEMORY_PHRASES)
+
+
+_WH_START = (
+    "what", "what's", "whats", "which", "who", "who's", "whose",
+    "when", "when's", "where", "where's", "why", "how", "how's",
+)
+
+
+def is_wh_question(text: str) -> bool:
+    """Does the message start with a wh-word? A question, even with a verb in
+    the tail ("What is the exact name ... Reproduce it exactly."). The direct
+    path still owns a ReAct tool loop, so a question that needs a tool can use
+    one; it just must not be routed to DER by a tail work verb."""
+    t = (text or "").lower().strip()
+    return bool(t) and t.split()[0] in _WH_START
 
 
 def is_web_search_request(text: str) -> bool:
@@ -404,6 +608,8 @@ class Tier0Verdict:
     intent: Tier0Intent
     is_chitchat: bool = False
     is_web_search: bool = False
+    is_memory: bool = False         # recall of the user's own stored statements
+    is_memory_write: bool = False   # instruction to remember a fact
 
 
 def tier0_classify(text: str, context=None) -> Tier0Verdict:
@@ -428,14 +634,19 @@ def tier0_classify(text: str, context=None) -> Tier0Verdict:
     # Layer 2 — cheap keyword/intent match.
     if is_web_search_request(text):
         return Tier0Verdict(intent=Tier0Intent.WEB, is_web_search=True)
-    if any(verb in t for verb in ACTION_VERBS) or has_work_verb(t):
-        return Tier0Verdict(intent=Tier0Intent.ACTION)
-
-    # Layer 3 — ambiguous middle: follow-up to a prior task -> DER (safe).
+    # The memory heuristics are SHADOW features now; they do not route.
+    # Follow-up FIRST: a wh-word can still be a continuation ("what about the
+    # other one"), and anaphora only counts with a prior task.
     if is_followup_to_task(text, context):
         return Tier0Verdict(intent=Tier0Intent.FOLLOWUP)
+    # A wh-question is a QUESTION even when a work verb is in the tail
+    # ("... Reproduce it exactly"). The direct path still has a ReAct loop.
+    if is_wh_question(text):
+        return Tier0Verdict(intent=Tier0Intent.QUESTION)
+    if has_action_verb(text) or has_work_verb(t):
+        return Tier0Verdict(intent=Tier0Intent.ACTION)
 
-    # Layer 4 — default: standalone question -> direct path.
+    # Default: standalone question -> direct path.
     return Tier0Verdict(intent=Tier0Intent.QUESTION)
 
 
@@ -1255,6 +1466,13 @@ class SemanticLogicGate:
                     requires_der = False
                     why_parts.append("tier0:followup no-active-task")
             else:  # QUESTION
+                # A recall of the user's own statements is a MEMORY question:
+                # the direct path assembles the cross-session legs, so the DAG
+                # records the lane and keeps requires_der False. A preference
+                # question ("which colour do I prefer") is the canonical case.
+                # No memory route here: a recall/write turn is a QUESTION by
+                # the general rules. The memory behaviour is the automatic
+                # turn pair + pins + recall, not a routing label.
                 # Ontology memory lanes come from the coordinate graph (Tier 2),
                 # never a neural projector. Tier 1 removed.
                 if t2.rows:

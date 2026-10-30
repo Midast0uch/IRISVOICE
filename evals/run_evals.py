@@ -347,8 +347,14 @@ def _retire_taught_facts(fact_template: str) -> int:
     `fern-green-{run}` keep a stable prefix; `880417` is the whole fact.
     Never raises - a failed retirement only makes the run noisier.
     """
-    prefix = fact_template.split("{run}")[0] or fact_template
-    if len(prefix) < 5:
+    # Strip the trailing separator so the base name also matches stale agent
+    # replies ("fern-green)" / "kestrel-blue."), not only the full fact
+    # ("fern-green-ebaf"). Measured 2026-10-30: a stale cross-session chunk
+    # said "green (fern-green)" and survived the `%fern-green-%` pattern.
+    prefix = (fact_template.split("{run}")[0] or fact_template).rstrip("-_ ")
+    # 3, not 5: "code-{run}" and "spot-{run}" are specific enough, and the
+    # 5-char guard silently kept a prior run's code-c551 (measured 2026-10-30).
+    if len(prefix) < 3:
         return 0
     like = f"%{prefix}%"
     try:
@@ -377,6 +383,30 @@ def _retire_taught_facts(fact_template: str) -> int:
             st.db,
             "DELETE FROM memory_chain WHERE insight LIKE ? OR result LIKE ? "
             "OR content LIKE ?", (like, like, like))
+        # Episodes are the "<memory> Past successes" source. Without this the
+        # direct path surfaces a PRIOR run's fact even after chunks and chain
+        # are clean (measured 2026-10-30: 20 stale fern-green episodes, and m03
+        # answered "Fern-green." over the current fern-green-ebaf).
+        try:
+            _ep_cols = {r[1] for r in st.db.execute("PRAGMA table_info(episodes)")}
+            if "task_summary" in _ep_cols:
+                app_write(st.db, "DELETE FROM episodes WHERE task_summary LIKE ?", (like,))
+            if "full_content" in _ep_cols:
+                app_write(st.db, "DELETE FROM episodes WHERE full_content LIKE ?", (like,))
+        except Exception as _ep_exc:  # noqa: BLE001 - hygiene never fails a run
+            log.warning("retire episodes failed for %r: %r", fact_template, _ep_exc)
+        # The native `remember` tool writes mycelium_pins. A stale pin must
+        # retire with the chunk/chain/episode rows, or it outranks the current
+        # fact in <recent_facts>/recall_memory (measured 2026-10-30: the
+        # preference probe returned the PRIOR run's fern-green-aa95).
+        try:
+            app_write(
+                st.db,
+                "DELETE FROM mycelium_pins WHERE title LIKE ? OR content LIKE ?",
+                (like, like),
+            )
+        except Exception as _pin_exc:  # noqa: BLE001 - hygiene never fails a run
+            log.warning("retire pins failed for %r: %r", fact_template, _pin_exc)
         app_flush(10.0)
         return removed
     except Exception as exc:  # noqa: BLE001 - never fail a run for hygiene
@@ -421,6 +451,47 @@ def _retire_eval_chats() -> int:
             con.close()
     except Exception as exc:  # noqa: BLE001 - never fail a run for hygiene
         log.warning("retire eval chats failed: %r", exc)
+        return 0
+
+
+def _retire_eval_memory() -> int:
+    """Delete the harness's OLD synthetic memory rows before a memory run.
+
+    The chat-store cleanup is not enough: every eval turn pair is also a
+    ``context_chunks`` row under ``session_id = eval-*``. An old agent reply
+    ("Green") can outrank the current fact in ``<cross_session_memory>`` even
+    after the fact-specific retire is clean (measured 2026-10-30). Eval threads
+    are synthetic; a real user session never starts with ``eval-``. Never raises.
+    """
+    try:
+        _root = str(Path(__file__).resolve().parents[1])
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from backend.memory.config import resolve_memory_store_path
+        from backend.memory.db import app_flush, app_write
+        from backend.memory.episodic import EpisodicStore
+
+        st = EpisodicStore(db_path=str(resolve_memory_store_path()),
+                           biometric_key=b"\0" * 32)
+        removed = 0
+        for table, col in (
+            ("context_chunks", "session_id"),
+            ("memory_chain", "thread_id"),
+            ("episodes", "session_id"),
+        ):
+            try:
+                n = st.db.execute(
+                    f"SELECT count(*) FROM {table} WHERE {col} LIKE 'eval-%'"
+                ).fetchone()[0]
+                if n:
+                    app_write(st.db, f"DELETE FROM {table} WHERE {col} LIKE 'eval-%'")
+                    removed += int(n)
+            except Exception as exc:  # noqa: BLE001 - one table never fails the run
+                log.warning("retire eval memory %s failed: %r", table, exc)
+        app_flush(10.0)
+        return removed
+    except Exception as exc:  # noqa: BLE001 - never fail a run for hygiene
+        log.warning("retire eval memory failed: %r", exc)
         return 0
 
 
@@ -528,6 +599,9 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
         _pre = _retire_eval_chats()
         if _pre:
             log.info("retired %d eval chat messages before the run", _pre)
+        _pre_mem = _retire_eval_memory()
+        if _pre_mem:
+            log.info("retired %d eval memory rows before the run", _pre_mem)
     try:
         for i, task in enumerate(tasks, 1):
             if task["mode"] != current_mode:
@@ -563,6 +637,7 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                     log.info("    retired %d earlier %s rows", _retired, task["id"])
 
             started = time.monotonic()
+            ask_started = None
             conv_id = None
             seed_note = None
             try:
@@ -599,6 +674,10 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                                               f"{seed_rec['reply'][:80]!r}")
                     except Exception as exc:
                         seed_note = f"seed failed: {type(exc).__name__}: {exc}"
+                # Time the ASK alone. `reply_s` includes the seed + setup, which
+                # made a 1.3 s recall look like 40 s. Keep both: the standard
+                # uses reply_s, the recall latency is reply_s_ask.
+                ask_started = time.monotonic()
                 rec = await _run_turn(task, conv_id, workdir, float(task.get("timeout_s", 900)))
             except Exception as exc:  # a broken socket is a failed task, not a crashed run
                 rec = {"reply": "", "documents": [], "event_counts": {}, "tools": [],
@@ -606,6 +685,10 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                        "ws_error": f"{type(exc).__name__}: {exc}"}
             seconds = round(time.monotonic() - started, 1)
             reply_s = round(rec["reply_at"] - started, 1) if rec.get("reply_at") else None
+            reply_s_ask = (
+                round(rec["reply_at"] - ask_started, 1)
+                if rec.get("reply_at") and ask_started else None
+            )
 
             text = "\n\n".join([rec["reply"], *rec["documents"]])
             notes = []
@@ -648,7 +731,8 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
 
             results.append({
                 "id": task["id"], "group": task["group"], "passed": passed,
-                "seconds": seconds, "reply_s": reply_s, "notes": notes, "conversation_id": conv_id,
+                "seconds": seconds, "reply_s": reply_s, "reply_s_ask": reply_s_ask,
+                "notes": notes, "conversation_id": conv_id,
                 "turn_id": rec.get("turn_id"),
                 "seed": seed_note,
                 "workdir": str(workdir) if workdir else None,
@@ -657,8 +741,9 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 "reply_head": rec["reply"][:400], "event_counts": rec["event_counts"],
                 "shell_syntax_errors": rec.get("shell_syntax_errors", 0),
             })
-            log.info("    %s in %.0fs (reply at %ss)  %s", "PASS" if passed else "FAIL", seconds,
-                     reply_s, "; ".join(notes))
+            log.info("    %s in %.0fs (reply at %ss, ask %ss)  %s",
+                     "PASS" if passed else "FAIL", seconds, reply_s, reply_s_ask,
+                     "; ".join(notes))
             _write_results(results, PARTIAL_FILE)
             if not passed and not _backend_alive():
                 # Every later task would fail for a reason that says nothing

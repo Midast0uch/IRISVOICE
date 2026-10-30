@@ -48,6 +48,11 @@ _QUESTION = [
     "what is a mycelium node?", "explain the ontology to me",
     # "internet" alone is not a WEB trigger (migrated list) -> direct.
     "what does the internet say about AI safety?",
+    # DELIBERATE CONTRACT CHANGE (2026-10-30): anaphora now requires a prior
+    # task. "what does this error mean?" with no context is a QUESTION, not a
+    # follow-up; the old DER expectation was a known false positive.
+    "what does this error mean?",
+    "what's the difference between a list and a tuple?",
 ]
 _ACTION = [
     "search for the latest news on AI", "create a file called notes.txt",
@@ -59,15 +64,9 @@ _ACTION = [
     "calculate the total cost",
     # "summarize" is an action verb (migrated) -> DER.
     "can you summarize this article for me?",
-    # FINDING (legacy-equivalent, verb/noun ambiguity): "list" the noun
-    # matches the "list" verb -> DER. Same as the legacy router; T13 tuning
-    # candidate, not a regression.
-    "what's the difference between a list and a tuple?",
-    # FINDING (legacy-equivalent): anaphora "this" + marker "the" route this
-    # question to DER. The gate preserves the migrated behavior for
-    # equivalence; the false positive is a T13 tuning candidate, not a
-    # regression (pin_85e598dcd79e family).
-    "what does this error mean?",
+    # DELIBERATE CONTRACT CHANGE (2026-10-30): a wh-question is a question even
+    # when a verb ("list") appears in the tail. This was a pinned false positive.
+
 ]
 _FOLLOWUP = [
     "yes do it", "change that to 6pm", "what about the other one",
@@ -84,6 +83,15 @@ _EDGE = [
     ("", None, False), ("   ", None, False), (None, None, False),
     ("Tool: do the thing", None, True), ("RUN the benchmark now", None, True),
 ]
+
+# DELIBERATE CONTRACT CHANGE (2026-10-30): a wh-question is a QUESTION even
+# when an action/work verb is in the tail. The old legacy substring router sent
+# these to DER; the gate now sends them direct. Listed so the gate-proof suite
+# can distinguish an intended reversal from a silent regression.
+_ALLOWED_GATE_DIRECT = {
+    "what's the difference between a list and a tuple?",
+}
+
 
 _COMPOUND = [
     "Look up our WebSocket reconnect pattern from last session and test it in ws_client.rs",
@@ -177,8 +185,13 @@ def test_gate_proof_equivalence_and_superiority():
     # Equivalence: the only allowed disagreements are compound/multi-concern
     # prompts the legacy router misrouted to DIRECT (False) while the gate
     # routes to DER (True). Any gate->False / legacy->True is a regression.
-    regressions = [d for d in disagreements if d[1] and not d[2]]
+    regressions = [d for d in disagreements if d[1] and not d[2]
+                   and d[0] not in _ALLOWED_GATE_DIRECT]
     assert not regressions, f"gate regressed vs legacy on: {regressions}"
+    flips = [d for d in disagreements if d[1] and not d[2]
+             and d[0] in _ALLOWED_GATE_DIRECT]
+    assert {d[0] for d in flips} == _ALLOWED_GATE_DIRECT, (
+        "the deliberate wh-question flips must be the only reversals")
 
     # Superiority: at least one compound prompt demonstrates the gate winning
     # where the legacy router misrouted to DIRECT. (The other compound prompts
@@ -199,5 +212,5 @@ def test_gate_proof_no_silent_reversals():
     for text, ctx, _ in _matrix():
         gate = k._needs_planning(text, ctx)
         legacy = _legacy_router(text, ctx)
-        if legacy and not gate:
+        if legacy and not gate and text not in _ALLOWED_GATE_DIRECT:
             pytest.fail(f"gate reversed legacy DER -> direct on {text!r}")

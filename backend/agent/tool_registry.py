@@ -996,7 +996,8 @@ def register_builtin_tools() -> None:
                 "Search long-term episodic memory for relevant past context, "
                 "solutions, or patterns. Use when you need prior knowledge for the current sub-task. "
                 "Returns chunks (episodic text), chain (earlier turns and taught facts), "
-                "and episodes (prior similar tasks)."
+                "episodes (prior similar tasks), and pins (explicit notes the user or "
+                "you saved to memory)."
             ),
             parameters={
                 "query": {"type": "string", "description": "What to search for"},
@@ -1009,6 +1010,23 @@ def register_builtin_tools() -> None:
             },
             category="memory", executor="memory", permission_tier="read_only",
             parallel_safe=True, critical=True,
+        ),
+        ToolSpec(
+            name="remember",
+            description=(
+                "Store a durable fact the user stated (attribute + value) so "
+                "recall_memory can return it later. Use for explicit 'remember "
+                "this' facts, preferences, names, and codes. Do not use for "
+                "reminders or tasks."
+            ),
+            parameters={
+                "attribute": {"type": "string", "description": (
+                    "What the fact is about, e.g. 'library card number'.")},
+                "value": {"type": "string", "description": (
+                    "The exact value to store, e.g. '880417'.")},
+            },
+            category="memory", executor="memory", permission_tier="side_effect",
+            parallel_safe=False, critical=False,
         ),
         ToolSpec(
             name="improve_self",

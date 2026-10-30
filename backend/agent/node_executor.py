@@ -59,6 +59,7 @@ NODE_TOOLS = (
     # Web research (also web-toggle gated) and the user's own desktop.
     "search", "crawler_query",
     "open_url", "launch_app", "open_file", "get_system_info", "recall_memory",
+    "remember",
     # The one way a card appears (reply-surface audit, Phase A): a node that
     # made a report, a file or a page to keep hands it over with a title.
     "create_artifact",
@@ -565,6 +566,15 @@ def _safe_look(ctx: NodeContext, shot: str, question: str) -> str:
 def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     """Run one node to completion. Never raises."""
     allowed = {t.get("function", {}).get("name") for t in ctx.tools}
+    # T48 observability: the RENDERED memory text this node actually receives.
+    # Reading the retrieval result is not enough; the step prompt is what the
+    # model sees, and a fact that never reaches it cannot be consumed.
+    if ctx.memory_facts:
+        try:
+            logger.info("[MEM-TEXT] conv=%s path=der goal=%r mem=%s",
+                        ctx.conv_id, (goal or "")[:80], ctx.memory_facts[:1200])
+        except Exception:  # noqa: BLE001 - observability never blocks a step
+            pass
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": _relative(

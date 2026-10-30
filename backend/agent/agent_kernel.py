@@ -930,6 +930,36 @@ def _edit_diff_fields(item) -> dict:
     return {"diff": eds[-1], **({"diffs": list(eds)} if len(eds) > 1 else {})}
 
 
+def _fact_line(text: str) -> str:
+    """The USER half of a stored turn pair, for fact-identity comparison."""
+    t = str(text or "").replace("\r", "")
+    if t.startswith("User:"):
+        t = t[len("User:"):]
+    return t.split("\nAssistant:")[0].strip().replace("\n", " ")
+
+
+def _dedupe_fact_lines(lines, against=None):
+    """Keep NEWEST-first facts, dropping an older statement of the SAME fact.
+
+    The recent-facts leg is newest-first; `_same_fact_text` decides whether two
+    statements are the same attribute with a different value. Without this,
+    BT-W10-2's prompt carried both alpha and bravo and the model picked alpha.
+    """
+    try:
+        from backend.memory.episodic import _same_fact_text
+    except Exception:  # noqa: BLE001 - no identity, no dedupe
+        return list(lines)
+    kept = [_fact_line(x) for x in (against or [])]
+    out = []
+    for ln in lines:
+        u = _fact_line(ln)
+        if any(_same_fact_text(u, k) for k in kept):
+            continue
+        out.append(ln)
+        kept.append(u)
+    return out
+
+
 def _remember_turn_urls(kernel, step_result, _where: str = "") -> int:
     """AC2.1 / AC9.3 / AC10.2 (session-319 fix): harvest every URL a step
     touched into turn memory, on ANY path.
@@ -4050,7 +4080,10 @@ class AgentKernel:
                 _ctx_budget323 = int(self.resolve_context_window() * 0.6)
                 _chunks = self._memory_interface.episodic.retrieve_context_chunks(
                     query=text,
-                    session_id=getattr(self, "session_id", None),
+                    # The TURN's session, not the kernel's fixed one: the seed
+                    # and the ask can be different conversations. The kernel id
+                    # is only a fallback when the caller passed none.
+                    session_id=session_id or getattr(self, "session_id", None),
                     limit=6,
                     min_similarity=0.25,
                     zones=["trusted", "tool"],
@@ -4069,7 +4102,7 @@ class AgentKernel:
                 try:
                     _ref_chunks323 = self._memory_interface.episodic.retrieve_context_chunks(
                         query=text,
-                        session_id=getattr(self, "session_id", None),
+                        session_id=session_id or getattr(self, "session_id", None),
                         limit=3,
                         min_similarity=0.25,
                         zones=["reference"],
@@ -4078,6 +4111,41 @@ class AgentKernel:
                 except Exception:
                     _ref_chunks323 = []
                 _blocks323: List[str] = []
+                # ── 3a-1: RECENT FACTS (always, bounded) ───────────────────
+                # A similarity leg cannot match a broad "what do you know
+                # about me" to "my card is card-0646" (no lexical overlap).
+                # This READ leg keeps the newest explicit facts addressable
+                # without a router heuristic. Bound: 8 turns + 8 pins.
+                try:
+                    _rf: List[str] = []
+                    try:
+                        _rows = self._memory_interface.episodic.db.execute(
+                            "SELECT content FROM context_chunks "
+                            "WHERE tool_name='user_turn' AND folded_into IS NULL "
+                            "ORDER BY timestamp DESC LIMIT 8"
+                        ).fetchall()
+                        for (_c,) in _rows:
+                            _u = str(_c or "")
+                            if _u.startswith("User:"):
+                                _u = _u[len("User:"):]
+                            _u = _u.split("\nAssistant:")[0].strip().replace("\n", " ")
+                            if _u:
+                                _rf.append(_u[:240])
+                    except Exception:
+                        pass
+                    # Newest-first, and one value per fact: the pins stay in
+                    # recall_memory, not in the automatic block (a pin can be an
+                    # older duplicate and compete with the newest user turn).
+                    _rf = _dedupe_fact_lines(_rf)
+                    if _rf:
+                        _blocks323.insert(
+                            0,
+                            "<recent_facts>\n- "
+                            + "\n- ".join(dict.fromkeys(_rf))
+                            + "\n</recent_facts>",
+                        )
+                except Exception as _rf_exc:  # noqa: BLE001 - never blocks a turn
+                    logger.debug("[AgentKernel] recent facts skipped: %s", _rf_exc)
                 # ── 3a-2: turn-start prior memory (IRIS_TURN_START_RECALL,
                 # OFF by default - A/B measured 2026-10-28). Chain rows
                 # relevant to the USER'S OWN WORDS, so a fact taught in an
@@ -4096,7 +4164,8 @@ class AgentKernel:
 
                     _pm_conn = _pm_resolve_conn(self._memory_interface)
                     _pm_rows = turn_start_prior_memory(
-                        _pm_conn, text, getattr(self, "session_id", None)
+                        _pm_conn, text,
+                        session_id or getattr(self, "session_id", None),
                     )
                     _pm_lines: List[str] = []
                     _pm_used = 0
@@ -4112,6 +4181,9 @@ class AgentKernel:
                             break
                         _pm_lines.append(_pm_line)
                         _pm_used += len(_pm_line)
+                    # A query-gated chain row can be the OLD value of a fact the
+                    # recent-facts leg already has; keep only the newest.
+                    _pm_lines = _dedupe_fact_lines(_pm_lines, against=_rf)
                     if _pm_lines:
                         _blocks323.append(
                             "<prior_memory>\n- "
@@ -4142,6 +4214,9 @@ class AgentKernel:
                     _x_chunks323 = []
                 _seen323 = set(_chunks)
                 _x_new323 = [c for c in _x_chunks323 if c not in _seen323]
+                # The cross-session leg is score-ordered, not newest-ordered;
+                # drop an older value of a fact the recent-facts leg has.
+                _x_new323 = _dedupe_fact_lines(_x_new323, against=_rf)
                 if _x_new323:
                     _blocks323.append(
                         "<cross_session_memory>\n"
@@ -4195,6 +4270,40 @@ class AgentKernel:
                             + "\n---\n".join(_file_chunks)
                             + "\n</file_memory>"
                         )
+                # The exact-value rule applies whenever RECALLED memory is in
+                # the prompt, not because a router labeled the turn. This
+                # decouples the rule from the removed memory heuristics.
+                try:
+                    _mem_text = "\n".join(_blocks323)
+                    if any(tag in _mem_text for tag in (
+                        "<prior_memory>", "<cross_session_memory>", "<recent_facts>",
+                    )):
+                        system_prompt += (
+                            "\n\nMEMORY ANSWER RULE: the prompt includes things the "
+                            "user stated earlier. Reproduce a stored value EXACTLY "
+                            "as stated, including any suffix, code, or identifier. "
+                            "Do not shorten, translate, or normalize it. If stored "
+                            "values disagree, use the newest user statement."
+                        )
+                        sys_tokens = len(system_prompt) // self._CHARS_PER_TOKEN
+                except Exception as _mr_exc:  # noqa: BLE001 - never blocks a turn
+                    logger.debug("[AgentKernel] memory answer rule skipped: %s", _mr_exc)
+                # The exact user statements are authoritative. When they are in
+                # the prompt, the derived "past successes" block can carry an
+                # OLDER value of the same attribute (measured 2026-10-30:
+                # BT-W10-2 answered alpha over the newer bravo). Drop the
+                # derived <memory> block; the user turns + pins carry the newest.
+                try:
+                    _exact = "\n".join(_blocks323)
+                    if any(tag in _exact for tag in (
+                        "<recent_facts>", "<prior_memory>", "<cross_session_memory>",
+                    )):
+                        episodic_prefix[:] = [
+                            m for m in episodic_prefix
+                            if "<memory>" not in (m.get("content") or "")
+                        ]
+                except Exception as _ex_exc:  # noqa: BLE001 - never blocks a turn
+                    logger.debug("[AgentKernel] derived-memory suppression skipped: %s", _ex_exc)
                 if _blocks323:
                     chunk_text = "\n---\n".join(_blocks323)
                     # Inject as a pseudo-exchange so role alternation stays valid
@@ -4259,6 +4368,28 @@ class AgentKernel:
             history_block = history
 
         # â”€â”€ Assemble final message list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── T48 observability: the RENDERED memory text this turn delivers ──
+        # The gate answer depends on what the model actually sees, not on what
+        # retrieval returned. Bounded to one line; never blocks a reply.
+        try:
+            _mem_blocks_text: List[str] = []
+            for _m in (episodic_prefix + chunk_prefix):
+                _c = _m.get("content") or ""
+                if any(tag in _c for tag in (
+                    "<memory>", "<context_memory>", "<cross_session_memory>",
+                    "<prior_memory>", "<file_memory>", "<reference_memory>",
+                    "<mycelium_profile>",
+                )):
+                    _mem_blocks_text.append(_c)
+            logger.info(
+                "[MEM-TEXT] session=%s path=direct query=%r mem=%s",
+                session_id or getattr(self, "session_id", None),
+                (text or "")[:80],
+                ("\n".join(_mem_blocks_text)[:1200] or "(none)"),
+            )
+        except Exception:  # noqa: BLE001 - observability never blocks a reply
+            pass
+
         messages: List[Dict] = [{"role": "system", "content": system_prompt}]
         messages.extend(episodic_prefix)  # Layer 2: episodic summaries
         messages.extend(chunk_prefix)  # Layer 3a: semantic DB chunks
@@ -17076,7 +17207,52 @@ Respond with a JSON object:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(_json.dumps(row, ensure_ascii=False) + "\n")
-        except Exception:  # noqa: BLE001 â€” shadow logging never blocks a reply
+
+            # ORACLE ROUTE SHADOW (2026-10-30, reworked 2026-10-30): the
+            # Oracle's pick on the ONE fork the kernel actually takes -
+            # `"der" if planned else "direct"`. It NEVER acts.
+            #
+            # BINARY ON PURPOSE. The first cut asked a four-way question
+            # (direct/der/memory_recall/memory_write) while the kernel has no
+            # memory branches: memory_write and memory_recall both land on the
+            # direct path. Two options that produce the same behaviour cannot
+            # be calibrated - the report's precision pools them, so the engine
+            # could look right on an option that changes nothing.
+            #
+            # `eng.shadow()` is the standard path: the row goes to
+            # `_shadow_row_sink` -> the one ledger, so
+            # scripts/consumer_enforcement_report.py can score it. The first
+            # cut used `decide()` + a private jsonl and wrote ZERO ledger rows
+            # (measured 2026-10-30: 0 route_v2 rows among 115,517 decision
+            # rows). A private file is not evidence.
+            #
+            # The reference is what the rules did, in the same vocabulary, so
+            # the row carries a parity label. It is NOT truth: the rules call
+            # every memory ask "direct" because the direct path is where those
+            # answers are assembled. A flip needs an OUTCOME label (did the
+            # turn run a tool?), not this parity number.
+            try:
+                from backend.agent.decision_engine import get_decision_engine
+
+                _eng = get_decision_engine()
+                if _eng is not None:
+                    _incumbent = "der" if planned else "direct"
+                    _eng.shadow(
+                        "route_v2",
+                        ["direct", "der"],
+                        {"goal": (text or "")[:200],
+                         "task_class": "personal", "last_result": "",
+                         "chars": len(text or ""),
+                         "web_mode": bool(web_mode)},
+                        sink=self._shadow_row_sink,
+                        reference={"brain_choice": _incumbent,
+                                   "criteria_version": "route_v2/binary-v1"},
+                    )
+            except Exception as _route_err:  # noqa: BLE001 - a shadow never blocks
+                logger.debug(
+                    "[AgentKernel] route_v2 shadow failed: %r", _route_err
+                )
+        except Exception:  # noqa: BLE001 — shadow logging never blocks a reply
             pass
 
     def _log_surface(

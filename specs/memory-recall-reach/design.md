@@ -267,6 +267,91 @@ TEXT; `memory_chain.distilled` used as specified.
       `get_tier3_failures()` into `AgentKernel._plan_task` (`:8395, :8511`) and the gated
       `partial_profile` into `AgentKernel._assemble_direct_context` (`:4002`). Zero duplicate
       modules; fixes the existing pipeline end to end.
+14. **Memory recall must reach the direct path; a noun or a marker is not intent** (REQ-12 AC8,
+    T48; measured 2026-10-30).
+    - *Why needed:* all three T48 asks routed to DER, so the direct path's five memory legs
+      were never exercised. `m01` matched `"deploy"` inside `"deployment"` because
+      `tier0_classify` used `any(verb in t for verb in ACTION_VERBS)`. `m02`/`m03` matched
+      the weak follow-up marker `"with the"` in `"Answer with the number only"`; the marker
+      scan did not require a prior task. The DER step carries only the thin 8-row /
+      420-char `_memory_facts` block.
+    - *Alternatives considered:*
+      - **Alt A (re-weight the rank):** the producer weights are already live; a recall
+        question that never reaches the direct path cannot benefit from them. Rejected.
+      - **Alt B (one reserved recall slot):** measured to regress m02 (handoff §9). Rejected.
+      - **Alt C (new fact store):** over-build for a gate whose failure is routing. Rejected.
+      - **Alt D (chosen — memory-aware router):**
+        1. Match `ACTION_VERBS` on word boundaries (`_ACTION_VERB_RE` / `has_action_verb`).
+        2. Split follow-up markers into strong/weak; weak markers require
+           `_prior_task_context` (word-boundary matched over the last four assistant turns).
+        3. Add a pure Tier 0 `is_memory_question` before action and follow-up, and emit
+           `ONTOLOGY_MEMORY_QA` (`PREFERENCE_LOOKUP` for preference questions,
+           `EPISODIC_TRAJECTORY_WALK` otherwise) with `requires_der_kernel = False`.
+        4. Key the direct path's session/reference/prior memory legs to the turn's
+           `session_id`, not the kernel's fixed id.
+    - *Pinned by:* `backend/tests/contract/test_memory_question_routing_contract.py`
+      (CT-W10-10), including the edge matrix (contractions, `context` vs `text`,
+      `open_ai`/`search.py`, `planet`/`toolbar` boundaries, fresh `what about` vs task
+      follow-up).
+    - *Live result (2026-10-30):* BT-W10-1 3/3 on three consecutive runs; BT-W10-2 PASS
+      twice. m03's seed ran DER for ~141 s because "Just acknowledge it briefly" matched
+      the anaphora follow-up branch; a new `is_memory_write` rule routes "Remember this..."
+      to the direct path and cut the group's seed time to ~10 s. The direct prompt now
+      carries a MEMORY ANSWER RULE (reproduce the stored value exactly), and the harness
+      retires `episodes` and `eval-%` memory rows so a prior run's fact cannot outrank the
+      current one.
+    - *Speed (2026-10-30):* the recall ASK is 1.8–2.9 s (`reply_s_ask`; the model call is
+      1.3 s). A memory WRITE now takes a deterministic short ack with no tools, so the seed
+      no longer calls `write_file` or speaks a 158-char confirmation. The remaining task
+      total is the seed's TTS/playback wait: synthesis is 0.98 s, but the seed's turn waits
+      ~31 s (`[AudioPipeline] Input status: input overflow`). That is a separate audio
+      pipeline issue, not the router; tracked in `pin_...` and the open items.
+15. **Pins are the native structured memory; broad recall is a READ-breadth problem, not a
+    router rule** (REQ-13 AC1; measured 2026-10-30).
+    - *What exists:* `mycelium_pins` + `mycelium_pin_links` are the app's pin store;
+      `PinStore.add` goes through `app_write`, the ONE writer (same queue as the FFI native
+      writer). The `pins` table with 18 columns is the MCM build store's contamination
+      (`pin_store.py:140-159`), not the app schema.
+    - *The gap:* `recall_memory` returned chunks/chain/episodes but never pins, so a pinned
+      fact was invisible to the native tool. It now returns `pins` from `PinStore.search`
+      (read-only, fails soft; CT-W10-11).
+    - *No new write tool:* the automatic turn pair + pins already store every explicit fact.
+      A `remember` tool would be a thin `PinStore.add` wrapper (never a second connection)
+      and is deferred until a DER task needs an explicit structured write.
+    - *Broad recall:* the 10-probe matrix passed 10/10 after one fix. The initial miss was
+      "What do you know about me?": similarity-gated legs cannot match a query with no
+      lexical overlap. Fixed with a bounded `recent_facts` leg (newest `user_turn` chunks +
+      pins) for `is_broad_memory_question`; no routing change.
+    - *Why the router rules stay:* removing `is_memory_write` reopens the seed anaphora path
+      ("Just acknowledge it briefly" -> "it"+"for" -> DER, measured 141 s). Removing
+      `is_memory_question` loses the exact-value rule. The Oracle `tool_choice` parity is
+      ~45%, so Oracle-driven live routing is not at the bar. The shadow is the evidence
+      path; the rules stay until it passes.
+16. **Native memory tools replace the routing heuristics; the Oracle route is shadow**
+    (2026-10-30, owner: "same results without the routing skill").
+    - *Live route:* `is_memory_question` / `is_memory_write` / `is_broad_memory_question`
+      are NOT consulted. The route is general: anaphora requires a prior task, a
+      wh-question is a question even with a verb in the tail, and action verbs are
+      word-boundary matched. The three T48 asks and the three seeds are QUESTIONs by
+      those rules alone.
+    - *Native path:* every user turn is captured automatically (chain + turn pair); the
+      `remember` tool writes a structured pin via `PinStore.add/update` (`app_write`, the
+      ONE writer); `recall_memory` returns pins + chunks + chain + episodes. The direct
+      prompt always carries a bounded `recent_facts` block (newest user turns + pins) and
+      the exact-value rule whenever recalled memory is present. No new store, no second
+      writer.
+    - *Result without the skill:* memory matrix 10/10 (direct/indirect/very-indirect/
+      broad/specific/preference/write/negative/injection), 1.5–4.3 s; BT-W10-1 3/3;
+      BT-W10-2 PASS twice. The only routing miss found was "text" the noun; removed from
+      ACTION_VERBS ("send" still covers the verb).
+    - *Oracle shadow:* `route_v2` is declared as a choice consumer (route job, 0.90
+      threshold, shadow-only) and logs beside the rule route on lane("oracle_shadow"):
+      94 rows (75 non-null; 19 are pre-declaration nulls); writes -> `memory_write`
+      (0.96–0.98), fact recalls -> `direct` (0.70–0.81), broad self-query ->
+      `memory_recall` (0.419). NOT flipped: the bar is 100 rows, precision >= 0.90,
+      ECE <= 0.05; the broad pick is below 0.90. The general rules stay live.
+    - *Final without-skill numbers (2026-10-30 10:16):* matrix 10/10 (1.3–3.2 s), gate
+      3/3 (`reply_s_ask` 2.7 / 1.2 / 1.4 s), BT-W10-2 PASS (newest preference wins).
 
 ### Reference points (their claims, their corpora - never mixed with ours)
 
@@ -462,7 +547,7 @@ sequenceDiagram
   K->>O: turn_start_prior_memory(conn, text, session_id)
   O->>DB: filtered_chain_recall (SELECT insight, result, content, role)
   O->>O: relevance_gate (insight + result + content) -> sort (role=='user', created_at DESC) -> [:TURN_START_KEEP]
-  K->>E: retrieve_context_chunks (session_id=self.session_id + cross-session trusted user-fact fallback)
+  K->>E: retrieve_context_chunks (TURN session_id + cross-session trusted user-fact fallback)
   E->>DB: Phase 1: fetch metadata + vec_i8/vec_scale (no content) with where_sql bounds
   E->>E: Vectorized numpy matmul + band*10+recency sort + at most 1 keyword slot
   E->>DB: Phase 2: SELECT id, content WHERE id IN (top_limit_ids)
@@ -486,14 +571,15 @@ sequenceDiagram
 | `backend/memory/distil_claims.py` / `scripts/distil_claims.py` | Built (Wave 4) | NO CHANGE (verified) | Distilled claim rows in `memory_chain` (`distil_claims.py`) |
 | `backend/memory/chunk_decay.py` | Built (Wave 5) | CONTRACT LOCK | Kyudo decay law + `ZONE_BUDGET` (`chunk_decay.py:1-200`) |
 | `backend/memory/maintenance.py` | Built (Wave 5) | NO CHANGE (verified) | `measure`, `maintain`, `reclaim` (`maintenance.py:1-122`) |
-| `backend/memory/memory_rank.py` | Built (Wave 6) | CONTRACT LOCK | Shadow memory-native rank (`memory_rank.LIVE = False`, `memory_rank.py`) |
+| `backend/memory/memory_rank.py` | Built (Wave 6) | CONTRACT LOCK | Memory-native rank is LIVE (`memory_rank.LIVE = True`); the module docstring still says "shadow only" and must be reconciled (finding 2026-10-30). Producer weights (`user_turn 1.0`, `der_step 0.50`) are load-bearing. |
 | `backend/memory/surface_queries.py` | Built (Wave 1/6) | CONTRACT LOCK | `/api/memory/overview` recall/FTS/rank counters (`surface_queries.py`, pinned by `test_memory_snapshot_contract.py`) |
 | `backend/memory/file_ingest.py` | Built (Wave 7) | NO CHANGE (verified) | `file_nodes` + `context_chunks` ingest + cold tier (`file_ingest.py:1-376`) |
 | `backend/memory/levels.py` | Built (Wave 9) | NO CHANGE (verified) | L1 `thread_context` + L2 `episodes` codec (`levels.py:1-191`) |
 | `backend/memory/db.py` | No | CONTRACT LOCK | Single writer `app_write` / `app_flush` (`db.py`, pinned by `test_one_writer_contract.py`) |
-| `backend/agent/agent_kernel.py` | Yes | CHANGE NEEDED (Wave 10) | Append `role='user'` chain row at turn entry (`:9127`); persist `User/Assistant` turn pair on both direct (`:9368`) and DER (`:9888`) completion; read `_pm_r.get("content")` in `_plan_task` (`:8486`); add cross-session trusted `context_fragment` recall leg (`:4046`, `:8482`); pass `context_package.mycelium_path` and `get_tier3_failures()` into `_build_planning_prompt` (`:8395-8407, :8511`) and inject gated `partial_profile` in `_assemble_direct_context` (`:3982, :4002`) |
+| `backend/agent/agent_kernel.py` | Yes | CHANGE NEEDED (Wave 10) | Append `role='user'` chain row at turn entry (`:9127`); persist `User/Assistant` turn pair on both direct (`:9368`) and DER (`:9888`) completion; read `_pm_r.get("content")` in `_plan_task` (`:8486`); add cross-session trusted `context_fragment` recall leg (`:4046`, `:8482`); key the session/reference/prior legs to the TURN `session_id` (`:4053, :4072, :4099`) so a fact taught in another conversation is reachable; pass `context_package.mycelium_path` and `get_tier3_failures()` into `_build_planning_prompt` (`:8395-8407, :8511`) and inject gated `partial_profile` in `_assemble_direct_context` (`:3982, :4002`); add the exact-value rule on memory PRESENCE (not a router label), the `[MEM-TEXT]` rendered-memory log (direct + `node_executor`), an always-on `recent_facts` leg (newest user turns + pins, bounded), and the Oracle `route_v2` shadow logger |
+| `backend/agent/semantic_gate.py` | Yes | CHANGE NEEDED (Wave 10, T48) | Router sent all three memory asks to DER: `any(verb in t ...)` matched `"deploy"` inside `"deployment"`, and `is_followup_to_task` matched `"with the"` with no prior task. Now: word-boundary `_ACTION_VERB_RE` / `has_action_verb`; strong/weak `_STRONG_FOLLOWUP_MARKERS` + `_prior_task_context`; `is_memory_question` / `is_memory_write` / `is_broad_memory_question` before action/follow-up; `ONTOLOGY_MEMORY_QA` lane (`PREFERENCE_LOOKUP` / `EPISODIC_TRAJECTORY_WALK`) with `requires_der_kernel=False`. Pinned by `test_memory_question_routing_contract.py` (CT-W10-10). |
 | `backend/agent/ontology_recall.py` | Yes | CHANGE NEEDED (Wave 10) | Include `r.get("content")` in `relevance_gate` (`:474`); sort by `(role == "user", created_at DESC)` BEFORE slicing `kept[:keep]` (`:489, :562`) |
-| `backend/agent/tool_bridge.py` & `backend/agent/tool_registry.py` | Yes | CHANGE NEEDED (Wave 10) | Upgrade `recall_memory` (`tool_registry.py:994-1001`, `tool_bridge.py:889-896, 2497-2522`) to accept optional `since`, `until`, `tool_name` and return `chunks` (`retrieve_context_chunks`) + `chain` (`turn_start_prior_memory`) + `episodes` (`retrieve_similar`) |
+| `backend/agent/tool_bridge.py` & `backend/agent/tool_registry.py` | Yes | CHANGE NEEDED (Wave 10) | Upgrade `recall_memory` (`tool_registry.py:994-1001`, `tool_bridge.py:889-896, 2497-2522`) to accept optional `since`, `until`, `tool_name` and return `chunks` (`retrieve_context_chunks`) + `chain` (`turn_start_prior_memory`) + `episodes` (`retrieve_similar`) + `pins` (`PinStore.search`, read-only). The old payload omitted the app's structured pin store; CT-W10-11 pins the leg. |
 | `backend/memory/mycelium/profile.py` & `backend/memory/mycelium/interface.py` | Yes | CHANGE NEEDED (Wave 10) | Apply `confidence_floor`, `write_lock * freshness` weight (`_EXTERNAL` cap `0.30`, `3×` decay), resonance filtering, and lazy-on-dirty render in `ProfileRenderer` (`profile.py:452-750`) and `_context_parts` (`interface.py:725-741, 836-855`) |
 | `backend/memory/mycelium/spaces.py` | No | CONTRACT LOCK | Canonical 7 coordinate spaces, `render_order` (`toolpath=None`), `write_lock`, `task_classes`, `confidence_floor` (`spaces.py:66-160`) |
 | `backend/agent/mcm_protocol/actions/pacman_fragment.py` | Yes | CHANGE NEEDED (Wave 10) | Allow explicit user-assistant turn pairs (`chunk_type="context_fragment"`) to store without being dropped by `_is_fragment_candidate` (`:217-253`) |
@@ -502,7 +588,7 @@ sequenceDiagram
 | `backend/agent/recall_decoder.py` | No | NO CHANGE (verified) | Calls `retrieve_context_chunks` with `session_id` (`:436`) |
 | `scripts/purge_harness_chunks.py` | Yes | CHANGE NEEDED (Wave 10) | Also delete `eval-*` / `de-*` / `ct-*` / `s365*` rows from `memory_chain` (`:38-47`) |
 | `evals/memory_bench.py` & `evals/standards.json` | Yes | CHANGE NEEDED (Wave 10) | Include FTS + single-slot keyword rule in `recall@10_live`, fix `ceiling_by_m` (`:376`), parenthesize `OR` in SQL (`:227, :273`), guard `recall@10_live` in `standards.json`, re-record at default `--words 40` |
-| `evals/run_evals.py` & `evals/tasks.json` | No | CONTRACT LOCK | End-to-end eval runner and `m01`–`m03` task definitions (`run_evals.py:186-560`, `tasks.json:1106-1146`) |
+| `evals/run_evals.py` & `evals/tasks.json` | Yes | CHANGE NEEDED (Wave 10, T48) | `_retire_taught_facts` also deletes `episodes` (task_summary/full_content) and strips the trailing separator so `fern-green)` matches; `_retire_eval_memory` deletes `context_chunks` / `memory_chain` / `episodes` for `eval-%` once before a memory group. Without this a prior run's fact outranks the current one in `<memory>` / `<cross_session_memory>`. Also records `reply_s_ask` (the ask alone; `reply_s` includes the seed + setup). `tasks.json` stays a contract lock. |
 | S79 / S81 answer-path standards | No | CONTRACT LOCK | `test_answer_path_standards.py` (newest-rows plan uses `idx_chunks_session_ts_zone`; `rowid IN` is a primary-key search) |
 
 ## Error Handling
@@ -542,12 +628,19 @@ sequenceDiagram
   - **CT-W10-7**: `recall_memory` tool (`tool_bridge.py:2497`, `tool_registry.py:994`) accepts `query`, `since`, `until`, `tool_name` and returns hits from `context_chunks`, `memory_chain`, and `episodes` (fails on old `episodes`-only implementation).
   - **CT-W10-8**: `ProfileRenderer` and `MyceliumInterface._context_parts` exclude `toolpath` (`render_order=None`), gate spaces by `task_classes` (e.g. `capability` excluded on `quick_edit`, `chrono` excluded on `code_task`), weight `domain` by `_EXTERNAL` (`<= 0.30` cap, `3×` decay) so unweighted `domain` nodes below `confidence_floor` are dropped, and lazily render dirty/missing sections on read.
   - **CT-W10-9**: `AgentKernel._plan_task` passes `context_package.mycelium_path` and `context_package.get_tier3_failures()` into `_build_planning_prompt` (instead of dropping them behind empty `tier1_directives=""`), and `_assemble_direct_context` injects the gated `partial_profile` when mature.
+  - **CT-W10-10**: the three T48 asks (`m01`–`m03` from `tasks.json`) are `QUESTION` + `is_memory` and `requires_der_kernel is False`; `"deployment"` does not match `"deploy"`; `"with the"` without a task is not a follow-up; action requests and real follow-ups stay DER; the memory lane follows the recall kind. Edge matrix: contractions (`what's`/`where's`), `context` vs `text`, `open_ai`/`search.py`, `planet`/`toolbar` word boundaries, and fresh `"what about the weather?"` vs task follow-up. Fails on the pre-fix substring/marker code.
+  - **CT-W10-11**: `recall_memory` returns `pins` from the app's `mycelium_pins` (`PinStore.search`, read-only) and fails soft when the table is absent. New matrix `evals/memory_probes.py`: direct, indirect, very-indirect, broad, specific, preference, indirect/direct write, negative, injection — 10/10; ask-only 2–10 s. The broad probe missed before the `recent_facts` leg.
+  - **No-routing-skill (2026-10-30)**: the same matrix 10/10 (1.3–3.2 s), gate 3/3 (`reply_s_ask` 2.7 / 1.2 / 1.4 s) and BT-W10-2 PASS after removing the live memory heuristics; `remember`/`recall` native tools, `recent_facts`, exact rule on presence, newest-fact dedupe (`_same_fact_text`). Oracle `route_v2` shadow: 94 rows (75 non-null), writes -> `memory_write` 0.96–0.98, recalls -> `direct` 0.70–0.81, broad -> `memory_recall` 0.419; not flipped (bar 100 rows / 0.90 / ECE 0.05).
 - Contract locks kept green: `test_answer_path_standards.py` S79/S81, `test_one_writer_contract.py`.
 - Behavioral:
   - **BT-W10-1**: `evals/run_evals.py --group memory` (`m01`, `m02`, `m03`) passes 3/3 on the
     live backend with a fresh per-run fact.
   - **BT-W10-2**: live conflict probe — teach preference A in thread 1, teach preference B in
-    thread 2, ask in thread 3 -> reply contains B and not A.
+    thread 2, ask in thread 3 -> reply contains B and not A. Standing probe: `evals/probe_conflict.py`.
+  - **BT-W10-1/2 live (2026-10-30)**: BT-W10-1 3/3 on three consecutive runs; `reply_s`
+    m01 38.7/37.4, m02 14.2/41.9, m03 12.8/15.3. BT-W10-2 PASS twice (`bravo-*` wins,
+    `alpha-*` absent). With the fast memory-write ack: 3/3 again, `reply_s_ask`
+    m01 2.9 s, m02 2.4 s, m03 1.8 s. The task total is the seed's TTS/playback wait.
 - Standing harness: `evals/memory_bench.py` (at default `--queries 120 --words 40`) on every
   memory change, compared with `evals/standards.json` "memory".
 - Physics-aware (REQ-7): replay recorded trajectories with injected Σ and assert the

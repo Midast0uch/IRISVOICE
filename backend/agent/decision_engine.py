@@ -145,6 +145,12 @@ CONSUMERS: Tuple[str, ...] = (
     # confident "it will fail" asks the model to correct the call before it
     # runs). Membership lets the owner switch it on with IRIS_DECISION_ENFORCE.
     "tool_approval",
+    # route_v2 (2026-10-30): the direct-vs-DER memory route, SHADOW ONLY. The
+    # four options are the routes the kernel can take; the Oracle's pick is
+    # logged beside the rules' route and never acted on until the bar
+    # (100 rows, precision >= 0.90, ECE <= 0.05). Declaring it is required by
+    # AC1.6: the backend refuses to score an undeclared consumer.
+    "route_v2",
 )
 
 
@@ -385,6 +391,7 @@ CONSUMER_JOBS: Dict[str, str] = {
     # `mode` REMOVED 2026-10-10 (owner): see the CONSUMERS tuple.
     "web_intent": "interpret_web", "user_feedback": "interpret",
     "tool_choice": "route", "recovery_strategy": "route",
+    "route_v2": "route",
     # tool_approval (2026-10-10): its own job — the pre-call approval question.
     "tool_approval": "approve",
     # T1.8 (AC9.1 sanctioned exception 1): `browser_next` and `web_depth` had job
@@ -462,6 +469,19 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     # The names come from the menu built upstream (the tool schemas); there is
     # no static name set to describe, so the mapping is empty by design.
     "tool_choice": ConsumerDeclaration("choice", {}),
+    # route_v2 (2026-10-30, narrowed the same day): the kernel has exactly ONE
+    # route fork - `"der" if planned else "direct"`. The first cut also offered
+    # memory_recall / memory_write, but the kernel has no memory branches: both
+    # land on the direct path. Two options that produce the same behaviour
+    # cannot be calibrated, so the menu is the live one
+    # (CADUCEAN_ARCHITECTURE 10: a computed signal must change behaviour).
+    "route_v2": ConsumerDeclaration("choice", {
+        "direct": ("Answer from what is already known: general knowledge, "
+                   "chit-chat, an explanation, or a question about something "
+                   "the user told you earlier (the direct path already carries "
+                   "the recalled facts)"),
+        "der": "Plan and execute a multi-step task with tools",
+    }),
     # Descriptions (2026-10-11): the reference renders "A {description}"; bare
     # names like `decompose` carry little meaning to the model.
     "recovery_strategy": ConsumerDeclaration("choice", {
@@ -645,6 +665,28 @@ CONSUMER_TASKS: Dict[str, ConsumerSpec] = {
         decision_type="choice",
         exclusive=True,
         criteria=CONSUMER_DECLARATIONS["tool_choice"].criteria,
+    ),
+    "route_v2": ConsumerSpec(
+        consumer_id="route_v2",
+        task_name="route",
+        instruction=(
+            "Choose the route this message needs. der: the user wants a "
+            "multi-step task done with tools (create, edit, search the web, "
+            "run a command). direct: everything else - general knowledge, "
+            "chit-chat, an explanation, or a question about something the "
+            "user told you earlier (the direct path already carries the "
+            "recalled facts, so a memory question is still direct).\n"
+            "Examples:\n"
+            "\"Remember this: my card is 123\" -> direct\n"
+            "\"What is my card number?\" -> direct\n"
+            "\"Where do I park?\" -> direct\n"
+            "\"What is the capital of France?\" -> direct\n"
+            "\"Create a file called notes.txt\" -> der\n"
+            "\"Find the three newest posts about X and sum their likes\" -> der\n"
+        ),
+        decision_type="choice",
+        exclusive=True,
+        criteria=CONSUMER_DECLARATIONS["route_v2"].criteria,
     ),
 }
 
