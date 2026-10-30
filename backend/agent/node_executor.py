@@ -59,7 +59,13 @@ NODE_TOOLS = (
     # Web research (also web-toggle gated) and the user's own desktop.
     "search", "crawler_query",
     "open_url", "launch_app", "open_file", "get_system_info", "recall_memory",
-    "remember",
+    # `remember` is NOT here (2026-10-30, measured): the Oracle's
+    # tool_choice could force it inside a step, and the step prompt's
+    # "set step_done" instruction landed in its free-text args -
+    # `fact:step_done` and `fact:STATUS: done` reached the live pin
+    # store. A step does not learn durable user facts; the direct
+    # path owns `remember`. `recall_memory` stays: a step may need a
+    # fact the user taught earlier.
     # The one way a card appears (reply-surface audit, Phase A): a node that
     # made a report, a file or a page to keep hands it over with a title.
     "create_artifact",

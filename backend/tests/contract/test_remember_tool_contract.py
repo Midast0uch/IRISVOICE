@@ -85,3 +85,21 @@ def test_remember_then_recall_returns_the_pin():
     payload = _recall_memory_payload(_EpisodicStub(conn), "library card number")
     assert payload["pins"]
     assert payload["pins"][0]["pin"]["content"] == "880417"
+
+
+def test_remember_is_not_offered_inside_a_node():
+    """DEFECT (2026-10-30, measured on the live store): `remember` sat in
+    NODE_TOOLS, so the Oracle's tool_choice could FORCE it inside a DER step.
+    The step prompt tells the model to set `step_done`, and a forced `remember`
+    gave that instruction a place to land. Two junk facts reached
+    mycelium_pins - `fact:step_done = "true"` and `fact:STATUS: done = "done"` -
+    with the ledger showing route=enforced chosen=remember conf=0.6445.
+
+    A DER step does not learn durable user facts; the direct path owns that.
+    `recall_memory` stays: a step may need a fact the user taught earlier.
+    """
+    from backend.agent.node_executor import NODE_TOOLS
+
+    assert "remember" not in NODE_TOOLS
+    assert "recall_memory" in NODE_TOOLS
+
