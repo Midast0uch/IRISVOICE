@@ -206,6 +206,10 @@ def filtered_chain_recall(
             if gone:
                 where.append("thread_id NOT IN ({})".format(",".join("?" * len(gone))))
                 params.extend(gone)
+            # A fact the user forgot is marked stale: it stays in the store as
+            # history but leaves recall (the same rule as a forgotten strand).
+            if "stale" in cols:
+                where.append("(stale IS NULL OR stale = 0)")
             sql = base
             if where:
                 sql += " WHERE " + " AND ".join(where)
@@ -573,6 +577,15 @@ def turn_start_prior_memory(conn, goal: str, thread_id: Optional[str] = None) ->
             rows, goal, None, None, max(TURN_START_KEEP, len(rows)),
             prefix_match=True,
         )
+        # The user's own CURRENT question is already on the chain (written at
+        # turn entry) and, being role='user', it outranks real facts. Drop it: it
+        # is the question, not a prior statement. Measured 2026-10-30: it headed
+        # the <prior_memory> block and pushed the taught fact down.
+        _goal = str(goal or "").strip()
+        kept = [
+            r for r in kept
+            if str(r.get("insight") or r.get("content") or "").strip() != _goal
+        ]
         # A taught fact is the USER'S OWN statement. A plan step that merely
         # repeats the question must never outrank it: on m03 the two kept rows
         # were 'Recall the user's preferred color...' while the fact row

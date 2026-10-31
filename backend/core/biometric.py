@@ -15,6 +15,7 @@ import logging
 import os
 import platform
 import socket
+import time
 import uuid as _uuid
 from typing import Optional, Callable
 
@@ -513,6 +514,98 @@ def load_dilithium_private_key() -> Optional[bytes]:
     return None
 
 
+def _sqlite_table_count(db_path: str) -> int:
+    """Table count of a PLAINTEXT store, read with plain sqlite3."""
+    import sqlite3
+
+    conn = sqlite3.connect(db_path)
+    try:
+        return conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def encrypt_plaintext_store(db_path: str, key: bytes) -> str:
+    """Encrypt an existing PLAINTEXT store in place with SQLCipher.
+
+    ``PRAGMA rekey`` cannot do this: it only re-encrypts an already-encrypted
+    database. Measured 2026-10-30 — on a plaintext file it is a SILENT no-op on
+    a plain sqlite3 connection (SQLite ignores unknown pragmas) and raises on a
+    sqlcipher3 one ("PRAGMA rekey can only be run on an existing encrypted
+    database"). The supported conversion is ``sqlcipher_export`` into a keyed
+    target, which is what this does.
+
+    The original is kept as ``<db>.pre-encrypt-<utc>``. The new file must open
+    with the key and hold the same table count before the swap, so a failed
+    conversion leaves the original untouched.
+
+    STOP THE BACKEND FIRST: the swap replaces the file the app has open.
+
+    Returns "encrypted" | "already-encrypted" | "no-file" | "failed:<reason>".
+    """
+    from backend.memory.db import is_plaintext_store
+
+    if not os.path.exists(db_path):
+        return "no-file"
+    if not is_plaintext_store(db_path):
+        return "already-encrypted"
+    try:
+        import sqlcipher3
+    except ImportError:
+        return "failed:sqlcipher3-unavailable"
+
+    tmp_out = f"{db_path}.encrypting"
+    for stale in (tmp_out, f"{tmp_out}-wal", f"{tmp_out}-shm"):
+        if os.path.exists(stale):
+            os.remove(stale)
+
+    try:
+        src = sqlcipher3.connect(db_path)
+        try:
+            # Fold the WAL into the main file so the export sees every row and
+            # the backup is a complete database.
+            src.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            src.execute(
+                "ATTACH DATABASE ? AS encrypted KEY ?",
+                (tmp_out, f"x'{key.hex()}'"),
+            )
+            src.execute("SELECT sqlcipher_export('encrypted')")
+            src.execute("DETACH DATABASE encrypted")
+        finally:
+            src.close()
+
+        plain_tables = _sqlite_table_count(db_path)
+        probe = sqlcipher3.connect(tmp_out)
+        try:
+            probe.execute(f"PRAGMA key = \"x'{key.hex()}'\"")
+            enc_tables = probe.execute(
+                "SELECT count(*) FROM sqlite_master WHERE type='table'"
+            ).fetchone()[0]
+        finally:
+            probe.close()
+        if enc_tables != plain_tables:
+            os.remove(tmp_out)
+            return f"failed:table-count-mismatch({enc_tables}!={plain_tables})"
+
+        backup = f"{db_path}.pre-encrypt-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+        os.replace(db_path, backup)
+        os.replace(tmp_out, db_path)
+        # The plaintext WAL/SHM belong to the file that is now the backup.
+        for sidecar in (f"{db_path}-wal", f"{db_path}-shm"):
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+        logger.info(
+            "[Biometric] Encrypted plaintext store %s (%d tables, backup %s)",
+            db_path, enc_tables, backup,
+        )
+        return "encrypted"
+    except Exception as exc:  # noqa: BLE001 - reported, never raised
+        logger.error("[Biometric] Plaintext store encryption failed: %s", exc)
+        return f"failed:{type(exc).__name__}"
+
+
 def migrate_memory_db_key(
     db_path: str = "data/memory.db",
     config_path: str = "data/memory_config.json",
@@ -528,6 +621,7 @@ def migrate_memory_db_key(
 
     Safe to call at any time; it is idempotent and never corrupts the DB:
       - No Dilithium key configured      -> "no-dilithium"   (nothing done)
+      - DB is PLAINTEXT, converted OK     -> "encrypted-plaintext"
       - DB already Dilithium-protected    -> "already-dilithium"
       - DB pseudo-protected, rekeyed OK   -> "migrated"
       - sqlcipher3 absent (plaintext)     -> "failed:sqlcipher3-unavailable"
@@ -544,6 +638,17 @@ def migrate_memory_db_key(
         return "no-dilithium"
 
     _new_key = derive_memory_key_from_dilithium(_dil)
+
+    # A PLAINTEXT store must be CONVERTED, not rekeyed. The probe below opens it
+    # with sqlite3 whatever the key is (open_encrypted_memory picks the reader
+    # from the file header), so the probe "succeeded" and this function returned
+    # "already-dilithium" on an unprotected store — measured 2026-10-30. Never
+    # report protection the file does not have.
+    from backend.memory.db import is_plaintext_store
+
+    if is_plaintext_store(db_path):
+        _status = encrypt_plaintext_store(db_path, _new_key)
+        return "encrypted-plaintext" if _status == "encrypted" else f"failed:{_status}"
 
     # Already migrated? Try opening with the Dilithium key first.
     try:

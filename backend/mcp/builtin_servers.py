@@ -530,6 +530,7 @@ class FileManagerServer(BuiltinServer):
         # of these handlers used to read one name with a "" default — which wrote
         # EMPTY files and answered success, or crashed opening "".
         from backend.tool_args import body_arg, missing_arg_error, path_arg
+        from backend.repo_privacy import learned_user_data_error
 
         if name == "read_file":
             path = path_arg(arguments)
@@ -567,6 +568,9 @@ class FileManagerServer(BuiltinServer):
             path = path_arg(arguments)
             if not path:
                 return missing_arg_error("edit_file", "path", arguments)
+            _refusal = learned_user_data_error(path)
+            if _refusal:
+                return _refusal
             old = _first_str(arguments, ("old", "old_string", "old_text"))
             new = _first_str(arguments, ("new", "new_string", "new_text"))
             if not old:
@@ -582,6 +586,9 @@ class FileManagerServer(BuiltinServer):
             path = path_arg(arguments)
             if not path:
                 return missing_arg_error("write_file", "path", arguments)
+            _refusal = learned_user_data_error(path)
+            if _refusal:
+                return _refusal
             content = body_arg(arguments)
             if content is None:
                 return missing_arg_error("write_file", "content", arguments)

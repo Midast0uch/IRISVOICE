@@ -938,6 +938,39 @@ def _fact_line(text: str) -> str:
     return t.split("\nAssistant:")[0].strip().replace("\n", " ")
 
 
+def _recent_user_turn_texts(db, current_text: str = "", limit: int = 8):
+    """The newest user statements from the Immortus chain, newest first.
+
+    Source is ``memory_chain.node_type='user_turn'`` (REQ-12 AC1): the chain
+    records every turn, while ``context_chunks.tool_name='user_turn'`` landed
+    for a few turns only and chunk pruning removed the rest (measured
+    2026-10-30: 158 chain rows vs 1 chunk row after a 33-turn probe run).
+    The current turn's own row is written at turn entry, so it is skipped here —
+    it is not a prior fact.
+    """
+    try:
+        rows = db.execute(
+            "SELECT COALESCE(insight, content, '') FROM memory_chain "
+            "WHERE node_type='user_turn' AND (stale IS NULL OR stale = 0) "
+            "ORDER BY rowid DESC LIMIT ?",
+            (limit + 1,),
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - a missing table is no facts, not a crash
+        return []
+    out = []
+    for row in rows:
+        text = str((row[0] if row else "") or "").strip()
+        if text.startswith("User:"):
+            text = text[len("User:"):]
+        text = text.split("\nAssistant:")[0].strip().replace("\n", " ")
+        if not text or text == str(current_text or "").strip():
+            continue
+        out.append(text[:240])
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _dedupe_fact_lines(lines, against=None):
     """Keep NEWEST-first facts, dropping an older statement of the SAME fact.
 
@@ -4115,28 +4148,21 @@ class AgentKernel:
                 # A similarity leg cannot match a broad "what do you know
                 # about me" to "my card is card-0646" (no lexical overlap).
                 # This READ leg keeps the newest explicit facts addressable
-                # without a router heuristic. Bound: 8 turns + 8 pins.
+                # without a router heuristic. Bound: the 8 newest user turns
+                # on the Immortus chain (pins live in recall_memory, not here).
                 try:
                     _rf: List[str] = []
                     try:
-                        _rows = self._memory_interface.episodic.db.execute(
-                            "SELECT content FROM context_chunks "
-                            "WHERE tool_name='user_turn' AND folded_into IS NULL "
-                            "ORDER BY timestamp DESC LIMIT 8"
-                        ).fetchall()
-                        for (_c,) in _rows:
-                            _u = str(_c or "")
-                            if _u.startswith("User:"):
-                                _u = _u[len("User:"):]
-                            _u = _u.split("\nAssistant:")[0].strip().replace("\n", " ")
-                            if _u:
-                                _rf.append(_u[:240])
+                        _rf = _dedupe_fact_lines(
+                            _recent_user_turn_texts(
+                                self._memory_interface.episodic.db, str(text or "")
+                            )
+                        )
                     except Exception:
                         pass
                     # Newest-first, and one value per fact: the pins stay in
                     # recall_memory, not in the automatic block (a pin can be an
                     # older duplicate and compete with the newest user turn).
-                    _rf = _dedupe_fact_lines(_rf)
                     if _rf:
                         _blocks323.insert(
                             0,
@@ -4146,8 +4172,9 @@ class AgentKernel:
                         )
                 except Exception as _rf_exc:  # noqa: BLE001 - never blocks a turn
                     logger.debug("[AgentKernel] recent facts skipped: %s", _rf_exc)
-                # ── 3a-2: turn-start prior memory (IRIS_TURN_START_RECALL,
-                # OFF by default - A/B measured 2026-10-28). Chain rows
+                # ── 3a-2: turn-start prior memory (IRIS_TURN_START_RECALL) ──
+                # ON by default since 2026-10-28 (owner decision); set
+                # IRIS_TURN_START_RECALL=0 to switch it off. Chain rows
                 # relevant to the USER'S OWN WORDS, so a fact taught in an
                 # earlier thread is in the context before the planner invents
                 # steps (the per-step gate compares the STEP, and a question
@@ -17237,16 +17264,32 @@ Respond with a JSON object:
                 _eng = get_decision_engine()
                 if _eng is not None:
                     _incumbent = "der" if planned else "direct"
+                    _frame = {"goal": (text or "")[:200],
+                              "task_class": "personal", "last_result": "",
+                              "chars": len(text or ""),
+                              "web_mode": bool(web_mode)}
+                    # input_key: the report's honest dedupe key. Without it the
+                    # same goal rescored counts as NEW evidence (confidence
+                    # jitters on every rescore), so "distinct rows" overstates
+                    # the sample. Measured 2026-10-30: 157 route_v2 rows, 0 with
+                    # an input_key, 60 distinct (chosen, confidence) pairs.
+                    _key = None
+                    try:
+                        from backend.agent.surface_shadow import (
+                            input_key as _input_key,
+                        )
+
+                        _key = _input_key("route_v2", (text or "")[:200], _frame)
+                    except Exception:  # noqa: BLE001 - a missing key is not fatal
+                        _key = None
                     _eng.shadow(
                         "route_v2",
                         ["direct", "der"],
-                        {"goal": (text or "")[:200],
-                         "task_class": "personal", "last_result": "",
-                         "chars": len(text or ""),
-                         "web_mode": bool(web_mode)},
+                        _frame,
                         sink=self._shadow_row_sink,
                         reference={"brain_choice": _incumbent,
-                                   "criteria_version": "route_v2/binary-v1"},
+                                   "criteria_version": "route_v2/binary-v1",
+                                   **({"input_key": _key} if _key else {})},
                     )
             except Exception as _route_err:  # noqa: BLE001 - a shadow never blocks
                 logger.debug(

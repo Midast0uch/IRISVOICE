@@ -602,6 +602,11 @@ class ToolExecutor:
         path = self._path_from_params(params)
         if not path:
             return self._missing_path_error("write_file", params)
+        from backend.repo_privacy import learned_user_data_error
+
+        _refusal = learned_user_data_error(path)
+        if _refusal:
+            return _refusal
         from backend.tool_args import body_arg, missing_arg_error
 
         content = body_arg(params)

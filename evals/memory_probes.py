@@ -117,6 +117,11 @@ _UNKNOWN = (
     "don't have", "not stored", "no record", "unable to", "can't find",
 )
 
+# The reach test: how many unrelated user turns may pass between teaching a fact
+# and asking for it. Every probe above asks one turn after it teaches, so the
+# taught line is always at the top of the chain. This one measures reach.
+DISTANCE_FILLER = 12
+
 
 async def _ask(task_id: str, prompt: str, conv_id: str) -> tuple[str, float]:
     started = time.monotonic()
@@ -157,6 +162,40 @@ async def main() -> int:
         rows.append((category, pid, ok, ask_s, reply.strip().replace("\n", " ")[:120]))
         print(f"{'PASS' if ok else 'FAIL'}  {category:<16} {pid:<12} {ask_s:>5}s  "
               f"{reply.strip().replace(chr(10), ' ')[:120]}")
+    # ── distance: does the fact survive unrelated turns? ────────────────
+    _retire_taught_facts("card-{run}")
+    far_fact = f"card-{run}-far"
+    far_seed = _http("POST", "/api/conversations",
+                     {"title": "[eval-seed] probe-distance"}, timeout=90)["id"]
+    await _ask(
+        "probe-distance-seed",
+        f"Remember this for later: my library card number is {far_fact}. "
+        "Just acknowledge it briefly.",
+        far_seed,
+    )
+    filler = _http("POST", "/api/conversations",
+                   {"title": "[eval] probe-distance-filler"}, timeout=90)["id"]
+    for i in range(DISTANCE_FILLER):
+        await _ask(
+            f"probe-distance-fill-{i}",
+            f"Quick unrelated note {i}: name one color, one fruit, one city. Be brief.",
+            filler,
+        )
+    far_ask = _http("POST", "/api/conversations",
+                    {"title": "[eval] probe-distance"}, timeout=90)["id"]
+    far_reply, far_s = await _ask(
+        "probe-distance",
+        "What is my library card number? Answer with the number only.",
+        far_ask,
+    )
+    far_ok = far_fact.lower() in far_reply.lower()
+    if not far_ok:
+        failures += 1
+    rows.append((f"distance x{DISTANCE_FILLER}", "distance", far_ok, far_s,
+                 far_reply.strip().replace("\n", " ")[:120]))
+    print(f"{'PASS' if far_ok else 'FAIL'}  {('distance x' + str(DISTANCE_FILLER)):<16} "
+          f"{'distance':<12} {far_s:>5}s  {far_reply.strip().replace(chr(10), ' ')[:120]}")
+
     print("\nsummary:", f"{len(rows) - failures}/{len(rows)} pass")
     _retire_eval_memory()
     _retire_eval_chats()

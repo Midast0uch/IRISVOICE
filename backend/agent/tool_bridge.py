@@ -604,6 +604,121 @@ def _remember_memory_payload(conn, attribute: str, value: str,
         return {"success": False, "error": f"memory write failed: {exc}"}
 
 
+# The sentinel written to context_chunks.folded_into for a forgotten value.
+# Recall reads `folded_into IS NULL`, so a folded chunk leaves every leg while
+# its text stays in the store as history.
+FORGOTTEN_FOLD = "forgotten-by-user"
+
+
+def _scrub_forgotten_value(conn, value: str) -> Dict[str, int]:
+    """Take a forgotten value out of every recall leg, keeping the rows as history.
+
+    THREE records can carry a taught fact, and each has its own exclusion:
+      * ``memory_chain`` user_turn rows -> ``stale = 1``
+      * ``context_chunks`` rows         -> ``folded_into = FORGOTTEN_FOLD``
+    Measured 2026-10-30: staling the chain alone was not enough — the turn-pair
+    chunk still carried the value and the next turn answered it.
+
+    Returns ``{"chain_rows": n, "chunks": n}``. Never raises.
+    """
+    val = str(value or "").strip()
+    counts = {"chain_rows": 0, "chunks": 0}
+    if not val:
+        return counts
+    from backend.memory.db import app_flush, app_write
+
+    like = f"%{val}%"
+    try:
+        counts["chain_rows"] = int(conn.execute(
+            "SELECT count(*) FROM memory_chain WHERE node_type='user_turn' "
+            "AND (insight LIKE ? OR content LIKE ?)", (like, like)
+        ).fetchone()[0] or 0)
+        if counts["chain_rows"]:
+            app_write(
+                conn,
+                "UPDATE memory_chain SET stale = 1 WHERE node_type='user_turn' "
+                "AND (insight LIKE ? OR content LIKE ?)",
+                (like, like),
+            )
+    except Exception as exc:  # noqa: BLE001 - a failed scrub reports, never raises
+        logger.warning("[ToolBridge] forget: chain rows not staled: %s", exc)
+    try:
+        counts["chunks"] = int(conn.execute(
+            "SELECT count(*) FROM context_chunks WHERE folded_into IS NULL "
+            "AND content LIKE ?", (like,)
+        ).fetchone()[0] or 0)
+        if counts["chunks"]:
+            app_write(
+                conn,
+                "UPDATE context_chunks SET folded_into = ? "
+                "WHERE folded_into IS NULL AND content LIKE ?",
+                (FORGOTTEN_FOLD, like),
+            )
+    except Exception as exc:  # noqa: BLE001 - a failed scrub reports, never raises
+        logger.warning("[ToolBridge] forget: chunks not folded: %s", exc)
+    try:
+        app_flush()
+    except Exception:  # noqa: BLE001 - the writes are already queued
+        pass
+    return counts
+
+
+def _forget_memory_payload(conn, attribute: str, value: str = "") -> Dict:
+    """Forget a stored fact. TWO records carry it, so both must be touched.
+
+    1. The pin (`mycelium_pins`, title `fact:<attribute>`) is removed through
+       `corrections.correct(..., "unpin", ...)` — the app's own delete: it writes
+       the PIN_CORRECTED ledger event and keeps a 600 s undo, exactly like the
+       memory UI. Deleting the row directly would leave no record and no undo.
+    2. The Immortus chain rows that quote the value are marked `stale = 1`, so
+       they stay as history but leave every recall leg.
+
+    Step 2 is not optional. Measured 2026-10-30: with only the pin deleted, the
+    next turn still answered the value, because the recall legs read the chain.
+
+    `value` is optional and guards against deleting a fact the user has since
+    changed. A missing fact is a success with `deleted: False` — the user's goal
+    ("it is gone") is already true.
+    """
+    attr = str(attribute or "").strip()
+    if not attr:
+        return {"success": False, "error": "attribute is required"}
+    attr = attr[:120]
+    want = str(value or "").strip()
+    try:
+        from backend.memory.pin_store import PinStore
+
+        store = PinStore(conn=conn)
+        existing = store.get_by_title(f"fact:{attr}")
+        if existing is None:
+            return {"success": True, "deleted": False, "attribute": attr,
+                    "message": f"no stored fact for {attr!r}"}
+        stored = str(existing.content or "").strip()
+        if want and stored != want:
+            return {"success": False, "deleted": False, "attribute": attr,
+                    "error": "the stored value differs; pass the current value "
+                             "or omit it to delete anyway"}
+
+        from backend.memory.corrections import CorrectionError, correct
+
+        try:
+            out = correct(conn, "unpin", f"pin:{existing.pin_id}")
+        except CorrectionError as exc:
+            return {"success": False, "deleted": False, "attribute": attr,
+                    "error": exc.message}
+
+        scrubbed = _scrub_forgotten_value(conn, stored)
+        return {"success": True, "deleted": True, "attribute": attr,
+                "pin_id": existing.pin_id,
+                "correction_id": out.get("correction_id"),
+                "undo_until": out.get("undo_until"),
+                "chain_rows_staled": scrubbed["chain_rows"],
+                "chunks_folded": scrubbed["chunks"]}
+    except Exception as exc:  # noqa: BLE001 - a failed delete reports, never raises
+        logger.warning("[ToolBridge] forget failed: %s", exc)
+        return {"success": False, "error": f"memory delete failed: {exc}"}
+
+
 class AgentToolBridge:
     """
     Bridges all IRIS capabilities to the agent system.
@@ -1002,6 +1117,24 @@ class AgentToolBridge:
                         "What the fact is about, e.g. 'library card number'.")},
                     "value": {"type": "string", "description": (
                         "The exact value to store, e.g. '880417'.")},
+                },
+                "category": "memory",
+                "server": "internal",
+            },
+            {
+                "name": "forget",
+                "description": (
+                    "Delete a durable fact the user asked you to forget, so "
+                    "recall_memory stops returning it. Use the same attribute you "
+                    "stored with `remember` (e.g. 'library card number'). Pass "
+                    "value only to confirm the current value."
+                ),
+                "parameters": {
+                    "attribute": {"type": "string", "description": (
+                        "What the fact is about, e.g. 'library card number'.")},
+                    "value": {"type": "string", "description": (
+                        "Optional: the current value, to avoid deleting a fact the "
+                        "user has since changed.")},
                 },
                 "category": "memory",
                 "server": "internal",
@@ -2655,6 +2788,28 @@ class AgentToolBridge:
                     return {"success": False, "error": "memory is not available"}
                 result = _remember_memory_payload(
                     _episodic.db, attribute, value, session_id)
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure",
+                    params, result, plan_title=plan_title,
+                )
+                return result
+
+            if tool_name == "forget":
+                attribute = str(params.get("attribute") or "").strip()
+                value = str(params.get("value") or "").strip()
+                _mi = getattr(self, "_memory_interface", None)
+                if _mi is None:
+                    try:
+                        from backend.memory import get_memory_interface
+
+                        _mi = get_memory_interface()
+                    except Exception:  # noqa: BLE001 - memory is optional
+                        _mi = None
+                _episodic = getattr(_mi, "episodic", None) if _mi is not None else None
+                if _episodic is None:
+                    return {"success": False, "error": "memory is not available"}
+                result = _forget_memory_payload(_episodic.db, attribute, value)
                 self._record_tool_event(
                     session_id, tool_name,
                     "success" if result.get("success") else "failure",

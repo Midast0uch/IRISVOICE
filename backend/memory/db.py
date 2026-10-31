@@ -95,6 +95,24 @@ def locked_retry(fn, *, label: str = "db-write"):
 # Set IRIS_MEMORY_ENCRYPTION=1 to disable fallback and require sqlcipher3.
 _REQUIRE_ENCRYPTION = os.environ.get("IRIS_MEMORY_ENCRYPTION", "0") == "1"
 
+# A SQLCipher file does NOT start with the plaintext magic, because SQLCipher
+# encrypts the header too. So the first 16 bytes identify the format with no
+# ambiguity, and every caller that must know the format reads them here.
+PLAIN_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def is_plaintext_store(db_path: str) -> bool:
+    """True when the file on disk is a PLAINTEXT SQLite database.
+
+    False for a missing or unreadable file (there is nothing to convert) and
+    for an encrypted file (its header is ciphertext).
+    """
+    try:
+        with open(db_path, "rb") as fh:
+            return fh.read(16).startswith(PLAIN_SQLITE_MAGIC)
+    except OSError:
+        return False
+
 
 _READ_HEADS = ("SELECT", "WITH")
 
@@ -261,13 +279,7 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
     # Deliberately NARROW: only a POSITIVELY identified plaintext file switches
     # reader. A missing or empty file keeps the previous preference (SQLCipher),
     # so encryption-at-rest for new databases is unchanged.
-    _PLAIN_MAGIC = b"SQLite format 3\x00"
-    _detected_plain = False
-    try:
-        with open(db_path, "rb") as _probe_fh:
-            _detected_plain = _probe_fh.read(16).startswith(_PLAIN_MAGIC)
-    except OSError:
-        _detected_plain = False  # no file yet (or unreadable) -> old behaviour
+    _detected_plain = is_plaintext_store(db_path)
     if _detected_plain:
         logger.info(
             "[db] %s is an UNENCRYPTED SQLite file (plaintext header) — "

@@ -1029,6 +1029,24 @@ def register_builtin_tools() -> None:
             parallel_safe=False, critical=False,
         ),
         ToolSpec(
+            name="forget",
+            description=(
+                "Delete a durable fact the user asked you to forget, so "
+                "recall_memory stops returning it. Use the same attribute you "
+                "stored with `remember` (e.g. 'library card number'). Pass "
+                "value only to confirm the current value."
+            ),
+            parameters={
+                "attribute": {"type": "string", "description": (
+                    "What the fact is about, e.g. 'library card number'.")},
+                "value": {"type": "string", "description": (
+                    "Optional: the current value, to avoid deleting a fact the "
+                    "user has since changed.")},
+            },
+            category="memory", executor="memory", permission_tier="side_effect",
+            parallel_safe=False, critical=False,
+        ),
+        ToolSpec(
             name="improve_self",
             description=(
                 "SELF-IMPROVEMENT ONLY — does NOT browse the web or fetch external information. "

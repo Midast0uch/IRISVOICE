@@ -5,7 +5,7 @@ the planner invented with the chain. "What is the name of my staging
 deployment?" became file-search steps; the taught fact shared no tokens with
 them and never entered the context - while the same fact IS reachable when the
 gate runs on the user's own words. ``turn_start_prior_memory`` is that recall:
-OFF by default (IRIS_TURN_START_RECALL=1 enables it), same pool, same relevance
+ON by default (IRIS_TURN_START_RECALL=0 disables it), same pool, same relevance
 gate. These tests fail on the code before 2026-10-28 (no turn-start recall).
 """
 from __future__ import annotations
@@ -168,3 +168,33 @@ def test_a_taught_fact_survives_one_turn_of_chain_churn(tmp_path, monkeypatch):
 
     assert kept, "the taught fact was evicted by one turn of chain churn"
     assert "kestrel-blue" in (kept[0].get("insight") or kept[0].get("result") or "")
+
+# -- 2026-10-30: the user's current question is NOT prior memory --------------
+# The question is written to the chain at turn entry, so it lands in the recall
+# pool and, being role='user' and newest, it headed the <prior_memory> block and
+# pushed the taught fact down. It is the question, not a past statement.
+def test_the_current_question_is_not_returned_as_prior_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(ontology_recall, "TURN_START_RECALL", True)
+    con = sqlite3.connect(str(tmp_path / "self.db"))
+    con.execute(
+        "CREATE TABLE memory_chain ("
+        "entry_id TEXT, thread_id TEXT, session_id TEXT, sequence INTEGER, role TEXT, "
+        "content TEXT, metadata TEXT, result TEXT, distilled INTEGER DEFAULT 0, "
+        "created_at REAL, chain_id TEXT, insight TEXT, topic_domain TEXT, "
+        "node_type TEXT, coords_from TEXT)")
+    con.execute(
+        "INSERT INTO memory_chain (thread_id, insight, result, created_at, role) "
+        "VALUES ('seed', ?, 'success', 1000.0, 'user')", (TAUGHT_INSIGHT,))
+    # the current turn's own row, NEWER, so it would win the user/first sort
+    con.execute(
+        "INSERT INTO memory_chain (thread_id, insight, created_at, role) "
+        "VALUES ('ask', ?, 2000.0, 'user')", (USER_QUESTION,))
+    con.commit()
+
+    kept = turn_start_prior_memory(con, USER_QUESTION, thread_id="ask")
+    con.close()
+
+    assert kept, "the taught fact must still be recalled"
+    texts = [str(r.get("insight") or r.get("content") or "").strip() for r in kept]
+    assert USER_QUESTION not in texts, "the current question was injected as a fact"
+    assert any("kestrel-blue" in t for t in texts)
