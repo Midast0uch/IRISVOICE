@@ -3017,6 +3017,7 @@ class LocalModelManager:
         progress_cb=None,  # async callable(event: dict) — optional progress hook
         crash_cb=None,  # async callable() — called if subprocess dies after load
         with_projector: bool = True,
+        projector_path: Optional[str] = None,
     ) -> bool:
         """
         Stop existing subprocess (if any), spawn new llama-cpp-python server.
@@ -3035,6 +3036,10 @@ class LocalModelManager:
         Absent from any caller written before this parameter existed —
         every such call keeps the new default (attach), so nothing already
         wired to load_model() changes behavior (CT-5).
+
+        projector_path: use THIS projector file instead of the scan's match.
+        The registry matches projectors by stem across directories, so a
+        model mirrored on the D: SSD can otherwise load a C: HDD projector.
 
         [10.6] Held under _load_lock — concurrent calls return False immediately.
         [10.5] Pre-flight resource check before spawning subprocess.
@@ -3105,9 +3110,16 @@ class LocalModelManager:
             # own mtime-cached parsing).
             # Off the event loop: walks the models directory (HDD I/O while the
             # disk is busy with the load stalls WS heartbeats).
-            mmproj_path, mmproj_size_gb = await asyncio.to_thread(
-                self._find_projector_for_model, model_path
-            )
+            if projector_path:
+                mmproj_path = str(projector_path)
+                try:
+                    mmproj_size_gb = Path(mmproj_path).stat().st_size / (1024 ** 3)
+                except OSError:
+                    mmproj_size_gb = 0.0
+            else:
+                mmproj_path, mmproj_size_gb = await asyncio.to_thread(
+                    self._find_projector_for_model, model_path
+                )
             attach_projector = bool(with_projector) and bool(mmproj_path)
             # DSpark drafter paired by scan_models (speculative decoding). An
             # MTP model already drafts with its own heads (--spec-type draft-mtp).
@@ -4252,12 +4264,36 @@ class LocalModelManager:
             # 592 prompts / 1.6 GB, each decision spent 240-380 ms on the cache
             # update (3-6 ms after boot) and the per-request cache listing wrote
             # ~10 MB/min into the backend log on the HDD.
-            if "d1-3b" in Path(str(model_path)).name.lower():
+            from backend.agent.decision_backend_d1 import is_d1_build
+
+            _is_d1 = is_d1_build(model_path)
+            if _is_d1:
                 cmd += ["--cache-ram", "0"]
             if params.get("n_ctx"):
                 cmd += ["--ctx-size", str(params["n_ctx"])]
-            if params.get("n_batch"):
-                cmd += ["--batch-size", str(params["n_batch"])]
+            _n_batch = int(params.get("n_batch") or 0)
+            if _is_d1:
+                # The native Decision Index API builds ONE graph for the whole
+                # prompt, so the PHYSICAL batch must cover it. llama.cpp's
+                # physical batch defaults to 512 and the logical batch does
+                # NOT raise it: a 27-tool menu (1631 tokens, measured
+                # 2026-11-01) was rejected with "input (1631 tokens) is too
+                # large to process. increase the physical batch size (current
+                # batch size: 512)" - every Oracle decision failed closed.
+                #
+                # The physical batch is set EQUAL to the context window, so
+                # the window is the only limit: any prompt that fits the
+                # window fits the batch. Measured on this 8 GB card (2B +
+                # mmproj): ctx 8192 / batch 4096 = +2096 MiB VRAM, 3.5 s to
+                # ready; ctx 8192 / batch 8192 = +2776 MiB, 2.5 s to ready.
+                # The 680 MiB buys the removal of a silent fail-closed on a
+                # long menu (the 120-option ceiling is 3954 tokens with
+                # short descriptions and ~7.2k with the longest real ones).
+                _n_batch = max(_n_batch, int(params.get("n_ctx") or 8192))
+            if _n_batch:
+                cmd += ["--batch-size", str(_n_batch)]
+                if _is_d1:
+                    cmd += ["--ubatch-size", str(_n_batch)]
             if params.get("flash_attn"):
                 cmd += ["--flash-attn", "on"]
             if params.get("cache_type_k"):

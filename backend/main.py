@@ -571,8 +571,10 @@ async def lifespan(app: FastAPI):
                     return ""
 
             try:
+                from backend.agent.decision_backend_d1 import is_d1_build
+
                 _pin = _read_vision_pin()
-                if not _pin or "d1-3b" not in _P(_pin).name.lower():
+                if not _pin or not is_d1_build(_pin):
                     logger.warning(
                         f"    [x] [D1BOOT] pinned vision model is not the d1 "
                         f"build ({_P(_pin).name or 'no pin'}) — skipping the "
@@ -605,9 +607,9 @@ async def lifespan(app: FastAPI):
 
                 _mgr = get_local_model_manager()
                 _st = _mgr.get_status()
-                if _st.get("loaded") and "d1-3b" in _P(
+                if _st.get("loaded") and is_d1_build(
                     str(_st.get("model_path", ""))
-                ).name.lower():
+                ):
                     logger.info(
                         f"    [+] [D1BOOT] d1 already resident on "
                         f"{_st.get('endpoint', '8082')} — nothing to do"
@@ -636,9 +638,21 @@ async def lifespan(app: FastAPI):
                     )
                 except Exception:
                     pass
+                # The projector lives BESIDE the model. Pass it explicitly so
+                # the boot load reads it from the same (fast) drive as the
+                # model instead of the registry's C: HDD copy — the scanner
+                # matches projectors by stem across directories, and its pick
+                # is not guaranteed to be the twin we just chose.
+                _mmproj = None
+                try:
+                    _sibs = sorted(_P(_load_path).parent.glob("mmproj*.gguf"))
+                    _mmproj = str(_sibs[0]) if _sibs else None
+                except Exception:
+                    _mmproj = None
                 _ok = await _mgr.load_model(
                     _load_path, with_projector=True,
                     custom_params={"n_ctx": _nctx},
+                    projector_path=_mmproj,
                 )
                 if _ok:
                     logger.info("    [+] [D1BOOT] d1 resident — vision + Oracle warm")

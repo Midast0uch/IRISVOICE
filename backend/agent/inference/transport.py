@@ -22,12 +22,16 @@ import logging
 import re as _re
 import threading as _threading
 import time as _perf_t
+import uuid as _uuid
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Protocol
 
 from backend.agent.call_context import call_class, priority_index
 from backend.agent.inference.errors import EmptyModelResponseError, MalformedToolCallError, RateLimitedError
 from backend.agent.rate_meter import get_rate_meter
+
+# One session id per process for OpenCode Zen (see the header below).
+_OPENCODE_SESSION_ID = _uuid.uuid4().hex
 
 logger = logging.getLogger(__name__)
 
@@ -818,6 +822,16 @@ class ApiHttpxTransport:
         # directly (tests, legacy callers) fails closed instead of crashing.
         if self._api_key and self._api_key.strip():
             headers["Authorization"] = f"Bearer {self._api_key.strip()}"
+        # OpenCode Zen (opencodego) routes a request by session: without
+        # `x-opencode-session` it refuses the call with 400 MissingSessionID
+        # ("Request is missing x-opencode-session and cannot be routed
+        # efficiently", measured 2026-11-02). One id per process keeps the
+        # routing stable for every call the app makes.
+        if (
+            getattr(self, "_provider_id", "") == "opencodego"
+            or "opencode.ai" in self._api_base_url
+        ):
+            headers["x-opencode-session"] = _OPENCODE_SESSION_ID
         body: Dict[str, Any] = {
             "model": model,
             "messages": messages,

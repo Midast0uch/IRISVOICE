@@ -27,21 +27,49 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "llama-3.2-3b", "name": "Llama 3.2 3B"},
         {"id": "mistral-3b-venice", "name": "Mistral 3B Venice Edition"},
     ],
+    # Live list from https://opencode.ai/zen/go/v1/models (2026-11-02). The
+    # first entry is the recommended default (get_default_model_for_provider).
+    # The older ids stay below the live list: a config that still points at one
+    # of them keeps resolving.
     "opencodego": [
-        {"id": "gpt-5.6-luna", "name": "GPT-5.6 Luna"},
-        {"id": "luna", "name": "Luna Code (Alias)"},
-        {"id": "kimi-k3", "name": "Kimi K3 (2.8T MoE)"},
-        {"id": "kimi-k2.7", "name": "Kimi K2.7"},
-        {"id": "kimi-k2.6", "name": "Kimi K2.6"},
+        {"id": "deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash"},
         {"id": "deepseek-v4-pro", "name": "DeepSeek V4 Pro"},
+        {"id": "glm-5.3-flash", "name": "GLM-5.3-Flash"},
+        {"id": "glm-5.3", "name": "GLM-5.3"},
+        {"id": "glm-5.2", "name": "GLM-5.2"},
+        {"id": "grok-4.7", "name": "Grok 4.7"},
+        {"id": "gpt-6-luna", "name": "GPT-6 Luna"},
+        {"id": "gpt-5.6-luna", "name": "GPT-5.6 Luna"},
+        {"id": "claude-haiku-5-5", "name": "Claude Haiku 5.5"},
+        {"id": "kimi-k3.1-pro", "name": "Kimi K3.1 Pro"},
+        {"id": "kimi-k3", "name": "Kimi K3"},
+        {"id": "kimi-k2.7-code", "name": "Kimi K2.7 Code"},
+        {"id": "mimo-v2.6-flash", "name": "MiMo-V2.6-Flash"},
+        {"id": "mimo-v2.6-pro", "name": "MiMo-V2.6-Pro"},
+        {"id": "minimax-m3.1-flash", "name": "MiniMax M3.1 Flash"},
+        {"id": "minimax-m3", "name": "MiniMax-M3"},
+        {"id": "qwen3.8-flash", "name": "Qwen3.8 Flash"},
+        {"id": "qwen3.8-max", "name": "Qwen3.8 Max"},
+        {"id": "qwen3.7-plus", "name": "Qwen3.7 Plus"},
+        {"id": "gemini-4-argon", "name": "Gemini 4 Argon"},
+        {"id": "longcat-2.0", "name": "LongCat-2.0"},
+        {"id": "step-5-preview", "name": "Step 5 Preview"},
+        {"id": "hy3", "name": "Hy3"},
+        {"id": "hy4-preview", "name": "Hy4 preview"},
+        {"id": "beam-free", "name": "Beam Free"},
+        {"id": "iceman-contributor-free", "name": "Iceman Contributor Free"},
+        {"id": "muse-spark-1.3-contributor", "name": "Muse Spark 1.3 Contributor"},
+        {"id": "muse-spark-1.2-contributor", "name": "Muse Spark 1.2 Contributor"},
+        # Older ids (still resolvable, no longer listed by the API).
         {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
         {"id": "deepseek-v3", "name": "DeepSeek V3"},
         {"id": "deepseek-r1", "name": "DeepSeek R1"},
-        {"id": "qwen3.7-max", "name": "Qwen 3.7 Max"},
-        {"id": "qwen3-32b", "name": "Qwen 3 32B"},
-        {"id": "glm-5.2", "name": "GLM 5.2"},
+        {"id": "luna", "name": "Luna Code (Alias)"},
+        {"id": "kimi-k2.7", "name": "Kimi K2.7"},
+        {"id": "kimi-k2.6", "name": "Kimi K2.6"},
+        {"id": "qwen3.7-max", "name": "Qwen3.7 Max"},
+        {"id": "qwen3-32b", "name": "Qwen3 32B"},
         {"id": "glm-5.1", "name": "GLM 5.1"},
-        {"id": "minimax-m3", "name": "MiniMax M3"},
         {"id": "minimax-m2.7", "name": "MiniMax M2.7"},
     ],
     "deepseek": [
@@ -378,8 +406,18 @@ def _fetch_api_windows(provider_id: str, base_url: str, api_key: str) -> None:
     log = logging.getLogger(__name__)
     t0 = time.monotonic()
     try:
+        _hdrs = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        # OpenCode Zen (opencodego) refuses a request without a session header,
+        # and its edge (Cloudflare) refuses a request without a browser
+        # signature: both answers were 403 on 2026-11-02/03. The same two
+        # headers make the chat call work (see transport.py).
+        if "opencode.ai" in base_url:
+            import uuid as _uuid
+
+            _hdrs["x-opencode-session"] = _uuid.uuid4().hex
+            _hdrs["User-Agent"] = "iris-voice/1.0"
         r = httpx.get(f"{base_url}/models", timeout=10.0, verify=get_ssl_context(),
-                      headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+                      headers=_hdrs)
         if r.status_code != 200:
             log.warning("[ctx_window] provider=%s %s/models answered %d - API windows stay unknown",
                         provider_id, base_url, r.status_code)

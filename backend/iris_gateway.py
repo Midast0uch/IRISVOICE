@@ -5850,6 +5850,19 @@ class IRISGateway:
         """
         msg_type = message.get("type")
         payload = message.get("payload", {})
+        # The task's workdir (the eval harness sends it with every turn).
+        # MEASURED 2026-11-03: without this the run_command tool ran in the
+        # IRISVOICE root, so a bare `pytest -q` collected the whole repository
+        # (46.5 s against 1.7 s in the workdir), the turn exceeded the eval
+        # timeout, and the turn-end flush lost the tool_choice decided rows.
+        _wd = payload.get("workdir")
+        if _wd:
+            try:
+                from .dev.orchestrator import bind_chat_workdir
+
+                bind_chat_workdir(session_id, _wd)
+            except Exception:  # noqa: BLE001 - a bad workdir must not block the turn
+                logger.warning("[gateway] workdir bind failed: %s", _wd)
 
         # ── NARRATION ROUTING: bind the Caducean session to THIS session ────
         # ConversationKernel resolves its broadcast target via
@@ -10355,10 +10368,34 @@ class IRISGateway:
                     # rebind. The role table is process-wide, so rebinding here
                     # (on the shared table) is visible to every kernel/session.
                     try:
-                        _fallback = None
+                        # The owner's persisted choice for each role (the
+                        # config's role binding), NOT the registry order:
+                        # MEASURED 2026-11-03, the first provider in the
+                        # registry order was cohere, whose account was
+                        # rate-limited (429), so the fallback broke every
+                        # turn with a provider error the TTS spoke aloud.
+                        _cfg_bindings = (
+                            getattr(load_config().inference, "role_bindings", None)
+                            or []
+                        )
                         for _b in router.roles.list():
                             if _b.instance_id in _local_ids:
-                                if _fallback is None:
+                                _preferred = None
+                                for _rb in _cfg_bindings:
+                                    if getattr(_rb, "role", None) == _b.role:
+                                        _preferred = getattr(_rb, "instance_id", None)
+                                        break
+                                _fallback = next(
+                                    (
+                                        i.id
+                                        for i in router.registry.list()
+                                        if i.id not in _local_ids
+                                        and (i.purpose or "chat") == "chat"
+                                        and (_preferred is None or i.id == _preferred)
+                                    ),
+                                    None,
+                                )
+                                if _fallback is None and _preferred is not None:
                                     _fallback = next(
                                         (
                                             i.id
