@@ -1085,6 +1085,18 @@ d1-3B says nothing about d1-2B. On 2026-11-04 every consumer was re-measured
 on the active engine with `consumer_enforcement_report.py` and the replay
 instruments below.
 
+**The tool_choice cohort must be read per stamp.** The mixed cohort (the
+`tc-frame-v8` rows of 2026-11-03 and the `tc-frame-v9` rows of 2026-11-04)
+reads 0.5884, and an earlier reading of that mixture read 0.6803 - the
+mixture is not a cohort. Per stamp on the active engine: `tc-frame-v8` (4826
+distinct rows) reads an out-of-fold AUROC of 0.631 with a calibrated
+threshold of 0.9518 (62 rows above it at precision 0.9516, Wilson lower
+bound 0.8671), and `tc-frame-v9` (380 rows) reads 0.5359. So the tool_choice
+does NOT meet the bar on either stamp, and the two stamps also cover
+different task shapes (the 2026-11-03 traffic and the 2026-11-04 traffic),
+so the comparison between them is not clean either. The tool_choice needs a
+question that earns the bar on one stamp.
+
 **The rule this round proved: option text that invites an answer makes the
 confidence rank the errors backwards.** The `review_verdict` v8 criteria
 described `refine` as "the step is vague, incomplete or uses the wrong tool",
