@@ -192,10 +192,28 @@ def score_tool_approval(
         return None
 
 
+def _approval_input_key(frame: dict) -> str:
+    """The dedupe key for an approval row: one row per distinct INPUT.
+
+    The report's honest dedupe key (docs/architecture/oracle.md 6.1 rule 1).
+    Without it the ledger key (consumer, engine, confidence, chosen,
+    reference, correct) collapses DIFFERENT calls that the quantized engine
+    answered with the same confidence: measured 2026-11-03, 11757 raw
+    tool_approval rows carried no key at all.
+    """
+    try:
+        from backend.agent.surface_shadow import input_key as _ik
+
+        return _ik(TOOL_APPROVAL_CONSUMER, str((frame or {}).get("goal", "")), frame)
+    except Exception:  # noqa: BLE001 - the key is best-effort
+        return ""
+
+
 def shadow_row(
     noul: Optional[Any],
     brain_bool: Optional[bool],
     scope: Optional[Dict[str, str]] = None,
+    input_key: Optional[str] = None,
 ) -> Optional[dict]:
     """The row for one approval judgment, or None.
 
@@ -222,6 +240,10 @@ def shadow_row(
         "shadow": True,
         "criteria_version": CRITERIA_VERSION,
     }
+    if input_key:
+        # The report's honest dedupe key (docs/architecture/oracle.md 6.1
+        # rule 1): a row counts once per distinct INPUT.
+        row["input_key"] = input_key
     if scope:
         row.update(scope)
     return row
@@ -385,7 +407,8 @@ def record_tool_approval(
         # (the review_verdict frame diagnostic is the precedent - it made the
         # v4 fix chain possible). Off the answer path (lane).
         logger.debug("[tool_approval] frame: %r", _frame)
-        emit_row(shadow_row(noul, brain_bool=_brain, scope=_scope))
+        emit_row(shadow_row(noul, brain_bool=_brain, scope=_scope,
+                             input_key=_approval_input_key(_frame)))
 
     try:
         from backend.utils.durability_queue import lane

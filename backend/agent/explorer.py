@@ -210,6 +210,16 @@ _WEB_PENDING_LOCK = threading.Lock()
 _URL_RE = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 
 
+def _web_intent_input_key(goal: str) -> str:
+    """The dedupe key for a web_intent row: one row per distinct INPUT."""
+    try:
+        from backend.agent.surface_shadow import input_key
+
+        return input_key(WEB_INTENT_CONSUMER, goal or "", None)
+    except Exception:  # noqa: BLE001 - the key is best-effort
+        return ""
+
+
 def defer_web_intent_row(row: dict, goal: str) -> None:
     """Hold one consult row until its turn grades. Never raises.
 
@@ -400,6 +410,11 @@ def _score_web_intent(
                 # behind a Windows path prefix. v3: the honest label + the
                 # interpret_web job (512 chars).
                 "criteria_version": "web_intent/v3",
+                # The report's honest dedupe key (oracle.md 6.1 rule 1): one
+                # row per distinct INPUT. Without it the ledger key collapses
+                # DIFFERENT requests that the quantized engine answered with
+                # the same confidence.
+                "input_key": _web_intent_input_key(str(goal or "")),
                 # REQ-6 AC6.3a (T5.0): the scope ids ride the row.
                 **_scope,
             }, goal)

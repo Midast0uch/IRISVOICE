@@ -576,6 +576,14 @@ def _remember_memory_payload(conn, attribute: str, value: str,
     the ONE writer queue, the same one the FFI native writer uses. This helper
     never opens a second connection. A re-taught attribute updates the existing
     pin (newest wins) instead of piling up duplicates.
+
+    BOUNDARY (owner decision B, 2026-10-31): the Immortus chain is the memory
+    of record; a pin is the INDEX over it. This pin makes the fact reachable by
+    an explicit `recall_memory` (which reads pins) and by the memory UI. It does
+    NOT inject the fact into the prompt: automatic recall reads `memory_chain`,
+    where the user's own statement lands as a `user_turn` row in the same turn.
+    A fact that exists only as a pin is therefore index-only by design. Do not
+    add pin injection to the answer path without changing this decision.
     """
     attr = str(attribute or "").strip()
     val = str(value or "").strip()
@@ -614,10 +622,19 @@ def _scrub_forgotten_value(conn, value: str) -> Dict[str, int]:
     """Take a forgotten value out of every recall leg, keeping the rows as history.
 
     THREE records can carry a taught fact, and each has its own exclusion:
-      * ``memory_chain`` user_turn rows -> ``stale = 1``
-      * ``context_chunks`` rows         -> ``folded_into = FORGOTTEN_FOLD``
+      * ``memory_chain`` rows quoting the value -> ``stale = 1``
+      * ``context_chunks`` rows                -> ``folded_into = FORGOTTEN_FOLD``
+
     Measured 2026-10-30: staling the chain alone was not enough — the turn-pair
     chunk still carried the value and the next turn answered it.
+
+    Measured 2026-10-31 on the live store: the chain has 211 ``user_turn`` rows
+    but 3,741 agent rows, 1,028 ``step`` rows and 113 ``sub_loop`` rows carry
+    text, and the scrub used to stale ONLY ``user_turn``. A value the assistant
+    echoed, or a plan step that repeated it, therefore survived every forget —
+    and ``run_filtered_recall`` reads those rows too. B (owner decision,
+    2026-10-31) makes the chain the memory of record, so the scrub matches the
+    whole chain, not one node type.
 
     Returns ``{"chain_rows": n, "chunks": n}``. Never raises.
     """
@@ -627,17 +644,23 @@ def _scrub_forgotten_value(conn, value: str) -> Dict[str, int]:
         return counts
     from backend.memory.db import app_flush, app_write
 
-    like = f"%{val}%"
+    # Escape the LIKE metacharacters: a value containing "_" or "%" must not
+    # stale (or fold) unrelated rows, or the app forgets a fact nobody forgot.
+    escaped = (
+        val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    like = f"%{escaped}%"
     try:
         counts["chain_rows"] = int(conn.execute(
-            "SELECT count(*) FROM memory_chain WHERE node_type='user_turn' "
-            "AND (insight LIKE ? OR content LIKE ?)", (like, like)
+            "SELECT count(*) FROM memory_chain "
+            "WHERE insight LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'",
+            (like, like),
         ).fetchone()[0] or 0)
         if counts["chain_rows"]:
             app_write(
                 conn,
-                "UPDATE memory_chain SET stale = 1 WHERE node_type='user_turn' "
-                "AND (insight LIKE ? OR content LIKE ?)",
+                "UPDATE memory_chain SET stale = 1 "
+                "WHERE insight LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'",
                 (like, like),
             )
     except Exception as exc:  # noqa: BLE001 - a failed scrub reports, never raises
@@ -645,13 +668,13 @@ def _scrub_forgotten_value(conn, value: str) -> Dict[str, int]:
     try:
         counts["chunks"] = int(conn.execute(
             "SELECT count(*) FROM context_chunks WHERE folded_into IS NULL "
-            "AND content LIKE ?", (like,)
+            "AND content LIKE ? ESCAPE '\\'", (like,)
         ).fetchone()[0] or 0)
         if counts["chunks"]:
             app_write(
                 conn,
                 "UPDATE context_chunks SET folded_into = ? "
-                "WHERE folded_into IS NULL AND content LIKE ?",
+                "WHERE folded_into IS NULL AND content LIKE ? ESCAPE '\\'",
                 (FORGOTTEN_FOLD, like),
             )
     except Exception as exc:  # noqa: BLE001 - a failed scrub reports, never raises
@@ -664,17 +687,22 @@ def _scrub_forgotten_value(conn, value: str) -> Dict[str, int]:
 
 
 def _forget_memory_payload(conn, attribute: str, value: str = "") -> Dict:
-    """Forget a stored fact. TWO records carry it, so both must be touched.
+    """Forget a stored fact. THREE records can carry it, so all must be touched.
 
     1. The pin (`mycelium_pins`, title `fact:<attribute>`) is removed through
        `corrections.correct(..., "unpin", ...)` — the app's own delete: it writes
        the PIN_CORRECTED ledger event and keeps a 600 s undo, exactly like the
        memory UI. Deleting the row directly would leave no record and no undo.
     2. The Immortus chain rows that quote the value are marked `stale = 1`, so
-       they stay as history but leave every recall leg.
+       they stay as history but leave every recall leg. Every node type, not
+       only `user_turn` — the chain is the memory of record (decision B).
+    3. The `context_chunks` rows that quote the value are folded into
+       `FORGOTTEN_FOLD`, so the chunk leg leaves them too.
 
-    Step 2 is not optional. Measured 2026-10-30: with only the pin deleted, the
-    next turn still answered the value, because the recall legs read the chain.
+    Steps 2 and 3 are not optional. Measured 2026-10-30: with only the pin
+    deleted, the next turn still answered the value, because the recall legs
+    read the chain. Measured 2026-10-31: staling only `user_turn` left agent
+    and step rows quoting the value reachable.
 
     `value` is optional and guards against deleting a fact the user has since
     changed. A missing fact is a success with `deleted: False` — the user's goal
@@ -757,6 +785,12 @@ class AgentToolBridge:
         # narrated as the single word "reading". One slot per session, cleared
         # when the crawl ends -- bounded by the number of live sessions.
         self._crawl_progress: Dict[str, str] = {}
+
+        # D3 (2026-10-31): per-session record of tools that RAN, so the reply
+        # exit can tell a real memory deletion from a spoken one. Monotonic
+        # stamps mean no per-turn reset and no cross-turn leakage; bounded so
+        # a long process cannot grow it without limit.
+        self._turn_tool_events: Dict[str, list] = {}
 
         # SpeakTool singleton — used by the crawler_query narration heartbeat
         # (run_with_narration(..., speak=self._speak_tool.speak)) and any path
@@ -1161,11 +1195,23 @@ class AgentToolBridge:
             },
             {
                 "name": "ask_user_question",
-                "description": "Ask the user a question mid-task. Requires user input.",
+                # Kept in step with the registry ToolSpec: the two menus had
+                # drifted (registry carried the four parking params, this one
+                # did not, so the chat path could not raise a NON-BLOCKING
+                # question). Whole-menu parity is pinned by
+                # backend/tests/contract/test_tool_menu_parity_contract.py.
+                "description": "Ask the user a question mid-task. Requires user input. "
+                               "Pass non_blocking=true (with parked_url + run_id) to raise the "
+                               "question card and return immediately so the task keeps going; "
+                               "the parked source is resumed when the answer arrives.",
                 "parameters": {
                     "text": {"type": "string", "description": "The question to ask"},
                     "options": {"type": "array", "items": {"type": "string"}, "description": "Optional: multiple-choice options"},
-                    "allow_other": {"type": "boolean", "description": "Allow free-form input (default: true)"}
+                    "allow_other": {"type": "boolean", "description": "Allow free-form input (default: true)"},
+                    "non_blocking": {"type": "boolean", "description": "If true, raise the card and return immediately (REQ-13 AC1)"},
+                    "parked_url": {"type": "string", "description": "Source URL to park behind the question (REQ-13 AC2)"},
+                    "run_id": {"type": "string", "description": "Research run id for the parked-source registry (REQ-13 AC6)"},
+                    "wall_kind": {"type": "string", "enum": ["captcha", "login", "paywall", "unknown"], "description": "Wall that blocked the source (REQ-13)"},
                 },
                 "category": "system",
             },
@@ -1297,22 +1343,35 @@ class AgentToolBridge:
                     "category": "vision",
                 },
             ])
-            # Live browser control (REQ-4): built from the registry specs, so the
-            # chat list and the DER planner's list share one definition.
-            try:
-                from backend.agent.tool_registry import resolve_tool
 
-                for _bname in ("browser_open", "browser_observe", "browser_act", "browser_explore"):
-                    _bspec = resolve_tool(_bname)
-                    if _bspec is not None:
-                        tools.append({
-                            "name": _bspec.name,
-                            "description": _bspec.description,
-                            "parameters": dict(_bspec.parameters),
-                            "category": _bspec.category,
-                        })
-            except Exception as exc:  # the chat still works without browser control
-                logger.warning("[ToolBridge] browser tools not added to chat list: %s", exc)
+        # ── ONE MENU (2026-10-31) ────────────────────────────────────────────
+        # The registry is the source of truth for what a tool IS. This list is
+        # hand-maintained, and it had drifted: measured 2026-10-31 the registry
+        # held 27 tools and this list 20, so glob_files, grep_files,
+        # recall_research, list_conversations, transcribe_media,
+        # combine_documents, get_rendered_documents, analyze_video_frames and
+        # clip_video were callable by a DER step and INVISIBLE to the chat
+        # path. Append every registry tool this list does not already name.
+        # get_registry_tools() already applies the internet capability gate,
+        # the personal-mode block list, the hidden flag and the browser tools.
+        try:
+            from backend.agent.tool_registry import get_registry_tools, resolve_tool
+
+            _have = {t.get("name") for t in tools}
+            _developer = CapabilitySet.is_developer()
+            for _reg_tool in get_registry_tools():
+                if _reg_tool.get("name") in _have:
+                    continue
+                # One documented difference between the two paths: ripgrep
+                # search stays developer-only in CHAT (personal chat is pinned
+                # by tests/unit/test_chat_tools_include_ripgrep.py). The DER
+                # registry keeps it, so the gate lives on the spec, not here.
+                _spec = resolve_tool(_reg_tool.get("name", ""))
+                if _spec is not None and _spec.developer_only and not _developer:
+                    continue
+                tools.append(_reg_tool)
+        except Exception as exc:  # the chat still works with the hand list
+            logger.warning("[ToolBridge] registry tools not added to chat list: %s", exc)
 
         # ── Desktop-control gate ─────────────────────────────────────────────
         # Tools that reach outside the app sandbox (launch the real browser/apps,
@@ -2095,6 +2154,37 @@ class AgentToolBridge:
             logger.warning("[ToolBridge] speak failed: %s", exc)
             return {"status": "error", "reason": str(exc)}
 
+    def _note_turn_tool(self, session_id: str, tool_name: str, result: Any) -> None:
+        """Record that a tool RAN in this session (D3 evidence, bounded).
+
+        Never raises: evidence collection must not block a tool call.
+        """
+        ok = isinstance(result, dict) and result.get("success") is True
+        deleted = result.get("deleted") if isinstance(result, dict) else None
+        events = self._turn_tool_events.setdefault(str(session_id or ""), [])
+        events.append((time.monotonic(), str(tool_name), ok, deleted))
+        del events[:-32]
+        if len(self._turn_tool_events) > 64:
+            stale = min(
+                self._turn_tool_events,
+                key=lambda key: self._turn_tool_events[key][-1][0]
+                if self._turn_tool_events[key] else 0.0,
+            )
+            self._turn_tool_events.pop(stale, None)
+
+    def forget_ran_since(self, session_id: str, since: float) -> bool:
+        """True when a ``forget`` in this session DELETED a fact since ``since``.
+
+        A ``forget`` that found nothing (``deleted`` is not True) is not
+        evidence of a deletion, so it does not satisfy a claim.
+        """
+        for stamp, name, ok, deleted in self._turn_tool_events.get(
+            str(session_id or ""), ()
+        ):
+            if stamp >= since and name == "forget" and ok and deleted is True:
+                return True
+        return False
+
     async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False, decision_meta: Optional[Dict] = None) -> Dict:
         """FAULTLINE boundary (session 244) — universal typed outcomes.
 
@@ -2149,6 +2239,12 @@ class AgentToolBridge:
         try:
             _note_web_tool_used(tool_name, result)
         except Exception:  # noqa: BLE001 — a label never blocks a tool call
+            pass
+        # D3: the single place every tool result passes, so the reply exit can
+        # check a memory-deletion claim against what actually ran.
+        try:
+            self._note_turn_tool(session_id, tool_name, result)
+        except Exception:  # noqa: BLE001 — evidence never blocks a tool call
             pass
         return result
 

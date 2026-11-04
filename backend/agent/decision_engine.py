@@ -9,20 +9,21 @@ keys stay exactly as they are, because they carry meaning that a rename would
 destroy:
   * the config block id ``oracle`` (agent_config.yaml) is what
     ``load_engine_config`` looks up; and
-  * the ACTIVE backend identity ``d1-3b-ad-q4_k_m`` KEYS THE CALIBRATED
+  * the ACTIVE backend identity ``d1-2b-q4_k_m`` KEYS THE CALIBRATED
     THRESHOLD (``backend_thresholds``, REQ-22 AC22.1 / REQ-25 AC25.8). Renaming
     that key marks every measured curve unaddressable and enforcement
     fail-closes — a rename there is a configuration migration, not a label
     change. (The retired ``gliner25-decide-onnx-int8`` entry stays as history:
     its rows are other_backend evidence, oracle.md §16.)
 
-One resident decision backend, BORROW-ONLY: d1-3B (a JEV-style System One
-decision model) served by the shared llama-server :8082 — the same server
+One resident decision backend, BORROW-ONLY: d1-2B (a typed System One
+decision model, lfm3) served by the shared llama-server :8082 — the same server
 vision uses (backend/agent/decision_backend_d1.py; the GLiNER ONNX backend it
 replaced is deleted, Wave 5). It never writes to memory, never emits events,
 never spawns a process. Its only job: score a caller-provided option set
 against a caller-provided feature frame and return a probability distribution,
-one question per run, read from the logits at the single answer slot.
+one question per run, answered by the model's native Decision Index API with
+zero generated tokens (oracle.md §3.4).
 Consumers: `tool_choice` (Wave 2), `presentation` and `narration` (Wave 4).
 
 Two primitives, both return DecisionScore/ArgsResult or None (None = degrade
@@ -501,16 +502,23 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
         "speak_first_only": "Speak only the first beat, then stay quiet",
         "stay_silent": "Speak nothing for this plan",
     }),
-    # REQ-13/T4.3 (B3): the QUALITY bar must be in the descriptions, or the
-    # incumbent passes everything (it said pass 96% of the time). `refine` has
-    # to be reachable on vague / incomplete / wrong-tool steps, not only on
-    # outright conflicts.
-    "review_verdict": ConsumerDeclaration("choice", {
-        "pass": "The step did its part: the change is present, correct and testable",
-        "refine": ("The step is vague, incomplete or uses the wrong tool - it "
-                   "needs another pass before it is trusted"),
-        "veto": "The step must not run: it is unsafe, off-goal or harmful",
-    }),
+    # REQ-13/T4.3 (B3): the QUALITY bar belongs in the REVIEWER's PROMPT
+    # (der_loop.Reviewer.REVIEW_INSTRUCTION - the incumbent passed 96% of
+    # the time without it), not in the Oracle's option text.
+    #
+    # MEASURED 2026-11-04 (replay of 600 recorded review_verdict states on
+    # the active engine, the bar's own OUTCOME label):
+    #   the descriptions below -> AUROC 0.4016 (INVERTED: the wrong rows
+    #     score higher; 412 of 416 disagreements were refine-vs-pass, so the
+    #     wording "vague, incomplete or uses the wrong tool" fires on every
+    #     plain read or add step);
+    #   the BARE NAMES -> AUROC 0.7967, with perfectly monotonic bands
+    #     (0.547 / 0.874 / 1.000 / 1.000 / 1.000).
+    # The same lesson as the tool_choice control labels (oracle.md 7.2b):
+    # option text that invites an answer makes the confidence rank the
+    # errors backwards. The instruction carries the semantics; the option
+    # text must not argue for a verdict.
+    "review_verdict": ConsumerDeclaration("choice", {}),
     # `mode` REMOVED 2026-10-10 (owner): see the CONSUMERS tuple. A consumer
     # absent from this table registers UNDECLARED and the engine REFUSES to
     # score it (AC1.6) - the removal is fail-closed by construction.
@@ -558,6 +566,14 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     # (brain_bool = success), so the label is GROUND TRUTH, not parity — the
     # fix for tool_choice's parity-label noise. The true/false lines render as
     # the reference's Yes:/No: criteria lines.
+    #
+    # MEASURED 2026-11-04: these lines still ask the v1-v3 QUESTION ("is this
+    # the RIGHT tool") while the label records "the call SUCCEEDED". A
+    # rewrite that asks the label's question ("This call will succeed as
+    # written") measured 0.9282 against 0.9309 for these lines on the same
+    # 238 replayed frames - no gain, because the INSTRUCTION carries the
+    # question. So the lines stay as they are (the minimality ladder: no
+    # change without a measured gain).
     "tool_approval": ConsumerDeclaration("noul", {
         "true": "This tool is the right next tool for the goal, given the last result",
         "false": "This tool is not the right next tool for the goal",
@@ -973,18 +989,20 @@ class EngineCounters:
 # A calibrated threshold cannot survive a change of readout or of criteria: the
 # curve was measured on ONE input shape, so re-using it under another is the
 # silent-flip mistake this key exists to prevent.
-# "letters" (2026-10-10): the REFERENCE readout restored — d1's trained shape
-# (LiquidAI/d1-3B prompt.py: coded options, letter-token readout, manual
-# im_start prompt over /completion). Measured live against our own server:
-# confidence spreads 0.47-0.99 with the case, where the retired "native"
-# name-token readout sat flat at 0.90-0.96 (OOF AUROC 0.476). Keep in sync
-# with decision_backend_d1._READOUT_TAG.
-CURRENT_READOUT_MODE = "letters"
-# The RETIRED letter mode, recorded so historical rows address a real, nameable
-# identity rather than silently matching the current one (T3.1). The Wave-2
-# "native" name-token era needs no constant: its rows carry the bare model id
-# (no readout tag) and separate through the engine field by construction.
-LEGACY_READOUT_MODE = "legacy_letters"
+# "systemone" (2026-11-01): the model's OWN Decision Index API. d1-2B ships the
+# trained question template in its GGUF and llama.cpp serves it at
+# POST /v1/systemone, applying the model's per-type logit temperature. The
+# backend sends one typed question and reads the calibrated answer, with zero
+# output tokens. This replaces the d1-3B reconstruction ("letters": coded
+# options + letter-token readout over a hand-built /completion prompt), which
+# could not be correct for d1-2B because it missed the trailing <think></think>
+# and the temperature. Keep in sync with decision_backend_d1._READOUT_TAG.
+CURRENT_READOUT_MODE = "systemone"
+# The RETIRED hand-built letter mode, recorded so historical rows address a
+# real, nameable identity rather than silently matching the current one (T3.1).
+# The older Wave-2 name-token era needs no constant: its rows carry the bare
+# model id (no readout tag) and separate through the engine field by design.
+LEGACY_READOUT_MODE = "letters"
 # AC13.3: the candidate cap changes the RENDERED criteria block, so it belongs
 # inside the hash - tuning the cap re-identifies every choice consumer exactly
 # as editing its criteria text does.
@@ -1122,9 +1140,9 @@ def _bar_record_enforced() -> frozenset:
     REQ-2 (AC2.1/AC2.2): the recorded ``backend_id`` is the FULL DECISION
     identity ``model|readout_mode|criteria_hash`` of the consumer the bar was
     earned for, so each consumer is compared against ITS OWN active identity.
-    A bar recorded under the retired letter readout carries a
-    ``legacy_letters`` (or bare model) identity and never matches a native one
-    - the flip must be re-earned on the deployed readout and criteria.
+    A bar recorded under the retired letter readout carries a ``letters`` (or
+    bare model) identity and never matches a native one - the flip must be
+    re-earned on the deployed readout and criteria.
     """
     try:
         from .consumer_bar import load_bar_record
@@ -2300,11 +2318,11 @@ class DecisionEngine:
             factory = self._backend_factory
             if factory is None:
                 # Wave 3 (specs/phonon2-d1-model-swap T3.1): the resident
-                # decision backend is d1-3B on the shared llama-server. The
-                # GLiNER ONNX backend is RETIRED from construction (its code
-                # and history stay until the T5.3 deletion; oracle.md §9 —
-                # no fallback model: a d1 miss means unavailable, never a
-                # silent GLiNER substitute).
+                # decision backend is d1 on the shared llama-server (d1-2B
+                # since 2026-11-01). The GLiNER ONNX backend is RETIRED from
+                # construction (its code and history stay until the T5.3
+                # deletion; oracle.md §9 — no fallback model: a d1 miss means
+                # unavailable, never a silent GLiNER substitute).
                 from backend.agent.decision_backend_d1 import D1Backend
 
                 def factory(**kwargs: Any) -> Any:
@@ -2328,7 +2346,7 @@ class DecisionEngine:
                 return False
             self._backend = backend
             # model_id FIRST: a backend may tag it with the readout (d1's
-            # "+letters") so rows and thresholds address the distribution
+            # "+systemone") so rows and thresholds address the distribution
             # they were measured on; backend_id is the bare variant fallback.
             self.model_id = getattr(backend, "model_id", None) or getattr(
                 backend, "backend_id", None
@@ -2612,6 +2630,7 @@ class DecisionEngine:
                 return [None] * len(consults)
             backend = self._backend
             t0 = self._clock()
+            out: List[Optional["DecisionScore"]] = []
             with _ORACLE_RUNS_LOCK:
                 _oracle_questions_in_flight += len(consults)
             try:
@@ -2624,7 +2643,8 @@ class DecisionEngine:
                 self.counters.decisions += sum(1 for ds in out if ds is not None)
                 logger.info(
                     "%s decide_batch questions=%d latency_ms=%d backend=%s",
-                    ENGINE_NAME, len(consults), el, self.model_id,
+                    ENGINE_NAME, len(consults), el,
+                    getattr(self, "model_id", None),
                 )
             _ = t_start
             return out

@@ -1480,7 +1480,16 @@ class Reviewer:
                 # gate's job is to DETECT a deficient step - on FAILED, refine
                 # and veto are both correct; on VERIFIED, only pass. Bumped so
                 # the new semantics own a clean cohort.
-                "criteria_version": "review_verdict/v8",
+                # review_verdict/v9 (2026-11-04) = the SAME v8 frame and the
+                # SAME label semantics (reading B), with the Oracle's OPTION
+                # TEXT changed to the bare names. MEASURED on the active
+                # engine by replaying 600 recorded states with the bar's own
+                # outcome label: the v8 descriptions measured AUROC 0.4016
+                # (inverted - the wrong rows scored higher, and 412 of 416
+                # disagreements were refine-vs-pass), the bare names measured
+                # 0.7967 with monotonic bands. A question change gets its own
+                # stamp, so the new cohort is clean (oracle.md 6.1 rule 3).
+                "criteria_version": "review_verdict/v9",
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).

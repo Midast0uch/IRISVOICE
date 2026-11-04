@@ -1845,7 +1845,7 @@ class ToolDecisionBox:
                 # changed in this step; last command result).
                 # v8: + files seen in the last result, + "read N times"
                 # (paging a long file).
-                "criteria_version": "tc-frame-v8",
+                "criteria_version": "tc-frame-v9",
                 # The MENU FINGERPRINT: the offered names + their option text.
                 # A tool added or re-described changes it, so evidence measured
                 # on another menu can be told apart (per-tool enforcement
@@ -1959,7 +1959,7 @@ class ToolDecisionBox:
                 # wrong picks; the call-level label takes the honest-key
                 # cohort from AUROC 0.657 to 0.7988 offline. Also carries
                 # input_key (one row per INPUT, however confidence collides).
-                "criteria_version": "tc-decide-v4",
+                "criteria_version": "tc-decide-v5",
                 "menu_fp": _menu_fingerprint(menu, option_criteria),
                 "state": _render_state("tool_choice", frame)[:2000],
                 "input_key": _tc_input_key(frame),
@@ -3161,6 +3161,11 @@ class ToolDecisionBox:
                 "pushes_used": int(pushes_used or 0),
                 "incumbent_route": incumbent_route,
             }
+            # MEASURED 2026-11-04: the depth_route rows carry no frame, so a
+            # live cohort cannot be replayed. One DEBUG line per judgment
+            # joins to the rows through the input_key (a hash of the
+            # consumer and this frame). Off the answer path.
+            logger.debug("[depth_route] frame: %r", frame)
             ds = eng.decide(
                 "depth_route",
                 list(self._DEPTH_ROUTES) + [self._DE_DELEGATE],

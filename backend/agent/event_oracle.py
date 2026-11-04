@@ -274,7 +274,8 @@ def _decide(consumer_id: str, options: Sequence[str], goal: str, instruction: st
         return None
 
 
-def _row(consumer_id: str, ds: Any, reference: Optional[str]) -> dict:
+def _row(consumer_id: str, ds: Any, reference: Optional[str],
+         statement: Optional[str] = None) -> dict:
     row: Dict[str, Any] = {
         "consumer_id": consumer_id,
         "chosen": ds.chosen,
@@ -284,6 +285,20 @@ def _row(consumer_id: str, ds: Any, reference: Optional[str]) -> dict:
     }
     if reference is not None:
         row["brain_choice"] = reference
+    if statement:
+        # The report's honest dedupe key (docs/architecture/oracle.md 6.1
+        # rule 1): a row counts once per distinct INPUT. Without it the
+        # ledger key (consumer, engine, confidence, chosen, reference,
+        # correct) collapses DIFFERENT events that the quantized engine
+        # answered with the same confidence: measured 2026-11-03, 853 raw
+        # presentation rows counted as 11 distinct and 224 event_family
+        # rows as 23, so those consumers could never reach the 100-row bar.
+        try:
+            from backend.agent.surface_shadow import input_key as _input_key
+
+            row["input_key"] = _input_key(consumer_id, statement, {"goal": statement})
+        except Exception:  # noqa: BLE001 - the key is best-effort
+            pass
     try:
         # REQ-6 AC6.3a (T5.0): the scope ids ride the row when the caller's
         # context carries them (bound as values here).
@@ -352,7 +367,7 @@ def run_user_feedback(
         brain_label = (_brain_label(brain, _user_prompt(frame), USER_OPTIONS)
                        if (sampled or low) else None)
         if ds is not None:
-            emit_row(_row(USER_FEEDBACK, ds, brain_label))
+            emit_row(_row(USER_FEEDBACK, ds, brain_label, frame))
         final = brain_label or (ds.chosen if ds is not None else None)
         if final is None:
             return None
@@ -491,7 +506,7 @@ def score_event(ev: Dict[str, Any], brain: Optional[Callable[[str], str]] = None
                 fam_descr = {f: ", ".join(family_labels(f)[:4]) for f in FAMILY_ORDER}
                 fam_ref = _brain_label(
                     brain, _event_prompt(frame, FAMILY_ORDER, fam_descr, "family"), FAMILY_ORDER)
-            emit_row(_row(EVENT_FAMILY, fam_ds, fam_ref))
+            emit_row(_row(EVENT_FAMILY, fam_ds, fam_ref, frame))
             rows += 1
 
         family = fam_ref or (fam_ds.chosen if fam_ds is not None else None)
@@ -509,7 +524,7 @@ def score_event(ev: Dict[str, Any], brain: Optional[Callable[[str], str]] = None
                     descr = {n: s.description for n, s in ea.registered_labels().items()}
                     type_ref = _brain_label(
                         brain, _event_prompt(frame, labels, descr, "label"), labels)
-                emit_row(_row(type_id, type_ds, type_ref))
+                emit_row(_row(type_id, type_ds, type_ref, frame))
                 rows += 1
     except Exception as e:  # noqa: BLE001 - a shadow never raises
         logger.warning("[event_oracle] score_event failed: %r", e)

@@ -220,6 +220,12 @@ def score_surface_bool(
         scorer = getattr(eng, "noul", None)
         if not callable(scorer):
             return None
+        # MEASURED 2026-11-04: the surface rows carry no frame, so a live
+        # cohort cannot be replayed - the same gap the tool_approval closed
+        # with its own frame log. One DEBUG line per judgment, keyed by the
+        # consumer, joins to the rows through the input_key (a hash of the
+        # consumer, the statement and this frame). Off the answer path.
+        logger.debug("[surface] frame %s: %r", consumer_id, frame or {"goal": statement})
         return scorer(
             consumer_id, statement, frame or {"goal": statement},
             true_label=_TRUE_LABEL, false_label=_FALSE_LABEL,

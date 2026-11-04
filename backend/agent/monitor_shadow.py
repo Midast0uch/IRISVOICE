@@ -133,6 +133,12 @@ def score_monitor_bool(
         scorer = getattr(eng, "noul", None)
         if not callable(scorer):
             return None
+        # MEASURED 2026-11-04: the monitor rows carry no frame, so a live
+        # cohort cannot be replayed. One DEBUG line per judgment, keyed by
+        # the consumer, joins to the rows through the input_key (a hash of
+        # the consumer, the statement and this frame). Off the answer path.
+        logger.debug("[monitor] frame %s: %r", consumer_id,
+                     frame or {"goal": statement})
         return scorer(
             consumer_id, statement, frame or {"goal": statement},
             true_label=_TRUE_LABEL, false_label=_FALSE_LABEL,
@@ -161,11 +167,30 @@ def _scope_now() -> Dict[str, str]:
         return {}
 
 
+def _monitor_input_key(consumer_id: str, statement: str) -> str:
+    """The dedupe key for a monitor row: one row per distinct INPUT.
+
+    The report's honest dedupe key (docs/architecture/oracle.md 6.1 rule 1).
+    Without it the ledger key (consumer, engine, confidence, chosen,
+    reference, correct) collapses DIFFERENT objectives that the quantized
+    engine answered with the same confidence: measured 2026-11-03, the done
+    rows counted 2008 raw as 113 distinct, so the consumer could not reach the
+    100-row bar on its own evidence.
+    """
+    try:
+        from backend.agent.surface_shadow import input_key as _ik
+
+        return _ik(consumer_id, statement, None)
+    except Exception:  # noqa: BLE001 - the key is best-effort
+        return ""
+
+
 def shadow_row(
     consumer_id: str,
     noul: Optional[Any],
     brain_bool: Optional[bool],
     scope: Optional[Dict[str, str]] = None,
+    input_key: Optional[str] = None,
 ) -> Optional[dict]:
     """The CT-DEI-6-shaped row for a monitor judgment, or None.
 
@@ -191,6 +216,10 @@ def shadow_row(
         "brain_bool": brain_bool,
         "shadow": True,
     }
+    if input_key:
+        # The report's honest dedupe key (docs/architecture/oracle.md 6.1
+        # rule 1): a row counts once per distinct INPUT.
+        row["input_key"] = input_key
     if scope:
         row.update(scope)
     return row
@@ -265,7 +294,8 @@ def monitor_bool(
     if _engine_decides:
         value = bool(noul.true(_cut))
         text = "" if value else _safe_text(brain_text_fn)
-        row = shadow_row(consumer_id, noul, brain_bool=value, scope=_scope)
+        row = shadow_row(consumer_id, noul, brain_bool=value, scope=_scope,
+                         input_key=_monitor_input_key(consumer_id, statement))
         return value, text, row
 
     try:
@@ -273,10 +303,12 @@ def monitor_bool(
     except Exception as e:  # noqa: BLE001 — fail closed, never raise
         logger.warning("[monitor] %s brain bool failed: %r", consumer_id, e)
         return False, "", shadow_row(consumer_id, noul, brain_bool=None,
-                                     scope=_scope)
+                                     scope=_scope,
+                                     input_key=_monitor_input_key(consumer_id, statement))
     text = "" if value else _safe_text(brain_text_fn)
     return value, text, shadow_row(consumer_id, noul, brain_bool=value,
-                                   scope=_scope)
+                                   scope=_scope,
+                                   input_key=_monitor_input_key(consumer_id, statement))
 
 
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,
@@ -292,7 +324,8 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
     def _job() -> None:
         noul = score_monitor_bool(consumer_id, statement, engine=engine)
         row = shadow_row(consumer_id, noul, brain_bool=brain_bool,
-                         scope=_scope)
+                         scope=_scope,
+                         input_key=_monitor_input_key(consumer_id, statement))
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
         emit_row(row)

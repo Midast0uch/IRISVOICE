@@ -13,10 +13,13 @@ Source of truth is the code. Names in `code font` are real identifiers.
 One small local model answers ONE question per run and returns a probability
 distribution over the answers the caller offered.
 
-- **Model**: d1-3B (`d1-3B-AD-Q4_K_M.gguf`), a typed "System One" decision model.
-  It is served by the shared `llama-server` on `:8082`, the same server and the same
-  loaded model that vision uses (with its `mmproj` projector). The Oracle only
-  borrows it: it never spawns, restarts or loads anything.
+- **Model**: d1-2B (`d1-2B-Q4_K_M.gguf`), a typed "System One" decision model
+  (architecture `lfm3`). It is served by the shared `llama-server` on `:8082`, the same
+  server and the same loaded model that vision uses (with its `mmproj` projector). The
+  Oracle only borrows it: it never spawns, restarts or loads anything.
+  The retired d1-3B (`lfm2`) cannot answer the native Decision Index API
+  (`/v1/systemone` answers 501 for it), so the swap changed the readout, not only
+  the weights.
 - **Question shapes** (`DECISION_TYPES`): `choice` (pick one named option),
   `noul` (P(statement is true), yes/no), `score` (ordered levels, schema only; no
   consumer uses it).
@@ -80,13 +83,13 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
    inference thread (never the caller's step thread)
      |
      v
- D1Backend.decide .................... backend/agent/decision_backend_d1.py
-   render prompt (im_start markup, letter-coded options)
-   POST /completion  n_predict=1  n_probs=512  temperature=1.0
-   softmax over the option-code tokens at the answer slot
-     |
-     v
- llama-server :8082 .................. d1-3B-AD-Q4_K_M.gguf + mmproj (shared with vision)
+  D1Backend.decide .................... backend/agent/decision_backend_d1.py
+    build the typed question (state + named criteria)
+    POST /v1/systemone  {state, questions:{q0:{type, instructions, criteria}}}
+    the model answers with the option NAME and its distribution
+      |
+      v
+  llama-server :8082 .................. d1-2B-Q4_K_M.gguf + mmproj (shared with vision)
      ^
      |  DecisionScore { chosen, confidence, distribution, engine_latency_ms }
      |
@@ -189,7 +192,7 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 
 - `backend/main.py` `_boot_load_d1` starts as an async task right after the TTS
   prewarm. It reads the pinned vision model; it loads only a file whose name contains
-  `d1-3b` (any other pin is refused with a log). It prefers a same-named file on the
+  `d1-2b` or `d1-3b` (any other pin is refused with a log). It prefers a same-named file on the
   `D:/lmstudio/models` SSD twin to the `C:` copy, skips the load if d1 is already
   resident on the shared server, and calls `LocalModelManager.load_model(...,
   with_projector=True, custom_params={"n_ctx": ...})`. `n_ctx` is the `last_ctx`
@@ -197,13 +200,21 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
 - The shared server port is `LocalModelManager.PORT` (env `IRIS_LOCAL_MODEL_PORT`,
   default 8082).
 - `D1Backend` checks `GET /v1/models` for a served id whose file name contains
-  `d1-3b`. The result is cached for `IRIS_D1_CHECK_TTL_S` (default 300 s). If the
+  `d1-2b` or `d1-3b`. When the server reports `output_modalities`, a d1 build must
+  declare `decisions` (the d1-3B GGUF has no Decision Index metadata and answers
+  `/v1/systemone` with 501). The result is cached for `IRIS_D1_CHECK_TTL_S` (default 300 s). If the
   server hosts anything else, every decision returns `None`.
 - The load is borrow-only and `retry_load = True`: a miss at boot is transient, and
   the engine probes again on the next decision.
 - HTTP uses one pooled keep-alive client (`httpx.Client`, timeout
-  `IRIS_D1_TIMEOUT_S`, default 20 s). `IRIS_D1_N_PROBS` (default 512) is how many top
-  token logprobs the server returns at the answer slot.
+  `IRIS_D1_TIMEOUT_S`, default 20 s).
+- The d1 server runs with `--batch-size` and `--ubatch-size` EQUAL to the context
+  window (`local_model_manager._build_server_cmd`, d1 builds only). The native
+  Decision Index API builds ONE graph for the whole prompt, so the PHYSICAL batch
+  must cover it: with llama.cpp's 512 default, a 27-tool menu (1629 tokens) was
+  rejected with "input (1631 tokens) is too large to process" and every decision
+  failed closed. Measured on the 8 GB card: ctx 8192 / batch 4096 = +2096 MiB VRAM
+  and 3.5 s to ready; ctx 8192 / batch 8192 = +2776 MiB and 2.5 s to ready.
 - After d1 is resident, `_boot_load_d1` proves the shared server multimodal once (`[D1BOOT] vision verdict proved in N s`); a proven verdict does not expire (a failed vision call drops it). Before 2026-10-13 a 300 s re-probe sent a 1x1 PNG inside turns and held the one-slot server 13.6 s while the node's `tool_choice` decision waited 9.8 s.
 - d1 starts with `--cache-ram 0` (`local_model_manager._build_server_cmd`, d1-3b models only): Oracle prompts share about 4 tokens, so the host prompt cache never paid, yet it kept every prompt. After one eval run it held 592 prompts / 1.6 GB, each decision spent 240-380 ms on the cache update (3-6 ms after boot), and its per-request listing wrote about 10 MB/min to the backend log. After: no cache updates; a whole backend run logged 6.5 MB.
 
@@ -326,37 +337,47 @@ re-described changes it.
 
 ### 3.4 Prompt and readout (`decision_backend_d1`)
 
-The prompt is built by hand, no chat template, no system turn:
+The native Decision Index API builds the prompt SERVER-SIDE from a typed question.
+The backend sends no hand-written prompt and reads no logprobs:
 
-```
-<|startoftext|><|im_start|>user
-{state}
-
-QUESTION:
-{instruction}
-
-Options:
-A {option text}
-B {option text}
-...
-
-Reply with the option code only.<|im_end|>
-<|im_start|>assistant
+```json
+POST /v1/systemone
+{"state": "{state}",
+ "questions": {"q0": {"type": "choice",
+                      "instructions": "{instruction}",
+                      "criteria": {"option name": "option text"}}},
+ "images": ["data:image/png;base64,..."]}
 ```
 
-- `noul` renders the yes/no template ("Reply with yes or no only."), adding the
-  declaration's `Yes:` / `No:` lines; the readout pools `yes/Yes/YES` against
-  `no/No/NO`.
-- `choice` pools each option's code token with its space-prefixed form. The server
-  returns the top `n_probs` token logprobs at the single answer slot; an option whose
-  code token is absent scores -inf; the answer is a softmax over the options.
+- `choice` names every option and its text in `criteria`; the answer carries the
+  option NAME, its `probabilities` and a `confidence`.
+- `noul` uses `criteria` with the `true` / `false` descriptions; the answer carries
+  `noul` = P(true).
+- `score` lists the ordered level labels lowest first; the answer carries the
+  `score` (the median level index), a `legend` and the per-level `probabilities`.
 - `confidence` is P(chosen). A noul row stores confidence in the CHOSEN answer
   (`max(p, 1-p)`) and keeps the raw `probability` beside it.
-- A scoring failure of any kind returns `None`.
-- Images ride `image_data` on the same request (the `guard` job).
+- **The option text is capped at 120 characters** (`_OPTION_TEXT_CAP`). The native
+  API generates ZERO tokens, so a decision costs the PREFILL of the prompt the
+  server renders, and the criteria block is the bulk of it: the 27-tool menu was
+  1619 tokens / 177 ms with the full tool documentation and 703 tokens / 82 ms
+  capped (measured 2026-11-01, RTX 3070). The cap is on the TEXT only; the option
+  NAME is never shortened, so the answer still names a real option. The cap also
+  IMPROVES the pick: over 30 real eval tasks the tool FAMILY was right in 29/30
+  capped against 17/30 with the full text (the long documentation pushed the
+  model to a self-improvement tool on research tasks).
+- A scoring failure of any kind returns `None`. A server without the Decision
+  Index metadata answers 501; the backend logs that once and fails closed.
+- Images ride the `images` field on the same request (the `guard` job).
 - `decide_batch` / `DecisionEngine.decide_many` / `shadow_many` (one pass over one
   shared state, `IRIS_ORACLE_BATCH_CAP`, default 8) exist, but nothing outside the
   tests calls them; every production consult is one question per run.
+
+**RETIRED (2026-11-01): the letter readout.** The d1-3B era built the prompt by
+hand (`<|im_start|>` markup, `A`..`Z` option codes) and read the top-512 token
+logprobs at one answer slot. That path is gone with the model swap: the d1-2B
+answers through `/v1/systemone` and generates ZERO tokens (`output_tokens: 0`).
+The retired identity name is `letters` (the name the d1-3B rows carry).
 
 ### 3.5 Decision identity and cohorts
 
@@ -365,7 +386,8 @@ identity = model_id | readout_mode | criteria_hash
          = d1-3b-ad-q4_k_m+letters | letters | <12 hex of sha1(type, criteria, cap)>
 ```
 
-- `model_id` is the served GGUF stem, lowercased, plus the readout tag (`+letters`).
+- `model_id` is the served GGUF stem, lowercased, plus the readout tag
+  (`+systemone` since 2026-11-01; the retired d1-3B rows carry `+letters`).
   A row's `engine` field holds this string.
 - `criteria_hash(consumer, candidate_cap)` digests the declared type, the declared
   criteria and the candidate cap. Editing criteria or the cap re-identifies the
@@ -642,18 +664,23 @@ How the numbers are made:
   `decides()` call. Adding a consumer to enforcement is the owner's edit of
   `IRIS_DECISION_ENFORCE`.
 - **Optional fine-tune path (manual, not part of the running app).**
-  1. `scripts/export_tool_choice_training.py` writes JSONL examples: the exact prompt
-     d1 reads, and the option code of a call that WORKED (an Oracle-decided row with
-     `outside_label` True, or a `tc-frame-v6+` shadow row with `brain_ok` True). A
-     failed, overridden or missing call is never a target.
+  1. `scripts/export_tool_choice_training.py` writes JSONL examples in the NATIVE
+     format (`state`, typed `question`, `target`, `tool`, `source`, `menu_fp`): the
+     exact question d1 reads, and the option of a call that WORKED (an
+     Oracle-decided row with `outside_label` True, or a `tc-frame-v6+` shadow row
+     with `brain_ok` True). A failed, overridden or missing call is never a target.
   2. `scripts/finetune_d1_lora.py` trains a 4-bit LoRA on the one answer-slot token,
      with the same readout the app uses. The split is by task. It scores the held-out
      set before and after (accuracy, and accuracy per confidence band). The backend
      must be stopped first (the served d1 shares the GPU).
+     RETIRED READOUT (2026-11-01): this trainer still reads the d1-3B letter format
+     (`prompt` + `completion`) and REFUSES the native export with a clear message.
+     A d1-2B fine-tune must train the model's own
+     `tokenizer.chat_template.systemone` answer slot (see LiquidAI/d1-2B).
   3. `--merge` writes bf16 weights; the operator converts them with llama.cpp
      (`convert_hf_to_gguf.py`, `llama-quantize`) and serves the result.
   4. A merged model is a NEW identity (a different served file name; it must still
-     contain `d1-3b`). Every consumer's calibration restarts; no threshold carries
+     contain `d1-2b` or `d1-3b`). Every consumer's calibration restarts; no threshold carries
      over. A fine-tune that does not raise held-out accuracy at high confidence is not
      shipped.
 
@@ -711,9 +738,9 @@ Figures in 7.1 are as of 2026-10-12 unless dated. Table 7.2 is the measurement o
 | `tool_choice` threshold | 0.790 calibrated (about 0.64 raw confidence); 201 rows above it; precision 0.9005; Wilson LB 0.851 |
 | Oracle enforced live | node tool calls: coding 11/15, browser 10/10 (eval groups) |
 | Live frontend browser runs | Oracle picks `browser_open` at confidence 0.92-0.923; `browser_act` at 0.73-0.80 |
-| Decision latency | 112-302 ms typical; 2.1 s worst seen |
+| Decision latency | 112-302 ms typical; 2.1 s worst seen (d1-3B era). d1-2B native: 175-190 ms p50, 418 ms p95 on a 27-tool menu (measured 2026-11-01, 12 real coding tasks) |
 | d1 boot load | about 30 s warm |
-| Model size on disk | `d1-3B-AD-Q4_K_M.gguf` 1.66 GB + `mmproj` 0.86 GB; shared with vision; the Oracle adds no second model |
+| Model size on disk | `d1-2B-Q4_K_M.gguf` 1.10 GB + `mmproj-d1-2B-F16.gguf` 0.38 GB; shared with vision; the Oracle adds no second model |
 | Fine-tune pilot (not shipped) | held-out accuracy 61.8% -> 76.5%; calls at confidence >= 0.9: 10 -> 25 of 68, at 92% accuracy |
 | Routing | rules remain the incumbent; the Oracle is shadow for routing |
 | `browser_next` | shadow only |
@@ -1050,9 +1077,66 @@ The remaining consumers, in order of tractability:
 - **`browser_next`** - a precision problem at every threshold; a frame fix (the same replay recipe) is the next lever.
 - **`click_safety`, `depth_route`, `done`, `presentation`, event consumers** - rows below 100; more traffic.
 
+### 7.6 The d1-2B reset and the option-text rule (2026-11-04)
+
+The engine swap (d1-3B -> d1-2B, 2026-10-30) reset every consumer's cohort:
+the bar's clauses are measured per engine identity, so a cohort earned on
+d1-3B says nothing about d1-2B. On 2026-11-04 every consumer was re-measured
+on the active engine with `consumer_enforcement_report.py` and the replay
+instruments below.
+
+**The rule this round proved: option text that invites an answer makes the
+confidence rank the errors backwards.** The `review_verdict` v8 criteria
+described `refine` as "the step is vague, incomplete or uses the wrong tool",
+and the model applied that test to every plain read or add step: 412 of 416
+disagreements with the Brain were refine-vs-pass, and the confidence ranked
+the wrong rows HIGHER. Measured on 600 recorded states, replayed on the
+active engine, scored with the bar's own OUTCOME label (VERIFIED -> pass was
+right, FAILED -> refine or veto was right):
+
+| option text | out-of-fold AUROC | confidence bands (low -> high) |
+|---|---|---|
+| the v8 descriptions | 0.4016 (inverted) | 0.430 / 0.258 / 0.276 / 0.128 |
+| the BARE NAMES | **0.7967** | 0.547 / 0.874 / 1.000 / 1.000 / 1.000 |
+
+The fix is `review_verdict/v9`: the criteria are the bare option names and
+the stamp is new, so the cohort is clean. The instruction carries the
+semantics (the QUALITY bar lives in the reviewer's prompt, per the
+phonon2-d1-model-swap VERIFY note); the option text must not argue for a
+verdict. This is the same lesson as the tool_choice control labels (7.2b).
+
+**`tool_approval` is not broken.** Its live cohort reads 0.5202, but the
+replay of 238 logged frames, joined to the rows by the `input_key` hash (the
+honest join, never by sequence), measures **0.9309** with the live question
+and 0.9282 with a rewrite that asks the label's question - no gain, so no
+change. The cohort's 0.52 comes from the OLD rows: the cohort mixes eras and
+task shapes, and the old rows carry the incumbent label.
+
+**The replay instruments.** The surface consumers (`depth_met`,
+`escalate_incomplete`, `needs_action`), the `done` monitor and the
+`depth_route` rows carry no frame, so their cohorts could not be replayed.
+From 2026-11-04 each of those call sites logs its frame (one DEBUG line per
+judgment, keyed by the consumer), and the row's `input_key` (a hash of the
+consumer, the statement and the frame) joins the log to the rows. The
+instruments are `scripts/replay_consumer.py` (a consumer with a recorded
+state), `scripts/replay_tool_approval.py` and `scripts/replay_surface.py`
+(the frame comes from the log).
+
+**The label source still splits the cohorts.** The `review_verdict` outcome
+label is written only when `IRIS_ORACLE_REVIEW_OUTCOME` is on. Rows without
+it are scored against the incumbent (the Brain's verdict), which is a
+different label (7.2b), so a cohort that mixes both sources measures a
+mixture. Read the label split before reading the headline.
+
+**The app hung on 2026-11-04.** The backend stopped answering `/health`
+during a traffic turn and the log writer stopped with it. The watchdog
+restarted it; `IRIS_FAULTHANDLER_DUMP` is now on so the next hang leaves a
+stack.
+
 ---
 
 ## 8. Operations
+
 
 ### 8.1 Environment flags
 
@@ -1068,7 +1152,7 @@ The remaining consumers, in order of tractability:
 | `IRIS_ORACLE_PHASE_PERIOD_S`, `_MAX_WAIT_S`, `_K` | 0.3, 0.3, 0.6 | phase gate tuning (timed gate) |
 | `IRIS_ORACLE_BATCH_CAP` | 8 | width of a batched pass (no production caller) |
 | `IRIS_ORACLE_REVIEW_OUTCOME` | off in code; `.env` sets 1 | stamps pending `review_verdict` rows with the step's settled label (VERIFIED / UNVERIFIED / FAILED) as the outside label; ON since 2026-10-17 (the v4 cohort is outcome-labelled) |
-| `IRIS_D1_CHECK_TTL_S`, `IRIS_D1_TIMEOUT_S`, `IRIS_D1_N_PROBS` | 300, 20, 512 | serving check cache, HTTP timeout, logprobs returned |
+| `IRIS_D1_CHECK_TTL_S`, `IRIS_D1_TIMEOUT_S` | 300, 20 | serving check cache, HTTP timeout |
 | `IRIS_LOCAL_MODEL_PORT` | 8082 | the shared llama-server port |
 
 **Off switches.** Remove `tool_choice` from `IRIS_DECISION_ENFORCE`: the tool model
@@ -1090,7 +1174,7 @@ python scripts/fit_oracle_calibration.py [--dry-run] [--scope tool_choice=tc-dec
 python scripts/calibrate_decision_threshold.py [--since ...] [--json]
 
 # re-ask d1 on recorded tool_choice states under a variant (needs :8082; writes nothing)
-python scripts/replay_tool_choice.py [--variants descriptions,hints] [--stamps tc-frame-v8] [--limit N]
+python scripts/replay_tool_choice.py [--variants descriptions,hints] [--stamps tc-frame-v8] [--limit N] [--engine ID]
 
 # outcome-checked decisions -> fine-tuning JSONL (read-only on the store)
 python scripts/export_tool_choice_training.py --out data/training/tool_choice.jsonl
@@ -1099,6 +1183,10 @@ python scripts/export_tool_choice_training.py --out data/training/tool_choice.js
 python scripts/finetune_d1_lora.py --model <d1-3B dir> --data data/training/tool_choice.jsonl \
     --out <dir> --epochs 3 --merge
 ```
+
+- `replay_tool_choice.py --engine` selects the SOURCE cohort of recorded rows
+  (default: the retired d1-3B letter era). Replaying that cohort through the
+  current model is how a model swap is measured before any live traffic.
 
 - `calibrate_decision_threshold.py` holds `decision_label`, the one labelling rule the
   report and the fit both import.
@@ -1135,14 +1223,14 @@ Under `backend/tests/` (`contract/` unless a path is given).
 - `test_decision_identity_contract.py` - `model|readout|criteria_hash`; a criteria or cap edit empties the threshold.
 - `test_consumer_declarations_contract.py`, `test_consumer_registry.py`, `test_consumer_tasks_contract.py`, `test_surface_observer_contract.py` - declared types and criteria; an undeclared consumer scores nothing.
 - `test_readonly_engine.py` - the engine writes nothing to the memory graph.
-- `test_oracle_phase_contract.py`, `test_phase_domain_exit_admission.py`, `behavioral/test_oracle_phase_identity.py` - phase admission and identical answers alone and under load.
+- `test_oracle_phase_contract.py`, `test_phase_domain_exit_admission.py` - phase admission and identical answers alone and under load.
 - `test_raw_threshold_contract.py` - `threshold_for` resolves the active identity's fitted curve on the raw scale.
 
 **Input, readout, jobs**
 
-- `test_d1_native_readout_contract.py`, `test_d1_logprob_shape_contract.py` - the reference prompt and letter readout; token `id`, never `bytes[0]`.
+- `test_d1_native_readout_contract.py` - the native Decision Index contract: the typed question, the answer shape, the fail-closed paths.
 - `test_oracle_jobs_contract.py`, `test_oracle_frame_evidence_contract.py` - the engine owns the input and budget; reference fields never reach the model; frames render their evidence.
-- `test_oracle_batch_contract.py`, `behavioral/test_batch_single_encode.py` - batching isolation.
+- `test_oracle_batch_contract.py` - batching isolation.
 
 **Tool choice**
 
