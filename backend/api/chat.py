@@ -562,43 +562,29 @@ async def create_thread(body: CreateThreadRequest) -> CreateThreadResponse:
 
 
 @router.get("/chat/threads/{thread_id}", response_model=ThreadDetail)
-async def get_thread(thread_id: str) -> ThreadDetail:
-    """Get a thread's full detail including messages."""
+def get_thread(thread_id: str) -> ThreadDetail:
+    """Get a thread's full detail including messages.
+
+    Declared ``def`` (not ``async def``) so FastAPI runs the blocking SQLite
+    reads in its threadpool instead of on the event loop.
+    """
     from backend.conversation_store import get_conversation
 
     conv = get_conversation(thread_id)
     if not conv:
         raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
-    # Optionally fetch Immortus chain entries (graceful if unavailable)
-    immortus_chain: list[dict[str, Any]] = []
-    try:
-        from backend.gateway.iris_ffi import _engine
+    # Immortus chain entries (graceful if unavailable).
+    #
+    # This used to read ``_engine._conn`` and order by ``chain_index``. Neither
+    # exists: IrisCoreEngine holds no connection, and no schema has a
+    # chain_index column. Both failures were caught at debug level, so the
+    # thread detail silently returned an empty chain every time.
+    from backend.gateway.iris_ffi import ffi_immortus_chain_recent
 
-        if _engine is not None:
-            # Use IrisCoreEngine's SQLite connection to query memory_chain
-            import sqlite3
-
-            conn: sqlite3.Connection = _engine._conn
-            rows = conn.execute(
-                "SELECT result, nbl_outcome, insight, coords_from, coords_to, "
-                "created_at FROM memory_chain WHERE thread_id = ? "
-                "ORDER BY chain_index DESC LIMIT 20",
-                (thread_id,),
-            ).fetchall()
-            for row in rows:
-                immortus_chain.append(
-                    {
-                        "result": row[0],
-                        "nbl_outcome": row[1],
-                        "insight": row[2],
-                        "coords_from": row[3],
-                        "coords_to": row[4],
-                        "timestamp": row[5],
-                    }
-                )
-    except Exception:
-        logger.debug("[ChatREST] Immortus chain fetch unavailable")
+    immortus_chain: list[dict[str, Any]] = ffi_immortus_chain_recent(
+        thread_id, limit=20
+    )
 
     return ThreadDetail(
         thread_id=thread_id,
@@ -609,21 +595,45 @@ async def get_thread(thread_id: str) -> ThreadDetail:
 
 
 @router.delete("/chat/threads/{thread_id}")
-async def delete_thread(thread_id: str) -> dict[str, Any]:
-    """Delete a thread, its messages, and purge its Immortus chain."""
+def delete_thread(thread_id: str) -> dict[str, Any]:
+    """Delete a thread, its messages, and purge its Immortus chain.
+
+    ``chain_purged`` reports what the purge ACTUALLY did. The endpoint used to
+    return ``{"deleted": true}`` while all 17 chain rows were still present
+    (measured 2026-10-30, conv-5087): the FFI returned -1 and a bare ``except:
+    pass`` hid it. A surviving chain row is still recalled on the next turn,
+    so the caller must be told.
+    """
     from backend.conversation_store import delete_conversation
 
     deleted = delete_conversation(thread_id)
 
-    # Purge Immortus chain (non-blocking)
+    chain_purged = False
+    chain_rows_removed: Optional[int] = None
     try:
         from backend.gateway.iris_ffi import ffi_immortus_chain_keep_latest
 
-        ffi_immortus_chain_keep_latest(thread_id, 0)
-    except Exception:
-        pass
+        removed = ffi_immortus_chain_keep_latest(thread_id, 0)
+        if removed >= 0:
+            chain_purged = True
+            chain_rows_removed = removed
+        else:
+            logger.warning(
+                "[ChatREST] chain purge unavailable for thread %s (rc=%s): "
+                "its chain rows survive the thread delete",
+                thread_id, removed,
+            )
+    except Exception as exc:  # noqa: BLE001 — the conversation IS deleted; name what failed
+        logger.warning(
+            "[ChatREST] chain purge failed for thread %s: %s", thread_id, exc
+        )
 
-    return {"deleted": deleted, "thread_id": thread_id}
+    return {
+        "deleted": deleted,
+        "thread_id": thread_id,
+        "chain_purged": chain_purged,
+        "chain_rows_removed": chain_rows_removed,
+    }
 
 
 @router.post(

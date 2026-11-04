@@ -1,187 +1,307 @@
-"""The d1 readout — the REFERENCE implementation, restored (2026-10-10).
+"""The d1 readout — the NATIVE Decision Index API (2026-11-01).
 
 WHY THIS FILE EXISTS
 
-d1 is a post-trained decision model: its calibrated distribution lives in the
-LETTER-CODE tokens of its trained prompt shape (LiquidAI/d1-3B prompt.py):
-options render as ``A {text}``, the model replies with the code, and the
-readout max-pools each code with its space-prefixed form at the ONE answer
-slot. The Wave-2 change that retired letters in favour of option-NAME tokens
-read a distribution the model was never trained to calibrate: measured live
-on our own llama-server and GGUF (2026-10-10, logs/_probe_d1_reference.py,
-_probe_d1_styles.py), the name readout's confidence sat flat at 0.90-0.96 on
-right and wrong answers alike (one isotonic knot, OOF AUROC 0.476 across 116
-web_intent rows), while the reference letter readout on the SAME server
-answered 5/5 varied tool questions and 4/4 noul questions with confidence
-spreading 0.47-0.99 with the difficulty of the case. The Wave-2 "letters
-collapse to a constant answer" finding came from the probe era of the
-bytes[0]-as-id defect (see _extract_logprobs) and does not reproduce under
-the correct format.
+d1 is a post-trained decision model: one state is read once and typed
+questions are answered in ONE forward pass with zero generated tokens.
 
-Pinned here: the renderers (coded options, yes/no criteria lines), the
-manual im_start prompt, the /completion transport, the letter readout
-(distinct single-token codes, space-form pooling, fail-closed), the readout
-tag on the row-level engine identity, and the fail-closed refusal of an
-undeclared consumer. OFFLINE and deterministic: the tokenizer is stubbed.
+For d1-3B there was no server support for that API, so this backend rebuilt the
+trained prompt by hand (LiquidAI/d1-3B prompt.py: coded options + letter-token
+readout over ``/completion``). d1-2B ships the template in its GGUF
+(``tokenizer.chat_template.systemone``) and llama.cpp serves it at
+``POST /v1/systemone``, applying the model's per-type logit temperature
+(``lfm3.decision.temperature.*`` = 1.3374 for d1-2B). The hand-built prompt is
+retired: it missed d1-2B's trailing ``<think></think>`` and its temperature, so
+its confidence was not the model's calibrated confidence.
+
+Pinned here: the native request shape (state + typed questions), the criteria
+mapping for each declared type, the answer mapping into the engine's
+DecisionScore envelope, the image field, the fail-closed paths, the readout
+tag on the row-level engine identity, and the shared d1 build test.
+
+OFFLINE and deterministic: the HTTP client is stubbed.
 """
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
-from backend.agent.decision_backend_d1 import D1Backend, _option_codes
+import pytest
+
+from backend.agent import decision_backend_d1 as d1mod
+from backend.agent.decision_backend_d1 import D1Backend, is_d1_build
+from backend.agent.decision_engine import OracleState
 from backend.agent import decision_engine as de
 
-_BACKEND_SRC = Path("backend/agent/decision_backend_d1.py")
+SERVED = r"D:\models\LiquidAI\d1-2B-GGUF\d1-2B-Q4_K_M.gguf"
 
 
-# ── the renderers ───────────────────────────────────────────────────────────
+class _Resp:
+    def __init__(self, status: int = 200, body: dict | None = None) -> None:
+        self.status_code = status
+        self._body = body or {}
 
-def test_choice_renders_coded_options_with_descriptions():
-    """Each option renders as `{code} {text}`; the code carries the answer,
-    the declared description carries the meaning (prompt.py _option_line,
-    desc style)."""
-    crit = {"pass": "The step did its part", "veto": "Must not run"}
-    out = D1Backend._question_choice("a state", "Did it work?", crit,
-                                     ["pass", "veto"])
-    assert "A The step did its part" in out
-    assert "B Must not run" in out
-    assert "Reply with the option code only." in out
-    assert "QUESTION:\nDid it work?" in out
+    def json(self) -> dict:
+        return self._body
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
-def test_choice_renders_the_label_as_text_when_no_description():
-    """No declared description: the label with underscores as spaces is the
-    text (prompt.py: `desc or label.replace("_", " ")`)."""
-    out = D1Backend._question_choice("s", "q", {}, ["read_file", "edit_file"])
-    assert "A read file" in out
-    assert "B edit file" in out
+class _Client:
+    """A pooled-client stand-in: records every POST, answers from a map."""
+
+    def __init__(self, answers=None, status: int = 200,
+                 modalities=("text", "decisions")) -> None:
+        self.answers = answers or {}
+        self.status = status
+        self.modalities = list(modalities)
+        self.posts: list[tuple[str, dict]] = []
+
+    def get(self, url, timeout=None):
+        model = {
+            "id": SERVED,
+            "architecture": {"output_modalities": self.modalities},
+        }
+        return _Resp(200, {"data": [model]})
+
+    def post(self, url, json=None, timeout=None):
+        self.posts.append((url, json or {}))
+        if self.status != 200:
+            return _Resp(self.status, {})
+        return _Resp(200, {"answers": self.answers})
 
 
-def test_noul_renders_the_yes_no_criteria_lines():
-    """The declaration's true/false descriptions render as the reference's
-    Yes:/No: lines — evidence the model was trained to read."""
-    crit = {"true": "The task is finished", "false": "The task needs work"}
-    out = D1Backend._question_noul("a state", "Is it done?", crit)
-    assert "Is it done?" in out
-    assert "Yes: The task is finished" in out
-    assert "No: The task needs work" in out
-    assert "Reply with yes or no only." in out
+@pytest.fixture()
+def wire(monkeypatch):
+    """Install a fake client and hand back (backend, client)."""
+    def _install(answers=None, status: int = 200, modalities=("text", "decisions")):
+        client = _Client(answers=answers, status=status, modalities=modalities)
+        monkeypatch.setattr(d1mod, "_pooled", lambda: client)
+        return D1Backend(), client
+
+    return _install
 
 
-def test_noul_without_criteria_renders_the_bare_instruction():
-    out = D1Backend._question_noul("a state", "Is it done?", None)
-    assert "Yes:" not in out and "No:" not in out
-    assert "Reply with yes or no only." in out
+# ── the build test ──────────────────────────────────────────────────────────
+
+def test_the_served_build_is_recognised_by_token():
+    """One shared test for every site that must accept the live d1 release:
+    main.py's boot refusal, the backend's /v1/models check, the server cmd and
+    the eval preflight all read this."""
+    assert is_d1_build(SERVED)
+    assert is_d1_build(r"C:\models\d1-3B-AD-Q4_K_M.gguf")
+    assert not is_d1_build(r"C:\models\LFM2.5-2.6B-Q4_K_M.gguf")
+    assert not is_d1_build("")
 
 
-def test_state_block_matches_the_reference_newlines():
-    """prompt.py state_block: a string renders as itself + TWO newlines, and
-    QUESTION: follows directly (the retired shape added a third)."""
-    out = D1Backend._question_noul("a state", "Is it done?")
-    assert "a state\n\nQUESTION:\nIs it done?" in out
+# ── the request ────────────────────────────────────────────────────────────
 
-
-# ── the prompt wrapper and the transport ────────────────────────────────────
-
-def test_the_prompt_is_the_manual_im_start_shape():
-    """prompt.py prefix_text + suffix_text: BOS, user turn, im_end, assistant
-    header — no chat template, no system turn."""
-    got = D1Backend._decision_prompt("body text")
-    assert got == ("<|startoftext|><|im_start|>user\nbody text"
-                   "<|im_end|>\n<|im_start|>assistant\n")
-
-
-def test_the_transport_is_raw_completion():
-    src = _BACKEND_SRC.read_text(encoding="utf-8")
-    assert "{_server_port()}/completion" in src
-    # No POST to the chat route (the bare string stays in _extract_logprobs's
-    # docstring, which documents BOTH llama.cpp response shapes it parses).
-    assert "{_server_port()}/v1/chat/completions" not in src, (
-        "the chat-completions transport applies the server's chat template - "
-        "the reference builds its own markup")
-
-
-def test_images_ride_the_completion_image_data_field():
-    """The declared images become /completion image_data entries (base64),
-    never content parts of a chat message."""
-    src = _BACKEND_SRC.read_text(encoding="utf-8")
-    assert '"image_data"' in src
-    assert "_message_content" not in src, "the chat content-parts builder is gone"
-
-
-# ── the letter readout ──────────────────────────────────────────────────────
-
-def test_option_codes_follow_the_reference_rule():
-    assert _option_codes(["A", "B"]) == ["A", "B"]  # native letters
-    assert _option_codes(["read_file", "edit_file"]) == ["A", "B"]
-    assert _option_codes([f"t{i}" for i in range(27)]) == [
-        f"{i:02d}" for i in range(27)]
-
-
-def _backend_with_tokenizer(monkeypatch, table):
-    """Stub /tokenize: `table` maps form -> token id (None = multi-token)."""
-    b = D1Backend()
-    seen: dict = {}
-
-    def fake_single(form):
-        if form in table:
-            return table[form]
-        seen.setdefault(form, 0)
-        seen[form] += 1
-        return 1000 + len(seen)  # distinct single tokens for unknown forms
-
-    monkeypatch.setattr(b, "_single_token_id", fake_single)
-    return b
-
-
-def test_letter_readout_pools_the_code_with_its_space_form(monkeypatch):
-    b = _backend_with_tokenizer(monkeypatch, {"A": 10, " A": 11,
-                                              "B": 12, " B": 13})
-    got = b._letter_readout(["read_file", "edit_file"])
+def test_choice_sends_one_typed_question_with_the_menu_descriptions(wire):
+    """A choice question carries label -> description (the per-turn menu
+    text), the consumer's instruction, and the state once."""
+    b, client = wire({"q": {
+        "type": "choice", "choice": "read_file",
+        "probabilities": {"read_file": 0.9, "NONE": 0.1}, "confidence": 0.9,
+    }})
+    state = OracleState(
+        job="route", fields=("goal",), text="goal: read the engine",
+        budget_ids=384,
+        option_criteria=(("read_file", "Read a file not read in this step"),
+                         ("NONE", "No tool")),
+    )
+    got = b.decide("tool_choice", ["read_file", "NONE"], state)
     assert got is not None
-    plan, width = got
-    assert width == 1, "the answer slot is ONE position"
-    assert plan["read_file"] == ((10, 11),)
-    assert plan["edit_file"] == ((12, 13),)
+    url, body = client.posts[-1]
+    assert url.endswith("/v1/systemone")
+    assert body["state"] == "goal: read the engine"
+    q = body["questions"]["q"]
+    assert q["type"] == "choice"
+    assert q["criteria"] == {
+        "read_file": "Read a file not read in this step", "NONE": "No tool"}
+    assert q["instructions"]
 
 
-def test_letter_readout_falls_back_when_codes_collide(monkeypatch):
-    """Two options whose codes tokenize to the SAME id: the fallback pool
-    must separate them (reference aliases)."""
-    b = _backend_with_tokenizer(monkeypatch, {"A": 10, " A": 10,
-                                              "B": 10, " B": 10})
-    got = b._letter_readout(["alpha", "beta"])
-    assert got is not None
-    plan, _ = got
-    ids = {plan["alpha"][0][0], plan["beta"][0][0]}
-    assert len(ids) == 2, "colliding codes must be separated by the pool"
+def test_choice_without_descriptions_falls_back_to_the_label_text(wire):
+    b, client = wire({"q": {
+        "type": "choice", "choice": "edit_file",
+        "probabilities": {"edit_file": 0.8, "read_file": 0.2},
+        "confidence": 0.8,
+    }})
+    b.decide("tool_choice", ["read_file", "edit_file"], {"goal": "g"})
+    q = client.posts[-1][1]["questions"]["q"]
+    assert q["criteria"] == {"read_file": "read file", "edit_file": "edit file"}
 
 
-def test_letter_readout_fails_closed_when_no_code_exists(monkeypatch):
-    b = D1Backend()
+def test_a_long_option_description_is_capped_but_the_name_is_not(wire):
+    """The native API generates ZERO tokens, so the decision latency is the
+    prefill of the prompt the server renders. The criteria block is the bulk
+    of it: the 27-tool menu was 1619 tokens / 177 ms with the full tool
+    documentation and 703 tokens / 82 ms with each option's text capped
+    (measured 2026-11-01, RTX 3070).
 
-    def always_none(form):
-        return None
+    The cap is on the TEXT only. The option NAME is never shortened, so the
+    answer still names a real option. The cap also IMPROVES the pick: with
+    the full documentation the model chose a self-improvement tool for 13 of
+    30 research tasks; capped it chose the research tool (family-correct
+    29/30 against 17/30)."""
+    b, client = wire({"q": {
+        "type": "choice", "choice": "read_file",
+        "probabilities": {"read_file": 0.9, "NONE": 0.1}, "confidence": 0.9,
+    }})
+    long_text = "Locate a GUI element on the user's LIVE SCREEN by description. " \
+                "ONLY use when the task requires SEEING what is on the screen. " \
+                "Do NOT use it to retrieve data that earlier steps collected."
+    state = OracleState(
+        job="route", fields=("goal",), text="goal: read the engine",
+        budget_ids=384,
+        option_criteria=(("read_file", long_text), ("NONE", "No tool")),
+    )
+    b.decide("tool_choice", ["read_file", "NONE"], state)
+    q = client.posts[-1][1]["questions"]["q"]
+    text = q["criteria"]["read_file"]
+    assert len(text) <= 120, "the option text must be capped (%d chars)" % len(text)
+    assert text.endswith("…")
+    assert "read_file" in q["criteria"], "the option NAME is never shortened"
+    assert long_text[:40] in text, "the cap keeps the FIRST part of the text"
 
-    monkeypatch.setattr(b, "_single_token_id", always_none)
-    assert b._letter_readout(["alpha", "beta"]) is None
+
+def test_noul_sends_only_the_declared_yes_no_text(wire):
+    """The call site owns the v7 question (surface_shadow passes it); the
+    declaration owns the Yes:/No: descriptions. The server's template adds
+    the prefixes, so ours must be stripped."""
+    b, client = wire({"q": {"type": "noul", "noul": 0.7}})
+    instruction = (
+        "Does this step take an ACTION in the project - read, write, edit, "
+        "create, implement, fix, run, search or browse - or does it only give "
+        "an ANSWER from what is already known?"
+    )
+    b.decide("needs_action", ["yes", "no"], {"goal": "Read main.py"},
+             instruction=instruction)
+    q = client.posts[-1][1]["questions"]["q"]
+    assert q["type"] == "noul"
+    assert q["instructions"] == instruction
+    assert set(q["criteria"]) == {"true", "false"}
+    for text in q["criteria"].values():
+        assert not text.lower().startswith(("yes:", "no:")), text
 
 
-# ── the row-level identity carries the readout ─────────────────────────────
+def test_images_ride_the_images_field_as_data_uris(wire):
+    b, client = wire({"q": {
+        "type": "choice", "choice": "safe",
+        "probabilities": {"safe": 0.95, "unsafe": 0.05}, "confidence": 0.95,
+    }})
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+    frame = OracleState(job="guard", fields=("goal",), text="goal: click",
+                        budget_ids=128, images=(png,))
+    b.decide("click_safety", ["safe", "unsafe"], frame)
+    body = client.posts[-1][1]
+    assert body["images"] == [
+        "data:image/png;base64," + base64.b64encode(png).decode("ascii")]
 
-def test_model_id_carries_the_readout_tag():
-    """The report scopes rows by this string: a readout change must
-    re-identify the backend so old rows fail closed into other_backend
-    instead of blending (AC25.8)."""
-    b = D1Backend()
-    assert b.model_id == f"{b.backend_id}+letters"
-    assert de.CURRENT_READOUT_MODE == "letters"
+
+# ── the answer mapping ─────────────────────────────────────────────────────
+
+def test_choice_answer_becomes_a_distribution_in_menu_order(wire):
+    b, _ = wire({"q": {
+        "type": "choice", "choice": "B",
+        "probabilities": {"A": 0.25, "B": 0.6, "C": 0.15}, "confidence": 0.6,
+    }})
+    got = b.decide("tool_choice", ["A", "B", "C"], {"goal": "g"})
+    assert got.consumer_id == "tool_choice"
+    assert got.chosen == "B"
+    assert got.confidence == pytest.approx(0.6)
+    assert [c.name for c in got.distribution] == ["A", "B", "C"]
+    assert [c.prob for c in got.distribution] == pytest.approx([0.25, 0.6, 0.15])
+    assert got.engine_latency_ms is not None
 
 
-# ── AC1.6: an undeclared consumer still scores nothing ─────────────────────
+def test_noul_answer_keeps_p_true_as_the_yes_probability(wire):
+    """The engine reads P(true) by NAME from the distribution: a noul row
+    stores the chosen answer's confidence, and the raw P(true) stays on the
+    'yes' candidate."""
+    b, _ = wire({"q": {"type": "noul", "noul": 0.2}})
+    got = b.decide("needs_action", ["yes", "no"], {"goal": "g"})
+    assert got.chosen == "no"
+    assert got.confidence == pytest.approx(0.8)
+    by_name = {c.name: c.prob for c in got.distribution}
+    assert by_name["yes"] == pytest.approx(0.2)
+    assert by_name["no"] == pytest.approx(0.8)
 
-def test_undeclared_consumer_is_refused_before_scoring(monkeypatch):
-    b = D1Backend()
-    b._loaded = True
-    monkeypatch.setattr(b, "_serves_d1", lambda force=False: (True, ""))
-    assert b.decide("never_declared", ["a", "b"], {"goal": "x"}) is None
+
+def test_score_answer_maps_its_levels(wire):
+    """No consumer declares `score` today; the mapping is pinned against the
+    live answer shape (digits keyed into probabilities, a float median)."""
+    got = D1Backend._score_from_answer(
+        "any", "score", ["low", "medium", "high"],
+        {"type": "score", "score": 1.0,
+         "legend": {"0": "low", "1": "medium", "2": "high"},
+         "probabilities": {"0": 0.2, "1": 0.7, "2": 0.1},
+         "confidence": 0.7},
+        12,
+    )
+    assert got.chosen == "medium"
+    assert got.confidence == pytest.approx(0.7)
+    assert [c.prob for c in got.distribution] == pytest.approx([0.2, 0.7, 0.1])
+
+
+# ── fail-closed paths ──────────────────────────────────────────────────────
+
+def test_undeclared_consumer_is_refused_before_any_request(wire):
+    b, client = wire({"q": {"type": "noul", "noul": 0.9}})
+    assert b.decide("never_declared", ["yes", "no"], {"goal": "g"}) is None
+    assert client.posts == []
+
+
+def test_a_noul_consumer_offered_a_non_binary_pair_is_refused(wire):
+    b, client = wire({"q": {"type": "noul", "noul": 0.9}})
+    assert b.decide("needs_action", ["yes", "maybe"], {"goal": "g"}) is None
+    assert client.posts == []
+
+
+def test_a_missing_native_endpoint_fails_closed(wire):
+    b, client = wire(status=404)
+    assert b.decide("tool_choice", ["A", "B"], {"goal": "g"}) is None
+    assert client.posts, "the call must have been attempted"
+
+
+def test_a_malformed_answer_fails_closed(wire):
+    b, _ = wire({"q": {"type": "choice", "choice": "A"}})
+    assert b.decide("tool_choice", ["A", "B"], {"goal": "g"}) is None
+
+
+def test_a_build_without_decision_metadata_is_not_served(wire):
+    """d1-3B has no Decision Index metadata: /v1/systemone answers 501 for it.
+    The availability check refuses it up front instead of hiding the cause."""
+    b, client = wire(modalities=("text",))
+    assert b.decide("tool_choice", ["A", "B"], {"goal": "g"}) is None
+    assert client.posts == []
+
+
+# ── the identity and the batch seam ────────────────────────────────────────
+
+def test_the_row_identity_names_the_native_readout(wire):
+    b, _ = wire({"q": {"type": "noul", "noul": 0.9}})
+    assert b.load()
+    assert b.backend_id == "d1-2b-q4_k_m"
+    assert b.model_id == "d1-2b-q4_k_m+systemone"
+    assert de.CURRENT_READOUT_MODE == "systemone"
+
+
+def test_batch_answers_each_question_at_its_own_key(wire):
+    b, client = wire({
+        "q0": {"type": "noul", "noul": 0.9},
+        "q1": {"type": "choice", "choice": "B",
+               "probabilities": {"A": 0.1, "B": 0.9}, "confidence": 0.9},
+    })
+    out = b.decide_batch("shared state", [
+        ("needs_action", ["yes", "no"], "Does it act?"),
+        ("tool_choice", ["A", "B"], "Which?"),
+    ])
+    assert len(out) == 2
+    assert out[0].chosen == "yes"
+    assert out[1].chosen == "B"
+    body = client.posts[-1][1]
+    assert body["state"] == "shared state"
+    assert set(body["questions"]) == {"q0", "q1"}

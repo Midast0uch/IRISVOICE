@@ -133,6 +133,9 @@ private:
 
     // Encryption
     unsigned char encryption_key_[32] = {0};
+    // The key as the caller supplied it (64 hex chars). SQLCipher's RAW form is
+    // PRAGMA key = "x'<hex>'" built from this string, not the decoded bytes.
+    std::string key_hex_;
     bool has_key_ = false;
 };
 

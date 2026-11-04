@@ -142,6 +142,10 @@ class MemoryConfig:
     # Database settings (CRITICAL - requires restart)
     db_path: str = "data/memory.db"
     encryption_enabled: bool = True
+    # Where the memory key comes from: "keychain" (development, default) or
+    # "launcher" (release: IRIS_MEMORY_PASSPHRASE / dashboard unlock, fail
+    # closed). Read by backend/core/biometric.memory_key_source().
+    key_source: str = "keychain"
     cipher_page_size: int = 4096
     kdf_iterations: int = 64000
     wal_mode: bool = True

@@ -105,8 +105,12 @@ class DiagnosticsManager:
                     (time.time() - start) * 1000,
                 )
 
-            # Open read-only first to test connection
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)
+            # Open read-only first to test connection. The store may be
+            # ENCRYPTED, which plain sqlite3 cannot read at all ("file is not
+            # a database"): the helper picks the reader from the file header.
+            from backend.memory.db import open_store_read_only
+
+            conn = open_store_read_only(str(db_path))
             try:
                 cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
                 table = cursor.fetchone()

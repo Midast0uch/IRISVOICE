@@ -180,6 +180,38 @@ def _monitor_statement(objective: str, completed_items, n: int = 4) -> str:
     return "\n".join(lines)[:_MONITOR_STATEMENT_CHARS]
 
 
+def _surface_input_key(consumer_id: str, statement: str, frame: dict) -> str:
+    """The dedupe key for a surface row: one row per distinct INPUT."""
+    try:
+        from backend.agent.surface_shadow import input_key
+
+        return input_key(consumer_id, statement, frame)
+    except Exception:  # noqa: BLE001 - the key is best-effort
+        return ""
+
+
+def _presentation_input_key(frame: dict, response: str = "") -> str:
+    """The dedupe key for a `presentation` row: one row per distinct INPUT.
+
+    The report's honest dedupe key (docs/architecture/oracle.md 6.1 rule 1).
+    Without it the ledger key (consumer, engine, confidence, chosen,
+    reference, correct) collapses DIFFERENT replies that the quantized engine
+    answered with the same confidence: measured 2026-11-03, 853 raw
+    presentation rows counted as 11 distinct, so the consumer could never
+    reach the 100-row bar.
+
+    The INPUT is the REPLY the shape decision was scored on. The frame holds
+    only the reply's length bucket and its structure flags, so the frame
+    alone gives a handful of keys; the reply text gives one per reply.
+    """
+    try:
+        from backend.agent.surface_shadow import input_key
+
+        return input_key("presentation", response or "", frame)
+    except Exception:  # noqa: BLE001 - the key is best-effort
+        return ""
+
+
 def _der_physics_settle(owner, session_id: str) -> None:
     """Fold-back point of the physics side lane.
 
@@ -971,22 +1003,71 @@ def _recent_user_turn_texts(db, current_text: str = "", limit: int = 8):
     return out
 
 
-def _dedupe_fact_lines(lines, against=None):
-    """Keep NEWEST-first facts, dropping an older statement of the SAME fact.
+def _same_fact_unit(a: str, b: str, threshold: float = 0.8) -> bool:
+    """Same statement restated, by identity OR by near-identical wording.
 
-    The recent-facts leg is newest-first; `_same_fact_text` decides whether two
-    statements are the same attribute with a different value. Without this,
-    BT-W10-2's prompt carried both alpha and bravo and the model picked alpha.
+    `_same_fact_text` only recognises a few shapes ("my X is Y"); a taught fact
+    phrased "Remember this for later: I prefer the color fern-alpha-... for
+    status indicators" is NOT matched by it (measured 2026-10-31), yet the two
+    variants share 0.89 of their tokens. High token overlap catches the restated
+    fact without merging genuinely different facts (a different attribute shares
+    far fewer tokens).
     """
     try:
         from backend.memory.episodic import _same_fact_text
-    except Exception:  # noqa: BLE001 - no identity, no dedupe
-        return list(lines)
+
+        if _same_fact_text(a, b):
+            return True
+    except Exception:  # noqa: BLE001 - fall through to the overlap test
+        pass
+    ta = set(re.findall(r"[a-z0-9_]+", str(a or "").lower()))
+    tb = set(re.findall(r"[a-z0-9_]+", str(b or "").lower()))
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / len(ta | tb) >= threshold
+
+
+def _dedupe_fact_rows(rows):
+    """rows = [(text, timestamp)]. Keep only the NEWEST statement of one fact.
+
+    Score order is not time order: a cross-session chunk recall returns the best
+    match first, and two statements of the same attribute with different values
+    ("...prefer the color fern-alpha..." / "...fern-bravo...") both match. The
+    model then picked either one (BT-W10-2, 2026-10-31). Sorting by the row's
+    timestamp and keeping the first of each same-fact group makes the newest the
+    only one that reaches the prompt.
+    """
+    try:
+        from backend.memory.episodic import _same_fact_text  # noqa: F401
+    except Exception:  # noqa: BLE001 - the overlap test below still works
+        pass
+    ordered = sorted(rows, key=lambda r: str(r[1] or ""), reverse=True)
+    kept: list = []
+    out: list = []
+    for text, _ts in ordered:
+        unit = _fact_line(text)
+        if any(_same_fact_unit(unit, k) for k in kept):
+            continue
+        kept.append(unit)
+        out.append(text)
+    return out
+
+
+def _dedupe_fact_lines(lines, against=None):
+    """Keep NEWEST-first facts, dropping an older statement of the SAME fact.
+
+    The recent-facts leg is newest-first. `_same_fact_unit` decides identity:
+    `_same_fact_text` shapes OR a high token overlap. The shape test alone did
+    NOT catch a taught fact ("...prefer the color fern-alpha-... for status
+    indicators" vs the bravo wording), so both reached the prompt and the model
+    picked the older one (BT-W10-2, 2026-10-31, after the chunk leg was already
+    deduped).
+    """
     kept = [_fact_line(x) for x in (against or [])]
     out = []
     for ln in lines:
         u = _fact_line(ln)
-        if any(_same_fact_text(u, k) for k in kept):
+        if any(_same_fact_unit(u, k) for k in kept):
             continue
         out.append(ln)
         kept.append(u)
@@ -1760,6 +1841,8 @@ class AgentKernel:
         # Reset at the start of each turn (process_text_message /
         # _execute_plan_der) and set when an external tool runs.
         self._turn_touched_external: bool = False
+        # D3 (2026-10-31): set at the top of every turn (process_text_message).
+        self._turn_started_monotonic: float = 0.0
 
         # â”€â”€ DER Loop components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
@@ -2688,6 +2771,17 @@ class AgentKernel:
         # Row order: "gemma2" (above) and "gemma4" do not collide -- first match
         # wins on a substring test, and neither string contains the other.
         ("local", "gemma4", 262_144),
+        # OpenCode Zen (opencodego). The live /models endpoint 403s, so the
+        # window was MEASURED instead of guessed: deepseek-v4.1-flash accepted
+        # a 720k-token prompt (2026-11-03) and OpenRouter lists 1048576 for
+        # the same model id. 128k is the value recorded here on purpose: the
+        # rule of this table is "under-sizing is safe, over-sizing is the
+        # bug" (the budget is window*0.75, so a too-high window over-commits
+        # the prompt). 128k is 15x the 8192 default that every opencodego
+        # model fell through to before this row, and it ends the message
+        # dropping that the 8192 budget caused ("prompt over the window:
+        # window=8192 budget=3840 dropped_messages=6").
+        ("opencodego", "", 128_000),
     ]
 
     # Known vision-capable API models. Keyed (provider_id, model_substring),
@@ -4225,7 +4319,7 @@ class AgentKernel:
                 # reach this one. Bounded to trusted user chunks; the session
                 # recall above still leads and duplicates are dropped.
                 try:
-                    _x_chunks323 = (
+                    _x_rows323 = (
                         self._memory_interface.episodic.retrieve_context_chunks(
                             query=text,
                             session_id=None,
@@ -4233,9 +4327,17 @@ class AgentKernel:
                             min_similarity=0.45,
                             chunk_types=["context_fragment"],
                             zones=["trusted"],
+                            with_meta=True,
                         )
                         or []
                     )
+                    # Newest statement of one fact only (BT-W10-2): the leg is
+                    # score-ordered, and both values of a restated fact match.
+                    _x_chunks323 = _dedupe_fact_rows([
+                        (str(_r.get("content") or ""), str(_r.get("timestamp") or ""))
+                        if isinstance(_r, dict) else (str(_r), "")
+                        for _r in _x_rows323
+                    ])
                 except Exception as _x_exc:  # noqa: BLE001 - never blocks a turn
                     logger.debug("[AgentKernel] cross-session memory skipped: %s", _x_exc)
                     _x_chunks323 = []
@@ -4578,7 +4680,20 @@ class AgentKernel:
 
         Returns: response text string.
         """
+        # The previous turn's rows (chain + chunks) may still be queued on the
+        # one writer; this assembly READS them to decide what the model sees, so
+        # drain first (bounded). Measured 2026-10-31: without it the newest
+        # taught fact was invisible to the next turn.
+        try:
+            from backend.memory.db import app_flush
+
+            app_flush(2.0)
+        except Exception:  # noqa: BLE001 - assembly still runs on settled rows
+            pass
+        _t_assemble = time.perf_counter()
         messages = self._assemble_direct_context(text, context, session_id=session_id)
+        logger.info("[Timing] assemble_direct: %.0f ms",
+                    (time.perf_counter() - _t_assemble) * 1000)
         # OBSERVABILITY (2026-10-29, T48): name the path that answered and how
         # much memory reached it. Without this line a pass/fail cannot be
         # attributed to a layer - the memory gate was read three times against
@@ -4738,14 +4853,18 @@ class AgentKernel:
                     except Exception:  # noqa: BLE001 - a shadow never needs context
                         _prev = []
                     _hist = "; ".join(_prev[-6:])[-400:]
-                    # tc-frame-v6: the tools' decision lines as option text
-                    try:
-                        from backend.agent.tool_registry import oracle_hint as _ohint
-
-                        _hints = {n: _ohint(n, d) for n, d in _crit.items() if n}
-                        _hints.update({n: _ohint(n) for n in ("DELEGATE", "NONE")})
-                    except Exception:  # noqa: BLE001
-                        _hints = dict(_crit)
+                    # tc-frame-v10 (2026-11-04): the option text is the BARE
+                    # tool name. MEASURED by replay on the active engine
+                    # (1200 recorded tc-frame-v8 states, the same rows for
+                    # both variants): the tools' decision lines measured
+                    # oof AUROC 0.6569 and the bare names 0.6955, with
+                    # monotonic confidence bands in both cases. The
+                    # instruction carries the question; the option text must
+                    # not argue for a tool (the same lesson as the
+                    # review_verdict v9 criteria and the tool_choice control
+                    # labels, oracle.md 7.6).
+                    _hints = {n: n for n in _offered}
+                    _hints.update({n: n for n in ("DELEGATE", "NONE")})
                     self._get_tool_box().record_shadow_tool_choice(
                         goal=text,
                         observed_tool=_name,
@@ -5846,6 +5965,41 @@ class AgentKernel:
 
         display = strip_leading_answer_marker(display or "")
         self._last_spoken_text = strip_leading_answer_marker((spoken or "").strip())
+        # D3 (2026-10-31): a memory deletion is only true when a tool performed
+        # it this turn. The measured failure: "Done - I've wiped your locker
+        # code from memory" with the pin still in the store and no tool event.
+        # The guard corrects the display text AND the spoken line, so the user
+        # never hears a deletion that did not happen.
+        try:
+            from backend.agent.artifact_policy import (
+                enforce_memory_deletion_claims,
+            )
+
+            _bridge = getattr(self, "_tool_bridge", None)
+            _delete_ran = bool(
+                _bridge is not None
+                and _bridge.forget_ran_since(
+                    getattr(self, "_turn_session_id", None) or "",
+                    getattr(self, "_turn_started_monotonic", 0.0),
+                )
+            )
+            _display_fixed, _spoken_fixed, _claims = (
+                enforce_memory_deletion_claims(
+                    display,
+                    self._last_spoken_text,
+                    delete_ran=_delete_ran,
+                )
+            )
+            if _claims:
+                logger.warning(
+                    "[ClaimGuard] turn %s claimed a memory deletion no tool "
+                    "performed; rewrote %d sentence(s)",
+                    getattr(self, "_turn_session_id", None),
+                    _claims,
+                )
+                display, self._last_spoken_text = _display_fixed, _spoken_fixed
+        except Exception as _claim_exc:  # noqa: BLE001 — never block a reply
+            logger.debug("[ClaimGuard] skipped: %s", _claim_exc)
         if display or self._last_spoken_text:
             # Taxonomy DELIVERY: the reply reached the user (lengths only, never the text).
             _emit_event(
@@ -9401,6 +9555,10 @@ class AgentKernel:
         # (this WebSocket) is what tool calls must run under - see
         # _respond_direct. The DER path already receives it as a parameter.
         self._turn_session_id = session_id
+        # D3 (2026-10-31): the turn's monotonic start. The reply exit accepts a
+        # memory-deletion claim only against a `forget` tool event after this
+        # stamp, so a previous turn's delete can never justify this turn's claim.
+        self._turn_started_monotonic = time.monotonic()
 
         # Resolve conversation_id â€” primary key for per-thread context.
         # getattr guard: a kernel may be constructed without __init__ (test
@@ -17116,6 +17274,14 @@ Respond with a JSON object:
             # declared only `goal`, which this frame never carried). Rows
             # before/after the change are different frames; never blend them.
             "criteria_version": "presentation/shape-v2",
+            # The report's honest dedupe key (docs/architecture/oracle.md 6.1
+            # rule 1): a row counts once per distinct INPUT. Without it the
+            # ledger key (consumer, engine, confidence, chosen, reference,
+            # correct) collapses DIFFERENT replies that the quantized engine
+            # answered with the same confidence: measured 2026-11-03, 853 raw
+            # presentation rows counted as 11 distinct, so the consumer could
+            # never reach the 100-row bar.
+            "input_key": _presentation_input_key(frame, response),
         }
         bridge = getattr(self, "_tool_bridge", None)
         recorder = getattr(bridge, "record_decision", None)
@@ -18423,15 +18589,16 @@ Respond with a JSON object:
                     _crit[_fn["name"]] = _fn.get("description") or ""
         except Exception:  # noqa: BLE001 â€” a shadow never needs context
             _crit = {}
-        # tc-frame-v6: the option lines are the tools' DECISION lines (when to
-        # choose, with the precondition), not the argument-oriented LLM text.
-        try:
-            from backend.agent.tool_registry import oracle_hint as _ohint
-
-            _hints = {n: _ohint(n, _crit.get(n, "")) for n in _offered}
-            _hints.update({n: _ohint(n) for n in ("DELEGATE", "NONE")})
-        except Exception:  # noqa: BLE001 â€” a shadow never needs context
-            _hints = dict(_crit)
+        # tc-frame-v10 (2026-11-04): the option lines are the BARE tool
+        # names. MEASURED by replay on the active engine (1200 recorded
+        # tc-frame-v8 states, the same rows for both variants): the tools'
+        # decision lines measured oof AUROC 0.6569 and the bare names
+        # 0.6955, with monotonic confidence bands in both cases. The
+        # instruction carries the question; the option text must not argue
+        # for a tool (the same lesson as the review_verdict v9 criteria and
+        # the tool_choice control labels, oracle.md 7.6).
+        _hints = {n: n for n in _offered}
+        _hints.update({n: n for n in ("DELEGATE", "NONE")})
 
         # THE STEP'S OWN STATE (tc-frame-v5 / tool_approval v3, 2026-10-11):
         # the hooks read the node's LIVE pre-call state - the calls this step

@@ -46,3 +46,18 @@
 {"at": "2026-10-22T14:42:25+00:00", "consumer": "tool_choice", "gap": "no-error-mass waiver: 2 wrong in 275 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed", "status": "enforced"}
 {"at": "2026-10-24T16:00:55+00:00", "consumer": "review_verdict", "gap": "", "status": "enforced"}
 {"at": "2026-10-24T16:00:55+00:00", "consumer": "tool_approval", "gap": "oof AUROC 0.6372 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "call_closing", "gap": "", "status": "enforced"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "escalate_incomplete", "gap": "enforcement bar unmet (distinct rows 7 < 100); rung live", "status": "sampled"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "needs_action", "gap": "enforcement bar unmet (minority class 4.2% < 5%); rung live", "status": "sampled"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "review_verdict", "gap": "enforcement bar unmet (oof AUROC 0.4851 < 0.65 (confidence does not rank errors)); rung live", "status": "sampled"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "route_v2", "gap": "oof calibrated ECE 0.0641 > 0.05", "status": "shadow"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "tool_choice", "gap": "enforcement bar unmet (distinct rows 1 < 100); rung live", "status": "sampled"}
+{"at": "2026-11-02T09:37:46+00:00", "consumer": "user_feedback", "gap": "distinct rows 96 < 100", "status": "shadow"}
+{"at": "2026-11-02T15:56:38+00:00", "consumer": "call_closing", "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows", "status": "shadow"}
+{"at": "2026-11-02T15:56:38+00:00", "consumer": "depth_met", "gap": "oof AUROC 0.5754 < 0.65 (confidence does not rank errors)", "status": "shadow"}
+{"at": "2026-11-02T15:56:38+00:00", "consumer": "route_v2", "gap": "", "status": "enforced"}
+{"at": "2026-11-03T07:40:57+00:00", "consumer": "event_type:safety", "gap": "distinct rows 1 < 100", "status": "shadow"}
+{"at": "2026-11-03T07:40:57+00:00", "consumer": "narration", "gap": "", "status": "enforced"}
+{"at": "2026-11-03T14:26:31+00:00", "consumer": "tool_choice", "gap": "", "status": "enforced"}
+{"at": "2026-11-03T16:53:41+00:00", "consumer": "user_feedback", "gap": "no-error-mass waiver: 1 wrong in 239 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed", "status": "enforced"}
+{"at": "2026-11-03T22:24:02+00:00", "consumer": "tool_choice", "gap": "enforcement bar unmet (oof AUROC 0.5867 < 0.65 (confidence does not rank errors)); rung live", "status": "sampled"}

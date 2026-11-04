@@ -11,6 +11,7 @@ import logging
 import re
 import uuid
 import math
+import time
 import struct
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
@@ -1323,8 +1324,29 @@ class EpisodicStore:
         # 50 the old path saw. Before, only the newest 200 were scored (research
         # recall: 200 of 1,777 summaries). None = the index is warming or failed:
         # the old path runs.
+        _t_call = time.perf_counter()
+        _t_fts = _t_call
         rows = None
         _kw_ids: set = set()
+        _inner = " AND ".join(where_clauses)
+        # REQ-3 AC2: the exact-word leg is INDEPENDENT of the fingerprint index.
+        # It used to run only inside the reach branch, so while the reach index
+        # was warming (or absent — a fresh store, a test fixture) an exact name,
+        # path or error string was dropped even though FTS had it. Measured by
+        # test_memory_chunk_fts_contract.py::test_exact_words_reach_a_row_the_fingerprint_cannot.
+        try:
+            from backend.agent import write_counters
+            from backend.memory import chunk_fts
+
+            _kw = chunk_fts.search(
+                self.db, query, session_id=session_id,
+                chunk_types=chunk_types, zones=zones,
+            )
+            _kw_ids = {int(r) for r in (_kw or [])}
+            _t_fts = time.perf_counter()
+        except Exception as _kw_exc:  # noqa: BLE001 - AC4: meaning only
+            logger.debug("[EpisodicStore] keyword candidates skipped: %s", _kw_exc)
+
         try:
             from backend.memory import recall_reach
 
@@ -1339,14 +1361,6 @@ class EpisodicStore:
                 # this only decides WHICH rows are scored.
                 _union: List[int] = [int(r) for r in _near]
                 try:
-                    from backend.agent import write_counters
-                    from backend.memory import chunk_fts
-
-                    _kw = chunk_fts.search(
-                        self.db, query, session_id=session_id,
-                        chunk_types=chunk_types, zones=zones,
-                    )
-                    _kw_ids = {int(r) for r in (_kw or [])}
                     _new = [r for r in _kw_ids if r not in set(_union)]
                     if _new:
                         write_counters.bump("memory.keyword.new_candidates", len(_new))
@@ -1369,7 +1383,6 @@ class EpisodicStore:
                 _rowid_order = list(dict.fromkeys(_floor + _union))
 
                 # REQ-12 AC6 Phase 1: metadata + vectors, never `content`.
-                _inner = " AND ".join(where_clauses)
                 rows = []
                 _seen_rowids: set = set()
                 for _part in range(0, len(_rowid_order), 500):
@@ -1393,10 +1406,22 @@ class EpisodicStore:
                     f"{where_sql} ORDER BY timestamp DESC LIMIT 200",
                     params_list,
                 ).fetchall()
+                # REQ-3 AC2: the exact-word rows join the FALLBACK candidate set
+                # too, so a cold/absent fingerprint index cannot drop them.
+                _known = {int(r[_C_ROWID]) for r in rows}
+                _extra = [r for r in _kw_ids if r not in _known]
+                for _part in range(0, len(_extra), 500):
+                    _ids = _extra[_part:_part + 500]
+                    rows.extend(self.db.execute(
+                        f"SELECT {_cols} FROM context_chunks "
+                        f"WHERE rowid IN ({','.join('?' * len(_ids))}) AND {_inner}",
+                        _ids + params_list,
+                    ).fetchall())
             except Exception as e:
                 logger.warning(f"[EpisodicStore] chunk retrieve error: {e}")
                 return []
 
+        _t_fetch = time.perf_counter()
         import datetime as _dt
 
         now_utc = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
@@ -1491,17 +1516,6 @@ class EpisodicStore:
                 continue
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        # REQ-3 AC2: at most ONE slot is reserved for a keyword hit. The old
-        # `scored = _kw_rows + _rest` put up to 50 FTS OR-hits ahead of every
-        # semantic candidate, so 6+ BM25 matches with sim >= 0.25 filled the
-        # whole limit window and evicted the real answers.
-        if limit and _kw_ids and len(scored) >= limit:
-            if not ({x[2] for x in scored[:limit]} & _kw_ids):
-                _kw_survivors = [x for x in scored if _is_kw.get(x[2])]
-                if _kw_survivors:
-                    # positional, deliberately NOT re-sorted: the guarantee is
-                    # that the last slot carries the best keyword hit.
-                    scored[limit - 1] = _kw_survivors[0]
         _shadow_trust_rank(scored, zone_of, limit)
 
         # REQ-7: the memory-native rank (trust, claim evidence, helped/misled,
@@ -1517,6 +1531,21 @@ class EpisodicStore:
                                    session_id=session_id, query=query)
         except Exception as _mr_exc:  # noqa: BLE001 - a rank never blocks retrieval
             logger.debug("[EpisodicStore] memory rank skipped: %s", _mr_exc)
+
+        # REQ-3 AC2: at most ONE slot is reserved for a keyword hit, applied
+        # AFTER the live rank. memory_rank.LIVE re-sorts `scored` by its own
+        # weights, so a slot reserved before it was silently lost (measured
+        # 2026-10-31 by test_exact_words_reach_a_row_the_fingerprint_cannot).
+        # The old `scored = _kw_rows + _rest` put up to 50 FTS OR-hits ahead of
+        # every semantic candidate, so 6+ BM25 matches filled the whole window
+        # and evicted the real answers; this keeps exactly one.
+        if limit and _kw_ids and len(scored) >= limit:
+            if not any(_is_kw.get(x[2]) for x in scored[:limit]):
+                _kw_survivors = [x for x in scored if _is_kw.get(x[2])]
+                if _kw_survivors:
+                    # positional, deliberately NOT re-sorted: the guarantee is
+                    # that the last slot carries the best keyword hit.
+                    scored[limit - 1] = _kw_survivors[0]
 
         top = scored[:limit]
 
@@ -1566,7 +1595,6 @@ class EpisodicStore:
             top = _kept
 
         results = [content for _, content, _ in top]
-
         if with_meta:
             # The consumer decides what to trust: the producer taxonomy is
             # returned with the text, so the prompt can say "your earlier
@@ -1585,6 +1613,9 @@ class EpisodicStore:
                     "chunk_type": (_meta_of.get(cid) or ("", None))[0],
                     "producer": _producer(cid),
                     "score": float(score),
+                    # When the row was written: a caller that must choose between
+                    # two statements of one fact keeps the newest (BT-W10-2).
+                    "timestamp": str((_rank_info.get(cid) or {}).get("timestamp") or ""),
                 }
                 for score, content, cid in top
             ]
@@ -1630,7 +1661,10 @@ class EpisodicStore:
 
         logger.debug(
             f"[EpisodicStore] retrieve_context_chunks: {len(results)}/{len(rows)} "
-            f"chunks (sim>={min_similarity}) for query={query[:40]!r}"
+            f"chunks (sim>={min_similarity}) for query={query[:40]!r} "
+            f"in {(time.perf_counter() - _t_call) * 1000:.0f} ms "
+            f"(fts={( _t_fts - _t_call) * 1000:.0f} fetch={(_t_fetch - _t_fts) * 1000:.0f} "
+            f"score={(time.perf_counter() - _t_fetch) * 1000:.0f})"
         )
         return results
 

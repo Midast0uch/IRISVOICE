@@ -37,7 +37,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -397,6 +397,10 @@ class UndoBody(BaseModel):
     correction_id: Optional[str] = None
 
 
+class UnlockBody(BaseModel):
+    passphrase: str
+
+
 def _store_conn():
     """The app memory connection every other writer uses (the memory interface's mycelium connection). Tests replace it."""
     from backend.agent.ontology_recall import resolve_mycelium_conn  # noqa: PLC0415 - lazy: the agent package is heavy
@@ -421,3 +425,87 @@ def memory_correct_undo(body: UndoBody):
 @router.get("/corrections")
 def memory_corrections(limit: int = corrections.LIST_LIMIT_DEFAULT):
     return _serve("corrections", lambda: corrections.list_corrections(_store_conn(), limit))
+
+
+# ── Memory key: launcher passphrase mode (OFF during development) ───────────
+# Owner decision 2026-10-31: at release the launcher supplies the phrase, and
+# the dashboard is the fallback when the user starts IRIS without it. The key
+# is held in this process only — never written to disk, the keychain or a log.
+
+@router.get("/key-status")
+def memory_key_status():
+    """Whether the store is locked and where its key comes from."""
+    from backend.core.biometric import (
+        memory_is_locked,
+        memory_key_source,
+        session_memory_key,
+    )
+    from backend.memory import get_memory_interface
+
+    return JSONResponse({
+        "key_source": memory_key_source(),
+        "locked": memory_is_locked(),
+        "unlocked": session_memory_key() is not None,
+        "memory_ready": get_memory_interface() is not None,
+    })
+
+
+@router.post("/unlock")
+async def memory_unlock(body: UnlockBody, request: Request):
+    """Derive the key from the passphrase, prove it opens the store, then keep it.
+
+    Only valid in launcher mode. The phrase is verified BEFORE the key enters
+    the process, so a wrong phrase leaves the app exactly as it was (locked).
+    """
+    from backend.core.biometric import (
+        derive_memory_key_from_passphrase,
+        memory_key_source,
+        set_session_memory_key,
+    )
+
+    if memory_key_source() != "launcher":
+        return JSONResponse(
+            {"ok": False, "error": "not in launcher mode"}, status_code=409
+        )
+    phrase = (body.passphrase or "").strip()
+    if not phrase:
+        return JSONResponse(
+            {"ok": False, "error": "passphrase required"}, status_code=400
+        )
+
+    key = derive_memory_key_from_passphrase(phrase)
+    from backend.memory.config import resolve_memory_store_path
+    from backend.memory.db import open_encrypted_memory
+
+    try:
+        conn = open_encrypted_memory(str(resolve_memory_store_path()), key)
+        try:
+            conn.execute("select count(*) from sqlite_master").fetchone()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — a wrong phrase is an expected outcome
+        logger.warning("[memory_api] unlock rejected: the passphrase did not open the store")
+        return JSONResponse(
+            {"ok": False, "error": "wrong passphrase"}, status_code=401
+        )
+
+    set_session_memory_key(key)
+    logger.info("[memory_api] memory unlocked for this process (key held in memory only)")
+
+    # The interface could not start while locked; bring it up now.
+    try:
+        from backend.memory import get_memory_interface, initialise_memory
+
+        if get_memory_interface() is None:
+            kernel = getattr(request.app.state, "agent_kernel", None)
+            adapter = getattr(kernel, "_model_router", None)
+            if adapter is not None:
+                memory = await initialise_memory(adapter=adapter)
+                request.app.state.memory = memory
+                if kernel is not None:
+                    kernel.set_memory_interface(memory)
+    except Exception as exc:  # noqa: BLE001 — the key is valid; report the init
+        logger.warning("[memory_api] memory unlock: store opened but init failed: %s", exc)
+
+    return JSONResponse({"ok": True})
+

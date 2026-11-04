@@ -34,6 +34,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SCREENSHOTS = ROOT / "screenshots"
 LT_DOC = ROOT / "docs" / "LIVE_TEST_VISION_BROWSER_E2E.md"
 
+# The live store is SQLCipher-encrypted: plain sqlite3 cannot read it.
+sys.path.insert(0, str(ROOT))
+from backend.memory.db import open_store_read_only  # noqa: E402
+
 # Battery rows: (id, prompt, assertion focus). Keep small; the harvest gate
 # (AC14.3) extends this over repeated runs.
 BATTERY = [
@@ -47,7 +51,7 @@ BATTERY = [
 def _ledger_rows(db: str, since: str) -> list[dict]:
     if not Path(db).is_file():
         return []
-    con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    con = open_store_read_only(db)
     con.row_factory = sqlite3.Row
     out = []
     try:

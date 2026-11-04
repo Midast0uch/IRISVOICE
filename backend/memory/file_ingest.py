@@ -155,6 +155,94 @@ _EXT_EXTRACTORS: Dict[str, Callable[[bytes, str], Tuple[str, bool]]] = {
     ".xlsx": _extract_xlsx,
 }
 
+# REQ-9 W4 (2026-10-31): audio and video become text through ffmpeg + faster-whisper.
+# Both are checked on first use: a missing binary or model is a counted
+# ExtractionError (the node is still written as a reference), never a crash.
+_MEDIA_EXT = {
+    ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
+    ".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v",
+}
+_WHISPER_MODEL = None
+
+
+def _whisper():
+    """The process-wide Whisper model (loaded once; downloads on first use)."""
+    global _WHISPER_MODEL
+    if _WHISPER_MODEL is None:
+        from faster_whisper import WhisperModel
+
+        _WHISPER_MODEL = WhisperModel(
+            os.environ.get("IRIS_WHISPER_MODEL", "base"),
+            device="cpu",
+            compute_type="int8",
+        )
+        logger.info("[file_ingest] Whisper model loaded (%s)",
+                    os.environ.get("IRIS_WHISPER_MODEL", "base"))
+    return _WHISPER_MODEL
+
+
+def _extract_media(data: bytes, path: str) -> Tuple[str, bool]:
+    """Decode to 16 kHz mono with ffmpeg, then transcribe with faster-whisper."""
+    import subprocess
+    import tempfile
+
+    suffix = Path(path).suffix.lower() or ".bin"
+    with tempfile.TemporaryDirectory(prefix="iris-media-") as tmp:
+        src = os.path.join(tmp, "source" + suffix)
+        wav = os.path.join(tmp, "audio.wav")
+        with open(src, "wb") as handle:
+            handle.write(data)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", src,
+                 "-ac", "1", "-ar", "16000", wav],
+                check=True, capture_output=True, timeout=900,
+            )
+        except FileNotFoundError as exc:
+            raise ExtractionError("ffmpeg is not installed") from exc
+        except subprocess.CalledProcessError as exc:
+            raise ExtractionError(f"ffmpeg could not decode {suffix}") from exc
+        segments, _info = _whisper().transcribe(wav, vad_filter=True, beam_size=1)
+        text = " ".join(s.text.strip() for s in segments if s.text.strip())
+    return text, False
+
+
+for _ext in _MEDIA_EXT:
+    _EXT_EXTRACTORS[_ext] = _extract_media
+
+# REQ-9 W3 (2026-10-31): images (screenshots, scans) become text. RapidOCR runs
+# on the onnxruntime already installed for the decision engine, so there is no
+# system binary and no extra service. A missing/broken engine is a counted
+# ExtractionError like every other extractor.
+_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
+_OCR_ENGINE = None
+
+
+def _ocr():
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        from rapidocr_onnxruntime import RapidOCR
+
+        _OCR_ENGINE = RapidOCR()
+        logger.info("[file_ingest] OCR engine loaded (RapidOCR)")
+    return _OCR_ENGINE
+
+
+def _extract_image(data: bytes, path: str) -> Tuple[str, bool]:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(data)).convert("RGB")
+    result, _elapsed = _ocr()(np.array(image))
+    lines = [str(line[1]) for line in (result or []) if len(line) > 1]
+    return "\n".join(line.strip() for line in lines if line.strip()), False
+
+
+for _ext in _IMAGE_EXT:
+    _EXT_EXTRACTORS[_ext] = _extract_image
+
 
 def _write(conn, sql: str, params=()) -> None:
     """One writer (REQ-9 AC2): the native writer when we own the store."""

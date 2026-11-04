@@ -2,8 +2,9 @@
 
 THE CONTRACT (specs/oracle-native-decision-surface, TG-3)
   * AC2.1 ``decision_identity`` composes the three parts; the retired letter
-    readout is nameable as ``legacy_letters`` so historical rows address a
-    real identity instead of silently matching the native one (T3.1).
+    readout is nameable as ``letters`` (the name the d1-3B rows carry) so
+    historical rows address a real identity instead of silently matching the
+    native one (T3.1).
   * AC2.2 ``EngineConfig.threshold_for`` resolves None on an UNKNOWN identity:
     a readout change and a criteria edit must each kill the threshold (T3.2,
     T3.4). Fail-closed is the default, not a fallback.
@@ -39,14 +40,19 @@ def test_identity_composes_model_readout_and_criteria():
 
 
 def test_the_retired_letter_readout_is_a_nameable_identity():
-    """T3.1: historical rows address a real identity, not a silent match."""
+    """T3.1: historical rows address a real identity, not a silent match.
+
+    2026-11-01: the ACTIVE readout became "systemone" (the native Decision
+    Index API), so the retired era is the one the recorded d1-3B rows
+    actually carry: "letters". No row was ever written as "legacy_letters";
+    that placeholder is gone."""
     legacy = de.decision_identity(
         "d1-x", de.LEGACY_READOUT_MODE, "presentation")
     native = de.decision_identity(
         "d1-x", de.CURRENT_READOUT_MODE, "presentation")
-    assert de.LEGACY_READOUT_MODE == "legacy_letters"
+    assert de.LEGACY_READOUT_MODE == "letters"
     assert legacy != native
-    assert legacy.split("|")[1] == "legacy_letters"
+    assert legacy.split("|")[1] == "letters"
 
 
 def test_backend_identity_without_a_consumer_carries_no_criteria_hash():

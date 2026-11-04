@@ -1845,7 +1845,15 @@ class ToolDecisionBox:
                 # changed in this step; last command result).
                 # v8: + files seen in the last result, + "read N times"
                 # (paging a long file).
-                "criteria_version": "tc-frame-v9",
+                # tc-frame-v10 (2026-11-04) = the SAME v9 frame, with the
+                # Oracle's OPTION TEXT changed to the bare tool names.
+                # MEASURED by replay on the active engine (1200 recorded
+                # tc-frame-v8 states, the same rows for both variants): the
+                # tools' decision lines measured oof AUROC 0.6569 and the
+                # bare names 0.6955, with monotonic confidence bands in both
+                # cases. A question change gets its own stamp, so the new
+                # cohort is clean (oracle.md 6.1 rule 3).
+                "criteria_version": "tc-frame-v10",
                 # The MENU FINGERPRINT: the offered names + their option text.
                 # A tool added or re-described changes it, so evidence measured
                 # on another menu can be told apart (per-tool enforcement

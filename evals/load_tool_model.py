@@ -18,6 +18,7 @@ import json
 import socket
 import sys
 import urllib.request
+from pathlib import Path
 
 D1_PORT = int(__import__("os").environ.get("IRIS_LOCAL_MODEL_PORT", "8082"))
 TOOL_PORT = 8091
@@ -36,7 +37,13 @@ def main() -> int:
         print(f"FAIL: no server on :{D1_PORT} ({exc!r}) — start the backend; "
               f"d1 loads at boot")
         return 1
-    if "d1-3b" not in served.lower():
+    # Run as a script: the repo root is not on sys.path by default.
+    _root = str(Path(__file__).resolve().parents[1])
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from backend.agent.decision_backend_d1 import is_d1_build
+
+    if not is_d1_build(served):
         print(f"FAIL: :{D1_PORT} serves {served!r}, not d1 — the Oracle and "
               f"vision are borrow-only until d1 is loaded (Models card)")
         return 1

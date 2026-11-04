@@ -154,6 +154,46 @@ def _plain_store_connection(db_path) -> "AppStoreConnection":
     return conn
 
 
+_ENC_CONN_FACTORY = None
+
+
+def _encrypted_store_connection_class():
+    """A sqlcipher3 connection that knows its file — same contract as
+    AppStoreConnection.
+
+    A C connection carries no attributes, so the subclass is the only place
+    ``store_path`` can live. Without it ``app_write`` saw no path, wrote on the
+    Python connection while the native writer also wrote, and every memory
+    event failed with "database is locked" (measured 2026-10-31, after the
+    native engine gained SQLCipher support and actually became the writer).
+    """
+    global _ENC_CONN_FACTORY
+    if _ENC_CONN_FACTORY is None:
+        import sqlcipher3
+
+        class _EncStoreConnection(sqlcipher3.Connection):
+            store_path = ""
+
+            def execute(self, sql, parameters=(), /):
+                # Same contract as AppStoreConnection: an answer-path READ runs
+                # on this thread's own connection when the native writer owns
+                # the file. Without this the encrypted store had ONE shared
+                # connection for every thread, so a lane scan serialized the
+                # recall read behind it (measured 2026-10-31: a 0.17 s retrieval
+                # took 2.9-6.4 s inside the running backend).
+                if (self.store_path and isinstance(sql, str)
+                        and not getattr(_LANE_CONNS, "opening", False)
+                        and sql.lstrip()[:6].upper().startswith(_READ_HEADS)
+                        and owns_store(self)):
+                    own = lane_connection(self)
+                    if own is not self:
+                        return own.execute(sql, parameters)
+                return super().execute(sql, parameters)
+
+        _ENC_CONN_FACTORY = _EncStoreConnection
+    return _ENC_CONN_FACTORY
+
+
 def app_write(conn, sql: str, params=()) -> None:
     """ONE WRITER (2026-10-04): the one way to write the app store.
 
@@ -234,6 +274,67 @@ def app_flush(timeout_s: float = 5.0) -> bool:
     return ok
 
 
+def app_memory_key() -> bytes:
+    """The key for a process that opens the store DIRECTLY (scripts, evals).
+
+    Session key (a dashboard unlock) wins, then the OS keychain, then a zero key
+    that a plaintext store simply ignores. 2026-10-31: after the store was
+    encrypted, the hardcoded zero key in maintenance scripts could not open it.
+    """
+    try:
+        from backend.core.biometric import KeyStorage, session_memory_key
+
+        return session_memory_key() or KeyStorage.retrieve_key() or b"\0" * 32
+    except Exception:  # noqa: BLE001 - a caller falls back to the plaintext form
+        return b"\0" * 32
+
+
+def row_factory_for(conn):
+    """The Row class that belongs to ``conn``'s module.
+
+    A sqlcipher3 connection cannot use ``sqlite3.Row``: the factory is called
+    with a sqlcipher3 Cursor and raises "Row() argument 1 must be
+    sqlite3.Cursor" (measured 2026-10-31 on the memory snapshot read).
+
+    The connection may be a SUBCLASS defined in THIS module (``store_path``
+    needs a Python subclass of the C type), so ``type(conn).__module__`` is not
+    reliable - ask the base class instead (measured again 2026-11-01, cold boot:
+    the snapshot warm-up failed on exactly that).
+    """
+    try:
+        import sqlcipher3
+
+        if isinstance(conn, sqlcipher3.Connection):
+            return sqlcipher3.Row
+    except Exception:  # noqa: BLE001 - no sqlcipher3: plain sqlite
+        pass
+    return sqlite3.Row
+
+
+def open_store_read_only(db_path: str):
+    """Open the app store for READING, whatever its format.
+
+    A plaintext file opens with sqlite3 and ``mode=ro``. An ENCRYPTED file
+    cannot be opened by sqlite3 at all ("file is not a database"), so it opens
+    through the same SQLCipher path as the app and is locked with
+    ``query_only``. The header decides — never a caller's assumption (D6,
+    2026-10-31: the memory snapshot warm-up failed on the live store because it
+    assumed plaintext).
+    """
+    if is_plaintext_store(db_path):
+        from urllib.parse import quote
+
+        p = Path(db_path)
+        return sqlite3.connect(
+            "file:" + quote(p.as_posix(), safe="/:") + "?mode=ro",
+            uri=True,
+            timeout=5.0,
+        )
+    conn = open_encrypted_memory(db_path, b"")
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def open_encrypted_memory(db_path: str, biometric_key: bytes):
     """
     Opens the memory database, preferring SQLCipher AES-256 encryption.
@@ -296,19 +397,55 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
         conn.execute("SELECT count(*) FROM sqlite_master")
         return conn
 
+    # A caller that passes no key (lane connections, maintenance scripts) gets
+    # the key the app stores at startup. Before 2026-10-31 the store was
+    # plaintext, so b"" was harmless; after encryption it produced
+    # "file is not a database" on every such call. Plaintext files returned
+    # above and never do a keychain read.
+    if not biometric_key:
+        try:
+            from backend.core.biometric import session_memory_key
+
+            biometric_key = session_memory_key() or b""
+        except Exception:  # noqa: BLE001 — the keychain read below still runs
+            biometric_key = b""
+    if not biometric_key:
+        try:
+            from backend.core.biometric import KeyStorage
+
+            biometric_key = KeyStorage.retrieve_key() or b""
+        except Exception as _key_exc:  # noqa: BLE001 — reported by the open below
+            logger.debug("[db] no keychain key for %s: %s", db_path, _key_exc)
+
     # Try sqlcipher3 first
     try:
         import sqlcipher3 as _sqlcipher3
-        conn = _sqlcipher3.connect(str(db_path), check_same_thread=False)
+        conn = _sqlcipher3.connect(
+            str(db_path), check_same_thread=False,
+            factory=_encrypted_store_connection_class(),
+        )
+        try:
+            conn.store_path = os.path.normcase(os.path.abspath(str(db_path)))
+        except Exception:  # noqa: BLE001 - no path = writes stay on this one
+            pass
         try:
             key_hex = biometric_key.hex()
-            conn.execute(f"PRAGMA key='{key_hex}'")
+            # RAW key, not a passphrase (D6, 2026-10-31). SQLCipher reads
+            # PRAGMA key='<64 hex chars>' as a PASSPHRASE and runs PBKDF2 over
+            # the text; the x'...' form uses the 32 bytes directly. The store
+            # exporter (biometric.encrypt_plaintext_store) writes the raw form,
+            # so the opener must use the same one: measured "hmac check failed
+            # for pgno=1" on a store the exporter had just verified with x'...'.
+            conn.execute(f"PRAGMA key=\"x'{key_hex}'\"")
             conn.execute(f"PRAGMA cipher_page_size={DEFAULT_CIPHER_PAGE_SIZE}")
-            conn.execute(f"PRAGMA kdf_iter={DEFAULT_KDF_ITERATIONS}")
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute("PRAGMA cache_size=-20000;")
+            # 128 MB, not 20: the FTS index and the 1024-bit fingerprint rows
+            # are read on every recall, and a 20 MB cache thrashed them (the
+            # keyword leg measured 1-3 s per call in the running backend vs
+            # 0.11 s in a quiet process, 2026-10-31).
+            conn.execute("PRAGMA cache_size=-131072;")
             conn.execute("PRAGMA temp_store=MEMORY;")
             conn.execute("PRAGMA mmap_size=268435456;")
             # D4g: wait for a competing writer instead of failing immediately

@@ -395,7 +395,16 @@ bug-vs-feature calls, launch quirks.
 - **`_memory_interface`**: `AgentToolBridge._memory_interface` never initialised
   (`tool_bridge.py:66`); `recall_memory` → `AttributeError` on tool-failure recovery.
   Latent until a tool fails.
-- **Dilithium `data/memory.db`**: "file is not a database" — unresolved.
+- **Dilithium `data/memory.db`**: "file is not a database" — RESOLVED 2026-11-01.
+  The live store (`D:/IRIS/store/memory.db`) is SQLCipher-encrypted and needs the
+  `sqlcipher3` module, which the SYSTEM python does not have (the project `.venv`
+  does). Started on the system python the backend ran WITHOUT memory: every
+  ledger row was refused ("ffi_init_engine() was never called") and the Oracle
+  calibration tooling could not read the ledger. `start-backend.py` now re-execs
+  under `.venv\Scripts\python.exe` when `sqlcipher3` is missing. Scripts that
+  read the app store must use `backend.memory.db.open_store_read_only(db)` (plain
+  `sqlite3` cannot read it) and must read rows by POSITION (the encrypted
+  connection returns plain tuples).
 - **`.next` cache bloat → frontend wedge (2026-09-13)**: Turbopack's dev cache can grow
   to 200k+ files; the server then holds ~100k handles at 0 CPU and answers **nothing**
   (see Step 0 "WEDGED, not compiling"). Fix = stop, `taskkill` the :3000 owner, rename

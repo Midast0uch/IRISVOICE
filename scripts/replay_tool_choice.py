@@ -10,8 +10,13 @@ full eval group, and never blends into the live cohorts (nothing is written).
 
 Needs the d1 llama-server on :8082 (the backend boots it). Read-only on the store.
 
+Since 2026-11-01 the live backend is d1-2B and answers through the native
+`/v1/systemone` API. `--engine` selects the SOURCE cohort of recorded rows
+(default: the retired d1-3B letter era). Replaying that cohort through the new
+model is how a model swap is measured before any live traffic.
+
 Usage:
-    python scripts/replay_tool_choice.py [--variants descriptions,hints] [--stamps tc-frame-v8] [--limit N]
+    python scripts/replay_tool_choice.py [--variants descriptions,hints] [--stamps tc-frame-v8] [--limit N] [--engine ID]
 """
 
 from __future__ import annotations
@@ -33,13 +38,14 @@ from _app_store import app_store_path  # noqa: E402
 from backend.agent.decision_backend_d1 import D1Backend  # noqa: E402
 from backend.agent.decision_engine import OracleState  # noqa: E402
 from backend.agent.tool_registry import oracle_hint, resolve_tool  # noqa: E402
+from backend.memory.db import open_store_read_only  # noqa: E402
 
-ENGINE = "d1-3b-ad-q4_k_m+letters"
+SOURCE_ENGINE = "d1-3b-ad-q4_k_m+letters"   # the recorded cohort to replay
 CONTROL = {"DELEGATE", "NONE"}
 
 
-def load_rows(limit: int, stamps=None):
-    c = sqlite3.connect(f"file:{app_store_path()}?mode=ro", uri=True)
+def load_rows(limit: int, stamps=None, engine: str = SOURCE_ENGINE):
+    c = open_store_read_only(app_store_path())
     rows, seen = [], set()
     for (p,) in c.execute(
             "SELECT interaction_payload FROM system_events WHERE event_type='tool_execution' "
@@ -50,7 +56,7 @@ def load_rows(limit: int, stamps=None):
             continue
         if not isinstance(d, dict) or d.get("consumer_id") != "tool_choice":
             continue
-        if d.get("engine") != ENGINE or not d.get("state") or not d.get("brain_choice"):
+        if d.get("engine") != engine or not d.get("state") or not d.get("brain_choice"):
             continue
         if stamps and d.get("criteria_version") not in stamps:
             continue
@@ -111,6 +117,18 @@ def report(variant: str, res):
             print(f"   conf[{lo:.2f},{hi:.2f}) n={len(b):4d} agree={sum(x[1] for x in b) / len(b):.3f}")
     wrong = collections.Counter((x[3], x[4]) for x in res if not x[1])
     print("   top disagreements (chosen, reference):", wrong.most_common(6))
+    # The bar's ranking clauses (docs/architecture/oracle.md 5): the AUROC
+    # asks whether the confidence RANKS the errors, the ECE whether it is
+    # calibrated. A variant that agrees more but inverts a band can still
+    # fail the bar, so the replay must show both.
+    pos = [x[0] for x in res if x[1]]
+    neg = [x[0] for x in res if not x[1]]
+    if pos and neg:
+        wins = sum((p > n) + 0.5 * (p == n) for p in pos for n in neg)
+        print(f"   oof_auroc={wins / (len(pos) * len(neg)):.4f} "
+              f"(correct={len(pos)} wrong={len(neg)})")
+    else:
+        print(f"   oof_auroc=untestable (correct={len(pos)} wrong={len(neg)})")
 
 
 def main() -> int:
@@ -118,8 +136,11 @@ def main() -> int:
     ap.add_argument("--variants", default="descriptions,hints")
     ap.add_argument("--limit", type=int, default=400)
     ap.add_argument("--stamps", default="", help="comma list of criteria_version to replay")
+    ap.add_argument("--engine", default=SOURCE_ENGINE,
+                    help="SOURCE cohort engine identity to replay")
     args = ap.parse_args()
-    rows = load_rows(args.limit, {s for s in args.stamps.split(",") if s} or None)
+    rows = load_rows(args.limit, {s for s in args.stamps.split(",") if s} or None,
+                     engine=args.engine)
     print(f"replayable distinct rows: {len(rows)}")
     backend = D1Backend()
     if not backend.load():

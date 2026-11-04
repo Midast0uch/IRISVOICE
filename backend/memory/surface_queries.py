@@ -68,7 +68,6 @@ from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
-from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -140,13 +139,14 @@ def read_only(path: Path | str) -> Iterator[sqlite3.Connection]:
     p = Path(path)
     if not p.is_file():
         raise StoreUnavailable(f"store not found: {p.name}")
-    uri = "file:" + quote(p.as_posix(), safe="/:") + "?mode=ro"
     try:
-        con = sqlite3.connect(uri, uri=True, timeout=5.0)
-    except sqlite3.Error as exc:
+        from backend.memory.db import open_store_read_only, row_factory_for
+
+        con = open_store_read_only(str(p))
+    except Exception as exc:
         raise StoreUnavailable(f"store not readable: {p.name}: {exc}") from exc
     try:
-        con.row_factory = sqlite3.Row
+        con.row_factory = row_factory_for(con)
         con.execute("PRAGMA query_only = ON")   # second lock on the door: a write raises even if mode=ro is lost
         yield con
     finally:

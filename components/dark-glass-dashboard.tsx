@@ -16,6 +16,7 @@ import { ActivityPanel } from './dashboard/ActivityPanel';
 import { LogsPanel } from './dashboard/LogsPanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { PermissionsSettingsCard } from './chat/PermissionsSettingsCard';
+import { MemoryKeyUnlockCard } from './dashboard/MemoryKeyUnlockCard';
 import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { UnifiedMarketplaceModelsSurface } from './integrations/UnifiedMarketplaceModelsSurface';
@@ -327,6 +328,15 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
       return (
         <div className="col-span-full mt-1 mb-2">
           <PermissionsSettingsCard />
+        </div>
+      );
+    }
+    // Release-mode memory unlock: visible only when key_source is "launcher"
+    // and the store is still locked. In development it renders one status line.
+    if (field.id === 'memory_key_unlock') {
+      return (
+        <div className="col-span-full mt-1 mb-2">
+          <MemoryKeyUnlockCard glowColor={glowColor} />
         </div>
       );
     }

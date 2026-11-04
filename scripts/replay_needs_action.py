@@ -58,14 +58,27 @@ def newest_log(explicit: str | None) -> str:
 def load_pairs(path: str) -> dict:
     """Distinct (goal, expected) -> label, from the log's diagnostic lines."""
     pairs: dict = {}
+    skipped = 0
     with open(path, encoding="utf-8", errors="replace") as f:
         for line in f:
+            # The log line is a JSON record: the [needs_action] text is the
+            # "message" field and the rest of the record follows it. Cut the
+            # tail so the "expected" field does not capture it.
+            line = line.split('", "module":')[0]
             m = LINE_RE.search(line)
             if not m:
                 continue
-            goal = ast.literal_eval(m.group(3).strip())
-            expected = ast.literal_eval(m.group(4).strip())
+            try:
+                goal = ast.literal_eval(m.group(3).strip())
+                expected = ast.literal_eval(m.group(4).strip())
+            except (ValueError, SyntaxError):
+                # A malformed line (the log record's JSON tail landed in the
+                # field) must not stop the replay - skip it and count it.
+                skipped += 1
+                continue
             pairs[(goal, expected)] = m.group(2) == "True"
+    if skipped:
+        print(f"skipped {skipped} malformed [needs_action] lines")
     return pairs
 
 

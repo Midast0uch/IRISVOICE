@@ -169,3 +169,65 @@ def test_ct_f7_budget_read_reports_live_text(store, tmp_path):
     assert rep["text_bytes"] >= len(TEXT)
     assert rep["chunks_live"] >= 1
     assert rep["budget_bytes"] == file_ingest.TOTAL_BUDGET
+
+# ── REQ-9 W4: audio/video (ffmpeg + faster-whisper) ────────────────────────
+
+def test_audio_and_video_extensions_route_to_the_media_extractor():
+    from backend.memory import file_ingest
+
+    for ext in (".mp3", ".wav", ".m4a", ".mp4", ".mkv", ".mov", ".webm"):
+        assert file_ingest._EXT_EXTRACTORS[ext] is file_ingest._extract_media
+
+
+def test_missing_ffmpeg_is_a_counted_extraction_error(monkeypatch):
+    import subprocess
+    from backend.memory import file_ingest
+
+    def _no_ffmpeg(*args, **kwargs):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(subprocess, "run", _no_ffmpeg)
+    with pytest.raises(file_ingest.ExtractionError, match="ffmpeg is not installed"):
+        file_ingest.extract_text(b"not really audio", "clip.mp3")
+
+
+def test_segments_are_joined_into_one_transcript(monkeypatch):
+    import subprocess
+    from backend.memory import file_ingest
+
+    class _Seg:
+        def __init__(self, text):
+            self.text = text
+
+    class _Model:
+        def transcribe(self, wav, **kwargs):
+            return [_Seg(" hello "), _Seg("world ")], None
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: None)
+    monkeypatch.setattr(file_ingest, "_whisper", lambda: _Model())
+    text, cut = file_ingest.extract_text(b"audio", "clip.mp3")
+    assert text == "hello world"
+    assert cut is False
+
+def test_image_extensions_route_to_the_ocr_extractor():
+    from backend.memory import file_ingest
+
+    for ext in (".png", ".jpg", ".jpeg", ".webp", ".tiff"):
+        assert file_ingest._EXT_EXTRACTORS[ext] is file_ingest._extract_image
+
+
+def test_ocr_lines_are_joined(monkeypatch):
+    from backend.memory import file_ingest
+
+    class _Engine:
+        def __call__(self, array):
+            return ([[None, " Kestrel "], [None, "protocol alpha"]], 0.01)
+
+    monkeypatch.setattr(file_ingest, "_ocr", lambda: _Engine())
+    from PIL import Image
+    import io
+    image = Image.new("RGB", (20, 10), "white")
+    buf = io.BytesIO(); image.save(buf, format="PNG")
+    text, cut = file_ingest.extract_text(buf.getvalue(), "scan.png")
+    assert text == "Kestrel\nprotocol alpha"
+    assert cut is False

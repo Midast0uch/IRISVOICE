@@ -3,6 +3,17 @@
   "backend": "gliner25-decide-onnx-int8",
   "p50_ms": 166,
   "p95_ms": 198,
+  "regressions": [
+    {
+      "accuracy": 0.0,
+      "detail": [
+        "p95 2048ms > baseline 198ms (+934%, tolerance 15%)",
+        "accuracy 0.000 < baseline 1.000"
+      ],
+      "p50_ms": 2020,
+      "p95_ms": 2048
+    }
+  ],
   "session_options": {
     "clamped": false,
     "execution_mode": "ORT_SEQUENTIAL",

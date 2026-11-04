@@ -353,5 +353,8 @@ def test_recall_memory_tool_survives_a_broken_chain_leg():
             return []
 
     out = tool_bridge._recall_memory_payload(_Broken(), "anything")
+    # `pins` joined the payload after this test was written (recall_memory
+    # reads the pin index; see test_recall_memory_pins_contract.py). The
+    # assertion stays EXACT so another key cannot appear unnoticed.
     assert out == {"success": True, "chunks": [], "chain": [],
-                   "episodes": [], "results": []}
+                   "episodes": [], "pins": [], "results": []}

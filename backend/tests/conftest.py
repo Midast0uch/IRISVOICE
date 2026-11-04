@@ -257,7 +257,7 @@ def approval_ui_attached(monkeypatch):
 
 # ── Real d1 decision backend (specs/phonon2-d1-model-swap Wave 5) ────────────
 #
-# The resident decision backend is d1-3B on the shared llama-server (:8082,
+# The resident decision backend is d1-2B on the shared llama-server (:8082,
 # borrow-only). This fixture loads it once per session and skips cleanly when
 # the shared server does not host d1, so the suites stay runnable on a
 # machine without the server up (the engine's own contract is "degrade,

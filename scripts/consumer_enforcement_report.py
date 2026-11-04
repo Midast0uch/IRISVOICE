@@ -72,6 +72,10 @@ _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+# The live store is SQLCipher-encrypted: plain sqlite3 cannot read it
+# ("file is not a database"). The backend's opener handles both cases.
+from backend.memory.db import open_store_read_only  # noqa: E402
+
 from backend.agent.consumer_bar import (  # noqa: E402
     ACTING_ANSWER,
     ACTING_ENFORCED,
@@ -177,16 +181,19 @@ def load_rows(
     if binary is None:
         binary = binary_consumers()
     seen: Dict[tuple, Dict[str, Any]] = {}
-    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    c.row_factory = sqlite3.Row
+    c = open_store_read_only(db)
     try:
         cur = c.execute(
             "SELECT outcome, interaction_payload FROM system_events "
             "WHERE event_type='tool_execution'"
         )
         for r in cur:
+            # The encrypted store returns plain tuples, the plaintext store
+            # sqlite3 rows: read by POSITION so both work.
+            outcome = r[0]
+            payload_text = r[1]
             try:
-                payload = json.loads(r["interaction_payload"] or "{}")
+                payload = json.loads(payload_text or "{}")
             except Exception:
                 skipped["unreadable"] += 1
                 continue
@@ -207,7 +214,7 @@ def load_rows(
             # rows by parity with the Brain (name vs name, bool vs bool),
             # dispatched rows by outcome. One rule, so the two instruments
             # cannot disagree again (they did: web_intent 1.0 vs 0.377).
-            correct = decision_label(r["outcome"], payload, d)
+            correct = decision_label(outcome, payload, d)
             if correct is None:
                 skipped["no_label"] += 1
                 # Measured live 2026-10-09 (d1, 225 tool_choice rows): 10%
@@ -317,7 +324,7 @@ def thresholds_by_consumer(
             # Wave 5 (specs/phonon2-d1-model-swap): the declared backend is
             # d1 on the shared llama-server — constructing it loads nothing
             # and touches no server. The identity is what the ROWS carry:
-            # model_id (the readout-tagged id, e.g. 'd1-3b-ad-q4_k_m+letters')
+            # model_id (the readout-tagged id, e.g. 'd1-2b-q4_k_m+systemone')
             # so an offline report scopes to the same string the live engine
             # writes; backend_id is the bare variant fallback.
             from backend.agent.decision_backend_d1 import D1Backend

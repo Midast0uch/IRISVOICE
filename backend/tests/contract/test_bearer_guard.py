@@ -53,7 +53,7 @@ class TestBearerNeverEmpty:
         httpx rejects `Bearer ` as an illegal header value."""
         captured = {}
 
-        def _fake_stream(self, url, headers, body, model, messages, chunk_callback, reasoning_callback=None):
+        def _fake_stream(self, url, headers, body, model, messages, chunk_callback, reasoning_callback=None, **kwargs):
             captured["headers"] = headers
             return ("", "", [])
 
@@ -70,7 +70,7 @@ class TestBearerNeverEmpty:
         """A whitespace-only key is treated as missing — no header."""
         captured = {}
 
-        def _fake_stream(self, url, headers, body, model, messages, chunk_callback, reasoning_callback=None):
+        def _fake_stream(self, url, headers, body, model, messages, chunk_callback, reasoning_callback=None, **kwargs):
             captured["headers"] = headers
             return ("", "", [])
 
@@ -85,7 +85,7 @@ class TestBearerNeverEmpty:
         """A real key still produces `Bearer <key>` (stripped of whitespace)."""
         captured = {}
 
-        def _fake_stream(self, url, headers, body, model, messages, chunk_callback, reasoning_callback=None):
+        def _fake_stream(self, url, headers, body, model, messages, chunk_callback, reasoning_callback=None, **kwargs):
             captured["headers"] = headers
             return ("", "", [])
 

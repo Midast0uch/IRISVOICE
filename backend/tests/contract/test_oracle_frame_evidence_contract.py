@@ -248,21 +248,22 @@ def test_dynamic_menu_criteria_travel_but_never_render_into_the_state():
 
 
 def test_dynamic_menu_criteria_render_into_the_option_lines():
-    """The backend renders the state's option_criteria beside the codes,
-    overriding the (empty) static declaration for this question only —
-    exactly as decide() passes them."""
+    """The backend carries the state's option_criteria into the question's
+    criteria, overriding the (empty) static declaration for this question only
+    — exactly as decide() passes them. 2026-11-01: the native endpoint names
+    options by label in a `criteria` object; there are no letter lines."""
     from backend.agent.decision_backend_d1 import D1Backend
     from backend.agent.decision_engine import OracleState
 
     st = OracleState(job="route", fields=("goal",), text="fix the failing test",
                      budget_ids=256,
                      option_criteria=(("read_file", "Read a file's contents"),))
-    out = D1Backend._question_choice(
-        st, "Which tool should handle this step?",
-        dict(st.option_criteria) or None,
-        ["read_file", "edit_file"])
-    assert "A Read a file's contents" in out
-    assert "B edit file" in out  # no description: the label as text
+    out = D1Backend._native_question(
+        "choice", "Which tool should handle this step?",
+        ["read_file", "edit_file"],
+        dict(st.option_criteria) or None)
+    assert out["criteria"]["read_file"] == "Read a file's contents"
+    assert out["criteria"]["edit_file"] == "edit file"  # no description: the label
 
 
 def test_async_shadow_passes_option_criteria():

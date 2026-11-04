@@ -48,10 +48,17 @@ endif()
 
 add_subdirectory(${re2_SOURCE_DIR} ${re2_BINARY_DIR} EXCLUDE_FROM_ALL)
 
-# --- SQLite3 (bundled amalgamation — no external dependency) ---
-set(SQLITE3_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3/sqlite3.c")
+# --- SQLCipher (prebuilt e_sqlcipher: SQLCipher 4 with FTS5) ---------------
+# The bundled sqlite3.c is PLAIN SQLite: it has no codec, so the native writer
+# could not open an encrypted store (measured 2026-10-31: "PRAGMA setup
+# failed: file is not a database", native init rc=-2). e_sqlcipher.dll is the
+# SQLCipher build from SQLitePCLRaw; its import library was generated from the
+# DLL's export table (see third_party/sqlcipher/README.md).
+set(SQLCIPHER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlcipher")
+set(SQLCIPHER_IMPORT_LIB "${SQLCIPHER_DIR}/e_sqlcipher.lib")
+set(SQLCIPHER_RUNTIME "${SQLCIPHER_DIR}/e_sqlcipher.dll")
 
-# IRIS core sources
+# IRIS core sources (sqlite3.c is NOT compiled: the SQLCipher DLL supplies it)
 set(IRIS_SOURCES
     iris_core.cpp
     db_manager.cpp
@@ -60,15 +67,11 @@ set(IRIS_SOURCES
     event_ingestor.cpp
 )
 
-add_library(iris_core SHARED ${SQLITE3_SOURCES} ${IRIS_SOURCES})
+add_library(iris_core SHARED ${IRIS_SOURCES})
 
-# The app schema carries FTS5 (context_chunks_fts plus INSERT/UPDATE/DELETE
-# triggers on context_chunks). This bundled SQLite was compiled WITHOUT FTS5,
-# so the native writer's connection could not fire those triggers: every
-# INSERT INTO context_chunks failed inside the writer (counted as a failed
-# write, error only on stderr) while the Python connection, whose build has
-# FTS5, stored the row. Enabled at the target so sqlite3.c sees it.
-target_compile_definitions(iris_core PRIVATE SQLITE_ENABLE_FTS5)
+# e_sqlcipher is built with FTS5 — the app schema's context_chunks triggers
+# need it (a build without FTS5 made every native INSERT there fail).
+target_compile_definitions(iris_core PRIVATE SQLCIPHER_AVAILABLE)
 
 target_include_directories(iris_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite3
@@ -77,6 +80,7 @@ target_include_directories(iris_core PRIVATE
 
 target_link_libraries(iris_core PRIVATE
     re2::re2
+    ${SQLCIPHER_IMPORT_LIB}
 )
 
 target_compile_options(iris_core PRIVATE
@@ -106,6 +110,9 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy
         "$<TARGET_FILE:iris_core>"
         "${CMAKE_SOURCE_DIR}/../../../backend/native/iris_core.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy
+        "${SQLCIPHER_RUNTIME}"
+        "${CMAKE_SOURCE_DIR}/../../../backend/native/e_sqlcipher.dll"
     )
 endif()
 

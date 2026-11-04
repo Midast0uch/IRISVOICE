@@ -41,6 +41,14 @@ from pathlib import Path
 
 def load_examples(path: str):
     rows = [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if rows and any("question" in r and "prompt" not in r for r in rows):
+        raise SystemExit(
+            "this file is the NATIVE Decision Index format (state + typed "
+            "question, exported for d1-2B). This trainer only reads the "
+            "retired d1-3B format (prompt + letter code): a 2B fine-tune must "
+            "train the model's own tokenizer.chat_template.systemone answer "
+            "slot. See LiquidAI/d1-2B for the reference training path."
+        )
     return [r for r in rows if r.get("prompt") and r.get("completion")]
 
 
@@ -67,7 +75,12 @@ def split(examples, holdout: float, seed: int):
 
 def code_ids(tok, prompt: str, code: str):
     """The readout group for one option code: the bare and space forms that
-    are SINGLE tokens (decision_backend_d1._letter_readout)."""
+    are SINGLE tokens.
+
+    RETIRED READOUT (2026-11-01): the live backend reads the native
+    ``/v1/systemone`` answer, which names the option and never scores a letter,
+    so this trainer no longer matches what IRIS serves. ``load_examples``
+    refuses the native export for that reason."""
     out = []
     for form in (code, f" {code}"):
         ids = tok.encode(form, add_special_tokens=False)

@@ -64,6 +64,50 @@ class TestD1ProjectorPairing:
         )
 
 
+# ── the native Decision Index serving contract (2026-11-01) ─────────────────
+class TestD1NativeBatchContract:
+    """The native /v1/systemone API builds ONE graph for the whole prompt, so
+    the PHYSICAL batch must cover it. llama.cpp's physical batch defaults to
+    512 and the logical batch does not raise it: a 27-tool menu (1629 tokens,
+    measured live) was rejected with "input (1629 tokens) is too large to
+    process. increase the physical batch size (current batch size: 512)" and
+    EVERY Oracle decision failed closed. The guard fails on that old state."""
+
+    def test_the_d1_server_physical_batch_covers_the_context_window(self):
+        from backend.agent.local_model_manager import LocalModelManager
+
+        mgr = LocalModelManager()
+        cmd = mgr._build_server_cmd(
+            r"D:\lmstudio\models\LiquidAI\d1-2B-GGUF\d1-2B-Q4_K_M.gguf",
+            {"n_ctx": 8192, "n_batch": 2048, "n_gpu_layers": -1},
+        )
+        assert "--ubatch-size" in cmd, (
+            "the d1 server must set the physical batch: the native Decision "
+            "Index API needs the whole prompt in one batch"
+        )
+        ub = int(cmd[cmd.index("--ubatch-size") + 1])
+        ctx = int(cmd[cmd.index("--ctx-size") + 1])
+        assert ub >= ctx, (
+            "the physical batch (%d) must cover the context window (%d): a "
+            "prompt that fits the window must fit the batch" % (ub, ctx)
+        )
+        # The logical batch must not be smaller than the physical one.
+        nb = int(cmd[cmd.index("--batch-size") + 1])
+        assert nb >= ub, "n_batch must be >= n_ubatch (llama.cpp refuses it)"
+
+    def test_a_non_d1_model_keeps_the_default_batch(self):
+        from backend.agent.local_model_manager import LocalModelManager
+
+        mgr = LocalModelManager()
+        cmd = mgr._build_server_cmd(
+            r"D:\lmstudio\models\Other\Some-8B-Q4_K_M.gguf",
+            {"n_ctx": 8192, "n_batch": 2048, "n_gpu_layers": -1},
+        )
+        assert "--ubatch-size" not in cmd, (
+            "only the d1 native path needs the physical batch raised"
+        )
+
+
 # ── T2.5: the tool model server ──────────────────────────────────────────────
 class TestToolModelServer:
 
@@ -109,15 +153,19 @@ class TestConfigBindings:
         as a workdir) and the eval regressed (FAIL, reply 100.1s vs the
         15.9s standard). Reverted to mercury-2 with the evidence recorded;
         the iris_tool_local instance stays configured (dormant) so the owner
-        can re-bind after tuning or accepting the trade-off."""
+        can re-bind after tuning or accepting the trade-off.
+
+        2026-11-01 (owner): both roles moved to Mercury 3. The Cerebras key
+        in the keyring is stale (401 Wrong API Key), so the Brain could not
+        plan at all; the inceptionlabs key is present and valid."""
         cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
         bindings = {
             b["role"]: b for b in cfg["inference"]["role_bindings"]
         }
         assert bindings["tool_execution"]["instance_id"] == "inceptionlabs"
-        assert bindings["tool_execution"]["model_override"] == "mercury-2"
+        assert bindings["tool_execution"]["model_override"] == "mercury-3"
         assert bindings["reasoning"]["instance_id"] == "inceptionlabs"
-        assert bindings["reasoning"]["model_override"] == "mercury-2.5"
+        assert bindings["reasoning"]["model_override"] == "mercury-3"
         # The dormant local instance stays ready for a future re-bind.
         assert "iris_tool_local" in cfg["inference"]["providers"]
 
@@ -134,15 +182,19 @@ class TestConfigBindings:
 
     def test_vision_model_points_to_d1(self):
         """T2.3: the pinned VLM is d1; the old LFM2.5-VL-3B is off the live
-        path (its registry retirement is T5.2, its file deletion T5.3)."""
+        path (its registry retirement is T5.2, its file deletion T5.3).
+        2026-11-01 (owner): the pin moved to the released d1-2B build on the
+        D: SSD; the 3B build is retired from the live path."""
         cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
         vm = cfg["field_values"]["vision"]["vision_model"]
-        assert "d1-3B-AD-Q4_K_M.gguf" in vm, vm
+        assert "d1-2B-Q4_K_M.gguf" in vm, vm
         assert "LFM2.5-VL-3B" not in vm
 
     def test_d1_registry_entry_exists(self):
         """T2.1: d1 is selectable in the model registry with a modest ctx
-        (8192) so the VRAM plan stays inside the owner's budget."""
+        (8192) so the VRAM plan stays inside the owner's budget. Both the
+        retired 3B entry and the live 2B entry are checked, so a registry
+        rewrite cannot silently drop the live build."""
         reg = json.loads(
             (REPO / "models" / "gguf" / ".iris_model_settings.json").read_text(
                 encoding="utf-8"
@@ -150,13 +202,21 @@ class TestConfigBindings:
         )
         assert "d1-3B-AD-Q4_K_M.gguf" in reg
         assert reg["d1-3B-AD-Q4_K_M.gguf"]["last_ctx"] <= 8192
+        assert "d1-2B-Q4_K_M.gguf" in reg
+        assert reg["d1-2B-Q4_K_M.gguf"]["last_ctx"] <= 8192
 
     def test_d1_boots_on_gpu_like_parakeet_did(self):
         """Wave 3 (owner 2026-10-08): d1 loads at STARTUP — vision and the
         Oracle find it resident instead of racing a manual Models-card load.
         Source contract: the lifespan boot load exists, reads the pinned
-        vision model, refuses a non-d1 pin, and loads WITH the projector."""
+        vision model, refuses a non-d1 pin, and loads WITH the projector.
+        The refusal is the shared build test (is_d1_build), not a literal
+        token, so a new d1 release needs no second place to edit."""
         src = (REPO / "backend" / "main.py").read_text(encoding="utf-8")
         assert "_boot_load_d1" in src, "no d1 boot load in lifespan"
         assert "with_projector=True" in src, "the boot load must attach the mmproj"
-        assert '"d1-3b" not in' in src, "a non-d1 pin must be refused, not loaded"
+        assert "is_d1_build(_pin)" in src, "a non-d1 pin must be refused, not loaded"
+        assert "projector_path=_mmproj" in src, (
+            "the boot load must take the projector beside the chosen model "
+            "file, not the registry's cross-drive match"
+        )

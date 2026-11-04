@@ -25,10 +25,10 @@ CHAIN_WHERE = ("thread_id LIKE 'de-%' OR thread_id LIKE 'eval-%' "
 
 
 def main(apply: bool) -> dict:
-    from backend.memory.db import app_write
+    from backend.memory.db import app_memory_key, app_write
     from backend.memory.episodic import EpisodicStore
 
-    st = EpisodicStore(db_path=DB, biometric_key=b"\0" * 32)
+    st = EpisodicStore(db_path=DB, biometric_key=app_memory_key())
     con = st.db
     out = {"apply": apply}
 

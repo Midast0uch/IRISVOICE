@@ -46,6 +46,10 @@ from backend.agent.decision_engine import OracleState  # noqa: E402
 from backend.memory.db import open_store_read_only  # noqa: E402
 
 SOURCE_ENGINE = "d1-2b-q4_k_m+systemone"
+# The control labels: the engine's "do not act" answers. The bar's rule
+# (calibrate_decision_threshold.py) counts a control-label row as skipped,
+# never as wrong.
+CONTROL_LABELS = ("NONE", "DELEGATE")
 
 
 def declaration_text(consumer: str) -> dict:
@@ -130,8 +134,32 @@ def live_instruction(consumer: str) -> str:
     return ""
 
 
+def trim_state(text: str, mode: str) -> str:
+    """Shorten the recorded frame text, so a frame variant can be measured.
+
+    MEASURED 2026-11-04: the tool_choice's recorded state carries the
+    step_facts and the last_result, and on the calibration tasks those two
+    lines are long file lists. The question the model reads is then mostly
+    file names. "trim" drops both lines, "trim2" keeps a short head of each.
+    """
+    if not mode or mode == "live":
+        return text
+    out = []
+    for line in text.split("\n"):
+        if line.startswith("step_facts:"):
+            if mode == "trim":
+                continue
+            line = "step_facts: " + line[len("step_facts:"):].split(";")[0]
+        elif line.startswith("last_result:"):
+            if mode == "trim":
+                continue
+            line = "last_result: " + line[len("last_result:"):][:120]
+        out.append(line)
+    return "\n".join(out)
+
+
 def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custom: dict,
-        instruction: str = "", raw_frame: bool = False):
+        instruction: str = "", raw_frame: bool = False, frame_mode: str = "live"):
     # The consumer's OWN job (name, fields, budget) - the live question. The
     # job changes the prompt and the text budget, so a replay with another
     # job measures another question (MEASURED 2026-11-04: review_verdict with
@@ -142,15 +170,16 @@ def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custo
     out = []
     same_pick = same_conf = compared = 0
     for r in rows:
+        state_text = trim_state(r["state"], frame_mode)
         if raw_frame:
             # The live call site passes a RAW frame ({"goal": text}), so the
             # backend reads the text and NEVER the job's budget or fields.
             # MEASURED 2026-11-04: the review_verdict live path does this, and
             # the replay with an OracleState (the job set) reproduces only
             # half of the live picks.
-            frame = {"goal": r["state"]}
+            frame = {"goal": state_text}
         else:
-            frame = OracleState(job=job.name, fields=tuple(job.fields), text=r["state"],
+            frame = OracleState(job=job.name, fields=tuple(job.fields), text=state_text,
                                 budget_ids=job.budget_ids,
                                 option_criteria=tuple(
                                     (n, option_text(variant, n, live, custom)) for n in r["menu"]))
@@ -172,6 +201,15 @@ def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custo
                   else not bool(r["outside_label"]))
         else:
             ok = ds.chosen == r["ref"]
+        # THE BAR's rule (calibrate_decision_threshold.py, decision_label): a
+        # CONTROL-label answer (NONE / DELEGATE) can never match the
+        # reference, so such a row is NOT SCOREABLE - it is counted as
+        # skipped, never as wrong. MEASURED 2026-11-04: the tool_choice's
+        # Oracle picks NONE on 63 of 400 rows, and counting them as wrong
+        # depresses every number. The rows are dropped here so the replay
+        # measures the same population the report measures.
+        if ds.chosen in CONTROL_LABELS:
+            continue
         out.append((float(ds.confidence), ok, ds.chosen, r["ref"]))
     if compared:
         print(f"   fresh ask vs the recorded row: same pick {same_pick}/{compared}, "
@@ -214,6 +252,9 @@ def main() -> int:
     ap.add_argument("--since", default="", help="only rows created at/after this ISO stamp")
     ap.add_argument("--raw-frame", action="store_true",
                     help="ask with the raw frame, like the live call site")
+    ap.add_argument("--frame", default="live", choices=["live", "trim", "trim2"],
+                    help="the frame variant: live, trim (drop the step_facts and "
+                         "the last_result) or trim2 (keep a short head of each)")
     args = ap.parse_args()
 
     stamps = {s.strip() for s in args.stamps.split(",") if s.strip()} or None
@@ -237,7 +278,7 @@ def main() -> int:
         instr = Path(instr).read_text(encoding="utf-8")
     for variant in [v.strip() for v in args.variants.split(",") if v.strip()]:
         report(variant, run(variant, args.consumer, rows, backend, live, custom, instr,
-                            args.raw_frame))
+                            args.raw_frame, args.frame))
     return 0
 
 

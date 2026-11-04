@@ -35,52 +35,51 @@ from backend.agent.decision_backend_d1 import D1Backend
 
 
 class _Resp:
-    def __init__(self, positions):
-        self._positions = positions
+    def __init__(self, answers):
+        self._answers = answers
+        self.status_code = 200
 
     def raise_for_status(self):
         return None
 
     def json(self):
-        return {"choices": [{"logprobs": {"content": [
-            {"top_logprobs": [{"id": t, "logprob": lp, "bytes": [116]}
-                              for t, lp in pos.items()]}
-            for pos in self._positions]}}]}
+        return {"answers": self._answers}
 
 
 class _FakeClient:
-    def __init__(self, positions):
-        self.positions = positions
+    def __init__(self, answers):
+        self.answers = answers
         self.payloads = []
 
     def post(self, url, json=None, timeout=None):
         self.payloads.append(json)
-        return _Resp(self.positions)
+        return _Resp(self.answers)
 
 
-def _backend(monkeypatch, positions, missing=()):
-    """A live-ish d1: letter-code tokenizer stubbed, server check stubbed,
-    POST faked. The code ids match the positions the fake server returns."""
-    codes = {"A": 10, "B": 11, "C": 12, "D": 13, "E": 14}
+def _backend(monkeypatch, answers):
+    """A live-ish d1: server check stubbed, POST faked. The answers are keyed
+    by the batch's per-question id (q0, q1, ...)."""
     b = D1Backend()
     b._loaded = True
     monkeypatch.setattr(b, "_serves_d1", lambda force=False: (True, ""))
-
-    def _single(form):
-        return codes.get(form)
-
-    monkeypatch.setattr(b, "_single_token_id", _single)
-    monkeypatch.setattr(b, "_ensure_yes_no_ids", lambda: {"yes": (20,), "no": (21,)})
-    client = _FakeClient(positions)
+    client = _FakeClient(answers)
     monkeypatch.setattr(d1mod, "_pooled", lambda: client)
     return b, client
 
 
-def test_batch_answers_each_question_at_its_own_slot(monkeypatch):
+def _choice(label, probs):
+    return {"type": "choice", "choice": label,
+            "probabilities": probs, "confidence": probs[label]}
+
+
+def test_batch_answers_each_question_at_its_own_id(monkeypatch):
     """AC7.1/AC14.1: two questions, one pass, per-question answers read from
-    per-question positions - the batch is transport, and the ANSWER to A is
-    never B's."""
-    b, client = _backend(monkeypatch, [{10: -0.1}, {20: -2.0, 21: -0.05}])
+    per-question ids - the batch is transport, and the ANSWER to A is never
+    B's."""
+    b, client = _backend(monkeypatch, {
+        "q0": _choice("alpha", {"alpha": 0.9, "beta": 0.1}),
+        "q1": {"type": "noul", "noul": 0.02},
+    })
     out = b.decide_batch("the shared state", [
         ("user_feedback", ["alpha", "beta"], None),
         ("done", ["yes", "no"], None),
@@ -88,18 +87,21 @@ def test_batch_answers_each_question_at_its_own_slot(monkeypatch):
     a, n = out
     assert a is not None and n is not None
     assert a.consumer_id == "user_feedback" and a.chosen == "alpha"
-    assert n.consumer_id == "done" and n.chosen == "no"  # -0.05 on 'no' wins
+    assert n.consumer_id == "done" and n.chosen == "no"
     payload = client.payloads[0]
-    text = payload["prompt"]
-    assert text.count("QUESTION:") == 2, "one state, two questions"
-    assert payload["n_predict"] == 2  # one position per question
+    assert payload["state"] == "the shared state"
+    assert set(payload["questions"]) == {"q0", "q1"}, "one state, two questions"
+    assert payload["questions"]["q0"]["type"] == "choice"
+    assert payload["questions"]["q1"]["type"] == "noul"
 
 
 def test_criteria_never_bleed_across_batch_members(monkeypatch):
     """AC7.5: consumer A's criteria words NEVER appear in consumer B's
     question within one pass."""
-    b, client = _backend(monkeypatch, [{10: -0.1, 11: -1.0},
-                                       {10: -0.1, 11: -1.0}])
+    b, client = _backend(monkeypatch, {
+        "q0": _choice("speak_all", {"speak_all": 0.9, "stay_silent": 0.1}),
+        "q1": _choice("plain_text", {"plain_text": 0.9, "prism_card": 0.1}),
+    })
     # (the second member needs DECLARED criteria of its own: `presentation`
     # replaces the removed `mode` here - user_feedback declares none)
     out = b.decide_batch("shared", [
@@ -107,18 +109,20 @@ def test_criteria_never_bleed_across_batch_members(monkeypatch):
         ("presentation", ["plain_text", "prism_card"], None),
     ])
     assert all(x is not None for x in out)
-    text: str = client.payloads[0]["prompt"]
-    q1, q2 = text.split("QUESTION:")[1:]
+    q0 = str(client.payloads[0]["questions"]["q0"])
+    q1 = str(client.payloads[0]["questions"]["q1"])
     # each member's declared criteria name its OWN options and never appear in
     # the other member's question.
-    assert "Speak every beat" in q1 and "Speak every beat" not in q2
-    assert "Answer in prose only" in q2 and "Answer in prose only" not in q1
+    assert "Speak every beat" in q0 and "Speak every beat" not in q1
+    assert "Answer in prose only" in q1 and "Answer in prose only" not in q0
 
 
 def test_a_malformed_member_fails_only_itself(monkeypatch):
     """AC7.5, the pinned failure-isolation choice: PER-QUESTION. An
     undeclared consumer answers nothing; its batch-mates still score."""
-    b, _client = _backend(monkeypatch, [{10: -0.1}, {20: -0.1}])
+    b, _client = _backend(monkeypatch, {
+        "q0": _choice("alpha", {"alpha": 0.9, "beta": 0.1}),
+    })
     out = b.decide_batch("shared", [
         ("user_feedback", ["alpha", "beta"], None),
         ("never_declared_consumer", ["alpha", "beta"], None),
@@ -129,7 +133,13 @@ def test_a_malformed_member_fails_only_itself(monkeypatch):
 
 def test_the_engine_groups_by_job_and_shared_state(monkeypatch):
     """AC7.1: two jobs never merge; same job + same state merge; same job +
-    different state stay separate passes (the state IS the batch's unit)."""
+    different state stay separate passes (the state IS the batch's unit).
+
+    INPUTS UPDATED 2026-11-01: this test used `user_feedback` + `web_intent`
+    as "the same job". `web_intent` now declares its own job
+    (`interpret_web`), so that pair is two jobs and MUST NOT merge - the old
+    input asserted the opposite of the rule. `done` + `sufficient` (both
+    `judge_goal`) exercise the merge the test is about."""
     eng = de.DecisionEngine.__new__(de.DecisionEngine)
     eng._cfg = de.EngineConfig()
     passes: list = []
@@ -141,17 +151,18 @@ def test_the_engine_groups_by_job_and_shared_state(monkeypatch):
     eng._decide_batch_group = _group
     frame = {"goal": "the same turn text"}
     eng.decide_many([
-        ("user_feedback", ["spec", "research"], frame),          # interpret
-        ("web_intent", ["yes", "no"], frame),           # interpret, same state
-        ("done", ["yes", "no"], frame),                 # judge_goal: other job
+        ("done", ["yes", "no"], frame),                 # judge_goal
+        ("sufficient", ["yes", "no"], frame),           # judge_goal, same state
+        ("user_feedback", ["spec", "research"], frame),  # interpret: other job
         ("narration", ["speak_all", "stay_silent"], {"goal": "different text"}),
     ])
     jobs = [s for s, _c in passes]
     assert len(passes) == 3, f"groups must be job+state: {passes}"
-    assert passes[0][1] == ["user_feedback", "web_intent"], (
+    assert passes[0][1] == ["done", "sufficient"], (
         "same job + same state merged into one pass")
-    assert jobs[1] != jobs[0] or True  # judge_goal state text starts "goal"
-    # The different-text narration consult is its own pass.
+    assert jobs[2] == "different text"
+    # The interpret consult is its own pass (a different job).
+    assert passes[1][1] == ["user_feedback"]
 
 
 def test_shadow_many_writes_one_row_per_question_with_its_scope(monkeypatch):
@@ -219,10 +230,13 @@ def test_the_load_counts_questions_while_a_batch_flies(monkeypatch):
     eng._run_inference = lambda fn, **kw: fn()
     monkeypatch.setattr(de, "_oracle_phase_enabled", lambda: False)
     frame = {"goal": "g"}
+    # INPUTS UPDATED 2026-11-01: three consults of ONE job, so they share one
+    # run. The old set used user_feedback twice plus web_intent, but web_intent
+    # now declares its own job and correctly split the run into 2+1.
     out = eng.decide_many([
-        ("user_feedback", ["spec", "research"], frame),
-        ("web_intent", ["yes", "no"], frame),
-        ("user_feedback", ["new_request", "refinement"], frame),
+        ("tool_choice", ["read_file", "edit_file"], frame),
+        ("route_v2", ["read_file", "edit_file"], frame),
+        ("recovery_strategy", ["retry", "escalate"], frame),
     ])
     assert len(out) == 3
     assert during == [3], ("the in-flight counter must count the QUESTIONS "

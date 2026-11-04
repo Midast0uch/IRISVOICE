@@ -11,12 +11,14 @@ The derived key is used for AES-256 encryption of the memory database.
 
 import getpass
 import hashlib
+import json
 import logging
 import os
 import platform
 import socket
 import time
 import uuid as _uuid
+from pathlib import Path
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -366,6 +368,81 @@ def _derive_machine_key(salt: bytes) -> bytes:
     return _derive_from_passphrase(machine_passphrase, salt)
 
 
+# ── Launcher passphrase (key_source="launcher") ──────────────────────────────
+# Owner decision (2026-10-31): at release the launcher supplies the memory
+# passphrase at startup and NO key is cached on the machine. Until then
+# `key_source` stays "keychain" in data/memory_config.json (LIVE = FALSE).
+#
+# "launcher" is FAIL CLOSED: without the phrase the store stays unopenable —
+# no keychain read, no pseudo-key fallback, no silent degradation.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MEMORY_PASSPHRASE_ENV = "IRIS_MEMORY_PASSPHRASE"
+
+# Process-only key, set when the user unlocks memory from the dashboard. It is
+# never written anywhere: a restart in launcher mode starts locked again.
+_SESSION_MEMORY_KEY: Optional[bytes] = None
+
+
+def set_session_memory_key(key: Optional[bytes]) -> None:
+    global _SESSION_MEMORY_KEY
+    _SESSION_MEMORY_KEY = bytes(key) if key else None
+
+
+def clear_session_memory_key() -> None:
+    global _SESSION_MEMORY_KEY
+    _SESSION_MEMORY_KEY = None
+
+
+def session_memory_key() -> Optional[bytes]:
+    return _SESSION_MEMORY_KEY
+
+
+def memory_is_locked(config_path: Optional[str] = None) -> bool:
+    """True when the launcher owns the key and no phrase has been supplied yet."""
+    return memory_key_source(config_path) == "launcher" and session_memory_key() is None
+
+
+def memory_key_source(config_path: Optional[str] = None) -> str:
+    """Return "keychain" (default) or "launcher" from the memory config.
+
+    Any unreadable/unknown value falls back to "keychain", so a broken file can
+    never silently switch the app to a key source that does not exist.
+    """
+    path = Path(config_path) if config_path else (REPO_ROOT / "data" / "memory_config.json")
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — a missing config keeps the dev default
+        return "keychain"
+    source = str(cfg.get("key_source") or "keychain").strip().lower()
+    return source if source in ("keychain", "launcher") else "keychain"
+
+
+def derive_memory_key_from_passphrase(phrase: str) -> bytes:
+    """32-byte memory key from the launcher passphrase.
+
+    Rule (fixed, so a phrase always reopens the same store): lowercase, collapse
+    every run of whitespace to one space, SHA-256 of the UTF-8 bytes. The same
+    rule was used for the 2026-10-31 live store.
+    """
+    normalized = " ".join((phrase or "").split()).lower()
+    return hashlib.sha256(normalized.encode("utf-8")).digest()
+
+
+def _require_launcher_passphrase_key() -> bytes:
+    phrase = (os.environ.get(MEMORY_PASSPHRASE_ENV) or "").strip()
+    if not phrase:
+        raise RuntimeError(
+            "IRIS memory passphrase required: data/memory_config.json sets "
+            'key_source="launcher" and ' + MEMORY_PASSPHRASE_ENV + " is empty. "
+            "The store is encrypted and stays closed without it (no keychain "
+            "or pseudo-key fallback by design)."
+        )
+    logger.info("[Biometric] Memory key derived from the launcher passphrase")
+    return derive_memory_key_from_passphrase(phrase)
+
+
 def initialize_memory_encryption(
     db_path: str = "data/memory.db",
     config_path: str = "data/memory_config.json",
@@ -394,6 +471,19 @@ def initialize_memory_encryption(
         32-byte encryption key
     """
     salt = DEFAULT_SALT
+
+    # 0a. A key unlocked from the dashboard in THIS process (launcher mode).
+    # It is the primary key while the process lives; nothing is persisted.
+    _session = session_memory_key()
+    if _session is not None and not force_pseudo:
+        return _session
+
+    # 0b. Launcher passphrase (release mode, OFF during development).
+    # FAIL CLOSED: no keychain read and no pseudo-key fallback, so the store
+    # cannot open while no phrase is supplied. force_pseudo is ignored on
+    # purpose — a "safety net" that silently decrypts would defeat the mode.
+    if memory_key_source(config_path) == "launcher":
+        return _require_launcher_passphrase_key()
 
     # 0. (Opt-in) Post-Quantum Identity (Dilithium) -> memory key via HKDF.
     # Only active when iris-launcher has provided a Dilithium private key.
@@ -670,7 +760,10 @@ def migrate_memory_db_key(
         )
         _conn = open_encrypted_memory(db_path, _old_key)
         try:
-            _conn.execute(f"PRAGMA rekey='{_new_key.hex()}'")
+            # Raw key form, matching open_encrypted_memory and the exporter:
+            # rekey='<hex>' would treat the hex as a PASSPHRASE (PBKDF2 over
+            # the text) and lock the store against its own opener.
+            _conn.execute(f"PRAGMA rekey=\"x'{_new_key.hex()}'\"")
             _conn.commit()
         finally:
             _conn.close()

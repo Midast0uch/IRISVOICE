@@ -614,7 +614,7 @@ spec and be next."
 | 6 benchmark | built; **AC1b/AC2 bench fidelity + `--words 40` standard re-record in Wave 10** |
 | 7 memory rank | shadow, switch OFF (measured loss: 0.72/0.75/0.56 vs 0.97/1.00/0.96) |
 | 8 observability | built |
-| 9 file recall | W1 + W2 (.pdf/.docx/.xlsx) + cold tier built; W3/W4 (OCR, audio) deferred |
+| 9 file recall | W1 + W2 (.pdf/.docx/.xlsx) + cold tier built; W3/W4 (image OCR, audio/video) DONE 2026-10-31 |
 | 10 two planes | decided, measured, closed negative (λ = 0 kept) |
 | 11 three levels | L1 `thread_context` + L2 `episodes` codec built; L1 region scan deferred (< 150 ms bar) |
 | 12 user fact persistence + m03 + vectorized rescore | **NEW (Wave 10 — execute next before CLM)** |

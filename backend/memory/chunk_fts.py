@@ -258,6 +258,24 @@ def backfill(conn) -> int:
         return 0
 
 
+def _match(conn, phrases: List[str], atoms: List[str], where: str,
+           params: List[object], limit: int) -> List[int]:
+    """Literal pass first, then plain words top up the budget."""
+    rows: List[int] = []
+    if phrases:
+        COUNTERS["literal_queries"] += 1
+        rows = _rows(conn, " OR ".join(phrases), where, params, limit)
+    if len(rows) < limit and atoms:
+        seen = set(rows)
+        for rid in _rows(conn, " OR ".join('"%s"' % a for a in atoms), where, params, limit):
+            if rid not in seen:
+                seen.add(rid)
+                rows.append(rid)
+            if len(rows) >= limit:
+                break
+    return rows
+
+
 def search(conn, query: str, *, session_id: Optional[str] = None,
            chunk_types: Optional[List[str]] = None, zones: Optional[List[str]] = None,
            limit: int = KEYWORD_CANDIDATES) -> List[int]:
@@ -275,18 +293,28 @@ def search(conn, query: str, *, session_id: Optional[str] = None,
     COUNTERS["queries"] += 1
     try:
         where, params = _where(conn, session_id, chunk_types, zones)
-        rows: List[int] = []
-        if phrases:
-            COUNTERS["literal_queries"] += 1
-            rows = _rows(conn, " OR ".join(phrases), where, params, limit)
-        if len(rows) < limit and atoms:
-            seen = set(rows)
-            for rid in _rows(conn, " OR ".join('"%s"' % a for a in atoms), where, params, limit):
-                if rid not in seen:
-                    seen.add(rid)
-                    rows.append(rid)
-                if len(rows) >= limit:
-                    break
+        if not where:
+            rows = _match(conn, phrases, atoms, "", [], limit)
+        else:
+            # POST-FILTER (2026-10-31). Applying the filter inside the FTS join
+            # makes SQLite check EVERY match before it can fill LIMIT: measured
+            # 1.66 s filtered vs 0.009 s unfiltered for a prose query on the
+            # 61k-chunk store, and the recall path runs this leg twice per turn.
+            # Take a wider unfiltered match, then apply the same filter in ONE
+            # indexed lookup over those rowids.
+            wide = max(int(limit) * 8, 200)
+            cand = _match(conn, phrases, atoms, "", [], wide)
+            if cand:
+                marks = ",".join("?" * len(cand))
+                allowed = {
+                    int(r[0]) for r in conn.execute(
+                        f"SELECT rowid FROM context_chunks "
+                        f"WHERE rowid IN ({marks}) {where}",
+                        list(cand) + list(params),
+                    )
+                }
+                cand = [r for r in cand if r in allowed]
+            rows = cand[:limit]
     except Exception as exc:  # noqa: BLE001 - AC4: meaning only, counted
         COUNTERS["missing" if "no such table" in str(exc).lower() else "error"] += 1
         logger.debug("[chunk_fts] keyword recall skipped: %s", exc)

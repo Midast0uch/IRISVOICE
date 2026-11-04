@@ -262,6 +262,34 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
                 action = "confirm" if payload.get("requires_confirmation") else "grant"
                 await ws.send(json.dumps({"type": "notification_response", "payload": {
                     "notification_id": payload.get("request_id", ""), "action": action}}))
+            elif mtype == "turn.part":
+                # The permission request and the question arrive as an
+                # INTERACTION part of the turn, not as a top-level frame
+                # (turn_protocol.py: the event bridge files the interaction
+                # events into the live turn). The harness only answered the
+                # top-level frame, so a destructive command waited for the
+                # full 180 s permission timeout and the turn stalled: c07
+                # took 423 s against a 40.45 s standard (measured 2026-11-02).
+                part = payload.get("part") or {}
+                if part.get("type") != "interaction":
+                    continue
+                event = part.get("event")
+                data = part.get("data") or {}
+                if event == "permission:request":
+                    record["permissions"] += 1
+                    action = "confirm" if data.get("requires_confirmation") else "grant"
+                    await ws.send(json.dumps({"type": "notification_response", "payload": {
+                        "notification_id": data.get("request_id", ""), "action": action}}))
+                elif event == "question:ask":
+                    record["questions"] += 1
+                    questions = data.get("questions") or [data]
+                    for q in questions:
+                        options = q.get("options") or []
+                        answer = options[0] if options else "Use your best judgement and continue."
+                        if isinstance(answer, dict):
+                            answer = answer.get("label") or answer.get("value") or str(answer)
+                        await ws.send(json.dumps({"type": "question_response", "payload": {
+                            "question_id": q.get("question_id", ""), "answer": str(answer)}}))
             elif mtype == "question:ask":
                 record["questions"] += 1
                 questions = payload.get("questions") or [payload]
@@ -364,11 +392,11 @@ def _retire_taught_facts(fact_template: str) -> int:
             sys.path.insert(0, _root)
 
         from backend.memory.config import resolve_memory_store_path
-        from backend.memory.db import app_flush, app_write
+        from backend.memory.db import app_flush, app_memory_key, app_write
         from backend.memory.episodic import EpisodicStore
 
         st = EpisodicStore(db_path=str(resolve_memory_store_path()),
-                           biometric_key=b"\0" * 32)
+                           biometric_key=app_memory_key())
         removed = 0
         ids = [r[0] for r in st.db.execute(
             "SELECT rowid FROM context_chunks WHERE content LIKE ?", (like,))]
@@ -435,12 +463,40 @@ def _retire_eval_chats() -> int:
 
         con = sqlite3.connect(str(db))
         try:
+            ids = [r[0] for r in con.execute(
+                "SELECT id FROM conversations WHERE title LIKE '[eval%'").fetchall()]
             n = con.execute(
                 "SELECT count(*) FROM messages WHERE conversation_id IN "
                 "(SELECT id FROM conversations WHERE title LIKE '[eval%')"
             ).fetchone()[0]
             if not n:
                 return 0
+            # The T42 user-turn row carries thread_id = CONVERSATION id and no
+            # session id (measured 2026-10-31), so the memory cleanup cannot find
+            # it by 'eval-%'. Delete those chain rows while the ids are known,
+            # or a finished eval's last fact keeps answering the next probe.
+            if ids:
+                try:
+                    _root = str(Path(__file__).resolve().parents[1])
+                    if _root not in sys.path:
+                        sys.path.insert(0, _root)
+                    from backend.memory.config import resolve_memory_store_path
+                    from backend.memory.db import app_flush, app_memory_key, app_write
+                    from backend.memory.episodic import EpisodicStore
+
+                    st = EpisodicStore(
+                        db_path=str(resolve_memory_store_path()),
+                        biometric_key=app_memory_key(),
+                    )
+                    marks = ",".join("?" * len(ids))
+                    app_write(
+                        st.db,
+                        f"DELETE FROM memory_chain WHERE thread_id IN ({marks})",
+                        tuple(ids),
+                    )
+                    app_flush(10.0)
+                except Exception as _mc_exc:  # noqa: BLE001 - hygiene, logged
+                    log.warning("retire eval chain rows failed: %r", _mc_exc)
             con.execute(
                 "DELETE FROM messages WHERE conversation_id IN "
                 "(SELECT id FROM conversations WHERE title LIKE '[eval%')")
@@ -468,11 +524,11 @@ def _retire_eval_memory() -> int:
         if _root not in sys.path:
             sys.path.insert(0, _root)
         from backend.memory.config import resolve_memory_store_path
-        from backend.memory.db import app_flush, app_write
+        from backend.memory.db import app_flush, app_memory_key, app_write
         from backend.memory.episodic import EpisodicStore
 
         st = EpisodicStore(db_path=str(resolve_memory_store_path()),
-                           biometric_key=b"\0" * 32)
+                           biometric_key=app_memory_key())
         removed = 0
         for table, col in (
             ("context_chunks", "session_id"),
@@ -530,7 +586,13 @@ def _run_hidden_tests(task: dict, workdir: Path) -> tuple:
 
 def _prepare_workdir(task: dict, run_dir: Path) -> Path:
     workdir = run_dir / task["id"]
-    shutil.copytree(FIXTURES_DIR / task["id"] / "repo", workdir)
+    src = FIXTURES_DIR / task["id"] / "repo"
+    if not src.exists():
+        # The calibration traffic shares ONE repo: a distinct decision row
+        # comes from a distinct PROMPT, not from a distinct workdir, so 240
+        # copies of the same small project are wasted disk and time.
+        src = FIXTURES_DIR / "_calibration" / "repo"
+    shutil.copytree(src, workdir)
     return workdir
 
 
@@ -610,8 +672,16 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 current_mode = task["mode"]
             log.info("[%d/%d] %s (%s, %s)", i, len(tasks), task["id"], task["group"], task["mode"])
 
-            workdir = _prepare_workdir(task, run_dir) if task["group"] == "coding" else None
-            before = _repo_status() if task["group"] == "coding" else set()
+                    # The dev_cli path BINDS a workdir (the agent edits files there), so the
+            # workdir follows the PATH, not the group: the calibration traffic is a
+            # dev_cli group and got "Workdir does not exist: None" (measured
+            # 2026-11-02, 100 no-op tasks).
+            workdir = _prepare_workdir(task, run_dir) if task.get("path") == "dev_cli" else None
+            # The leak check needs the SAME baseline rule as the workdir: a task
+            # that binds a workdir can touch the repo, so the baseline is the repo
+            # status before THAT task. With an empty baseline the check reported
+            # the whole repo status as a leak (measured 2026-11-02: 4990 files).
+            before = _repo_status() if workdir is not None else set()
 
             # Memory-group hygiene (2026-10-28, from the first A/B): each run
             # teaches a FRESH fact. Repeated runs against the live store taught
@@ -838,7 +908,7 @@ def _summary(results: list) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRIS execution pass-rate harness")
     ap.add_argument("--group", action="append",
-                    choices=["coding", "research", "browser", "browser_goal", "memory"], default=[])
+                    choices=["coding", "research", "browser", "browser_goal", "memory", "calibration"], default=[])
     ap.add_argument("--task", action="append", default=[], help="task id (repeatable)")
     ap.add_argument("--record-baseline", action="store_true")
     ap.add_argument("--record-standard", action="store_true",

@@ -53,9 +53,17 @@ sqlite3* DBManager::open_connection() {
 
     #ifdef SQLCIPHER_AVAILABLE
     if (has_key_) {
-        rc = sqlite3_key(db, encryption_key_, 32);
+        // RAW key form, matching the Python opener (2026-10-31). sqlite3_key()
+        // treats its input as a PASSPHRASE and runs PBKDF2; a store written
+        // with PRAGMA key = "x'<hex>'" (raw 32 bytes) cannot be opened that
+        // way — measured as "file is not a database".
+        std::string key_pragma = "PRAGMA key = \"x'" + key_hex_ + "'\";";
+        char* key_err = nullptr;
+        rc = sqlite3_exec(db, key_pragma.c_str(), nullptr, nullptr, &key_err);
         if (rc != SQLITE_OK) {
-            std::cerr << "[DB] Key derivation failed: " << sqlite3_errmsg(db) << std::endl;
+            std::cerr << "[DB] Key apply failed: "
+                      << (key_err ? key_err : "unknown") << std::endl;
+            sqlite3_free(key_err);
             sqlite3_close(db);
             return nullptr;
         }
@@ -87,6 +95,7 @@ sqlite3* DBManager::open_connection() {
 
 int DBManager::initialize(const std::string& db_path, const std::string& key_hex) {
     db_file_path_ = db_path;
+    key_hex_ = key_hex;
 
     if (hex_to_bytes(key_hex, encryption_key_) == 0) {
         has_key_ = true;

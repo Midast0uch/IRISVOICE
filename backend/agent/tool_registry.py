@@ -82,6 +82,12 @@ class ToolSpec:
     # The tool enforces its own consent (browser_* run every action through the
     # click-safety gate), so the generic permission prompt never fires for it.
     self_gated: bool = False
+    # CHAT-only mode gate: the chat menu offers this tool only in developer
+    # mode. The DER registry still lists it in personal mode (that behaviour
+    # predates this flag and is unchanged). Pinned by
+    # tests/unit/test_chat_tools_include_ripgrep.py and
+    # tests/contract/test_tool_menu_parity_contract.py.
+    developer_only: bool = False
 
 
 # ── Registry storage ────────────────────────────────────────────────────────
@@ -286,8 +292,22 @@ ORACLE_HINTS: Dict[str, str] = {
     "recall_memory": "Look up what was said or learned in earlier conversations",
     "create_artifact": "Hand the user a finished report, file or page with a title",
     # The menu's two control labels (tool_decision._DE_DELEGATE / _DE_NONE).
-    "DELEGATE": "Not sure - let the model choose the tool",
-    "NONE": "No tool - the step is already done",
+    # MEASURED 2026-11-03 (replay of 250 recorded d1-2B states): the old
+    # line ("Not sure - let the model choose the tool") made DELEGATE the
+    # model's answer whenever it hesitated - 56 of the disagreements were
+    # DELEGATE picks where the Brain had used a real tool (edit_file 21,
+    # run_command 19, read_file 16). The line now says WHEN to delegate.
+    # The two control labels carry NO hint (measured 2026-11-03): any text
+    # that describes DELEGATE as a fallback ("not sure - let the model
+    # choose") pulls the model to it. Replay of 250 recorded d1-2B states:
+    # with the invitation 56 of the disagreements were DELEGATE picks and
+    # the agreement was 0.632; with a narrower invitation it was 75 picks
+    # and 0.540; with NO text (the bare name, as the descriptions variant
+    # does) there were ZERO DELEGATE disagreements, the agreement was 0.700
+    # and the out-of-fold AUROC was 0.7104.
+    #
+    # NONE is bare too: with its line the agreement fell to 0.672 and the
+    # out-of-fold AUROC to 0.7212 (measured on the same 250 states).
 }
 
 
@@ -778,7 +798,8 @@ def register_builtin_tools() -> None:
                 "max_results": {"type": "integer", "description": "Result cap (default 100); truncation is reported", "optional": True},
                 "no_ignore": {"type": "boolean", "description": "Search ignored files too (.gitignore opt-out)", "optional": True},
             },
-            category="file", executor="dev", permission_tier="read_only", parallel_safe=True,
+            category="file", executor="dev", permission_tier="read_only",
+            parallel_safe=True, developer_only=True,
             critical=True,
         ),
         ToolSpec(
@@ -793,7 +814,8 @@ def register_builtin_tools() -> None:
                 "max_results": {"type": "integer", "description": "Result cap (default 200); truncation is reported", "optional": True},
                 "no_ignore": {"type": "boolean", "description": "Search ignored files too (.gitignore opt-out)", "optional": True},
             },
-            category="file", executor="dev", permission_tier="read_only", parallel_safe=True,
+            category="file", executor="dev", permission_tier="read_only",
+            parallel_safe=True, developer_only=True,
         ),
         ToolSpec(
             name="get_system_info",

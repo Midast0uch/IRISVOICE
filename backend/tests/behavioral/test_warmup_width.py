@@ -80,18 +80,19 @@ class TestWarmupAtEffectiveCap:
         STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface REQ-1
         AC1.1/AC1.4): the hand-rolled `/completion` letter renderer
         (`D1Backend._render`) is RETIRED from scoring and replaced by the native
-        named-criteria question (`_question_choice`). The property this test
-        protects - the prompt grows with the option count - is unchanged, so the
-        assertion moves to the new renderer. The RIPPLE map did not list this
-        file; recorded as a gap in the Wave 2 notes."""
-        two = D1Backend._question_choice(
-            "warm goal", "pick a tool", {}, ["NONE", "DELEGATE"])
-        six = D1Backend._question_choice(
-            "warm goal", "pick a tool", {},
+        named-criteria question. The property this test protects - the request
+        grows with the option count - is unchanged, so the assertion moves to
+        the new renderer. NATIVE READOUT (2026-11-01): `_question_choice` is
+        gone with the letter readout; the same property now lives in
+        `_native_question`, whose `criteria` carries one entry per option."""
+        two = D1Backend._native_question(
+            "choice", "pick a tool", ["NONE", "DELEGATE"], {})
+        six = D1Backend._native_question(
+            "choice", "pick a tool",
             ["WARM_LABEL_0", "WARM_LABEL_1", "WARM_LABEL_2", "WARM_LABEL_3",
-             "NONE", "DELEGATE"],
+             "NONE", "DELEGATE"], {},
         )
-        assert len(six) > len(two), (
-            "a 6-option menu did not produce a longer prompt than a 2-option "
-            "one — the warm-up width would not matter and AC30.4 is moot"
+        assert len(six["criteria"]) > len(two["criteria"]), (
+            "a 6-option menu did not produce a longer question than a 2-option "
+            "one - the warm-up width would not matter and AC30.4 is moot"
         )

@@ -25,7 +25,7 @@ import json
 import re
 import threading
 from collections import OrderedDict
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, List, Optional, Tuple
 
 # Owner bound, final reading (2026-09-25). Earlier the same day: "task cards only
 # appear for 3 more steps with tools" and "not have task cards pop up for things
@@ -181,6 +181,75 @@ def strip_leading_answer_marker(text: str) -> str:
     start of the text, once; a marker mid-text is prose and stays.
     """
     return _ANSWER_MARKER_RE.sub("", text or "", count=1)
+
+
+# D3 (2026-10-31): the reply once said "Done - I've wiped your locker code
+# from memory" while the pin was still in the store and NO tool ran. A memory
+# deletion is only true when the turn performed one, so this guard rewrites
+# the claim. It is deliberately narrow: a sentence must carry an explicit
+# memory word AND a deletion verb. "I deleted the temp file" is a file
+# deletion and must never be touched.
+_MEMORY_DELETION_VERB_RE = re.compile(
+    r"\b(?:delet(?:e|es|ed|ing)|remov(?:e|es|ed|ing)|wip(?:e|es|ed|ing)"
+    r"|eras(?:e|es|ed|ing)|purg(?:e|es|ed|ing)|clear(?:s|ed|ing)?)\b",
+    re.IGNORECASE,
+)
+_MEMORY_NOUN_RE = re.compile(r"\b(?:memory|memories)\b", re.IGNORECASE)
+# Only in the 24 characters before the verb: "I have not deleted ... from
+# memory" is a truthful denial, not a claim.
+_NEGATION_RE = re.compile(r"\b(?:not|never|n't)\b", re.IGNORECASE)
+# A sentence starts on a non-space character so the separating whitespace
+# stays in the rebuilt text.
+_SENTENCE_RE = re.compile(r"[^\s.!?\n][^.!?\n]*[.!?]*")
+_HONEST_MEMORY_DELETE = (
+    "I did not delete anything from memory: no memory-delete tool ran."
+)
+
+
+def _is_memory_deletion_claim(sentence: str) -> bool:
+    if not _MEMORY_NOUN_RE.search(sentence):
+        return False
+    verb = _MEMORY_DELETION_VERB_RE.search(sentence)
+    if verb is None:
+        return False
+    window = sentence[max(0, verb.start() - 24):verb.start()]
+    return _NEGATION_RE.search(window) is None
+
+
+def _rewrite_deletion_claims(text: str) -> Tuple[str, int]:
+    pieces: List[str] = []
+    last = 0
+    hits = 0
+    for match in _SENTENCE_RE.finditer(text):
+        if not _is_memory_deletion_claim(match.group(0)):
+            continue
+        pieces.append(text[last:match.start()])
+        pieces.append(_HONEST_MEMORY_DELETE)
+        last = match.end()
+        hits += 1
+    if not hits:
+        return text, 0
+    pieces.append(text[last:])
+    return "".join(pieces), hits
+
+
+def enforce_memory_deletion_claims(
+    display: str, spoken: Optional[str], *, delete_ran: bool
+) -> Tuple[str, str, int]:
+    """Rewrite a memory-deletion claim that no tool performed (D3).
+
+    ``delete_ran`` is the turn's evidence: a ``forget`` call that reported
+    ``success`` and ``deleted``. When it is true the text is returned unchanged
+    because the claim is true. When it is false every claiming sentence in the
+    display text AND the spoken line is replaced by :data:`_HONEST_MEMORY_DELETE`.
+
+    Returns ``(display, spoken, claims_rewritten)``.
+    """
+    if delete_ran:
+        return display or "", spoken or "", 0
+    fixed_display, display_hits = _rewrite_deletion_claims(display or "")
+    fixed_spoken, spoken_hits = _rewrite_deletion_claims(spoken or "")
+    return fixed_display, fixed_spoken, display_hits + spoken_hits
 
 
 def card_title_from_content(content: Optional[str]) -> str:

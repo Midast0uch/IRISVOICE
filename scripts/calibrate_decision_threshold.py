@@ -38,9 +38,13 @@ from pathlib import Path
 REFUSE_BELOW = 50
 ACCURACY_TARGET = 0.90
 
+# The live store is SQLCipher-encrypted: plain sqlite3 cannot read it.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from backend.memory.db import open_store_read_only  # noqa: E402
+
 
 def _connect(db: str) -> sqlite3.Connection:
-    c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    c = open_store_read_only(db)
     c.row_factory = sqlite3.Row
     return c
 

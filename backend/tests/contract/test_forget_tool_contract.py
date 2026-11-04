@@ -190,3 +190,55 @@ def test_forget_is_registered_and_not_offered_inside_a_node():
     assert spec is not None, "the model cannot call a tool that is not registered"
     assert spec.permission_tier == "side_effect"
     assert "forget" not in NODE_TOOLS, "a DER step must not delete user facts"
+
+
+def test_forget_stales_agent_rows_that_quote_the_value_too(tmp_path):
+    """DEFECT (measured 2026-10-31 on the live store): the chain holds 211
+    ``user_turn`` rows but 3,741 agent rows, 1,028 ``step`` rows and 113
+    ``sub_loop`` rows with text — and the scrub staled ONLY ``user_turn``. A
+    value the assistant echoed ("your locker code is ...") or a plan step that
+    repeated it therefore survived the forget, and ``run_filtered_recall``
+    reads those rows. B (owner, 2026-10-31): the chain IS the memory, so the
+    scrub covers the whole chain, not one node type."""
+    conn = _make_app_db(tmp_path)
+    _remember_memory_payload(conn, "locker code", VALUE)
+    _teach_in_chain(conn, f"Remember: my locker code is {VALUE}.")
+    conn.execute(
+        "INSERT INTO memory_chain (thread_id, role, insight, node_type) "
+        "VALUES ('conv-1', 'agent', ?, NULL)",
+        (f"Your locker code is {VALUE}.",),
+    )
+    conn.execute(
+        "INSERT INTO memory_chain (thread_id, role, insight, node_type) "
+        "VALUES ('conv-1', 'assistant', ?, 'step')",
+        (f"Recall the locker code {VALUE} from memory.",),
+    )
+    conn.commit()
+
+    out = _forget_memory_payload(conn, "locker code")
+
+    assert out["chain_rows_staled"] == 3
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memory_chain WHERE stale = 0"
+    ).fetchone()[0] == 0, "a row that quotes the value still reaches recall"
+
+
+def test_forget_does_not_stale_a_row_that_only_looks_like_the_value(tmp_path):
+    """A LIKE pattern is not a literal. ``_`` matches any character, so the old
+    ``content LIKE '%abc_def%'`` also staled a row holding ``abcXdef`` — the app
+    forgot a fact the user never asked it to forget."""
+    conn = _make_app_db(tmp_path)
+    _remember_memory_payload(conn, "locker code", "abc_def")
+    _teach_in_chain(conn, "my locker code is abc_def")
+    conn.execute(
+        "INSERT INTO memory_chain (thread_id, role, insight, node_type) "
+        "VALUES ('conv-1', 'user', 'the project code is abcXdef', 'user_turn')"
+    )
+    conn.commit()
+
+    out = _forget_memory_payload(conn, "locker code", "abc_def")
+
+    assert out["chain_rows_staled"] == 1
+    assert conn.execute(
+        "SELECT stale FROM memory_chain WHERE insight LIKE '%abcXdef%'"
+    ).fetchone()[0] == 0, "an unrelated fact was staled by a wildcard match"

@@ -38,6 +38,91 @@ except Exception:
 base_dir = Path(__file__).parent.resolve()
 os.chdir(base_dir)
 
+# A native crash (an access violation in a C extension) leaves NO traceback:
+# the process dies with 0xC0000005 and the log has nothing (measured
+# 2026-11-02, the backend died during the eval and the cause was unknown).
+# faulthandler catches Windows fatal exceptions and writes the stack of every
+# thread to a file, so the next crash says WHERE it happened.
+try:
+    import faulthandler
+
+    _fh_path = base_dir / "logs" / "faulthandler_backend.log"
+    _fh_path.parent.mkdir(parents=True, exist_ok=True)
+    faulthandler.enable(
+        file=_fh_path.open("a", encoding="utf-8"), all_threads=True
+    )
+    # NOTE: faulthandler.enable() keeps ONE file handler. The crash handler
+    # further down (logs/crash_traceback.log) replaces this one, so this file
+    # stays empty. The confirmation print lives with the crash handler.
+except Exception:  # noqa: BLE001 - a missing dump must never block the start
+    pass
+
+# ── The memory store needs SQLCipher ─────────────────────────────────────────
+# The live store (D:/IRIS/store/memory.db) is encrypted and can only be opened
+# with the `sqlcipher3` module. The SYSTEM python on this machine does not have
+# it; the project venv does. Started on the system python the backend runs
+# WITHOUT memory: every ledger row is refused ("ffi_init_engine() was never
+# called, so there is no engine at all") and the Oracle calibration rows
+# cannot be read by the tooling either.
+#
+# So: if this interpreter cannot import sqlcipher3 and the project venv can,
+# run the backend under the venv. One re-exec, then the real interpreter runs.
+if not os.environ.get("IRIS_BACKEND_REEXEC_DONE"):
+    try:
+        import sqlcipher3  # noqa: F401
+
+        _HAS_SQLCIPHER = True
+    except Exception:
+        _HAS_SQLCIPHER = False
+    if not _HAS_SQLCIPHER:
+        _venv_py = base_dir / ".venv" / "Scripts" / "python.exe"
+        if _venv_py.exists():
+            import subprocess
+
+            os.environ["IRIS_BACKEND_REEXEC_DONE"] = "1"
+            print(
+                "[start-backend] sqlcipher3 is missing in this interpreter; "
+                "re-running under the project venv (%s) so the encrypted "
+                "memory store can be opened." % _venv_py,
+                flush=True,
+            )
+            _proc = subprocess.Popen(
+                [str(_venv_py), str(Path(__file__).resolve()), *sys.argv[1:]]
+            )
+            try:
+                _code = _proc.wait()
+            except KeyboardInterrupt:
+                _proc.terminate()
+                _code = 130
+            # A Windows exit code can be UNSIGNED (0xC0000005 = an access
+            # violation = 3221225477) and os._exit takes a C int: passing the
+            # raw code raised OverflowError and the wrapper died with a
+            # traceback instead of the child's status.
+            #
+            # The exit code is also RECORDED: the manager detaches, so nobody
+            # sees the status, and three crashes left no trace at all
+            # (measured 2026-11-02, 00:00 / 03:38 / 09:02).
+            try:
+                import json as _json
+                import time as _time
+
+                _exit_file = base_dir / "logs" / "backend_exit.json"
+                _exit_file.parent.mkdir(parents=True, exist_ok=True)
+                _exit_file.write_text(
+                    _json.dumps(
+                        {
+                            "exit_code": _code,
+                            "at": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            except Exception:  # noqa: BLE001 - the record never blocks the exit
+                pass
+            os._exit(_code if 0 <= _code < 256 else 1)
+
+
 # ── Optional: periodic all-thread stack dump for diagnosing silent hangs ─────
 # Off unless IRIS_FAULTHANDLER_DUMP is set to a positive number of seconds.
 # A wedged worker thread (e.g. a DER step blocked inside asyncio.run, or an
@@ -79,6 +164,13 @@ try:
                     f"pid {os.getpid()} ===\n")
     _crash_fh.flush()
     _fh_crash.enable(file=_crash_fh, all_threads=True)
+    # Say so: a crash leaves an EMPTY dump file when the handler was never
+    # installed, and the two cases look the same from the outside.
+    print(
+        "[start-backend] crash dump handler -> logs/crash_traceback.log (pid %s)"
+        % os.getpid(),
+        flush=True,
+    )
 except Exception as _fh_crash_exc:  # never let a diagnostic block startup
     print(f"   Crash traceback handler skipped: {_fh_crash_exc}")
 

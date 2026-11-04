@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Export outcome-checked tool decisions as d1 fine-tuning examples (2026-10-11).
 
-Each example is EXACTLY the prompt d1 reads (the reference shape: manual
-im_start markup, the state, QUESTION, coded options with the tools' decision
-lines, "Reply with the option code only.") and the target option CODE of a
-tool call that WORKED:
+Each example is the NATIVE Decision Index request d1-2B reads (2026-11-01):
+the recorded state, the typed `choice` question with the menu's decision lines
+as criteria, and the target option LABEL of a tool call that WORKED:
 
   * an Oracle-decided row (criteria_version tc-decide-*) whose call held
     (outside_label True) -> target = d1's own pick;
@@ -14,6 +13,11 @@ tool call that WORKED:
 A call that failed, was overridden or never happened is NOT a target (a failed
 call is not evidence of the right tool). Rows without the replay `state` key
 cannot be rendered and are skipped. Read-only on the store; writes one JSONL.
+
+The format changed with the d1-2B swap: the hand-built prompt and letter code
+are gone (the server renders the template from the GGUF). `finetune_d1_lora.py`
+consumes the OLD format and refuses this one — a 2B fine-tune must train the
+model's own systemone template.
 
 Usage:
     python scripts/export_tool_choice_training.py --out data/training/tool_choice.jsonl
@@ -35,8 +39,9 @@ for p in (str(_REPO), str(_REPO / "scripts")):
 
 from _app_store import app_store_path  # noqa: E402
 
-from backend.agent.decision_backend_d1 import D1Backend, _option_codes  # noqa: E402
+from backend.agent.decision_backend_d1 import D1Backend  # noqa: E402
 from backend.agent.tool_registry import oracle_hint, resolve_tool  # noqa: E402
+from backend.memory.db import open_store_read_only  # noqa: E402
 
 INSTRUCTION = "Which tool should handle this request?"
 
@@ -50,7 +55,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="data/training/tool_choice.jsonl")
     args = ap.parse_args()
-    c = sqlite3.connect(f"file:{app_store_path()}?mode=ro", uri=True)
+    c = open_store_read_only(app_store_path())
     seen, kept, why = set(), [], collections.Counter()
     for (p,) in c.execute("SELECT interaction_payload FROM system_events "
                           "WHERE event_type='tool_execution'"):
@@ -83,11 +88,11 @@ def main() -> int:
             why["duplicate"] += 1
             continue
         seen.add(key)
-        codes = _option_codes(menu)
-        text = D1Backend._question_choice(state, INSTRUCTION,
-                                          {n: _hint(n) for n in menu}, menu)
-        kept.append({"prompt": D1Backend._decision_prompt(text),
-                     "completion": codes[menu.index(target)],
+        question = D1Backend._native_question(
+            "choice", INSTRUCTION, menu, {n: _hint(n) for n in menu}
+        )
+        kept.append({"state": state, "question": question,
+                     "target": target,
                      "tool": target, "source": cv, "menu_fp": d.get("menu_fp")})
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

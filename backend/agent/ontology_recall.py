@@ -564,6 +564,16 @@ def turn_start_prior_memory(conn, goal: str, thread_id: Optional[str] = None) ->
     if not TURN_START_RECALL or not goal or not str(goal).strip():
         return []
     try:
+        # The PREVIOUS turn's user row may still sit on the one writer: this
+        # read DECIDES on it (the newest taught fact must win). Drain first,
+        # bounded — a drained queue costs a lock and a condition check.
+        # Measured 2026-10-31: without it, BT-W10-2 answered the older fact.
+        try:
+            from backend.memory.db import app_flush
+
+            app_flush(2.0)
+        except Exception:  # noqa: BLE001 - the read still runs on the settled rows
+            pass
         t0 = time.perf_counter()
         rows = run_filtered_recall(
             conn, RecallFilters(thread_id=thread_id, limit=CANDIDATE_POOL)

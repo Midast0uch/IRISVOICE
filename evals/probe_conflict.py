@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 from evals.run_evals import (  # noqa: E402
     _http,
     _retire_eval_chats,
+    _retire_eval_memory,
     _retire_taught_facts,
     _run_turn,
 )
@@ -31,11 +32,30 @@ from evals.run_evals import (  # noqa: E402
 async def main() -> int:
     run = uuid.uuid4().hex[:6]
     a, b = f"fern-alpha-{run}", f"fern-bravo-{run}"
+    # Start from a clean store: a memory-eval run leaves its OWN taught fact
+    # behind (m03's "fern-green-..."), and the probe does not teach that prefix,
+    # so a probe run straight after the eval answered the eval's fact instead of
+    # the newer one (measured 2026-10-31, three FAILs in a row). The gate is
+    # about ordering between THIS run's two facts, not about leftover state.
+    try:
+        _retire_eval_memory()
+        _retire_eval_chats()
+        # A CRASHED earlier probe never runs its cleanup, and its fact then
+        # outranks this run's newest one (measured 2026-10-31: three runs all
+        # answered the same stale "fern-alpha-9ec968"). Clear the whole prefix.
+        for _prefix in ("fern-alpha-", "fern-bravo-"):
+            _retire_taught_facts(_prefix)
+    except Exception as exc:  # noqa: BLE001 - cleanup never decides the probe
+        print("pre-clean failed", repr(exc))
     convs: dict[str, str] = {}
+    # Titles carry the run id: POST /api/conversations with a title that already
+    # exists can hand back the OLD conversation, and its history then repeats the
+    # previous run's answer (measured 2026-10-31: three runs answered the same
+    # stale "fern-alpha-9ec968" while their own facts differed).
     for key, title in (
-        ("a", "[eval-seed] conflict-a"),
-        ("b", "[eval-seed] conflict-b"),
-        ("ask", "[eval] conflict-ask"),
+        ("a", f"[eval-seed] conflict-a {run}"),
+        ("b", f"[eval-seed] conflict-b {run}"),
+        ("ask", f"[eval] conflict-ask {run}"),
     ):
         conv = _http("POST", "/api/conversations", {"title": title}, timeout=90)
         convs[key] = conv.get("id") or conv.get("conversation_id")

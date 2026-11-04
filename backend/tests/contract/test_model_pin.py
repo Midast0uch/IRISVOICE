@@ -33,7 +33,7 @@ class TestModelIdentity:
         """The identity names the VARIANT (quant token included), so a
         different quant of the same model can never inherit a threshold."""
         bid = D1Backend().backend_id
-        assert bid == "d1-3b-ad-q4_k_m", bid
+        assert bid == "d1-2b-q4_k_m", bid
         assert "q4_k_m" in bid, "the quant token IS the identity (AC22.1)"
 
     def test_model_hash_is_a_stable_file_fingerprint(self):

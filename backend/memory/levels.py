@@ -51,10 +51,16 @@ def ensure_schema(conn) -> None:
 
 
 def _write(conn, sql, params=()):
-    if owns_store(conn):
-        app_write(conn, sql, params)
-    else:
-        conn.execute(sql, params)
+    """One writer, ALWAYS through app_write.
+
+    This used to fall back to a bare ``conn.execute`` when the native writer did
+    not own the file - with NO commit, so an entire backfill (3,166 thread rows,
+    232 episode vectors) vanished when the process exited while the same process
+    reported the rows it had just written (measured 2026-11-01, after the
+    encrypted store gave the connection a store_path). app_write commits on both
+    paths.
+    """
+    app_write(conn, sql, params)
 
 
 def _centroid(rows) -> tuple:
@@ -179,6 +185,7 @@ if __name__ == "__main__":
     import sys
 
     sys.path.insert(0, r"C:\dev\IRISVOICE")
+    from backend.memory.db import app_memory_key
     from backend.memory.episodic import EpisodicStore
 
     ap = argparse.ArgumentParser()
@@ -186,6 +193,7 @@ if __name__ == "__main__":
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--episodes", action="store_true")
     a = ap.parse_args()
-    st = EpisodicStore(db_path=a.db, biometric_key=b"\0" * 32)
+    # The store is encrypted (2026-10-31): a hardcoded zero key fails on it.
+    st = EpisodicStore(db_path=a.db, biometric_key=app_memory_key())
     print(json.dumps(backfill(st.db, dry_run=a.dry_run, episodes=a.episodes), indent=2))
     print(json.dumps(report(st.db), indent=2))

@@ -134,11 +134,57 @@ CADUCEAN_RECOMMEND_COMPRESS = 1
 CADUCEAN_RECOMMEND_CONTINUE = 2
 CADUCEAN_RECOMMEND_TOPO_VIOLATION = 3  # NEW in v2
 
+# Kept alive for the process lifetime: dropping the handle removes the DLL
+# search directory again (os.add_dll_directory, Python 3.8+ on Windows).
+_DLL_DIR_HANDLES: list = []
+
+
+class _SerializedLib:
+    """ONE LOCK around every ctypes call into iris_core.dll.
+
+    ctypes releases the GIL for the duration of a foreign call, so two Python
+    threads can be inside the C++ core at the same time. The core is a
+    single-threaded engine (its own writer thread on the C side), and the
+    access violations the backend died with (0xC0000005, four times on
+    2026-11-02, each right after a store write, no Python traceback, no
+    faulthandler dump) are exactly the shape of unsynchronized native state.
+    One process-wide lock makes every call from Python atomic. The queued
+    writes were already serialized on the native writer thread, so the added
+    cost lands on the direct read/ingest path only.
+    """
+
+    def __init__(self, lib: "ctypes.CDLL", lock) -> None:
+        self.__dict__["_raw"] = lib
+        self.__dict__["_lock"] = lock
+
+    def __getattr__(self, name: str):
+        target = getattr(self.__dict__["_raw"], name)
+        if not callable(target):
+            return target
+        lock = self.__dict__["_lock"]
+
+        def _serialized(*args, **kwargs):
+            with lock:
+                return target(*args, **kwargs)
+
+        return _serialized
+
 
 class _IrisFFI:
     """Thin ctypes wrapper around iris_core C-API."""
 
     def __init__(self, dll_path: str):
+        # iris_core.dll imports e_sqlcipher.dll (SQLCipher 4, FTS5). Windows
+        # does NOT search the loaded module's own directory for its imports, so
+        # the directory must be added explicitly or the load fails and the app
+        # silently falls back to Python (2026-10-31).
+        if os.name == "nt":
+            try:
+                _add = getattr(os, "add_dll_directory", None)
+                if _add is not None:
+                    _DLL_DIR_HANDLES.append(_add(str(Path(dll_path).parent)))
+            except Exception as _dd_exc:  # noqa: BLE001 — the load reports it
+                logger.debug("[iris_ffi] add_dll_directory failed: %s", _dd_exc)
         self._lib = ctypes.CDLL(dll_path)
 
         # --- Lifecycle ---
@@ -288,6 +334,13 @@ class _IrisFFI:
             ctypes.c_double,
         ]
         self._lib.simulate_trajectories_to_db.restype = ctypes.c_int
+
+        # Serialize every call (see _SerializedLib). Installed LAST, after the
+        # argtypes setup above, so the setup itself is untouched.
+        import threading as _threading
+
+        self._call_lock = _threading.Lock()
+        self._lib = _SerializedLib(self._lib, self._call_lock)
 
     # Wrapper methods with encoding
     def init_core_engine(self, db_path: str, key_hex: str) -> int:
@@ -1069,25 +1122,82 @@ class _PythonFallbackEngine:
         ]
 
     def immortus_chain_keep_latest(self, thread_id: str, keep_count: int) -> int:
+        """Delete a thread's chain rows beyond ``keep_count``.
+
+        Returns the number of rows that are ACTUALLY gone after the write
+        lands; -1 means the purge did not happen. It used to return
+        ``total - keep_count`` (a plan, not an observation), so a write that
+        never landed still looked like a purge.
+
+        Rows are selected by ``rowid``, not ``chain_id``: the live store has
+        1,820 rows with a NULL chain_id, and ``chain_id NOT IN (...)`` is NULL
+        for every one of them (so those rows were never deleted), while one
+        chain_id is duplicated (so its twin could be deleted by mistake).
+        """
         if not self._conn:
             return -1
         from backend.memory.db import app_flush, app_write
 
-        # One writer: the deleted count is not known when the delete is
-        # queued, so report rows beyond keep_count (flush: queued appends
-        # must be counted). The only caller ignores the value.
+        # Queued appends must be counted, and the queued DELETE must land
+        # before the "after" count decides whether the purge worked.
         app_flush()
         total = self._conn.execute(
             "SELECT COUNT(*) FROM memory_chain WHERE thread_id = ?", (thread_id,)
         ).fetchone()[0]
         app_write(
             self._conn,
-            "DELETE FROM memory_chain WHERE thread_id = ? AND chain_id NOT IN "
-            "(SELECT chain_id FROM memory_chain WHERE thread_id = ? "
-            "ORDER BY created_at DESC LIMIT ?)",
-            (thread_id, thread_id, keep_count),
+            "DELETE FROM memory_chain WHERE rowid IN ("
+            "SELECT rowid FROM memory_chain WHERE thread_id = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+            (thread_id, int(keep_count)),
         )
-        return max(0, total - keep_count)
+        app_flush()
+        remaining = self._conn.execute(
+            "SELECT COUNT(*) FROM memory_chain WHERE thread_id = ?", (thread_id,)
+        ).fetchone()[0]
+        if remaining > keep_count:
+            logger.error(
+                "[iris_ffi] chain purge did not land thread=%s keep=%d remaining=%d",
+                thread_id, int(keep_count), remaining,
+            )
+            return -1
+        return max(0, total - remaining)
+
+    def immortus_chain_recent(
+        self, thread_id: str, limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """Newest chain rows for one thread — the thread-detail read path.
+
+        Orders by ``created_at`` (a REAL on every store) rather than
+        ``chain_index``, which does not exist on either schema; the old query
+        raised "no such column" into a debug-level catch, so the thread detail
+        always returned an empty chain.
+        """
+        if not self._conn:
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT result, nbl_outcome, insight, coords_from, coords_to, "
+                "created_at FROM memory_chain WHERE thread_id = ? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (thread_id, int(limit)),
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001 — a missing column must be named
+            logger.warning(
+                "[iris_ffi] chain read failed thread=%s: %s", thread_id, exc
+            )
+            return []
+        return [
+            {
+                "result": r[0],
+                "nbl_outcome": r[1],
+                "insight": r[2],
+                "coords_from": r[3],
+                "coords_to": r[4],
+                "timestamp": r[5],
+            }
+            for r in rows
+        ]
 
     @staticmethod
     def _parse_coords(text: Optional[str]) -> Optional[tuple]:
@@ -1651,11 +1761,48 @@ class IrisCoreEngine:
         return []
 
     def immortus_chain_keep_latest(self, thread_id: str, keep_count: int) -> int:
-        if self._ffi:
-            return self._ffi.immortus_chain_keep_latest(thread_id, keep_count)
-        if self._fallback:
+        """Purge a thread's chain rows; -1 when no engine could do it.
+
+        MEASURED 2026-10-31: the native symbol returns -1 on a healthy, freshly
+        initialized store (probe: 5 appends, keep_latest(...,0) -> -1, all 5
+        rows still present). The old body returned that -1 as final, so
+        DELETE /chat/threads/{id} reported success while every chain row
+        survived and the next turn could still recall it. A negative native
+        result means "this engine cannot do it", not "nothing to do": fall
+        through to the Python engine, which owns a real connection and a
+        working DELETE.
+        """
+        if self._ffi is not None:
+            try:
+                rc = self._ffi.immortus_chain_keep_latest(thread_id, keep_count)
+            except Exception as exc:  # noqa: BLE001 — the Python engine still can
+                logger.warning(
+                    "[iris_ffi] native chain purge raised (%s); using Python engine",
+                    exc,
+                )
+                rc = -1
+            if rc >= 0:
+                return rc
+            logger.warning(
+                "[iris_ffi] native chain purge unavailable (rc=%s) thread=%s; "
+                "using Python engine",
+                rc, thread_id,
+            )
+        if self._fallback is not None:
             return self._fallback.immortus_chain_keep_latest(thread_id, keep_count)
         return -1
+
+    def immortus_chain_recent(
+        self, thread_id: str, limit: int = 20
+    ) -> List[Dict[str, Any]]:
+        """Newest chain rows for a thread (thread-detail read path).
+
+        IrisCoreEngine has no store connection of its own — the Python engine
+        does — so the API must ask here, not read ``_engine._conn``.
+        """
+        if self._fallback is None:
+            return []
+        return self._fallback.immortus_chain_recent(thread_id, limit)
 
     def immortus_chain_query_by_coordinate(
         self,
@@ -1726,7 +1873,7 @@ def ffi_native_write(store_path: str, sql: str, params=()) -> bool:
         ffi = getattr(eng, "_ffi", None) if eng is not None else None
         if ffi is None or not getattr(ffi, "has_writer", False):
             return False
-        if not store_path or getattr(eng, "_native_db_path", None) != store_path:
+        if not store_path or _norm_store_path(store_path) != getattr(eng, "_native_db_path", None):
             return False
         rc = ffi.db_submit_write(sql, tuple(params or ()))
         if rc == 0:
@@ -1747,7 +1894,7 @@ def ffi_native_owns(store_path: str) -> bool:
         eng = _engine
         ffi = getattr(eng, "_ffi", None) if eng is not None else None
         return bool(ffi is not None and getattr(ffi, "has_writer", False) and store_path
-                    and getattr(eng, "_native_db_path", None) == store_path)
+                    and getattr(eng, "_native_db_path", None) == _norm_store_path(store_path))
     except Exception:  # noqa: BLE001
         return False
 
@@ -1985,10 +2132,22 @@ def ffi_immortus_chain_query_mediators(
 
 
 def ffi_immortus_chain_keep_latest(thread_id: str, keep_count: int) -> int:
-    """Keep the latest keep_count entries in the Immortus chain."""
+    """Keep the latest keep_count entries in the Immortus chain.
+
+    Returns rows actually removed; -1 when no engine could purge.
+    """
     if _engine is None:
         return -1
     return _engine.immortus_chain_keep_latest(thread_id, keep_count)
+
+
+def ffi_immortus_chain_recent(
+    thread_id: str, limit: int = 20
+) -> List[Dict[str, Any]]:
+    """Newest chain rows for one thread. Empty when no engine is loaded."""
+    if _engine is None:
+        return []
+    return _engine.immortus_chain_recent(thread_id, limit)
 
 
 def ffi_immortus_chain_query_by_coordinate(

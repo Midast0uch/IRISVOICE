@@ -127,9 +127,26 @@ def score(frame: Dict[str, Any], options: List[str], engine: Any) -> Optional[An
         return None
 
 
+def _browser_input_key(state: str) -> str:
+    """The dedupe key for a browser_next row: one row per distinct INPUT.
+
+    The report's honest dedupe key (docs/architecture/oracle.md 6.1 rule 1).
+    Without it the ledger key (consumer, engine, confidence, chosen,
+    reference, correct) collapses DIFFERENT pages that the quantized engine
+    answered with the same confidence.
+    """
+    try:
+        from backend.agent.surface_shadow import input_key as _ik
+
+        return _ik(BROWSER_NEXT_CONSUMER, state or "", None)
+    except Exception:  # noqa: BLE001 - the key is best-effort
+        return ""
+
+
 def shadow_row(ds: Any, brain_choice: str, action: str,
                scope: Optional[Dict[str, str]] = None,
-               state: str = "", brain_ok: Optional[bool] = None) -> Optional[dict]:
+               state: str = "", brain_ok: Optional[bool] = None,
+               input_key: Optional[str] = None) -> Optional[dict]:
     """The row for one element judgment, or None (no score, no row)."""
     if ds is None:
         return None
@@ -156,6 +173,10 @@ def shadow_row(ds: Any, brain_choice: str, action: str,
         "state": (state or "")[:2000],
         "brain_ok": brain_ok,
     }
+    if input_key:
+        # The report's honest dedupe key (docs/architecture/oracle.md 6.1
+        # rule 1): a row counts once per distinct INPUT.
+        row["input_key"] = input_key
     if scope:
         row.update(scope)
     return row
@@ -199,7 +220,8 @@ def record_browser_next(
 
     def _job() -> None:
         emit_row(shadow_row(score(frame, ids, engine), target, action, scope,
-                            state=state, brain_ok=brain_ok))
+                            state=state, brain_ok=brain_ok,
+                            input_key=_browser_input_key(state)))
 
     try:
         from backend.utils.durability_queue import lane
