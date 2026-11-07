@@ -125,6 +125,10 @@ _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     # are dropped in transit and every curve silently reads as incumbent-only.
     "outside_label",
     "label_source",
+    # tc-decide-v6 (2026-11-07): the step-outcome label's PROVENANCE. Off this
+    # list the stamp ran but the store showed only outside_label, so a reader
+    # could not tell a step-verified label from the old call-age one.
+    "label_reference", "step_outcome",
     # job (2026-10-01): the Oracle job (decision_engine.ORACLE_JOBS) the row was
     # scored under - its input recipe and budget. Off this list it is dropped.
     "job",

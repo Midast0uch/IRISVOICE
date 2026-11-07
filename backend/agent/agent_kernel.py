@@ -8070,7 +8070,25 @@ class AgentKernel:
                         )
                 except Exception:  # noqa: BLE001
                     pass
-                # web_intent/v2 TURN-OUTCOME label (oracle.md 7.5, 2026-10-17):
+                # tc-decide-v6 (2026-11-07): flush any DECIDED tool_choice row
+                # whose step never settled (early turn end, exception). The row
+                # was written WITHOUT an outside_label, so a flushed row is
+                # counted and never scored - two label semantics never blend.
+                try:
+                    from backend.agent import tool_choice_outcome_label as _tcol
+
+                    _tc_swept = _tcol.sweep()
+                    if _tcol.enabled() and _tc_swept:
+                        _tcol_st = _tcol.stats()
+                        logger.info(
+                            "[Oracle] tool_choice step-outcome label: "
+                            "swept_parity_now=%d pending_rows=%d "
+                            "dropped_overflow=%d",
+                            _tc_swept, _tcol_st.get("pending_rows", 0),
+                            _tcol_st.get("dropped_overflow", 0),
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
                 # the held consult rows are stamped with what the turn NEEDED,
                 # not the keyword list's parity. truth = "yes" when the request
                 # named a URL (by rule), else "yes" when a web tool succeeded
@@ -18737,6 +18755,7 @@ Respond with a JSON object:
                 last_result=_last or None, option_criteria=_hints or None,
                 calls_this_step=_hist or None, done_when=_done_when or None,
                 step_facts=_facts_now() or None,
+                step_id=getattr(item, "step_id", None), turn_id=_turn_id,
             )
             if got is None:
                 return None
@@ -20810,6 +20829,17 @@ Respond with a JSON object:
             _rol.stamp(getattr(item, "step_id", None), _verified)
         except Exception:  # noqa: BLE001 â€” a label never blocks a settle
             logger.debug("[DER] review outcome stamp failed")
+
+        # tc-decide-v6 (2026-11-07): the decided tool_choice rows of THIS step
+        # are held at call time; the step's verified_label now exists. Write
+        # them with the step's outcome (one row, one writer). Flag-gated and
+        # deletable; never delays or fails a settle.
+        try:
+            from backend.agent import tool_choice_outcome_label as _tcol
+
+            _tcol.stamp(getattr(item, "step_id", None), _turn_id, _verified)
+        except Exception:  # noqa: BLE001 - a label never blocks a settle
+            logger.debug("[DER] tool_choice outcome stamp failed")
 
         try:
             _score_t0 = time.monotonic()

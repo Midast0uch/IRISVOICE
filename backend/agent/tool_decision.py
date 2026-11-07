@@ -1877,6 +1877,8 @@ class ToolDecisionBox:
         calls_this_step: Optional[str] = None,
         done_when: Optional[str] = None,
         step_facts: Optional[str] = None,
+        step_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> Optional[Tuple[str, Dict[str, Any]]]:
         """THE ORACLE DECIDES the node's next tool (2026-10-11), or None.
 
@@ -1967,10 +1969,16 @@ class ToolDecisionBox:
                 # wrong picks; the call-level label takes the honest-key
                 # cohort from AUROC 0.657 to 0.7988 offline. Also carries
                 # input_key (one row per INPUT, however confidence collides).
-                "criteria_version": "tc-decide-v5",
+                "criteria_version": "tc-decide-v6",
                 "menu_fp": _menu_fingerprint(menu, option_criteria),
                 "state": _render_state("tool_choice", frame)[:2000],
                 "input_key": _tc_input_key(frame),
+                # tc-decide-v6 (2026-11-07): the row joins its step's settled
+                # outcome. `step_id` is the step's ORDINAL in a turn ("s2"), so
+                # the turn is part of the key too. See
+                # backend.agent.tool_choice_outcome_label.
+                "step_id": step_id or None,
+                "turn_id": turn_id or None,
             }
             logger.info(
                 "[TOOL_DECISION] Oracle decides tool=%s conf=%.3f route=%s latency_ms=%s",
@@ -2012,6 +2020,20 @@ class ToolDecisionBox:
                 else:
                     out["outcome_label"] = "ok" if ok else "failed"
                 out["outside_label"] = bool(called == row.get("chosen") and ok)
+                # tc-decide-v6 (2026-11-07): when the step-outcome label is on,
+                # the call-age label is NOT the answer - it measures the model's
+                # ARGUMENTS, not the Oracle's TOOL. Drop it and let the step's
+                # verified_label stamp it at settle (review_outcome_label's
+                # precedent). An unsettled row is then counted, never scored,
+                # instead of blending two label semantics into one curve.
+                try:
+                    from backend.agent import tool_choice_outcome_label as _tcol
+
+                    if _tcol.enabled() and out["outcome_label"] in ("ok", "failed"):
+                        out.pop("outside_label", None)
+                        out["label_pending"] = True
+                except Exception:  # noqa: BLE001 - a label never blocks a node
+                    pass
                 out["brain_params"] = {
                     k: str(v)[:120] for k, v in (params or {}).items()
                     if k in ("path", "file_path", "command", "pattern", "query",
@@ -2807,6 +2829,21 @@ class ToolDecisionBox:
         if recorder is None:
             return
         try:
+            # tc-decide-v6 (2026-11-07): the DECIDED tool_choice row is held
+            # until its step settles, then written with the step's verified
+            # outcome (one row, one writer - the review_verdict precedent).
+            # Other rows (the failure-triage row, the RespondDirect shadow row)
+            # fall straight through: `defer` returns False for them.
+            from backend.agent import tool_choice_outcome_label as _tcol
+
+            if _tcol.defer(
+                row,
+                lambda r: recorder(r, kind="shadow", session_id=session_id),
+            ):
+                return
+        except Exception:  # noqa: BLE001 - a hold is an observer, never a gate
+            pass
+        try:
             recorder(row, kind="shadow", session_id=session_id)
         except Exception as _e:  # noqa: BLE001 — the row is an observer
             logger.debug("[TOOL_DECISION] triage shadow row write failed: %r", _e)
@@ -3206,6 +3243,10 @@ class ToolDecisionBox:
                 # frame shape change; never blend cohorts.
                 "criteria_version": "depth_route/v3",
                 "shadow": True,
+                # The frame the engine read (2026-11-04): the DEBUG line above
+                # was the only copy, so a question change still needed fresh
+                # live traffic. replay_consumer reads this dict directly.
+                "state": frame,
             }
             self._record_shadow_row(row, session_id=session_id)
             return row
