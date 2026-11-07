@@ -59,6 +59,12 @@ class _Ctx:
     # no assertion changed). The empty case is pinned in test_reviewer_gate.py.
     gradient_warnings = "step 2 failed like this before"
     active_contracts = ""
+    # 2026-11-06 (input change, no assertion changed): review_verdict/v13
+    # requires EVIDENCE for a row - an empty frame is not evidence (see
+    # _review_frame_evidence). These tests check the row SHAPE, so the context
+    # carries the last result the gate judges against. The no-evidence rule is
+    # pinned in test_review_frame_contract.py.
+    last_result_text = "output: 3 passed"
 
 
 def _reviewer(engine, raw=None):
@@ -71,6 +77,13 @@ def _item(desc="read the readme", objective="OBJ-1"):
     from backend.agent.der_loop import QueueItem
     return QueueItem(step_id="s1", step_number=1, description=desc,
                      objective_anchor=objective)
+
+
+def _completed(desc="ran the tests", result="success | 3 passed"):
+    """A completed step that carries evidence (a v13 row needs one)."""
+    q = _item(desc)
+    q.result = result
+    return q
 
 
 class TestReviewVerdictShadowRow:
@@ -128,7 +141,8 @@ class TestReviewVerdictShadowRow:
         engine = _VerdictEngine(chosen="veto")
         reviewer = _reviewer(engine)
 
-        verdict, _ = reviewer.review(_item(), [], object(), is_mature=False)
+        verdict, _ = reviewer.review(_item(), [_completed()], object(),
+                                     is_mature=False)
 
         assert verdict in (ReviewVerdict.PASS, ReviewVerdict.VETO,
                            ReviewVerdict.REFINE)
