@@ -110,6 +110,18 @@ SURFACE_CONSUMERS: Dict[str, str] = {
         # threshold): d1 reads the closed verb list better than prose. The
         # stamp moved to needs_action/v7; the label rule and the frame are
         # unchanged from v6.
+        #
+        # v8 WAS TRIED AND REVERTED THE SAME DAY (2026-11-05). An offline replay
+        # (logs/na_experiment.py) reported that an "artifact" question met the
+        # acting clause at n=231 precision 0.918. THAT MEASUREMENT WAS INVERTED:
+        # the script compared `(not chosen_no) == (ref is False)`, which is
+        # `chosen_no == ref`, while the bar's rule (decision_label) is
+        # `bool(chosen) == bool(outside_label)` = `(not chosen_no) == ref`. The
+        # reported 0.918 was really 0.082. The live v8 cohort confirmed it: the
+        # engine's 'no' answers fell to 12.5% correct (5 of 40) against v7's
+        # 39.9% (77 of 193) on the same outcome-labelled population. The v7
+        # question is restored and the stamp is back to v7. The instrument is
+        # fixed; do not trust any v8 number.
         "Does this step take an ACTION in the project - read, write, edit, "
         "create, implement, fix, run, search or browse - or does it only "
         "give an ANSWER from what is already known? Decide about the action "
@@ -124,8 +136,17 @@ SURFACE_CONSUMERS: Dict[str, str] = {
     # parity metric answers "how often does the loop call a task complete when
     # the depth bar was not actually met?".
     "depth_met": (
-        "Is this actually done to the depth its success criteria require, "
-        "rather than only superficially complete?"
+        # depth_met/v4 (2026-11-06): MEASURED by replay on the 348 recorded
+        # depth_met/v3 states. The v3 question ("done to the depth ... rather
+        # than only superficially complete?") scored oof AUROC 0.4784 (below
+        # chance). Restating the frame's own fields scored 0.6152 with
+        # MONOTONIC confidence bands (0.375/0.403/0.539/0.594/0.769); a
+        # verification-anchored wording was WORSE (0.4823/0.5951). The label is
+        # the EXTERNAL turn verdict, which the agent cannot see, so this is the
+        # best measured wording and still below the 0.65 bar - it stays shadow.
+        "The objective is fully met: every required fact is covered, the "
+        "required work is complete and verified, and nothing required is "
+        "still missing."
     ),
 }
 
@@ -252,12 +273,19 @@ def shadow_row(
     brain_bool: Optional[bool],
     scope: Optional[Dict[str, str]] = None,
     input_key: Optional[str] = None,
+    state: Any = None,
 ) -> Optional[dict]:
     """The CT-DEI-6-shaped row for a surface judgment, or None.
 
     No Noul → no row: a missing engine must never fabricate a shadow row.
     ``brain_bool`` is what the legacy decider ACTUALLY returned, so the row is
     a shadow PAIR and the parity metric exists.
+
+    ``state`` (2026-11-04): the frame the engine READ (a dict, or the statement
+    when the live call passes only ``{"goal": statement}``). Without it a live
+    cohort cannot be replayed, so a question change had to be paid for with
+    hours of live traffic instead of minutes offline. This is the same gap
+    tool_approval closed with its own frame log.
     """
     if noul is None:
         return None
@@ -275,6 +303,8 @@ def shadow_row(
     }
     if input_key:
         row["input_key"] = input_key
+    if state is not None:
+        row["state"] = state
     if scope:
         row.update(scope)
     return row
@@ -347,16 +377,18 @@ def surface_bool(
     if _engine_decides:
         value = bool(noul.true(_cut))
         return value, shadow_row(consumer_id, noul, brain_bool=value,
-                                 scope=_scope, input_key=_ik)
+                                 scope=_scope, input_key=_ik,
+                                 state=frame or statement)
 
     try:
         value = bool(brain_bool_fn())
     except Exception as e:  # noqa: BLE001 — fail safe, never raise
         logger.warning("[surface] %s legacy decider failed: %r", consumer_id, e)
         return False, shadow_row(consumer_id, noul, brain_bool=None,
-                                 scope=_scope, input_key=_ik)
+                                 scope=_scope, input_key=_ik,
+                                 state=frame or statement)
     return value, shadow_row(consumer_id, noul, brain_bool=value, scope=_scope,
-                             input_key=_ik)
+                             input_key=_ik, state=frame or statement)
 
 
 _NA_ACTION_LEAD = re.compile(
@@ -456,7 +488,7 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
                          consumer_id)
             return
         row = shadow_row(consumer_id, noul, brain_bool=brain_bool, scope=_scope,
-                         input_key=_ik)
+                         input_key=_ik, state=_frame or statement)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
         if row is not None and outside_label is not None:
@@ -472,7 +504,7 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
             # with the verdict as their outside label, by report_verdict; the
             # map is bounded and the drop counted. try/except: a label never
             # blocks a consult - on any failure the row writes exactly as
-            # before.
+            # before. (`done` is held in monitor_shadow, its own path.)
             try:
                 from backend.agent import turn_verdict_label as _tvl
 

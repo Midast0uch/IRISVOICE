@@ -85,6 +85,16 @@ _SYSTEM = (
     "Rules:\n"
     "- Paths are relative to the project folder: `main.py`, `pkg/mod.py`.\n"
     "- Read a file before you change it.\n"
+    # MEASURED 2026-11-06: a step whose goal named ONE file still did 9 calls
+    # (read, list, glob, list again, git_status, run x3, recall_memory) - every
+    # extra call is a full model round trip. Do the step, not a survey.
+    "- Do only what the step names. Do NOT survey: do not list directories, "
+    "check git status, or recall memory unless the step's goal explicitly "
+    "asks for it. If the goal gives a file path, read THAT path directly - "
+    "do not glob or list to find it. If the goal or expected output mentions "
+    "the file's conventions or style, the file's own code IS the convention: "
+    "read that file only, never config files or directory listings. Do not "
+    "repeat a call you already made.\n"
     "- Create a file or folder only when the task asks for one; give findings "
     "in your answer, not in a file.\n"
     "- Change an existing file with edit_file: `old` must be copied exactly from "
@@ -255,6 +265,21 @@ class NodeResult:
         if self.calls:
             lines.append("\nActions:")
             lines += [f"- {c['tool']} {c['target']} -> {'ok' if c['ok'] else 'FAILED'}" for c in self.calls]
+        # The tool OUTPUT, bounded and total-capped. It is OUTSIDE the model's
+        # summary (which echoes the goal), so the goal-contract coverage may
+        # use it as evidence for a behavior fact (2026-11-06). Absent when no
+        # call carried an excerpt, so old-format results are unchanged.
+        _outs = [(c.get("tool", ""), c.get("out") or "")
+                 for c in self.calls if c.get("out")]
+        if _outs:
+            lines.append("\nOutput:")
+            _budget = 1200
+            for _t, _o in _outs:
+                if _budget <= 0:
+                    break
+                _take = _o[:_budget]
+                lines.append(f"[{_t}]\n{_take}")
+                _budget -= len(_take)
         if self.last_command_failed:
             lines.append("\nThe last command in this step exited non-zero.")
         if self.error:
@@ -389,6 +414,37 @@ def _target(params: dict) -> str:
             # the step's actions could not be read (goal_contract._ACTION_RE)
             return " ".join(str(params[key]).split())[:80]
     return ""
+
+
+def _output_excerpt(raw, limit: int = 300) -> str:
+    """A bounded head+tail of ONE tool call's OUTPUT for the step result.
+
+    The step result used to carry only the tool name and an ok/FAILED marker, so
+    the goal-contract coverage could never see what the tool actually printed
+    ("2 passed", "hello-world"). MEASURED 2026-11-06 (c02_add_slugify): two
+    behavior facts stayed open on every UNVERIFIED step and the streak-gate
+    re-planned three steps that redid the work (380 s reply vs a 52.9 s
+    standard). Head+tail because a run's verdict lives at the END. Never raises.
+    """
+    try:
+        if isinstance(raw, dict):
+            _parts = [
+                str(raw.get(_k))
+                for _k in ("stdout", "stderr", "content", "output", "result", "text", "error")
+                if raw.get(_k)
+            ]
+            _txt = "\n".join(_parts) if _parts else str(raw)
+        else:
+            _txt = str(raw or "")
+    except Exception:  # noqa: BLE001 - an excerpt never blocks
+        return ""
+    _txt = _txt.strip()
+    if not _txt:
+        return ""
+    if len(_txt) <= limit:
+        return _txt
+    _head = limit // 2
+    return f"{_txt[:_head]} [...] {_txt[-(limit - _head):]}"
 
 
 def history_text(calls: List[Dict[str, Any]], last: int = 6, limit: int = 400) -> str:
@@ -886,6 +942,10 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 # the CALL, not the work's state.
                 calls.append({"tool": name, "target": _target(params or {}), "ok": not failed,
                               "ok_call": bool(_approval_ok),
+                              # the call's OUTPUT (bounded head+tail): the
+                              # goal-contract coverage reads it as outside
+                              # evidence for a behavior fact (2026-11-06).
+                              "out": _output_excerpt(raw),
                               "args": {k: params[k] for k in _ID_KEYS
                                        if isinstance(params, dict) and params.get(k)}})
                 logger.info("[run_node] conv=%s %s %s -> %s", ctx.conv_id, name,

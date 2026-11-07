@@ -144,3 +144,31 @@ def test_a_writer_failure_never_propagates():
 
     tvl.defer(_row(), _boom)
     assert tvl.report_verdict("t1", passed=True) == 1
+
+
+# ── `done` joined 2026-11-06 ───────────────────────────────────────────────
+# MEASURED: 1999 done/v2 rows, EVERY ONE outside_label=None / label_source=None,
+# because `done` was written immediately and never held for the verdict.
+
+def test_done_uses_the_same_hold_and_verdict():
+    row = {
+        "consumer_id": "done", "chosen": False, "brain_bool": False,
+        "confidence": 0.8, "shadow": True,
+        "criteria_version": "done/v2", "turn_id": "t9",
+    }
+    written = []
+    assert tvl.defer(row, written.append) is True
+    assert written == []
+    assert tvl.report_verdict("t9", passed=True) == 1
+    assert written[0]["outside_label"] is True
+    assert written[0]["label_source"] == "outcome"
+
+
+def test_monitor_shadow_holds_done_for_the_verdict_too():
+    import inspect
+
+    from backend.agent import monitor_shadow as ms
+
+    src = inspect.getsource(ms._submit_shadow)
+    assert 'consumer_id == "done"' in src
+    assert "_tvl.defer(row, emit_row)" in src

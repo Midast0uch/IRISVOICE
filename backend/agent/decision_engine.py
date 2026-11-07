@@ -339,9 +339,14 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # 0.5113; envelope evidence -> replay AUROC 1.0000). 3 x 200 + STEP[:300] +
     # TOOL + OBJECTIVE[:200] is ~1150 chars; at the old 200-id/800-char budget
     # the cap cut the OBJECTIVE — the bar the review rubric judges against.
-    # 384 ids stays the owner ceiling (test_oracle_jobs_contract).
+    # RAISED to 384 = 1536 chars (2026-11-06, review_verdict/v13): the frame
+    # now carries ACTION + SUCCESS CRITERION before the evidence, so 288 would
+    # cut the evidence - the proven signal - from the end. The frame RESERVES
+    # the evidence and gives the header only the remainder, so this is headroom
+    # for the header, never a cut of the evidence. 384 stays the owner ceiling
+    # (test_oracle_jobs_contract).
     OracleJob("judge_review", "did this step do its part?",
-              ("goal",), 288),
+              ("goal",), 384),
     OracleJob("judge_goal", "is the objective met, deep and sufficient?",
               ("goal", "open_facts", "evidence"), 128),
     # depth_met gets its OWN job (2026-10-17, oracle.md 7.5: "Give the
@@ -1107,7 +1112,18 @@ def _current_backend_identity(
             # server (same cheap-construction rule GlinerOnnx had).
             from .decision_backend_d1 import D1Backend
 
-            model = str(D1Backend().backend_id or "")
+            _declared = D1Backend()
+            # model_id FIRST, exactly as the loaded engine (2356) and the
+            # report (consumer_enforcement_report:333) do. Using the bare
+            # backend_id here made the PRE-LOAD enforcement check compare
+            # 'd1-2b-q4_k_m' against a bar record written with the tagged
+            # 'd1-2b-q4_k_m+systemone', so every consumer read "measured on a
+            # different engine" and the Oracle enforced NOTHING - measured
+            # 2026-11-06: deciding=none while narration/presentation/route_v2
+            # held status=enforced.
+            model = str(
+                getattr(_declared, "model_id", "") or _declared.backend_id or ""
+            )
         except Exception:  # noqa: BLE001 — unknown identity = no flips
             return ""
     if not model:
@@ -2693,6 +2709,8 @@ class DecisionEngine:
                     "engine_latency_ms": ds.engine_latency_ms,
                     "shadow": True,
                     "grouping": f"job_batch:{len(_items)}",
+                    # See shadow(): the frame makes the row replayable offline.
+                    "state": frame,
                 }
                 if scope:
                     row.update(scope)
@@ -2857,6 +2875,11 @@ class DecisionEngine:
                 ],
                 "engine_latency_ms": ds.engine_latency_ms,
                 "shadow": True,
+                # The frame the engine actually read (2026-11-04). Without it a
+                # live cohort cannot be replayed, so every question change cost
+                # 6-11 min of live traffic per task; with it the replay in
+                # scripts/replay_consumer.py reproduces the live call offline.
+                "state": _frame,
             }
             if _scope:
                 row.update(_scope)

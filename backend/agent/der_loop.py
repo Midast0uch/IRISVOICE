@@ -1258,11 +1258,12 @@ class Reviewer:
     # This is the consumer's CRITERIA: the row stamp below moved to v4 and
     # the report measures the new cohort on its own rows, never blended.
     REVIEW_INSTRUCTION = (
-        "STEP is the work about to run; RECENT RESULTS show how the work is "
-        "going. Answer pass when running this step is the right move as-is. "
-        "Answer refine when the results show the work needs another pass "
-        "first. Answer veto when the step would repeat a failure the results "
-        "already show."
+        "STEP is the work about to run; ACTION is what it will do; SUCCESS "
+        "CRITERION is how the run is judged; RECENT RESULTS show how the work "
+        "is going. Answer pass when this step will VERIFY - its result will "
+        "meet the success criterion. Answer refine when the action or the "
+        "results show it will fall short and needs another pass first. Answer "
+        "veto when it would repeat a failure the results already show."
     )
 
     def _shadow_review_verdict(
@@ -1330,15 +1331,41 @@ class Reviewer:
             # prior), polluting the cohort. v6 falls back to the last result
             # the model saw and writes NO row when even that is empty - an
             # empty frame is not evidence.
+            _params = getattr(item, "params", None)
+            if isinstance(_params, dict):
+                # The frame is persisted on the row (state) and logged, so a
+                # secret-named param value is redacted before it can ride it.
+                # Internal keys (`_dependency_results` and friends) are dropped:
+                # they are prior tool output, not this step's arguments, and
+                # they would crowd out the real args and the evidence.
+                _params = {
+                    _k: ("<redacted>" if any(
+                        _s in str(_k).lower() for _s in
+                        ("key", "token", "secret", "password", "auth", "credential"))
+                        else _v)
+                    for _k, _v in _params.items()
+                    if not str(_k).startswith("_")
+                }
+            _action = " ".join(
+                _x for _x in (
+                    str(getattr(item, "tool", "") or ""),
+                    str(_params or ""),
+                ) if _x.strip()
+            )
             _ev = _review_frame_evidence(
                 completed_steps, context_package,
-                str(getattr(item, "description", "") or ""))
+                str(getattr(item, "description", "") or ""),
+                _action, str(getattr(item, "expected_output", "") or ""))
             if _ev is None:
                 logger.debug(
                     "[ORACLE] review_verdict row skipped: the step left no "
                     "evidence to judge step_id=%s", getattr(item, "step_id", "?"))
                 return
-            goal = f"RECENT RESULTS: {_ev}"[:1152]
+            # v8 (2026-11-05): `_ev` already renders its own "STEP:" and
+            # "RECENT RESULTS:" sections, so the old f-string prefix produced
+            # "RECENT RESULTS: STEP: ..." - a malformed frame whose first
+            # section was mislabelled. The frame is `_ev` verbatim.
+            goal = _ev[:1536]
             # DIAGNOSTIC (2026-10-17): decision rows do not store the rendered
             # frame, so a live cohort cannot be replayed. This line is the
             # cheap permanent mitigation: one DEBUG record per review shows
@@ -1489,7 +1516,50 @@ class Reviewer:
                 # disagreements were refine-vs-pass), the bare names measured
                 # 0.7967 with monotonic bands. A question change gets its own
                 # stamp, so the new cohort is clean (oracle.md 6.1 rule 3).
-                "criteria_version": "review_verdict/v9",
+                # review_verdict/v10 (2026-11-05, owner: "label fix first") =
+                # the SAME v9 frame and option text; the LABEL changed.
+                # review_outcome_label.GROUND_TRUTH now reads UNVERIFIED
+                # ({pass: False, refine: True, veto: False}) where it used to
+                # emit no label at all. MEASURED cause: der_commits holds
+                # 12,980 VERIFIED / 4,779 UNVERIFIED / 20 FAILED, so with
+                # UNVERIFIED unlabelled the outcome cohort was single-class -
+                # chosen=='pass' <=> outside_label True, chosen=='refine' <=>
+                # False - and oof AUROC sat at 0.4581 on 1,283 rows. 27% of all
+                # steps were discarded. A label change is a new calibrated
+                # identity exactly like a frame change, so the stamp moves and
+                # the old cohort is never blended in.
+                # review_verdict/v11 (2026-11-05) = the v10 label PLUS a frame
+                # fix. v10 measured 180 distinct rows with a balanced label
+                # (88 correct / 92 wrong) and the bands MONOTONICALLY INVERTED
+                # (accuracy 0.593 / 0.538 / 0.826 / 0.474 / 0.362 / 0.250 as
+                # confidence rises), oof AUROC 0.4117. The cause is the frame:
+                # v7 let "the plan makes an otherwise-empty frame informative"
+                # stand, so a first step with no completed steps and no last
+                # result still wrote a row whose entire frame was
+                # "RECENT RESULTS: STEP: <one line>". d1 answered those from
+                # the binary prior, confidently. _review_frame_evidence now
+                # returns None when there is no EVIDENCE (the v6 rule, finally
+                # enforced) and the caller writes no row; the plan line still
+                # rides along when evidence exists. The malformed
+                # "RECENT RESULTS: STEP:" double prefix is gone too.
+                # review_verdict/v13 (2026-11-06) = the v11 frame PLUS the two
+                # signals the outcome depends on. MEASURED on the v11 cohort
+                # (597 rows): the same model ranks agreement with the Brain's
+                # plan verdict at AUROC 0.8201 but ranks the execution OUTCOME
+                # at 0.5139 - prior evidence and a plan line cannot predict
+                # verification. The frame now carries ACTION (the tool and its
+                # real params; internal `_` keys dropped, secret-named values
+                # redacted) and SUCCESS CRITERION (expected_output), and the
+                # instruction asks the verification question the outcome label
+                # grades, not "is this the right move". The evidence is
+                # RESERVED first (it is the proven signal; the backend trims
+                # from the end) and the judge_review budget rose 288->384 to
+                # the owner ceiling for the header headroom. A frame + question
+                # change is a new calibrated identity (oracle.md 6.1 rule 3),
+                # so the stamp moves. (v12 wrote 4 rows before the `_`-key
+                # filter and the evidence reservation landed; they are not
+                # blended.)
+                "criteria_version": "review_verdict/v13",
             }
             # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
             # values here, on the review's own task).
@@ -1791,7 +1861,9 @@ def _review_evidence_line(s) -> str:
 
 
 def _review_frame_evidence(completed_steps, context_package=None,
-                           plan: str = "") -> Optional[str]:
+                           plan: str = "", action: str = "",
+                           expected: str = "",
+                           budget: int = 1536) -> Optional[str]:
     """The review gate's frame: the step's PLAN + the evidence (v7, 2026-10-23).
 
     v6 carried only the prior steps' envelope lines. Measured on v6: 75
@@ -1800,27 +1872,76 @@ def _review_frame_evidence(completed_steps, context_package=None,
     what THIS step is. v3 had taught the opposite lesson (step description +
     the problem-shaped OBJECTIVE made d1 hedge "refine" on everything); v7 is
     the untested middle: the PLAN line, never the objective, next to the
-    evidence. The plan also makes an otherwise-empty frame informative, so a
-    step with nothing else still writes a row.
-    Never raises.
+    evidence.
+
+    EVIDENCE IS REQUIRED (v8, 2026-11-05, owner: "label fix first"). v7 also
+    let "the plan makes an otherwise-empty frame informative, so a step with
+    nothing else still writes a row" stand. MEASURED on the v10 cohort (180
+    distinct rows, label fixed so the cohort finally has both classes): the
+    confidence bands are MONOTONICALLY INVERTED - accuracy 0.593 / 0.538 /
+    0.826 / 0.474 / 0.362 / 0.250 as confidence rises from 0.4 to 1.0, oof
+    AUROC 0.4117. The rows with no evidence are the cause: their frame is the
+    literal "RECENT RESULTS: STEP: <one line>" and nothing else, so d1 answers
+    from the binary prior and is most confident exactly where it is most
+    wrong. A plan line is not evidence about how the work is going.
+
+    So the v6 rule is restored and made real: with no completed-step envelope
+    line AND no last_result_text there is NO frame and the caller writes no
+    row. The plan line still rides along when evidence exists (the v7 gain).
+
+    v13 (2026-11-06): the gate now sees WHAT the step will do (ACTION: the
+    tool and its real params) and HOW success is judged (SUCCESS CRITERION:
+    the item's expected_output), between the plan and the evidence. Measured
+    on the v11 cohort: the same model ranks agreement with the Brain's plan
+    verdict at AUROC 0.8201 but ranks the execution OUTCOME at 0.5139 - the
+    pre-execution gate cannot predict verification from prior evidence and a
+    plan line alone. The action and the criterion are the two signals the
+    outcome depends on that the frame was missing.
+
+    The ORDER is a budget, not a set of magic caps: the evidence is RESERVED
+    first (it is the proven signal and the backend trims the frame from the
+    END), and the header fills only the remainder. The judge_review budget
+    rose 288->384 (the owner ceiling) so the header has headroom. A long plan
+    can never cut the evidence. Never raises.
     """
     try:
-        parts: List[str] = []
-        plan_txt = str(plan or "").strip()
-        if plan_txt:
-            parts.append("STEP: " + plan_txt[:300])
         lines = [
             ln for ln in (
                 _review_evidence_line(s) for s in (completed_steps or [])[-3:]
             ) if str(ln or "").strip()
         ]
+        evidence = None
         if lines:
-            parts.append("RECENT RESULTS: " + " | ".join(lines))
+            evidence = "RECENT RESULTS: " + " | ".join(lines)
         else:
             out = str(getattr(context_package, "last_result_text", "") or "").strip()
             if out:
-                parts.append("RECENT RESULTS: output: " + out[:300])
-        return "\n".join(parts) if parts else None
+                evidence = "RECENT RESULTS: output: " + out[:300]
+        if evidence is None:
+            # No evidence: an empty frame is not evidence (the v6 rule, now
+            # actually enforced - v7 returned the plan line alone here).
+            return None
+        # The evidence is the proven signal (replay AUROC 1.0 on envelope
+        # evidence vs 0.51 on raw result heads) and the backend trims the
+        # frame from the END, so the evidence is RESERVED first and the header
+        # gets only the remainder. A long plan can then never cut the evidence,
+        # and no field needs a hand-picked cap to make the arithmetic fit.
+        room = max(0, budget - len(evidence) - 1)
+        head = []
+        for label, text, cap in (
+            ("STEP: ", plan, 300),
+            ("ACTION: ", action, 300),
+            ("SUCCESS CRITERION: ", expected, 200),
+        ):
+            t = str(text or "").strip()
+            if not t:
+                continue
+            line = label + t[:cap]
+            if len(line) > room:
+                break
+            head.append(line)
+            room -= len(line) + 1
+        return "\n".join(head + [evidence])
     except Exception:  # noqa: BLE001 - a frame never blocks a row
         return None
 

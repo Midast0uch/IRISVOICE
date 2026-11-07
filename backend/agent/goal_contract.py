@@ -470,6 +470,17 @@ def mark_coverage(
                         and _checked_after_change(_res)):
                     _hit = True
                     break
+                # A BEHAVIOR fact's outside evidence is the tool's own OUTPUT.
+                # An `Output:` section (node_executor.as_step_result, 2026-11-06)
+                # is real tool output, NOT the model's summary (which echoes the
+                # goal), so a passing check plus that output covers the fact.
+                # MEASURED 2026-11-06 (c02_add_slugify): two behavior facts
+                # stayed open on every UNVERIFIED step, C stalled at 0.333 and
+                # the streak-gate re-planned 3 steps that redid the work.
+                if (_is_unverified(_oc) and _terms and "Output:" in _res
+                        and _checked_after_change(_res)):
+                    _hit = True
+                    break
                 continue
             _low = _norm(_res)
             if not _terms:
@@ -491,6 +502,20 @@ def mark_coverage(
             if _found:
                 _hit = True
                 break
+        if not _hit:
+            # DIAGNOSTIC (2026-11-06): why a required fact stayed open. The
+            # label decides the whole branch, so log it with the term and
+            # passing-check evidence the credit rule consults.
+            try:
+                logger.debug(
+                    "[goal-contract] fact open: %r terms=%r change_ask=%s "
+                    "labels=%r checked_after_change=%r",
+                    str(_fact)[:70], list(_match_terms)[:6], _change_asks[_i],
+                    [str(_oc) for _oc in _outcomes][:4],
+                    [bool(_checked_after_change(_r)) for _r in _results][:4],
+                )
+            except Exception:  # noqa: BLE001 - a diagnostic never blocks
+                pass
         if _hit:
             _k = _norm(_fact)
             if _k not in _seen:

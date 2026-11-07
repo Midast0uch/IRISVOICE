@@ -603,6 +603,71 @@ def _gc_coverage_label(verified: str, item, step_result) -> str:
     return verified
 
 
+_NODE_CORE_TOOLS = frozenset({
+    "read_file", "edit_file", "write_file", "run_command",
+    "list_directory", "glob_files", "grep_files",
+})
+
+
+def _narrow_node_tools(tools, goal, engine=None, k=None):
+    """Advisory narrowing: keep the CORE coding tools + the Oracle's top picks.
+
+    MEASURED 2026-11-06: a node's menu was 17 tools (~14k chars of JSON) on
+    every model call, and most calls only need the basic coding tools. The
+    Oracle already ranks the same menu for tool_choice. Keeping the core tools
+    plus its top picks cuts the payload without removing basic capability.
+
+    Falls back to the FULL list whenever the engine is unavailable or any step
+    fails - a narrowing never removes capability it cannot justify. ``k`` (or
+    IRIS_NODE_TOOL_MENU_K) <= 0 disables it.
+    """
+    try:
+        if k is None:
+            k = int(os.environ.get("IRIS_NODE_TOOL_MENU_K", "12") or 12)
+        names = [
+            t.get("function", {}).get("name") for t in (tools or [])
+        ]
+        names = [n for n in names if n]
+        if k <= 0 or len(names) <= k:
+            return tools
+        keep = {n for n in names if n in _NODE_CORE_TOOLS}
+        if engine is None:
+            try:
+                from backend.agent.decision_engine import get_decision_engine
+
+                engine = get_decision_engine()
+            except Exception:  # noqa: BLE001 - full menu stands
+                engine = None
+        ranked = []
+        if engine is not None:
+            ds = engine.decide(
+                "tool_choice", names, {"goal": str(goal or "")[:400]}
+            )
+            if ds is not None and getattr(ds, "distribution", None):
+                ranked = [
+                    c.name for c in sorted(
+                        ds.distribution, key=lambda c: -float(c.prob))
+                ]
+        if not ranked:
+            # no Oracle ranking: never drop a tool for a reason we cannot state
+            return tools
+        for n in ranked:
+            if len(keep) >= k:
+                break
+            if n in names:
+                keep.add(n)
+        kept = [t for t in tools if t.get("function", {}).get("name") in keep]
+        if kept and len(kept) < len(tools):
+            logger.info(
+                "[DER] node tool menu narrowed %d -> %d (dropped=%s)",
+                len(tools), len(kept), sorted(set(names) - keep),
+            )
+        return kept or tools
+    except Exception as exc:  # noqa: BLE001 - narrowing never breaks a step
+        logger.debug("[DER] tool menu narrowing skipped: %r", exc)
+        return tools
+
+
 def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
     """Typed execution events (spec research-memory-chain-browser D9 / Wave E)
     on lane("memory_events"): never on the answer path, never raises. The
@@ -8230,7 +8295,12 @@ class AgentKernel:
                     engine=_ss_depth.AUTO_ENGINE,
                     enforced=_depth_enforced,
                     defer=True,  # ignored once enforced: a deciding consumer is waited for
-                    criteria_version="depth_met/v3",
+                    # v4 (2026-11-06): the QUESTION changed (surface_shadow
+                    # _STATEMENTS) - replay 0.4784 -> 0.6152, monotonic bands.
+                    # Still below the 0.65 bar (the label is the external turn
+                    # verdict), so it stays shadow. A question change is a new
+                    # calibrated identity.
+                    criteria_version="depth_met/v4",
                     acts=lambda c: oracle_acts("depth_met", c),
                     frame=_depth_frame,
                 )
@@ -9026,6 +9096,16 @@ class AgentKernel:
         '"load-bearing" (the task fails without it), "supporting" (helps but '
         'alternatives exist), or "cosmetic" (nice to have). Omit for '
         '"supporting".\n'
+        # PLAN SHAPE (2026-11-06): measured on c02_add_slugify, s1 was an
+        # "inspect the existing module and project structure" step that ran
+        # broad `find`/`ls -R` sweeps and the FULL test suite (17.9 s), then
+        # s3 verified anyway - 56-71 s of duplicate work on a one-function
+        # task. A step is a GOAL; the runtime resolves one tool for it, so
+        # name the artifact, never a survey.
+        "- Keep each step MINIMAL. A first step that reads ONE named file is "
+        "enough. Do NOT plan a step that inspects the project structure, "
+        "sweeps directories, checks git, or runs the test suite to 'see what "
+        "exists'; verification is its own later step.\n"
     )
 
         plan_raw: Optional[str] = None
@@ -17251,6 +17331,9 @@ Respond with a JSON object:
             "engine_latency_ms": ds.engine_latency_ms,
             "route": "engine" if (enforced and confident) else "shadow",
             "escalated": False,
+            # The frame the engine read (2026-11-04). Without it the 7,000
+            # presentation rows could only be re-measured with live traffic.
+            "state": frame,
             # The parity reference (2026-09-27). `chosen` speaks the engine's
             # vocabulary (plain_text / prism_card / card_plus_summary) while the
             # live surface is "plain"/"card", so the live value is TRANSLATED
@@ -18565,6 +18648,10 @@ Respond with a JSON object:
             return self._der_run_direct_node(item, goal, task)
         _menu = set(NODE_TOOLS) | (set(NODE_SCREEN_TOOLS) if _vision_relevant(goal) else set())
         tools = [t for t in self._get_openai_tools() if t.get("function", {}).get("name") in _menu]
+        # Advisory narrowing (2026-11-06): core coding tools + the Oracle's top
+        # picks, so a call does not carry the whole 17-tool menu. Full menu on
+        # any failure; IRIS_NODE_TOOL_MENU_K=0 disables it.
+        tools = _narrow_node_tools(tools, goal)
         # The shadow scores the menu the node's model was OFFERED, not the
         # registry's first names (which are vision tools).
         _offered = [t["function"]["name"] for t in tools]
@@ -18899,6 +18986,11 @@ Respond with a JSON object:
                     "[needs_action] step=%s label=%s goal=%r expected=%r",
                     getattr(item, "step_id", "?"), _label, goal, _na_expected,
                 )
+                # v8 was tried and REVERTED the same day (2026-11-05): the
+                # offline replay that "proved" it had its label comparison
+                # inverted, and the live cohort showed the acting 'no' answer
+                # falling to 12.5% correct against v7's 39.9%. The stamp is back
+                # to v7. See surface_shadow.SURFACE_CONSUMERS for the full note.
                 _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
                                       True,
                                       {"goal": goal, "expected": _na_expected},
@@ -22208,7 +22300,15 @@ Respond with a JSON object:
                 # became a logged warning.
                 _done_value, _done_text, _done_row = _ms.monitor_bool(
                     "done", _monitor_statement(task_objective, completed_items),
-                    criteria_version="done/v2",
+                    # v3 (2026-11-06): the instruction moved from "Is the
+                    # objective complete?" to one that names what complete means
+                    # ("every required fact covered... nothing required is still
+                    # missing"). MEASURED on the 63 distinct parity rows: the same
+                    # 61.9% agreement with the Brain's done-bit at AUROC 0.7019
+                    # against 0.6549 - a strict improvement, no trade-off. A
+                    # question change is a new calibrated identity, so the stamp
+                    # moves and the v2 cohort is never blended in.
+                    criteria_version="done/v3",
                     brain_bool_fn=lambda: data.get("done") is True,
                     brain_text_fn=lambda: str(data.get("description", "") or ""),
                     engine=_ms.AUTO_ENGINE,

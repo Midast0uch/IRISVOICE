@@ -60,11 +60,21 @@ def test_click_safety_is_declared_from_the_code_not_the_prose():
 
 def test_review_verdict_carries_the_quality_bar():
     """T4.3/B3: the incumbent said pass 96% of the time because the question was
-    under-specified. `refine` must be reachable on vague/incomplete/wrong-tool
-    steps, not only on outright conflicts."""
-    crit = de.CONSUMER_DECLARATIONS["review_verdict"].criteria
-    assert set(crit) == {"pass", "refine", "veto"}
-    assert "vague" in crit["refine"] and "incomplete" in crit["refine"]
+    under-specified. `refine` and `veto` must be reachable, not only `pass`.
+
+    SUPERSEDED 2026-11-04 (measured, see decision_engine.CONSUMER_DECLARATIONS):
+    the quality bar in the OPTION TEXT inverted AUROC (0.4016 on 600 replayed
+    states; 412 of 416 disagreements were refine-vs-pass), while the BARE names
+    scored 0.7967. The bar therefore lives in the INSTRUCTION
+    (der_loop.Reviewer.REVIEW_INSTRUCTION), which is where the reviewer reads
+    it. The declaration's criteria is empty by design: option text must not
+    argue for a verdict."""
+    from backend.agent.der_loop import Reviewer
+
+    inst = Reviewer.REVIEW_INSTRUCTION.lower()
+    assert "pass" in inst and "refine" in inst and "veto" in inst
+    assert "another pass" in inst or "fall short" in inst
+    assert de.CONSUMER_DECLARATIONS["review_verdict"].criteria == {}
 
 
 # ── AC4.3/AC4.5: the heuristic is gone, the score type exists ───────────────
@@ -211,15 +221,17 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     assert de.CONSUMER_JOBS["done"] == "judge_goal"
     assert de.CONSUMER_JOBS["sufficient"] == "judge_goal"
     assert de.ORACLE_JOBS["judge_review"].fields == ("goal",)
-    # 288, not 200 (2026-10-17, review_verdict/v3): the v3 frame renders 3
-    # ENVELOPE lines as evidence (each head+tail capped at 200 — the outcome
-    # of a tool run lives at the TAIL of its output, so the v1 raw
-    # result[:120] head cut threw the signal away; measured: constant verdict,
-    # oof AUROC 0.5113 live, vs replay AUROC 1.0000 with envelope evidence).
-    # 3 x 200 + STEP[:300] + TOOL + OBJECTIVE[:200] is ~1150 chars = 288 ids
-    # x 4; at 200 ids/800 chars the cap cut the OBJECTIVE — the bar the review
-    # rubric judges against. 384 stays the owner ceiling.
-    assert de.ORACLE_JOBS["judge_review"].budget_ids == 288
+    # 384, not 288 (2026-11-06, review_verdict/v13). 288 was sized for the v3
+    # frame: 3 ENVELOPE lines (each head+tail capped at 200 — the outcome of a
+    # tool run lives at the TAIL of its output; measured: constant verdict,
+    # oof AUROC 0.5113 live, vs replay AUROC 1.0000 with envelope evidence)
+    # + STEP[:300] + TOOL + OBJECTIVE[:200] is ~1150 chars = 288 ids x 4.
+    # The v13 frame adds ACTION + SUCCESS CRITERION before the evidence, so at
+    # 288 the backend cap (which trims from the END) would cut the evidence.
+    # The frame now RESERVES the evidence and gives the header only the
+    # remainder, and 384 (the owner ceiling) is the header headroom. The test's
+    # purpose is unchanged: the budget fits the frame.
+    assert de.ORACLE_JOBS["judge_review"].budget_ids == 384
     assert de.CONSUMER_JOBS["review_verdict"] == "judge_review"
     assert de.CONSUMER_JOBS["escalate_incomplete"] == "judge_step"
     assert de.ORACLE_JOBS["judge_step"].budget_ids == 96

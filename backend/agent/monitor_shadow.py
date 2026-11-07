@@ -44,7 +44,22 @@ MONITOR_CONSUMERS: Dict[str, str] = {
     "sufficient": (
         "Is the evidence gathered so far sufficient to answer the objective?"
     ),
-    "done": "Is the objective complete?",
+    # v3 (2026-11-06): the question named what "complete" means. MEASURED on the
+    # 63 distinct parity rows that carry state (logs/done_exp.py, judged by
+    # decision_label's bool(chosen)==bool(brain_bool), which is answer-aware on
+    # this cohort because brain_bool is the Brain's own done-bit):
+    #   current "Is the objective complete?"      agree 61.9%  auroc 0.6549
+    #   v3 (this)                                  agree 61.9%  auroc 0.7019
+    #   "cover every required fact... missing/unproven/partly"  agree 61.9%  auroc 0.6015
+    #   "the step evidence below says..."          agree 61.9%  auroc 0.6560
+    # v3 is the only variant that raises the ranking without costing any
+    # agreement, so it is a strict improvement. The criteria (the yes/no
+    # descriptions below) are unchanged; only the instruction moved, which
+    # re-identifies the consumer through criteria_hash and re-opens the bar.
+    "done": (
+        "Is the objective complete - every required fact covered by the work "
+        "done so far? Answer yes only when nothing required is still missing."
+    ),
 }
 
 _TRUE_LABEL = "yes"
@@ -191,6 +206,7 @@ def shadow_row(
     brain_bool: Optional[bool],
     scope: Optional[Dict[str, str]] = None,
     input_key: Optional[str] = None,
+    state: Optional[str] = None,
 ) -> Optional[dict]:
     """The CT-DEI-6-shaped row for a monitor judgment, or None.
 
@@ -220,6 +236,10 @@ def shadow_row(
         # The report's honest dedupe key (docs/architecture/oracle.md 6.1
         # rule 1): a row counts once per distinct INPUT.
         row["input_key"] = input_key
+    if state is not None:
+        # The frame the engine read, so the cohort can be replayed offline
+        # instead of paying 6-11 min of live traffic per question change.
+        row["state"] = state
     if scope:
         row.update(scope)
     return row
@@ -295,7 +315,8 @@ def monitor_bool(
         value = bool(noul.true(_cut))
         text = "" if value else _safe_text(brain_text_fn)
         row = shadow_row(consumer_id, noul, brain_bool=value, scope=_scope,
-                         input_key=_monitor_input_key(consumer_id, statement))
+                         input_key=_monitor_input_key(consumer_id, statement),
+                         state=statement)
         return value, text, row
 
     try:
@@ -304,11 +325,13 @@ def monitor_bool(
         logger.warning("[monitor] %s brain bool failed: %r", consumer_id, e)
         return False, "", shadow_row(consumer_id, noul, brain_bool=None,
                                      scope=_scope,
-                                     input_key=_monitor_input_key(consumer_id, statement))
+                                     input_key=_monitor_input_key(consumer_id, statement),
+                                     state=statement)
     text = "" if value else _safe_text(brain_text_fn)
     return value, text, shadow_row(consumer_id, noul, brain_bool=value,
                                    scope=_scope,
-                                   input_key=_monitor_input_key(consumer_id, statement))
+                                   input_key=_monitor_input_key(consumer_id, statement),
+                                   state=statement)
 
 
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,
@@ -325,9 +348,26 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
         noul = score_monitor_bool(consumer_id, statement, engine=engine)
         row = shadow_row(consumer_id, noul, brain_bool=brain_bool,
                          scope=_scope,
-                         input_key=_monitor_input_key(consumer_id, statement))
+                         input_key=_monitor_input_key(consumer_id, statement),
+                         state=statement)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
+        # `done` JOINED 2026-11-06: measured 2,214 done rows, EVERY ONE
+        # outside_label=None / label_source=None. This path emitted the row at
+        # once, so the turn verdict (the eval harness's hidden tests; a user
+        # correction for live turns) could never label it and it could not earn
+        # an outcome bar. Held rows are written once, with the verdict as their
+        # outside label, by turn_verdict_label.report_verdict; the map is
+        # bounded and the drop counted. try/except: a label never blocks a
+        # consult - on any failure the row writes exactly as before.
+        if row is not None and consumer_id == "done":
+            try:
+                from backend.agent import turn_verdict_label as _tvl
+
+                if _tvl.defer(row, emit_row):
+                    return
+            except Exception:  # noqa: BLE001 - fall through to the plain emit
+                pass
         emit_row(row)
 
     try:
