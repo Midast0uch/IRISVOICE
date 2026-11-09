@@ -800,6 +800,23 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
             db_path, _cc_exc,
         )
 
+    # Every Memory snapshot counts distilled claims (distil_claims.counts:
+    # "WHERE distilled = 1"): a SCAN of the whole chain, the same 42k-row read
+    # the two indexes above were built to remove (test_memory_api_contract
+    # caught it, 2026-11-09). A PARTIAL index holds only the distilled rows, so
+    # it is tiny and can never be chosen for the created_at recall order (S2).
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_chain_distilled "
+            "ON memory_chain(distilled) WHERE distilled = 1"
+        )
+        conn.commit()
+    except Exception as _cd_exc:  # noqa: BLE001 — a missing index is slow, not wrong
+        logger.warning(
+            "[iris_ffi] idx_memory_chain_distilled not created (db=%s): %s",
+            db_path, _cd_exc,
+        )
+
 
 class _PythonFallbackEngine:
     """Pure Python fallback — uses sqlite3 (or sqlcipher3 if available)."""

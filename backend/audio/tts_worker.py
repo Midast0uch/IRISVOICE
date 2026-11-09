@@ -586,14 +586,15 @@ def main() -> None:
     # inside the backend but loads in ~10 s standalone. Same switch as the
     # backend's hook in start-backend.py; remove with it.
     if os.environ.get("IRIS_STACK_DUMP_S"):
-        import faulthandler
+        # A GIL-holding sampler, not faulthandler.dump_traceback_later: that
+        # native watchdog walked live frames without the GIL and crashed the
+        # process (backend/utils/stack_sampler.py has the measurement).
+        from backend.utils.stack_sampler import start as _start_sampler
 
         _dump_fh = open(_PROJECT_DIR / "logs" / "stackdump_tts.log", "w")
         _dump_fh.write(f"start_epoch {time.time():.3f}\n")
         _dump_fh.flush()
-        faulthandler.dump_traceback_later(
-            float(os.environ["IRIS_STACK_DUMP_S"]), repeat=True, file=_dump_fh
-        )
+        _start_sampler(_dump_fh, os.environ["IRIS_STACK_DUMP_S"], name="tts-stack-sampler")
     logger.info("TTS worker starting — loading model...")
 
     # Send loading status immediately so the parent knows we're alive

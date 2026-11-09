@@ -8131,6 +8131,15 @@ class AgentKernel:
                         )
                 except Exception:  # noqa: BLE001
                     pass
+                # A row the native writer failed or dropped was invisible: app_write
+                # returns once it is queued (2026-11-09 audit). One stats read per
+                # turn; a WARNING only when the counts grew.
+                try:
+                    from backend.memory.db import report_native_write_losses
+
+                    report_native_write_losses(getattr(self, "conversation_id", "") or "")
+                except Exception:  # noqa: BLE001 - a diagnostic never fails a turn
+                    logger.debug("[db] native write loss report skipped")
                 # the held consult rows are stamped with what the turn NEEDED,
                 # not the keyword list's parity. truth = "yes" when the request
                 # named a URL (by rule), else "yes" when a web tool succeeded

@@ -1,7 +1,8 @@
 """Contract tests for fetch capabilities + vision frame extraction (T7/T12a/T12b).
 
-Hermetic: no live web, no real vision server. The crawler path is stubbed at
-CrawlOrchestrator.fetch_url; the vision provider is a fake injected into
+Hermetic: no live web, no real vision server. The crawler path is stubbed at the
+hybrid fetch tiers (_fast_http_fetch_one / _browser_pool_fetch_one) and the robots
+gate; the vision provider is a fake injected into
 extract_page_frames.
 """
 
@@ -59,27 +60,52 @@ class _ThinResult:
     pages = [_Page(markdown="hi")]  # far below MIN_CONTENT_CHARS=20
 
 
-def _patch_fetch_url(monkeypatch, result):
-    """Stub CrawlOrchestrator.fetch_url to return `result` (never hits network)."""
-    import backend.crawler.orchestrator as orch_mod
+def _patch_hybrid_fetch(monkeypatch, result):
+    """Stub the hybrid fetch tiers (never hits network); return the Tier-1 call list.
 
-    async def _fake_fetch_url(self_or_none, url, **kwargs):
-        return result
+    Updated 2026-11-09: fetch_crawl is now a hybrid fetch - Tier 1 _fast_http_fetch_one (httpx),
+    then Tier 2 _browser_pool_fetch_one (commit a2e4d161) - and no longer calls
+    CrawlOrchestrator.fetch_url, so the old stub missed and the tests hit the live network.
+    Both tiers are stubbed with the same `result` the tests always used, turned into a
+    FetchOutcome by the REAL page_is_usable (so the verdict is judged, not hard-coded).
+    The robots gate (a live robots.txt fetch) is patched to allow the URL.
+    """
+    import backend.crawler.capabilities as cap_mod
+    from backend.crawler.usability import UsabilityVerdict, page_is_usable
 
-    monkeypatch.setattr(orch_mod.CrawlOrchestrator, "fetch_url", _fake_fetch_url)
+    class _AllowAll:
+        async def is_allowed(self, url, user_agent):
+            return True
+
+    monkeypatch.setattr(cap_mod, "get_robots_checker", lambda: _AllowAll())
+
+    tier1_calls = []
+
+    def _outcome(url):
+        if result.error or not result.pages:
+            return FetchOutcome(
+                url=url, capability="fetch.crawl", page=None,
+                verdict=UsabilityVerdict(False, UsabilityReason.TRANSPORT_ERROR, result.error or ""),
+            )
+        page = result.pages[0]
+        return FetchOutcome(url=url, capability="fetch.crawl", page=page, verdict=page_is_usable(page))
+
+    async def _fake_tier1(url, goal, job_id, page_offset, on_progress):
+        tier1_calls.append((url, job_id))
+        return _outcome(url)
+
+    async def _fake_tier2(url, goal, job_id, page_offset, on_progress):
+        # Tier 2 runs only when Tier 1 is unusable; it meets the same page, so same outcome.
+        return _outcome(url)
+
+    monkeypatch.setattr(cap_mod, "_fast_http_fetch_one", _fake_tier1)
+    monkeypatch.setattr(cap_mod, "_browser_pool_fetch_one", _fake_tier2)
+    return tier1_calls
 
 
 def test_fetch_crawl_wraps_orchestrator(monkeypatch):
-    """fetch_one routes through CrawlOrchestrator.fetch_url (REQ-6 AC2)."""
-    import backend.crawler.orchestrator as orch_mod
-
-    calls = []
-
-    async def _fake_fetch_url(self_or_none, url, **kwargs):
-        calls.append((url, kwargs))
-        return _OkResult()
-
-    monkeypatch.setattr(orch_mod.CrawlOrchestrator, "fetch_url", _fake_fetch_url)
+    """fetch_one routes through the hybrid fetch, Tier 1 first (REQ-6 AC2, REQ-3 AC3.2)."""
+    calls = _patch_hybrid_fetch(monkeypatch, _OkResult())
 
     cap = FetchCrawlCapability()
     outcome = asyncio.run(cap.fetch_one("https://example.com/", "goal", "job-1"))
@@ -89,23 +115,25 @@ def test_fetch_crawl_wraps_orchestrator(monkeypatch):
     assert outcome.verdict.usable is True
     assert outcome.page is not None
     assert calls and calls[0][0] == "https://example.com/"
-    assert calls[0][1]["job_id"] == "job-1"
+    assert calls[0][1] == "job-1"
 
 
 def test_fetch_crawl_error_page_is_none(monkeypatch):
     """Fetch failure -> page None, verdict unusable (REQ-6, never raises)."""
-    _patch_fetch_url(monkeypatch, _ErrResult())
+    calls = _patch_hybrid_fetch(monkeypatch, _ErrResult())
     cap = FetchCrawlCapability()
     outcome = asyncio.run(cap.fetch_one("https://example.com/", "goal", "job-2"))
+    assert calls, "Tier 1 (_fast_http_fetch_one) was never called"
     assert outcome.page is None
     assert outcome.verdict.usable is False
 
 
 def test_fetch_crawl_unusable_page_detected(monkeypatch):
     """Page below MIN_CONTENT_CHARS -> unusable verdict (page_is_usable)."""
-    _patch_fetch_url(monkeypatch, _ThinResult())
+    calls = _patch_hybrid_fetch(monkeypatch, _ThinResult())
     cap = FetchCrawlCapability()
     outcome = asyncio.run(cap.fetch_one("https://example.com/", "goal", "job-3"))
+    assert calls, "Tier 1 (_fast_http_fetch_one) was never called"
     assert outcome.verdict.usable is False
     assert outcome.verdict.reason == UsabilityReason.TOO_SHORT
 

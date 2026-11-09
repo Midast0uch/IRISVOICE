@@ -171,8 +171,15 @@ class TestCTN3DbPathSourceOfTruth:
             resolve_memory_store_path,
         )
 
+        import json
+        from pathlib import Path
+
         p = resolve_memory_store_path()
         assert p.is_absolute()
-        # Config says db_path = "data/memory.db" -> anchored at repo root.
-        assert p == REPO_ROOT / "data" / "memory.db", p
+        # The config's db_path, repo-root-anchored when relative. The literal
+        # "data/memory.db" was pinned here until the owner moved the store to
+        # D:/IRIS/store/memory.db (2026-10-26); the test read a stale value.
+        cfg = json.loads((REPO_ROOT / "data" / "memory_config.json").read_text(encoding="utf-8"))
+        want = Path(cfg["db_path"])
+        assert p == (want if want.is_absolute() else REPO_ROOT / want), p
         assert "backend" not in p.parts[-2], p  # never backend/data/...

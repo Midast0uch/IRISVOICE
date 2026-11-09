@@ -38,17 +38,40 @@ def resolve_memory_store_path(config_path: Optional[str] = None) -> Path:
     cfg_path = Path(config_path) if config_path else (REPO_ROOT / "data" / "memory_config.json")
     if not cfg_path.is_absolute():
         cfg_path = REPO_ROOT / cfg_path
+    global _LAST_GOOD_STORE_PATH
     try:
         cfg = load_config(str(cfg_path))
         db_path = Path(cfg.db_path)
-    except Exception as exc:  # noqa: BLE001 — resolver must never crash callers
-        logger.warning(
-            "[MemoryConfig] resolve_memory_store_path fell back to default: %s", exc
-        )
-        db_path = Path("data/memory.db")
+    except Exception as exc:  # noqa: BLE001 - handled below, never the default store
+        # FAIL CLOSED (2026-11-09). The old fallback returned data/memory.db,
+        # and open_encrypted_memory CREATES a store there: one bad read of an
+        # EXISTING config (a half-written file; an unknown field - the
+        # key_source incident of 2026-10-31) gave the app an empty memory.
+        # Only a MISSING config means defaults (from_file returns them).
+        db_path = None
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8")).get("db_path")
+            if isinstance(raw, str) and raw.strip():
+                db_path = Path(raw)
+        except Exception:  # noqa: BLE001 - next rung
+            pass
+        if db_path is None and _LAST_GOOD_STORE_PATH is not None:
+            db_path = _LAST_GOOD_STORE_PATH
+        logger.error(
+            "[MemoryConfig] config %s did not load (%s); store path %s",
+            cfg_path, exc,
+            db_path if db_path is not None else "UNRESOLVED - refusing the default store")
+        if db_path is None:
+            raise RuntimeError(
+                f"memory store path unresolved: {cfg_path} exists but did not load ({exc})"
+            ) from exc
     if not db_path.is_absolute():
         db_path = REPO_ROOT / db_path
+    _LAST_GOOD_STORE_PATH = db_path
     return db_path
+
+
+_LAST_GOOD_STORE_PATH: Optional[Path] = None
 
 
 @dataclass

@@ -57,7 +57,9 @@ def _make_direct_path_kernel(tokens_used: int, max_tokens: int) -> AgentKernel:
     # Route straight to the direct path (this is what REQ-6 is testing —
     # NOT the planning heuristic itself, which has its own tests).
     k._needs_planning = lambda text, context: False
-    k._respond_direct = lambda text, context, chunk_callback=None, reasoning_callback=None: (
+    # Stand-in input: the kernel now passes session_id= to _respond_direct (commit 36fd9117), so the
+    # stand-in must accept it; the assertions are unchanged.
+    k._respond_direct = lambda text, context, chunk_callback=None, reasoning_callback=None, **kw: (
         "Hello! This is a direct, non-DER reply."
     )
     # Response-shaping is out of scope for REQ-6 — identity passthrough.
@@ -112,7 +114,8 @@ class TestContextUsageOnDirectReply:
         try:
             k = _make_direct_path_kernel(tokens_used=100, max_tokens=8_192)
 
-            def _streaming_respond_direct(text, context, chunk_callback=None, reasoning_callback=None):
+            # **kw: same stand-in input fix as above (kernel passes session_id=, commit 36fd9117).
+            def _streaming_respond_direct(text, context, chunk_callback=None, reasoning_callback=None, **kw):
                 # Simulate a real streaming provider invoking chunk_callback
                 # several times before the method returns.
                 for chunk in ("Hel", "lo ", "wor", "ld"):

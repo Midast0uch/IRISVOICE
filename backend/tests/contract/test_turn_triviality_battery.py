@@ -115,7 +115,9 @@ def _make_direct_kernel():
     k._tokens_used = 0
     k.resolve_context_window = lambda: 8_192
     k._needs_planning = lambda text, context: False          # trivial turn
-    k._respond_direct = lambda text, context, chunk_callback=None, reasoning_callback=None: (
+    # Stand-in input: the kernel now passes session_id= to _respond_direct (commit 36fd9117), so the
+    # stand-in must accept it; the assertions are unchanged.
+    k._respond_direct = lambda text, context, chunk_callback=None, reasoning_callback=None, **kw: (
         "Hello! Plain answer, no tools."
     )
     k._process_structured_response = lambda response, turn_id=None, conversation_id=None: response

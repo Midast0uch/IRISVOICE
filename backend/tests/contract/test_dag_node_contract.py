@@ -174,11 +174,27 @@ def test_router_has_a_production_caller():
 
 
 def test_runner_has_a_production_caller():
-    """CT-4: get_node_runner().run() is reached from agent_kernel's DER
-    recovery path — the runner is not built-but-never-called."""
-    assert _calls_in("backend/agent/agent_kernel.py", "get_node_runner"), (
-        "NodeRunner has no production caller — recovery nodes must execute "
-        "through the runner (REQ-1 AC2)"
+    """CT-4: the step runner is reached from agent_kernel — it is not
+    built-but-never-called.
+
+    Retargeted 2026-11-09: commit a645c2bc removed the inline recovery that
+    called nodes/runner.get_node_runner(); the real step runner is now
+    backend/agent/node_executor.run_node, called from AgentKernel._der_run_node.
+    Same meaning (the node runner has a production caller), pointed at the
+    runner that exists. nodes/runner.py itself is kept."""
+    tree = ast.parse(_src("backend/agent/agent_kernel.py"))
+    imports_run_node = any(
+        isinstance(n, ast.ImportFrom)
+        and n.module == "backend.agent.node_executor"
+        and any(a.name == "run_node" for a in n.names)
+        for n in ast.walk(tree)
+    )
+    assert imports_run_node, (
+        "agent_kernel no longer imports run_node from backend.agent.node_executor"
+    )
+    assert _calls_in("backend/agent/agent_kernel.py", "run_node"), (
+        "node_executor.run_node has no production caller — DER steps must "
+        "execute through the node runner (_der_run_node)"
     )
 
 

@@ -451,11 +451,17 @@ def memory_key_status():
 
 
 @router.post("/unlock")
-async def memory_unlock(body: UnlockBody, request: Request):
+def memory_unlock(body: UnlockBody, request: Request):
     """Derive the key from the passphrase, prove it opens the store, then keep it.
 
     Only valid in launcher mode. The phrase is verified BEFORE the key enters
     the process, so a wrong phrase leaves the app exactly as it was (locked).
+
+    A plain def (2026-11-09): FastAPI runs it on a worker thread. As an async
+    handler the key derivation and the store open ran ON the event loop and
+    held every other request (test_handlers_are_worker_thread_functions_not_async).
+    The one async call, initialise_memory, goes back to the loop through
+    anyio.from_thread.run.
     """
     from backend.core.biometric import (
         derive_memory_key_from_passphrase,
@@ -500,7 +506,12 @@ async def memory_unlock(body: UnlockBody, request: Request):
             kernel = getattr(request.app.state, "agent_kernel", None)
             adapter = getattr(kernel, "_model_router", None)
             if adapter is not None:
-                memory = await initialise_memory(adapter=adapter)
+                import functools
+
+                import anyio.from_thread
+
+                memory = anyio.from_thread.run(
+                    functools.partial(initialise_memory, adapter=adapter))
                 request.app.state.memory = memory
                 if kernel is not None:
                     kernel.set_memory_interface(memory)

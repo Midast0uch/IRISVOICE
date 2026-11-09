@@ -37,7 +37,9 @@ def test_the_direct_reply_path_stores_the_reply_for_the_next_turn():
         k._mcm_orch, k._memory_interface = None, None
         k.resolve_context_window = lambda: 32_000
         k._needs_planning = lambda text, context: False
-        k._respond_direct = lambda text, context, chunk_callback=None, reasoning_callback=None: "Hello there."
+        # Stand-in input: the kernel now passes session_id= to _respond_direct (commit 36fd9117), so the
+        # stand-in must accept it; the assertions are unchanged.
+        k._respond_direct = lambda text, context, chunk_callback=None, reasoning_callback=None, **kw: "Hello there."
         k._process_structured_response = lambda response, turn_id=None, conversation_id=None: response
         k._maybe_escalate_web_format = lambda task_id, conv_id, response_text="": None
         k.clear_turn_trust_flag = lambda: None

@@ -140,7 +140,9 @@ if not os.environ.get("IRIS_BACKEND_REEXEC_DONE"):
 try:
     _fh_every = float(os.environ.get("IRIS_FAULTHANDLER_DUMP", "0") or 0)
     if _fh_every > 0:
-        import faulthandler as _faulthandler
+        # GIL-holding sampler (2026-11-09): faulthandler.dump_traceback_later
+        # crashed the process it watched (backend/utils/stack_sampler.py).
+        from backend.utils.stack_sampler import start as _start_sampler
 
         # PER-PID, APPEND (2026-10-19): the old fixed name was opened with
         # "w", so every backend start TRUNCATED the previous process's dumps -
@@ -149,7 +151,7 @@ try:
         # A per-pid file survives the restart and keeps the last seconds.
         _fh_path = base_dir / f"faulthandler_dump_{os.getpid()}.log"
         _fh_file = open(_fh_path, "w", encoding="utf-8", errors="replace")
-        _faulthandler.dump_traceback_later(_fh_every, repeat=True, file=_fh_file)
+        _start_sampler(_fh_file, _fh_every, name="faulthandler-dump-sampler")
         print(f"   Faulthandler: dumping all thread stacks every {_fh_every:g}s -> {_fh_path}")
 except Exception as _fh_exc:  # never let a diagnostic block startup
     print(f"   Faulthandler setup skipped: {_fh_exc}")
@@ -550,11 +552,15 @@ def main():
     # TEMP DIAGNOSTIC (2026-09-29, remove after the idle-gap hunt): in-process
     # thread-stack dump every N s. External samplers crashed the backend.
     if os.environ.get("IRIS_STACK_DUMP_S"):
-        import faulthandler
+        # A GIL-holding sampler, not faulthandler.dump_traceback_later: that
+        # native watchdog walked live frames without the GIL and caused most
+        # of the "native 0xC0000005 every ~30 min" deaths (measured
+        # 2026-11-09; see backend/utils/stack_sampler.py).
+        from backend.utils.stack_sampler import start as _start_sampler
         _dump_fh = open(os.path.join(base_dir, "logs", "stackdump.log"), "w")
         _dump_fh.write(f"start_epoch {__import__('time').time():.3f}\n")
         _dump_fh.flush()
-        faulthandler.dump_traceback_later(float(os.environ["IRIS_STACK_DUMP_S"]), repeat=True, file=_dump_fh)
+        _start_sampler(_dump_fh, os.environ["IRIS_STACK_DUMP_S"])
     try:
         print("Starting async server...")
         asyncio.run(run_server())

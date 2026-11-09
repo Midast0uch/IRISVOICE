@@ -16,6 +16,7 @@ from pathlib import Path
 
 from backend.gateway import iris_ffi as _ffi
 from backend.memory import memory_events as me
+from backend.memory.db import open_encrypted_memory
 from backend.memory.surface_queries import has_index_on
 
 WANT = {"idx_memory_events_thread_ts", "idx_memory_chain_chain_id"}
@@ -30,7 +31,10 @@ def test_app_store_has_the_memory_surface_indexes():
 
     # A fresh app store, built the way startup builds it.
     eng = _ffi._PythonFallbackEngine(db_path=str(tmp / "fresh.db"), key_hex="00" * 32)
-    fresh = sqlite3.connect(str(tmp / "fresh.db"))
+    # A fresh store is SQLCipher-encrypted under the .venv, so plain sqlite3.connect cannot read it
+    # ("file is not a database", 2026-11-09, also on HEAD); open it with the same keyed opener the engine uses.
+    # Same file, same key, same assertions - only the connection is keyed.
+    fresh = open_encrypted_memory(str(tmp / "fresh.db"), bytes.fromhex("00" * 32))
     try:
         me.ensure_schema(fresh)
         assert WANT <= _names(fresh), WANT - _names(fresh)

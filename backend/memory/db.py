@@ -140,8 +140,24 @@ class AppStoreConnection(sqlite3.Connection):
                 and owns_store(self)):
             own = lane_connection(self)
             if own is not self:
-                return own.execute(sql, parameters)
+                return _routed_read(self, own, sql, parameters)
         return super().execute(sql, parameters)
+
+
+def _routed_read(conn, own, sql, parameters):
+    """Run a read on this thread's own connection AS ``conn`` would.
+
+    The per-thread connection is opened bare, so a caller's ``row_factory``
+    never reached it: a caller that set sqlite3.Row and read rows by column
+    name got plain tuples (live 2026-11-09, every boot: "[memory_api]
+    snapshot warm-up failed ... TypeError: tuple indices must be integers or
+    slices, not str"). A cursor takes the factory when it is created, so
+    setting it per call is safe for the cursors other callers still hold."""
+    if own.row_factory is not conn.row_factory:
+        own.row_factory = conn.row_factory
+    if own.text_factory is not conn.text_factory:
+        own.text_factory = conn.text_factory
+    return own.execute(sql, parameters)
 
 
 def _plain_store_connection(db_path) -> "AppStoreConnection":
@@ -187,7 +203,7 @@ def _encrypted_store_connection_class():
                         and owns_store(self)):
                     own = lane_connection(self)
                     if own is not self:
-                        return own.execute(sql, parameters)
+                        return _routed_read(self, own, sql, parameters)
                 return super().execute(sql, parameters)
 
         _ENC_CONN_FACTORY = _EncStoreConnection
@@ -212,8 +228,18 @@ def app_write(conn, sql: str, params=()) -> None:
 
         if ffi_native_write(path, sql, params):
             return
-    conn.execute(sql, params)
-    conn.commit()
+    try:
+        conn.execute(sql, params)
+        conn.commit()
+    except Exception:
+        # A failed statement left the implicit transaction (and the WAL write
+        # lock) open on a SHARED connection until some later commit (2026-11-09
+        # audit). Close it here, then raise as before.
+        try:
+            conn.rollback()
+        except Exception as _rb_exc:  # noqa: BLE001 - the original error wins
+            logger.warning("[db] app_write rollback failed: %r", _rb_exc)
+        raise
 
 
 _LANE_CONNS = __import__("threading").local()
@@ -254,6 +280,35 @@ def owns_store(conn) -> bool:
     from backend.gateway.iris_ffi import ffi_native_owns
 
     return ffi_native_owns(path)
+
+
+_LAST_WRITE_LOSSES = {"failed": 0, "dropped": 0}
+
+
+def report_native_write_losses(context: str = "") -> dict:
+    """Log the rows the native writer FAILED or DROPPED since the last call.
+
+    app_write returns once a row is queued, so a row lost inside the native
+    queue was never logged or counted anywhere but ffi_native_write_stats(),
+    which only a test read (2026-11-09 audit). Returns the growth; a WARNING
+    is logged only when it is non-zero. Never raises."""
+    try:
+        from backend.gateway.iris_ffi import ffi_native_write_stats
+
+        st = ffi_native_write_stats() or {}
+        grew = {k: int(st.get(k, 0) or 0) - _LAST_WRITE_LOSSES[k] for k in _LAST_WRITE_LOSSES}
+        for k in _LAST_WRITE_LOSSES:
+            _LAST_WRITE_LOSSES[k] = int(st.get(k, 0) or 0)
+        if any(v > 0 for v in grew.values()):
+            logger.warning(
+                "[db] native writer lost rows (ctx=%s): failed +%d dropped +%d "
+                "(totals queued=%s written=%s failed=%s dropped=%s)",
+                context or "-", grew["failed"], grew["dropped"], st.get("queued"),
+                st.get("written"), st.get("failed"), st.get("dropped"))
+        return grew
+    except Exception as exc:  # noqa: BLE001 - a diagnostic never fails a turn
+        logger.debug("[db] native write stats unreadable: %r", exc)
+        return {}
 
 
 def app_flush(timeout_s: float = 5.0) -> bool:

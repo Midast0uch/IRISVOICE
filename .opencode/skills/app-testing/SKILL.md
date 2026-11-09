@@ -53,6 +53,9 @@ over-builds it invites) before touching code (CLAUDE.md "THE SCOPE BOUND").
 **1. Start the backend DETACHED, with stack dumps on, and wait for REAL readiness.**
 ```powershell
 $env:IRIS_STACK_DUMP_S = '4'   # in-process thread dump every 4 s -> logs/stackdump.log
+# (a GIL-holding sampler, backend/utils/stack_sampler.py, since 2026-11-09. Never go back
+#  to faulthandler.dump_traceback_later: its native watchdog read live frames without the
+#  GIL and caused ~80 "0xC0000005 every ~30 min" backend deaths from 2026-09-29.)
 npm run iris:start:backend      # or: Start-Process python start-backend.py -WindowStyle Hidden ...
 # poll /health until 200 — it answers 503 {"status":"starting","tts":{"status":"loading"}}
 # until the TTS worker is warm (by design since 2026-09-30); budget 300 s cold.

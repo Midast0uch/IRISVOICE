@@ -50,6 +50,7 @@ CREATE TABLE memory_chain (entry_id TEXT DEFAULT NULL, thread_id TEXT NOT NULL, 
   stale INTEGER DEFAULT 0, mediator TEXT, mediator_source TEXT, node_type TEXT, topic_domain TEXT,
   execution_domain TEXT, PRIMARY KEY (thread_id, sequence));
 CREATE INDEX idx_memory_chain_created ON memory_chain(created_at);
+CREATE INDEX idx_memory_chain_distilled ON memory_chain(distilled) WHERE distilled = 1;
 CREATE INDEX idx_memory_chain_session ON memory_chain(session_id);
 CREATE INDEX idx_memory_chain_thread ON memory_chain(thread_id, created_at DESC);
 CREATE TABLE mycelium_landmarks (landmark_id TEXT PRIMARY KEY, label TEXT, task_class TEXT NOT NULL,

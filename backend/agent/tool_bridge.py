@@ -1754,6 +1754,17 @@ class AgentToolBridge:
                     params, session_id, tool_name)
                 if _not_saved is not None:
                     return _not_saved
+            _escape = self._relative_escape(params, session_id)
+            if _escape:
+                # A RELATIVE path that climbs out of the bound project (2026-11-09):
+                # c12 read `../c10_create_module/_eval_hidden/test_hidden.py`, ran
+                # other tasks' tests and hit the step limit 3 times (reply 420 s).
+                # An absolute path the user names is still allowed.
+                from backend.agent.tool_errors import tool_error
+
+                _msg = (f"'{_escape}' is outside the project folder. Use a path "
+                        "inside the project, or the absolute path the user gave.")
+                return tool_error("workdir_denied", _msg, raw=_msg)
             params = self._anchor_file_paths(params, session_id)
             if tool_name in ("read_file", "list_directory"):
                 params = {k: (self._self_edit_view(v, session_id)
@@ -3333,6 +3344,22 @@ class AgentToolBridge:
 
     _FILE_PATH_KEYS = ("path", "file_path")
 
+    def _relative_escape(self, params: Dict, session_id: str) -> str:
+        """The first RELATIVE file path that resolves outside the bound project
+        folder, or "". No bound folder, or an absolute path: "" (unchanged)."""
+        self.__init_bridge_state__()
+        workdir = self._session_workdirs.get(session_id)
+        if not workdir or not isinstance(params, dict):
+            return ""
+        for key in self._FILE_PATH_KEYS:
+            raw = params.get(key)
+            if not (isinstance(raw, str) and raw.strip()) or os.path.isabs(raw) \
+                    or raw.startswith(("/", "\\")):
+                continue
+            if not self._path_under(os.path.normpath(os.path.join(workdir, raw)), workdir):
+                return raw
+        return ""
+
     def _anchor_file_paths(self, params: Dict, session_id: str) -> Dict:
         """Resolve a RELATIVE file-tool path against the session workdir.
 
@@ -3688,17 +3715,21 @@ class AgentToolBridge:
         # which listed the eval root, read ANOTHER task's hidden tests, hit the
         # 13-call limit and replied "could not verify" - a FAIL. A missing
         # folder, or one outside the project, runs in the project folder.
+        # `repo_path` (the git tools) takes the same rule: it wins over `cwd`
+        # in the resolution below, so a stale one skipped the cwd guard.
         _bound = self._session_workdirs.get(session_id)
-        _model_cwd = params.get("cwd") if isinstance(params, dict) else None
-        if _bound and isinstance(_model_cwd, str) and _model_cwd.strip():
+        for _key in ("repo_path", "cwd"):
+            _model_cwd = params.get(_key) if isinstance(params, dict) else None
+            if not (_bound and isinstance(_model_cwd, str) and _model_cwd.strip()):
+                continue
             _want = self._resolve_scope(_model_cwd, session_id)
             if not (os.path.isdir(_want) and self._path_under(_want, _bound)):
                 logger.info(
-                    "[ToolBridge][%s] cwd %r is %s - running in the project folder %r",
-                    session_id, _model_cwd,
+                    "[ToolBridge][%s] %s %r is %s - running in the project folder %r",
+                    session_id, _key, _model_cwd,
                     "missing" if not os.path.isdir(_want) else "outside the project",
                     _bound)
-                params = {k: v for k, v in params.items() if k != "cwd"}
+                params = {k: v for k, v in params.items() if k != _key}
 
         # Resolve working directory: explicit param > session workdir > repo root
         cwd = self._resolve_scope(

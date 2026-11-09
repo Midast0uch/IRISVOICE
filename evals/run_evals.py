@@ -536,12 +536,17 @@ def _retire_eval_memory() -> int:
             ("episodes", "session_id"),
         ):
             try:
-                n = st.db.execute(
-                    f"SELECT count(*) FROM {table} WHERE {col} LIKE 'eval-%'"
-                ).fetchone()[0]
-                if n:
-                    app_write(st.db, f"DELETE FROM {table} WHERE {col} LIKE 'eval-%'")
-                    removed += int(n)
+                # A range, not LIKE 'eval-%': the same rows, but the binary-
+                # collated column index can serve it. Deleted by rowid in
+                # batches of 500 so the live store's one writer never holds the
+                # write lock for a whole-table delete (2026-11-09 audit).
+                ids = [r[0] for r in st.db.execute(
+                    f"SELECT rowid FROM {table} WHERE {col} >= 'eval-' AND {col} < 'eval.'")]
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    app_write(st.db, f"DELETE FROM {table} WHERE rowid IN "
+                                     f"({','.join('?' * len(part))})", part)
+                removed += len(ids)
             except Exception as exc:  # noqa: BLE001 - one table never fails the run
                 log.warning("retire eval memory %s failed: %r", table, exc)
         app_flush(10.0)
@@ -647,23 +652,29 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
         original_projects = json.loads(IRIS_CONFIG.read_text(encoding="utf-8")).get("projects") or []
     except (OSError, ValueError):
         original_projects = []
-    eval_projects = [p for p in original_projects if p.get("id") != EVAL_PROJECT_ID] + [{
-        "id": EVAL_PROJECT_ID, "name": "IRIS evals", "path": str(EVAL_ROOT),
-        "mode": "developer", "driveType": "local",
-    }]
-    _http("POST", "/api/projects", {"projects": eval_projects})
+    def _register_eval_root(path: Path) -> None:
+        _http("POST", "/api/projects", {"projects": [
+            p for p in original_projects if p.get("id") != EVAL_PROJECT_ID] + [{
+                "id": EVAL_PROJECT_ID, "name": "IRIS evals", "path": str(path),
+                "mode": "developer", "driveType": "local",
+            }]})
+
+    _register_eval_root(EVAL_ROOT)
     current_mode = None
     results = list(done)
     # Retire the harness's OLD synthetic chats ONCE, before the group starts.
     # (Deleting a conversation mid-run once appeared to break the turn context:
     # three back-to-back memory groups on the same code all scored 0/3.)
-    if any(t.get("fact") for t in tasks):
-        _pre = _retire_eval_chats()
-        if _pre:
-            log.info("retired %d eval chat messages before the run", _pre)
-        _pre_mem = _retire_eval_memory()
-        if _pre_mem:
-            log.info("retired %d eval memory rows before the run", _pre_mem)
+    # EVERY run, not only memory tasks (2026-11-09): coding runs never retired,
+    # so evidence._memory_facts (a cross-session recall leg) put earlier runs'
+    # "The project is in ...\iris-evals\<old run>\<task>" into node prompts;
+    # the model passed that dead folder as run_command cwd ([WinError 267]),
+    # then `cwd=..`, and a c14 run read another task's hidden tests: FAIL.
+    _pre = _retire_eval_chats()
+    if _pre:
+        log.info("retired %d eval chat messages before the run", _pre)
+    _pre_mem = _retire_eval_memory()
+    log.info("retired %d eval memory rows before the run", _pre_mem)
     try:
         for i, task in enumerate(tasks, 1):
             if task["mode"] != current_mode:
@@ -676,7 +687,21 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
             # workdir follows the PATH, not the group: the calibration traffic is a
             # dev_cli group and got "Workdir does not exist: None" (measured
             # 2026-11-02, 100 no-op tasks).
+            if task.get("path") == "dev_cli" and not keep:
+                # An earlier task's folder (and its graded _eval_hidden tests) is
+                # not this task's business: a shell command can still reach a
+                # sibling folder, so it is removed before the next task starts.
+                for _old in run_dir.iterdir():
+                    shutil.rmtree(_old, ignore_errors=True)
             workdir = _prepare_workdir(task, run_dir) if task.get("path") == "dev_cli" else None
+            if workdir is not None:
+                # The registered root is THIS task's folder, as a user's project
+                # is (2026-11-09). With the whole iris-evals tree registered,
+                # `read_file ../c10_create_module/_eval_hidden/test_hidden.py`
+                # and `pytest ../c08_write_tests/...` stayed inside a registered
+                # root: c12 read and ran other tasks' hidden tests, hit the
+                # 12-call step limit three times, reply 420 s against 22 s.
+                _register_eval_root(workdir)
             # The leak check needs the SAME baseline rule as the workdir: a task
             # that binds a workdir can touch the repo, so the baseline is the repo
             # status before THAT task. With an empty baseline the check reported

@@ -40,11 +40,26 @@ import backend.agent.event_bus as _eb_module
 import backend.gateway.iris_ffi as _ffi
 
 
+def _seed_plain(path) -> None:
+    """Create a PLAINTEXT store file before the engine opens it.
+
+    The plans below are read with plain sqlite3. open_encrypted_memory keeps an
+    existing plaintext file plaintext but ENCRYPTS a new one whenever sqlcipher3
+    is importable (always under .venv): from then on these standards failed
+    with "file is not a database" and guarded nothing (found 2026-11-09)."""
+    seed = sqlite3.connect(str(path))
+    seed.execute("PRAGMA journal_mode=WAL")
+    seed.execute("CREATE TABLE _plain_seed (x INTEGER)")
+    seed.commit()
+    seed.close()
+
+
 @pytest.fixture()
 def migrated_store():
     """A fresh store migrated by the same code the backend runs at startup."""
     tmp = Path(tempfile.mkdtemp(prefix="answer-path-std-"))
     store = tmp / "memory.db"
+    _seed_plain(store)
     eng = _ffi._PythonFallbackEngine(db_path=str(store), key_hex="00" * 32)
     conn = sqlite3.connect(str(store))
     yield conn
@@ -268,6 +283,7 @@ _CHUNK_RECALL = (
 def test_s79_context_chunk_recall_walks_an_index_in_time_order(tmp_path):
     from backend.memory.episodic import EpisodicStore
 
+    _seed_plain(tmp_path / "memory.db")
     store = EpisodicStore(db_path=str(tmp_path / "memory.db"), biometric_key=b"\0" * 32)
     store._init_schema()
     conn = sqlite3.connect(str(tmp_path / "memory.db"))

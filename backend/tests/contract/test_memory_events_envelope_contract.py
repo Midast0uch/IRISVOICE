@@ -18,6 +18,16 @@ from backend.memory import memory_events as me
 @pytest.fixture()
 def store(monkeypatch):
     tmp = Path(tempfile.mkdtemp(prefix="memenv-")) / "memory.db"
+    # Seed a PLAINTEXT file first: this fixture reads the store with plain
+    # sqlite3, and open_encrypted_memory keeps an existing plaintext file
+    # plaintext. Without the seed a NEW file is encrypted under the .venv
+    # (sqlcipher3 importable) and the fixture failed with "file is not a
+    # database" (2026-11-09, also on HEAD).
+    _seed = sqlite3.connect(str(tmp))
+    _seed.execute("PRAGMA journal_mode=WAL")
+    _seed.execute("CREATE TABLE _plain_seed (x INTEGER)")
+    _seed.commit()
+    _seed.close()
     eng = _ffi._PythonFallbackEngine(db_path=str(tmp), key_hex="00" * 32)
     monkeypatch.setattr(_ffi, "_engine", eng)
     conn = sqlite3.connect(str(tmp), check_same_thread=False)

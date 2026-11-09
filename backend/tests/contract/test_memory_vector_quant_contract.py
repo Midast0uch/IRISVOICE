@@ -84,6 +84,14 @@ def store(tmp_path):
     from backend.memory.episodic import EpisodicStore
 
     path = str(tmp_path / "memory.db")
+    # Seed a PLAINTEXT file first: _seed and the tests read the store with plain sqlite3, and
+    # open_encrypted_memory keeps an existing plaintext file plaintext. Without the seed a new file is
+    # encrypted under the .venv and every test failed with "file is not a database" (2026-11-09, also on HEAD).
+    _plain = sqlite3.connect(path)
+    _plain.execute("PRAGMA journal_mode=WAL")
+    _plain.execute("CREATE TABLE _plain_seed (x INTEGER)")
+    _plain.commit()
+    _plain.close()
     st = EpisodicStore(db_path=path, biometric_key=b"\0" * 32)
     recall_reach._INDEXES.pop(path, None)
     yield path, st

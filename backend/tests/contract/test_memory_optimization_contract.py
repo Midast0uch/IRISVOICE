@@ -7,11 +7,12 @@ backend-memory-optimization spec:
     BEFORE any import that could transitively load torch, so the CPU-only
     Pocket-TTS worker never initialises a CUDA runtime.
   * REQ-5 AC5.3: the TTS worker trims its working set after model load.
-  * REQ-1 AC1.2 / REQ-6 AC6.1: ``VoiceCommandDetector.__init__`` does NOT eagerly
-    call ``warm_up()`` / ``_parakeet_warm_up()`` — Parakeet and faster-whisper
+  * REQ-1 AC1.2 / REQ-6 AC6.1: ``VoiceCommandHandler.__init__`` does NOT eagerly
+    call ``warm_up()`` / ``_phonon2_warm_up()`` — Phonon-2 and faster-whisper
     load lazily on first use (JIT), eliminating the boot-time 4.2 GB footprint.
-  * REQ-1: ``parakeet_worker.py`` runs offline (``HF_HUB_OFFLINE=1``) and has an
-    idle-exit watchdog so the parent can reclaim VRAM/RAM after 20 min idle.
+    (Parakeet was the original STT engine; it is retired, commit c9a967e0.)
+  * REQ-1: ``phonon2_stream.py`` has an idle-exit watchdog (``_IDLE_EXIT_S``) so
+    the fermion server is stopped after 20 min idle.
 
 These are source-level contract pins: spawning the real workers would load
 multi-GB models, which is exactly what the spec forbids at boot. The assertions
@@ -121,18 +122,53 @@ def test_voice_command_init_does_not_eagerly_warm_up():
     assert not eager_calls, (
         "VoiceCommandHandler.__init__ must not eagerly call warm-up: %r" % eager_calls
     )
-    # The lazy spawn path must still exist for first-utterance Parakeet launch.
-    assert "def _ensure_loaded" in src, "ParakeetTranscriber._ensure_loaded must exist"
+    # Updated 2026-11-09: Parakeet STT was deleted (commit c9a967e0; voice_command.py says
+    # ParakeetTranscriber is retired), so `_ensure_loaded` no longer exists and `_phonon2_warm_up`
+    # is the Phonon-2 twin of the old eager warm-up call. Same intent as before: __init__ may
+    # CONSTRUCT the Phonon-2 client but must not START it (no eager server spawn).
+    assert not any(
+        line.strip().startswith("self._phonon2_warm_up()") for line in init_lines
+    ), "VoiceCommandHandler.__init__ must not eagerly call _phonon2_warm_up()"
+    assert any(
+        line.strip().startswith("self._phonon2 = Phonon2StreamClient()") for line in init_lines
+    ), "VoiceCommandHandler.__init__ must construct the Phonon2StreamClient"
+    # Constructing the client starts nothing: its __init__ only sets state. The server is spawned
+    # by begin_utterance/_ServerManager.ensure, never by the constructor.
+    p2 = _read("backend/audio/phonon2_stream.py")
+    c_start = p2.find("class Phonon2StreamClient")
+    assert c_start != -1, "Phonon2StreamClient class not found"
+    c_init = p2.find("def __init__", c_start)
+    c_end = p2.find("\n    def ", c_init + 1)
+    c_body = p2[c_init:c_end if c_end != -1 else len(p2)]
+    for started in ("ensure(", "ensure_server(", "Thread(", ".start(", "begin_utterance(", "Popen("):
+        assert started not in c_body, (
+            "Phonon2StreamClient.__init__ must not start anything (found %r)" % started
+        )
 
 
-def test_parakeet_worker_offline_and_idle_exit():
-    """REQ-1: parakeet_worker runs offline and has an idle-exit watchdog."""
-    src = _read("backend/audio/parakeet_worker.py")
-    assert 'HF_HUB_OFFLINE' in src, "parakeet_worker.py must set HF_HUB_OFFLINE"
-    assert "_IDLE_TIMEOUT_S" in src, "parakeet_worker.py must define an idle timeout"
-    assert "shutting_down" in src, "parakeet_worker.py must emit a clean idle shutdown"
-    # The parent must treat an idle exit as a clean stop, not a crash.
-    vc = _read("backend/audio/voice_command.py")
-    assert "_mark_idle_shutdown" in vc, (
-        "voice_command.py must handle worker idle-exit as a clean stop"
+def test_stt_worker_idle_exit():
+    """REQ-1: the STT worker (Phonon-2 fermion server) has an idle-exit watchdog.
+
+    Renamed from test_parakeet_worker_offline_and_idle_exit (2026-11-09): backend/audio/
+    parakeet_worker.py is deleted with Parakeet (commit c9a967e0). The idle exit now lives in
+    phonon2_stream.py (`_IDLE_EXIT_S`, `_start_idle_watchdog_locked`). The old HF_HUB_OFFLINE,
+    `shutting_down` and `_mark_idle_shutdown` checks are dropped: nothing in the Phonon-2 path
+    sets or emits them (grep of backend/audio finds no HF_HUB_OFFLINE; the fermion server is a
+    separate exe that the manager just terminates), so there is nothing to pin."""
+    src = _read("backend/audio/phonon2_stream.py")
+    assert "_IDLE_EXIT_S" in src, "phonon2_stream.py must define an idle-exit timeout"
+    assert "def _start_idle_watchdog_locked" in src, "phonon2_stream.py must define the idle watchdog"
+    # The idle exit must be wired, not just defined: ensure() starts the watchdog ...
+    assert "self._start_idle_watchdog_locked()" in src, (
+        "the idle watchdog must be started by _ServerManager.ensure"
+    )
+    # ... the watchdog compares idle time to the timeout and stops the server process ...
+    w_start = src.find("def _start_idle_watchdog_locked")
+    w_end = src.find("\n    def ", w_start + 1)
+    watch = src[w_start:w_end if w_end != -1 else len(src)]
+    assert "idle > _IDLE_EXIT_S" in watch, "the watchdog must compare idle time to _IDLE_EXIT_S"
+    assert "proc.terminate()" in watch, "the watchdog must stop the idle server process"
+    # ... and activity resets the clock so a live app is not stopped (live 2026-10-16).
+    assert "def touch" in src and "self._last_activity = time.monotonic()" in src, (
+        "touch() must record activity for the idle watchdog"
     )

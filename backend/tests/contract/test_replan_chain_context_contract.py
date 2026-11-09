@@ -41,7 +41,9 @@ def chain_store():
     eng = _ffi._PythonFallbackEngine(db_path=str(path), key_hex="00" * 32)
     prev = _ffi._engine
     _ffi._engine = eng
-    conn = sqlite3.connect(str(path))
+    # The engine's file is SQLCipher-encrypted under the .venv, so a plain sqlite3.connect cannot read it
+    # ("file is not a database", 2026-11-09, also on HEAD); read through the engine's own keyed connection.
+    conn = eng._conn
     yield conn
     _ffi._engine = prev
     conn.close()

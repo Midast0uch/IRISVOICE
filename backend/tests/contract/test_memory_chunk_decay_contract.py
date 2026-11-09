@@ -33,6 +33,16 @@ def store(tmp_path):
     from backend.memory.episodic import EpisodicStore
 
     path = str(tmp_path / "memory.db")
+    # Seed a PLAINTEXT file first: this fixture reads the store with plain
+    # sqlite3, and open_encrypted_memory keeps an existing plaintext file
+    # plaintext. Without the seed a NEW file is encrypted under the .venv
+    # (sqlcipher3 importable) and the fixture failed with "file is not a
+    # database" (2026-11-09, also on HEAD).
+    _seed = sqlite3.connect(path)
+    _seed.execute("PRAGMA journal_mode=WAL")
+    _seed.execute("CREATE TABLE _plain_seed (x INTEGER)")
+    _seed.commit()
+    _seed.close()
     EpisodicStore(db_path=path, biometric_key=b"\0" * 32)
     con = sqlite3.connect(path)
     # the events table belongs to the wider store schema; create the columns

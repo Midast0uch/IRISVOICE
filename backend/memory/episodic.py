@@ -1191,8 +1191,14 @@ class EpisodicStore:
                 from backend.memory.fold_chunks import pinned_chunk_ids
 
                 _pinned = pinned_chunk_ids(self.db)
-            except Exception:
-                _pinned = set()
+            except Exception as _pin_exc:
+                # Unknown pins = do not fold this round (2026-11-09 audit): an
+                # empty set here silently folded PINNED chunks. Skipping only
+                # leaves the older rows competing until the next write.
+                logger.warning(
+                    "[EpisodicStore] pinned-chunk read failed, supersede fold skipped: %r",
+                    _pin_exc)
+                supersede = {}
             for new_id, old_ids in supersede.items():
                 _foldable = [oid for oid in old_ids if oid not in _pinned]
                 if not _foldable:
