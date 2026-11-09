@@ -1,13 +1,26 @@
-"""Contract: the tool_choice row is labelled by its STEP's verified outcome.
+"""Contract: the tool_choice row is labelled by the STEP'S COMPLETION.
 
-tc-decide-v6 (2026-11-07). The decided row asks "which tool next"; the only
-outside reference that answers that is the step's verified_label. The row is
-held from its call result until the step settles, then written once by the
-single ledger writer.
+tc-decide-v7 (2026-11-07). The decided row asks "which tool next"; the outside
+reference that answers it is whether the step that used the pick COMPLETED.
+`outside_label` is True only when BOTH hold:
+
+    * the CALL succeeded (the row's own `outcome_label == "ok"`), and
+    * the step was NOT retried (it reached finalize with no failure and no
+      post-finalize artifact graft).
+
+Two earlier labels are why this rule exists, and both are pinned here as
+history, not as behaviour:
+    * v4 (call-age): on a binding pick `called == chosen` is true by
+      construction, so the label reduced to `ok` - "the call ran", not "the
+      right TOOL was chosen" (698 rows, oof AUROC 0.5849);
+    * v6 (verified_label): the DER verifier grades the step's OUTPUT text
+      against expected text, so a successful read is UNVERIFIED. The live gate
+      produced 19 settled rows, ALL UNVERIFIED - a single-class label that
+      cannot rank anything.
 
 These pin the mechanics, not the code:
   * the flag is the off switch (off = no hold, the call-age label stands);
-  * VERIFIED -> True, UNVERIFIED and FAILED -> False;
+  * ok+completed -> True; ok+retried -> False; failed+anything -> False;
   * the key is (turn, step): the step id is an ORDINAL, so two turns collide
     without the turn;
   * a step may hold MANY rows (one per tool call) and every one is stamped;
@@ -52,17 +65,23 @@ def test_flag_off_never_holds(monkeypatch):
     assert tcol.stats()["pending_rows"] == 0
 
 
-def test_verified_is_true_and_unverified_failed_are_false():
-    cases = [("VERIFIED", True), ("UNVERIFIED", False), ("FAILED", False)]
-    for i, (label, want) in enumerate(cases):
+def test_the_label_is_the_truth_table_of_call_and_step():
+    # (call outcome, step completed) -> explained pick?
+    cases = [
+        ("ok", True, True, "COMPLETED"),     # call worked, step completed
+        ("ok", False, False, "FAILED"),      # call worked, step retried
+        ("failed", True, False, "COMPLETED"),  # call failed, step completed
+        ("failed", False, False, "FAILED"),  # both failed
+    ]
+    for i, (call, step_ok, want, step_outcome) in enumerate(cases):
         step = f"v{i}"
         wrote: list = []
-        assert tcol.defer(_row(step), lambda r, out=wrote: out.append(dict(r)))
+        assert tcol.defer(_row(step, outcome=call), lambda r, out=wrote: out.append(dict(r)))
         assert wrote == []  # held, not written at call time
-        assert tcol.stamp(step, "t1", label) == 1
+        assert tcol.stamp(step, "t1", step_ok) == 1
         assert wrote[0]["outside_label"] is want
-        assert wrote[0]["label_reference"] == "step_verified"
-        assert wrote[0]["step_outcome"] == label
+        assert wrote[0]["label_reference"] == "step_completed"
+        assert wrote[0]["step_outcome"] == step_outcome
 
 
 def test_the_key_is_turn_plus_step():
@@ -70,9 +89,9 @@ def test_the_key_is_turn_plus_step():
     b: list = []
     tcol.defer(_row("s2", "tA"), lambda r: a.append(dict(r)))
     tcol.defer(_row("s2", "tB"), lambda r: b.append(dict(r)))
-    assert tcol.stamp("s2", "tA", "VERIFIED") == 1
+    assert tcol.stamp("s2", "tA", True) == 1
     assert a[0]["outside_label"] is True and b == []
-    assert tcol.stamp("s2", "tB", "FAILED") == 1
+    assert tcol.stamp("s2", "tB", False) == 1
     assert b[0]["outside_label"] is False
 
 
@@ -80,11 +99,11 @@ def test_every_row_of_a_step_is_stamped_once():
     wrote: list = []
     for _ in range(3):
         tcol.defer(_row("s3"), lambda r: wrote.append(dict(r)))
-    assert tcol.stamp("s3", "t1", "UNVERIFIED") == 3
+    assert tcol.stamp("s3", "t1", False) == 3
     assert len(wrote) == 3
     assert all(r["outside_label"] is False for r in wrote)
     # a second settle of the same step writes nothing
-    assert tcol.stamp("s3", "t1", "VERIFIED") == 0
+    assert tcol.stamp("s3", "t1", True) == 0
     assert len(wrote) == 3
 
 
@@ -94,6 +113,7 @@ def test_unsettled_row_is_swept_with_no_label():
     assert tcol.sweep() == 1
     assert wrote and "outside_label" not in wrote[0]
     assert tcol.stats()["pending_rows"] == 0
+    assert tcol.stats()["flushed_unsettled"] == 1
 
 
 def test_non_decided_rows_pass_through():
@@ -107,9 +127,14 @@ def test_non_decided_rows_pass_through():
 
 def test_row_after_settle_is_labelled_immediately():
     wrote: list = []
-    assert tcol.stamp("s5", "t1", "VERIFIED") == 0
+    assert tcol.stamp("s5", "t1", True) == 0
     assert tcol.defer(_row("s5"), lambda r: wrote.append(dict(r))) is True
     assert wrote[0]["outside_label"] is True
+    assert wrote[0]["label_reference"] == "step_completed"
+    # the retry verdict travels the same reverse path
+    assert tcol.stamp("s6", "t1", False) == 0
+    assert tcol.defer(_row("s6"), lambda r: wrote.append(dict(r))) is True
+    assert wrote[1]["outside_label"] is False
 
 
 def test_pending_is_bounded(monkeypatch):

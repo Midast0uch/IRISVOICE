@@ -1073,7 +1073,20 @@ async def lifespan(app: FastAPI):
             )
 
         app.state.ready = True
-        logger.info("IRIS Backend startup completed successfully!")
+        # The owner's standard is <= 5 min. The epoch is set in start-backend.py
+        # and survives the venv re-exec; fall back to the lifespan start when the
+        # process was launched another way (tests, uvicorn CLI).
+        try:
+            _boot_s = time.time() - float(
+                os.environ.get("IRIS_PROCESS_START_EPOCH") or app.state._started_at
+            )
+        except (TypeError, ValueError):
+            _boot_s = time.time() - app.state._started_at
+        # StructuredLogger.info() takes only the message (no %-args); an
+        # f-string keeps the measured boot number in ONE log line.
+        logger.info(
+            f"IRIS Backend startup completed successfully in {_boot_s:.1f}s"
+        )
 
         # Memory surface: fill the snapshot cache once, in the background, after a delay and when no turn runs
         # (measured 2026-10-21: the first GET /api/memory/snapshot after a start took > 300 s on the cold

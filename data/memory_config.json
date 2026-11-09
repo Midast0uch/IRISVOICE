@@ -1,13 +1,13 @@
 {
   "db_path": "D:/IRIS/store/memory.db",
-  "encryption_enabled": false,
+  "encryption_enabled": true,
   "embedding": {
     "backend": "lfm25-emb-350m",
     "model_name": "LiquidAI/LFM2.5-Encoder-350M"
   },
   "compression": {
-    "threshold": 0.80,
-    "keep_ratio": 0.60
+    "threshold": 0.8,
+    "keep_ratio": 0.6
   },
   "distillation": {
     "enabled": true,
@@ -22,5 +22,6 @@
   "privacy": {
     "audit_logging": true,
     "audit_retention_days": 30
-  }
+  },
+  "key_source": "keychain"
 }

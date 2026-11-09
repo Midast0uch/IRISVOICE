@@ -988,7 +988,7 @@ def register_builtin_tools() -> None:
             ),
             parameters={
                 "command": {"type": "string", "description": "Command to run"},
-                "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)", "optional": True},
+                "cwd": {"type": "string", "description": "Leave it out: the command runs in the project folder. Only for a subfolder of the project, as a relative path", "optional": True},
                 "timeout": {"type": "integer", "description": "Seconds to allow, default 300, max 600. Raise it for long test suites or builds.", "optional": True},
             },
             category="shell", executor="dev", permission_tier="side_effect", parallel_safe=False,

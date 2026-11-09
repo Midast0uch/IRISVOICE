@@ -269,17 +269,30 @@ class NodeResult:
         # summary (which echoes the goal), so the goal-contract coverage may
         # use it as evidence for a behavior fact (2026-11-06). Absent when no
         # call carried an excerpt, so old-format results are unchanged.
-        _outs = [(c.get("tool", ""), c.get("out") or "")
+        # A call that did not RUN (call-level failure: the tool errored before
+        # doing its job) is headed "[tool error]": its text is an error, not
+        # evidence. A command that ran and exited non-zero keeps "[tool]" - its
+        # output IS the answer to "how many tests fail" (2026-11-09).
+        _outs = [(c.get("tool", ""), c.get("out") or "",
+                  c.get("ok_call", c.get("ok", True)))
                  for c in self.calls if c.get("out")]
         if _outs:
             lines.append("\nOutput:")
+            # The budget fills from the NEWEST call back: the step's final
+            # state is in its last calls. Filled oldest-first, a long early
+            # output (get_system_info, a stray 4-minute run) used the whole
+            # budget and cut the final "3 failed" run (live c14 2026-11-09:
+            # the report fact stayed open, one cover push, reply 300 s).
+            # Blocks keep their call order.
             _budget = 1200
-            for _t, _o in _outs:
+            _kept = []
+            for _t, _o, _ran in reversed(_outs):
                 if _budget <= 0:
                     break
                 _take = _o[:_budget]
-                lines.append(f"[{_t}]\n{_take}")
+                _kept.append(f"[{_t}]\n{_take}" if _ran else f"[{_t} error]\n{_take}")
                 _budget -= len(_take)
+            lines += list(reversed(_kept))
         if self.last_command_failed:
             lines.append("\nThe last command in this step exited non-zero.")
         if self.error:
@@ -710,7 +723,17 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 except Exception as exc:  # noqa: BLE001 - the model decides
                     logger.debug("[run_node] conv=%s choose_tool failed: %r", ctx.conv_id, exc)
                     forced = None
-                if forced and forced in allowed:
+                if isinstance(forced, (list, tuple, set)):
+                    # CANDIDATE COMPRESSION: the Oracle ranked; the model picks
+                    # from this shortlist. NO named tool_choice - a single
+                    # forced pick can be worse than the model's own choice
+                    # (c14: list_directory, 28 commands, 301 s).
+                    _keep = {str(x) for x in forced} & allowed
+                    _menu = [t for t in tools
+                             if (t.get("function") or {}).get("name") in _keep]
+                    if _menu:
+                        gen_tools = _menu
+                elif forced and forced in allowed:
                     gen_tools = [t for t in tools
                                  if (t.get("function") or {}).get("name") == forced] or tools
                     gen_extra["tool_choice"] = forced

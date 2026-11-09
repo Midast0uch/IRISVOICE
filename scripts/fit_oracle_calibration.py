@@ -64,6 +64,15 @@ from scripts.calibrate_decision_threshold import _auroc, _ece_brier  # noqa: E40
 
 MIN_BLOCK = 20
 FOLDS = 5
+
+# The OWNER's policy threshold per consumer, in RAW confidence units. The bar
+# picks the LOWEST calibrated threshold that meets its precision floor (maximum
+# coverage, policy A). `tool_choice` runs policy B - obey only when confident -
+# so its threshold is the calibrated value at this raw confidence instead.
+# Measured 2026-11-07 (action-class label): raw 0.70 selects 122 of 290 rows at
+# 95.9% precision (Wilson 90.8%) vs 90.7% overall. Only applies when that
+# consumer's rows are fitted; the bar still checks every other clause.
+POLICY_RAW_THRESHOLD = {"tool_choice": 0.70}
 # Below two blocks of evidence there is nothing to fit: a map would be one
 # constant and its out-of-fold score would measure the fold split, not the map.
 MIN_FIT_ROWS = 2 * MIN_BLOCK
@@ -201,12 +210,17 @@ def oof_calibrated(
 
 def fit_consumer(
     rows: Sequence[Dict[str, Any]], *, acting: Optional[str] = None,
+    consumer_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The calibration entry for ONE consumer's distinct rows of one backend.
 
     ``rows`` carry ``confidence`` (in the chosen answer) and ``correct``; a row
     may carry ``repeats`` (how many ledger rows it stands for) and ``chosen``
     (the answer the engine gave).
+
+    ``consumer_id`` applies the owner's POLICY_RAW_THRESHOLD (policy B) so the
+    entry's threshold is the calibrated value at that raw confidence, not the
+    bar's maximum-coverage minimum. Every other clause still applies.
 
     ``acting`` names the ONE answer that changes behaviour (consumer_bar.
     ACTING_ANSWER). When given, the entry also carries that answer's precision
@@ -285,6 +299,22 @@ def fit_consumer(
                 acting_precision=(round(kk / len(sel), 4) if sel else None),
                 acting_wilson_lb=(round(wilson_lb(kk, len(sel)), 4) if sel else None),
             )
+    _raw = POLICY_RAW_THRESHOLD.get(str(consumer_id or ""))
+    if _raw is not None and entry["knots"]:
+        # Policy B: the calibrated value at the owner's RAW confidence, not the
+        # bar's maximum-coverage minimum. Re-measure the selected set so the
+        # record carries the numbers actually enforced.
+        _t = round(apply_knots(entry["knots"], float(_raw)), 4)
+        _sel = [i for i in range(len(xs)) if cal[i] >= _t]
+        if _sel:
+            _k = sum(1 for i in _sel if ok[i])
+            _n = len(_sel)
+            entry["threshold"] = _t
+            entry["rows_above"] = _n
+            entry["oof"].update(
+                precision_at_t=round(_k / _n, 4),
+                wilson_lb=round(wilson_lb(_k, _n), 4),
+            )
     return entry
 
 
@@ -313,6 +343,7 @@ def fit_all(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         cid: fit_consumer(
             grp,
             acting=ACTING_ANSWER.get(cid) if cid in ACTING_ENFORCED else None,
+            consumer_id=cid,
         )
         for cid, grp in sorted(by.items())
     }

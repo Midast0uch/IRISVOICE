@@ -286,6 +286,10 @@ def _row(consumer_id: str, ds: Any, reference: Optional[str],
     if reference is not None:
         row["brain_choice"] = reference
     if statement:
+        # The frame the engine read. Recorded so the cohort can be replayed
+        # offline for a question change (the alternative is 6-11 min of live
+        # traffic PER CHANGE; MEASURED 2026-11-04: event rows carried no frame).
+        row["state"] = statement
         # The report's honest dedupe key (docs/architecture/oracle.md 6.1
         # rule 1): a row counts once per distinct INPUT. Without it the
         # ledger key (consumer, engine, confidence, chosen, reference,

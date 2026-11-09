@@ -1,30 +1,32 @@
-"""Attach the STEP'S verified outcome to the tool_choice rows decided in it.
+"""Attach the STEP'S completion to the tool_choice rows decided in it.
 
 WHY THIS EXISTS (measured 2026-11-07, data/memory.db, active engine)
-    The decided tool_choice row used ``outside_label = bool(called == chosen and
-    ok)``. On a binding pick the model writes only the ARGUMENTS, so
-    ``called == chosen`` is true by construction and the label reduces to ``ok``:
-    "the call ran".  Measured on ``tc-decide-v4`` (698 distinct rows): 74 wrong
-    and EVERY one carried ``outcome_label=failed``. There is no ``overridden``
-    class, so the consumer was graded on whether the model's arguments worked,
-    not on whether the Oracle's TOOL was the right next action. A read_file on a
-    path the frame said existed but the model then mistyped is a wrong ARGUMENT,
-    not a wrong tool choice. oof AUROC sat at 0.5849 under that label.
+    Two labels failed before this one, and those failures are the reason for the
+    rule below:
 
-    The step's own ``verified_label`` (VERIFIED / UNVERIFIED / FAILED) is the
-    outside reference REQ-7 already prefers. It answers the question the pick
-    actually asks: did this choice serve a step that did its job?
+    * tc-decide-v4 used ``outside_label = bool(called == chosen and ok)``. On a
+      binding pick the model writes only the ARGUMENTS, so ``called == chosen``
+      is true by construction and the label reduces to ``ok``: "the call ran".
+      698 distinct rows: 624 ok / 74 failed, oof AUROC 0.5849. A read_file on a
+      path the frame named but the model then mistyped is a wrong ARGUMENT, not
+      a wrong tool choice.
 
-THE LABEL (stated, not computed)
-    VERIFIED   -> the step did its job. The pick served it: ``outside_label``
-                  True.
-    FAILED     -> the step did not do its job. ``outside_label`` False.
-    UNVERIFIED -> the result did not demonstrate the expected output. The pick
-                  is not proven right: ``outside_label`` False. This is the
-                  review_verdict v10 precedent (2026-11-05): an unproven result
-                  should not be waved through, and without this arm the cohort
-                  is single-class (der_commits: 12,980 VERIFIED against 20
-                  FAILED).
+    * tc-decide-v6 used the step's ``verified_label`` (VERIFIED -> True,
+      UNVERIFIED/FAILED -> False). Live gate, 100% sampling, force floor 0:
+      19 settled rows, ALL UNVERIFIED, zero VERIFIED. The DER verifier grades
+      the step OUTPUT against the step's expected text; a successful read that
+      returns the file does not match an expected sentence, so it is UNVERIFIED.
+      The label was single-class (all False) and could not rank anything.
+
+THE LABEL (tc-decide-v7, stated, not computed)
+    ``outside_label`` = the CALL succeeded AND the step was NOT retried.
+      - the call succeeded: the row's own ``outcome_label == "ok"`` (the
+        call-level outcome, the v4 precedent);
+      - the step was not retried: the step reached finalize without taking the
+        failure path and without a post-finalize artifact graft.
+    A failed step is exactly the step the DER recovery path retries, grafts or
+    splits, so "retried" is a structural signal, not a text match.
+    ``label_reference`` = "step_completed"; ``step_outcome`` = COMPLETED/FAILED.
 
     A row whose step never settles is written with NO outside label. It is
     COUNTED as skipped by the report, never scored on the old call label - a
@@ -45,14 +47,15 @@ WHY DEFER (one row, one writer)
 WHY A FLAG, DEFAULT OFF (deletable wrapper)
     With IRIS_ORACLE_TOOL_CHOICE_OUTCOME unset, ``defer`` returns False and the
     call-age label is byte-identical to tc-decide-v5. The live gate is run with
-    the flag on; the cohort carries a NEW criteria stamp (tc-decide-v6), so the
+    the flag on; the cohort carries a NEW criteria stamp (tc-decide-v7), so the
     old and new labels never blend.
 
 DELETION CONTRACT (keep this true)
     - backend/agent/tool_choice_outcome_label.py   (this file, all logic)
     - backend/agent/tool_decision.py               (the defer call in
       _record_shadow_row and the outside_label removal in label_decided_row)
-    - backend/agent/agent_kernel.py                (the stamp call at settle)
+    - backend/agent/agent_kernel.py                (the stamp at the failure
+      branch and after the post-finalize artifact graft)
     - backend/tests/contract/test_tool_choice_outcome_label_contract.py
     Nothing else.
 """
@@ -67,17 +70,6 @@ from typing import Any, Dict, List, Optional, Tuple
 ENV_FLAG = "IRIS_ORACLE_TOOL_CHOICE_OUTCOME"
 CONSUMER = "tool_choice"
 
-# The step settle values. Anything else leaves the row unlabelled: an unknown
-# outcome must not invent a reference.
-VERIFIED_LABELS = ("VERIFIED", "UNVERIFIED", "FAILED")
-
-# How a settled step reads against "was this tool the right choice?".
-TOOL_CHOICE_GROUND_TRUTH = {
-    "VERIFIED": True,
-    "UNVERIFIED": False,
-    "FAILED": False,
-}
-
 # Bounded, drop-oldest, always COUNTED (repo standard: never lose a measurement
 # silently). tool_choice has several rows per step, so the cap is in ROWS.
 _MAX_PENDING_ROWS = 4096
@@ -88,8 +80,8 @@ _PENDING: "OrderedDict[Tuple[str, str], List[Dict[str, Any]]]" = OrderedDict()
 _PENDING_ROWS = 0
 # A step that settled before its row arrived. The row is normally built at the
 # call result, which precedes settle, but a concurrent step can race; remember
-# the label (bounded) so the row is still stamped instead of flushed on parity.
-_SETTLED: "OrderedDict[Tuple[str, str], str]" = OrderedDict()
+# the label (bounded) so the row is still stamped instead of flushed unlabelled.
+_SETTLED: "OrderedDict[Tuple[str, str], bool]" = OrderedDict()
 
 _DROPPED = 0
 _SETTLED_AHEAD = 0
@@ -109,21 +101,24 @@ def _key(step_id: Any, turn_id: Any) -> Optional[Tuple[str, str]]:
     return (str(turn_id or "").strip(), sid)
 
 
-def _apply(row: Dict[str, Any], label: Optional[str]) -> None:
-    """Attach the settled outcome to one row. Unknown label = no label."""
-    truth = TOOL_CHOICE_GROUND_TRUTH.get(str(label or "").upper())
-    if truth is None:
-        return
+def _apply(row: Dict[str, Any], step_ok: bool) -> None:
+    """Attach the step's completion to one row.
+
+    The pick is right only when BOTH hold: the call it made worked, and the
+    step it served was not retried. A call that failed is a wrong pick even in
+    a completed step; a step that failed is a wrong pick even when its call ran.
+    """
     row["label_source"] = "outcome"
-    row["label_reference"] = "step_verified"
-    row["step_outcome"] = str(label).upper()
-    row["outside_label"] = bool(truth)
+    row["label_reference"] = "step_completed"
+    row["step_outcome"] = "COMPLETED" if step_ok else "FAILED"
+    row["outside_label"] = bool(step_ok and row.get("outcome_label") == "ok")
 
 
-def _write(entry: Dict[str, Any], label: Optional[str]) -> None:
+def _write(entry: Dict[str, Any], step_ok: Optional[bool]) -> None:
     global _WRITE_FAILED
     row = entry["row"]
-    _apply(row, label)
+    if step_ok is not None:
+        _apply(row, bool(step_ok))
     try:
         entry["write"](row)
     except Exception:  # noqa: BLE001 - a label never blocks a settle
@@ -160,16 +155,15 @@ def defer(row: Optional[Dict[str, Any]], write) -> bool:
             return False
         entry = {"row": row, "write": write}
         with _LOCK:
-            label = _SETTLED.pop(key, None)
-            if label is not None:
+            flush_now = key in _SETTLED
+            if flush_now:
+                step_ok = _SETTLED.pop(key)
                 _SETTLED_AHEAD += 1
-                flush_now = True
             else:
-                flush_now = False
                 _PENDING.setdefault(key, []).append(entry)
                 _bump_pending_locked(1)
         if flush_now:
-            _write(entry, label)
+            _write(entry, step_ok)
         return True
     except Exception:  # noqa: BLE001 - deferral never blocks a call
         return False
@@ -185,12 +179,13 @@ def _bump_pending_locked(delta: int) -> None:
 
 
 def stamp(step_id: Optional[str], turn_id: Optional[str],
-          verified_label: Optional[str]) -> int:
-    """Attach the settled outcome to every held row of this step and WRITE them.
+          step_ok: bool) -> int:
+    """Attach the step's completion to every held row and WRITE them.
 
-    Returns the number of rows emitted. A step whose label the table cannot read
-    emits its rows with no outside label (counted, never scored). Idempotent per
-    step: a second settle finds nothing held. Never raises.
+    ``step_ok`` is True only for a step that reached finalize without a retry.
+    Returns the number of rows emitted. A step that never held a row keeps the
+    value for a row still in flight (bounded). Idempotent per step: a second
+    settle finds nothing held. Never raises.
     """
     if not enabled():
         return 0
@@ -198,21 +193,19 @@ def stamp(step_id: Optional[str], turn_id: Optional[str],
         key = _key(step_id, turn_id)
         if key is None:
             return 0
-        label = str(verified_label or "").upper()
-        if label not in VERIFIED_LABELS:
-            label = ""
+        ok = bool(step_ok)
         with _LOCK:
             entries = _PENDING.pop(key, None)
             if entries is None:
                 # Keep the outcome for a row still in flight (bounded).
-                _SETTLED[key] = label
+                _SETTLED[key] = ok
                 while len(_SETTLED) > _MAX_SETTLED:
                     _SETTLED.popitem(last=False)
                 return 0
             global _PENDING_ROWS
             _PENDING_ROWS -= len(entries)
         for entry in entries:
-            _write(entry, label or None)
+            _write(entry, ok)
         return len(entries)
     except Exception:  # noqa: BLE001 - a label never blocks a settle
         return 0
@@ -262,6 +255,6 @@ def stats() -> Dict[str, int]:
             "pending_steps": len(_PENDING),
             "dropped_overflow": _DROPPED,
             "recovered_after_settle": _SETTLED_AHEAD,
-            "flushed_parity": _FLUSHED,
+            "flushed_unsettled": _FLUSHED,
             "write_failed": _WRITE_FAILED,
         }

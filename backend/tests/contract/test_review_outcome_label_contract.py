@@ -122,20 +122,49 @@ def test_a_failed_step_makes_veto_right(monkeypatch):
 
 
 def test_an_unverified_step_stamps_nothing(monkeypatch):
-    """No ground truth -> no label. Guessing would be the phantom agreement the
-    review row already guards against for parse failures.
+    """CHANGED 2026-11-05 (owner: "label fix first"). This test used to pin
+    "UNVERIFIED emits no label", on the reading that an unverified step has no
+    ground truth. That reading answers the STEP's question; the consumer is
+    asked the REVIEW's. An unproven result should not have been waved through,
+    so `pass` is wrong and `refine` is right - a determinate answer.
 
-    The row is still EMITTED (it is a real measurement on its parity
-    reference); only the outcome keys are absent. Dropping it would lose
-    evidence."""
+    The measured cost of the old rule: der_commits holds 12,980 VERIFIED /
+    4,779 UNVERIFIED / 20 FAILED, so the outcome cohort was single-class and
+    oof AUROC sat at 0.4581 on 1,283 rows. 27% of all steps were discarded.
+
+    The row is still EMITTED either way (it is a real measurement); only
+    whether it carries an outcome label changed. An UNKNOWN label still emits
+    the row unstamped - that half of the old contract is untouched and is
+    pinned by test_an_unknown_verified_label_stamps_nothing below."""
     monkeypatch.setenv(rol.ENV_FLAG, "1")
-    row = _row()
+    row = _row(chosen="refine", brain="pass")
     written = []
     assert rol.defer(row, written.append) is True
     assert rol.stamp("s1", "UNVERIFIED") == 1
-    assert "outside_label" not in row
-    assert "label_source" not in row
+    # the review's question, not the step's: an unproven step needed another pass
+    assert row["outside_label"] is True
+    assert row["label_source"] == "outcome"
     assert written == [row]  # emitted, not dropped
+
+
+def test_an_unverified_step_makes_pass_wrong(monkeypatch):
+    """The mirror of the above, and the case the old map could not see: d1 and
+    the Brain both waved a step through and its result never verified."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    row = _row(chosen="pass", brain="pass")
+    rol.register(row)
+    assert rol.stamp("s1", "UNVERIFIED") == 1
+    assert row["outside_label"] is False
+
+
+def test_an_unverified_step_leaves_veto_wrong(monkeypatch):
+    """A partial result does not warrant refusing the step outright, so `veto`
+    stays wrong under UNVERIFIED even though it is right under FAILED."""
+    monkeypatch.setenv(rol.ENV_FLAG, "1")
+    row = _row(chosen="veto", brain="pass")
+    rol.register(row)
+    assert rol.stamp("s1", "UNVERIFIED") == 1
+    assert row["outside_label"] is False
 
 
 def test_an_unknown_verified_label_stamps_nothing(monkeypatch):
@@ -331,6 +360,14 @@ def test_the_ground_truth_table_is_the_owner_decision_reading_b():
         "pass": True, "refine": False, "veto": False}
     assert rol.GROUND_TRUTH["FAILED"] == {
         "pass": False, "refine": True, "veto": True}
+    # 2026-11-05 (owner: "label fix first"): UNVERIFIED joined the table. The
+    # step's success is unknown; the review's correctness is not - an unproven
+    # result should not have been waved through. `veto` stays wrong: a partial
+    # result does not warrant refusing the step. Measured cause of the change:
+    # der_commits holds 12,980 VERIFIED / 4,779 UNVERIFIED / 20 FAILED, so the
+    # old single-class outcome cohort read oof AUROC 0.4581 on 1,283 rows.
+    assert rol.GROUND_TRUTH["UNVERIFIED"] == {
+        "pass": False, "refine": True, "veto": False}
 
 
 # ── the REVERSE path: the step settles BEFORE the row is built ──────────────
@@ -399,16 +436,19 @@ def test_the_settled_memory_is_bounded_and_the_first_settle_wins(monkeypatch):
 
 
 def test_an_unverified_late_outcome_still_emits_the_row_unstamped(monkeypatch):
-    """No ground truth -> no label, even on the reverse path. The row is a real
-    measurement on its parity reference and must not be dropped."""
+    """CHANGED 2026-11-05 (owner: "label fix first"). The reverse path (the step
+    settles before the shadow lane builds the row) used to emit an UNVERIFIED
+    row unstamped. It now stamps it, exactly as the forward path does - the two
+    paths must never disagree about a label. The row is still EMITTED and never
+    dropped; an UNKNOWN label still emits it unstamped."""
     monkeypatch.setenv(rol.ENV_FLAG, "1")
     written = []
     assert rol.stamp("s12", "UNVERIFIED") == 0
-    row = _row(step="s12")
+    row = _row(step="s12", chosen="refine", brain="pass")
     assert rol.defer(row, written.append) is True
     assert written == [row]
-    assert "outside_label" not in row
-    assert "label_source" not in row
+    assert row["outside_label"] is True
+    assert row["label_source"] == "outcome"
 
 
 def test_sweep_still_flushes_and_counts_a_row_with_no_outcome(monkeypatch):

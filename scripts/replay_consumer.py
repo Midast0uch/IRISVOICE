@@ -92,13 +92,28 @@ def load_rows(consumer: str, limit: int, stamps=None, engine: str = SOURCE_ENGIN
         state = d.get("state")
         menu = [x["name"] for x in (d.get("candidates") or []) if isinstance(x, dict)]
         ref = d.get("brain_choice")
-        if not state or not menu or ref not in menu:
+        mode = "choice"
+        if not state:
             continue
-        key = (state, tuple(menu), ref)
+        if not menu or ref not in menu:
+            # BOOL consumers (2026-11-04): depth_met, done, needs_action,
+            # escalate_incomplete and tool_approval answer a yes/no question, so
+            # there is no candidate menu. Their reference is `brain_bool`; the
+            # question is `state` (now recorded by every writer). Without this
+            # branch the replay skipped all five, which are exactly the ones the
+            # bar fails on AUROC.
+            ref = d.get("brain_bool")
+            if ref is None:
+                continue
+            ref = bool(ref)
+            menu = None
+            mode = "bool"
+        key = (json.dumps(state, sort_keys=True, default=str)
+               if isinstance(state, dict) else state, tuple(menu or ()), ref)
         if key in seen:
             continue
         seen.add(key)
-        rows.append({"state": state, "menu": menu, "ref": ref,
+        rows.append({"state": state, "menu": menu, "ref": ref, "mode": mode,
                      "stamp": d.get("criteria_version"), "ts": ts,
                      "confidence": d.get("confidence"), "chosen": d.get("chosen"),
                      "outside_label": d.get("outside_label")})
@@ -170,14 +185,53 @@ def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custo
     out = []
     same_pick = same_conf = compared = 0
     for r in rows:
-        state_text = trim_state(r["state"], frame_mode)
+        if r.get("mode") == "bool":
+            # BOOL consumers (2026-11-04): the live call is
+            # `engine.noul(consumer, statement, frame)`, which is
+            # `decide(consumer, ["yes","no"], frame or {"goal": statement})`.
+            # `state` is the frame when the site passed one, else the
+            # statement. Score the SAME frame here so the replay reproduces
+            # the live prompt.
+            from backend.agent.surface_shadow import register_surface_consumers
+
+            register_surface_consumers()
+            st = r["state"]
+            if isinstance(st, dict):
+                frame = st
+            else:
+                frame = {"goal": str(st)}
+            ds = backend.decide(consumer, ["yes", "no"], frame,
+                                instruction=instruction or None)
+            if ds is None:
+                continue
+            p = 0.0
+            for c in (ds.distribution or ()):
+                if c.name == "yes":
+                    p = float(c.prob)
+                    break
+            chosen = p >= 0.5
+            out.append((max(p, 1.0 - p), chosen == bool(r["ref"]),
+                        chosen, bool(r["ref"])))
+            continue
+        st = r["state"]
+        if isinstance(st, dict):
+            # 2026-11-04: the state is now the EXACT frame the live call
+            # passed, so replay hands the dict back unchanged. The backend
+            # reads `goal` from a raw mapping, which is what the live call
+            # did; re-wrapping it in an OracleState would change the prompt.
+            state_text = trim_state(str(st.get("goal") or ""), frame_mode)
+            raw = dict(st)
+            raw["goal"] = state_text
+        else:
+            state_text = trim_state(st, frame_mode)
+            raw = {"goal": state_text}
         if raw_frame:
             # The live call site passes a RAW frame ({"goal": text}), so the
             # backend reads the text and NEVER the job's budget or fields.
             # MEASURED 2026-11-04: the review_verdict live path does this, and
             # the replay with an OracleState (the job set) reproduces only
             # half of the live picks.
-            frame = {"goal": state_text}
+            frame = raw
         else:
             frame = OracleState(job=job.name, fields=tuple(job.fields), text=state_text,
                                 budget_ids=job.budget_ids,
@@ -263,7 +317,8 @@ def main() -> int:
         rows = [r for r in rows if str(r.get("ts") or "") >= args.since]
     print(f"replayable distinct rows: {len(rows)}")
     if not rows:
-        print("  (the rows must carry state + candidates + brain_choice)")
+        print("  (the rows must carry state + a reference: brain_choice with "
+              "candidates, or brain_bool)")
         return 1
     live = declaration_text(args.consumer)
     custom = {}

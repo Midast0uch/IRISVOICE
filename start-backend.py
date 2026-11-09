@@ -57,6 +57,12 @@ try:
 except Exception:  # noqa: BLE001 - a missing dump must never block the start
     pass
 
+# ── Boot clock (2026-11-04) ─────────────────────────────────────────────────
+# Set once and INHERITED across the venv re-exec below, so the startup-complete
+# log can report the FULL boot. The owner's standard is 5 min; without a number
+# in the log a slow start is invisible (it looked like "14 min" with no phase).
+os.environ.setdefault("IRIS_PROCESS_START_EPOCH", str(__import__("time").time()))
+
 # ── The memory store needs SQLCipher ─────────────────────────────────────────
 # The live store (D:/IRIS/store/memory.db) is encrypted and can only be opened
 # with the `sqlcipher3` module. The SYSTEM python on this machine does not have
@@ -208,24 +214,97 @@ def _is_checked_hash_pyc(path) -> bool:
         return False
 
 
-try:
-    _purged = 0
-    # SCOPED to the project's own Python. rglob from base_dir walked the WHOLE
-    # repo — node_modules, .next (which balloons to multi-GB on this machine)
-    # and models/ (18 GB of weights). That walk did not finish in 300s when
-    # measured, so the backend sat at ~24 MB RSS burning 7s of CPU and never
-    # reached uvicorn: it looked like a hang and was really a directory crawl.
+_PYC_STAMP = Path(base_dir) / "logs" / "pyc_scan.json"
+
+
+def _pycache_signature() -> dict:
+    """Cheap fingerprint of every project `__pycache__` dir: (mtime_ns, .pyc
+    count). SCOPED to the project's own Python — an rglob from base_dir walked
+    the WHOLE repo (node_modules, .next, models/) and did not finish in 300 s.
+
+    WHY A STAT, NOT AN OPEN (measured 2026-11-04): the old guard opened all
+    3,154 .pyc on EVERY boot. That is 1.4 s once Defender has scanned them and
+    144 s on a cold first access — a fixed tax that made a warm boot 2-3 min
+    and a cold boot 5-14 min. CPython writes a .pyc atomically (temp +
+    os.replace), so a changed dir mtime is the signal that something appeared
+    or was replaced. Only those dirs are opened.
+    """
+    sig = {}
     for _root in _PYC_ROOTS:
         _dir = Path(base_dir) / _root
         if not _dir.is_dir():
             continue
-        for _pyc in _dir.rglob("__pycache__/*.pyc"):
-            if not _is_checked_hash_pyc(_pyc):
+        for _dirpath, _dirnames, _files in os.walk(_dir):
+            if os.path.basename(_dirpath) != "__pycache__":
+                continue
+            try:
+                _st = os.stat(_dirpath)
+                _count = sum(
+                    1 for _e in os.scandir(_dirpath) if _e.name.endswith(".pyc")
+                )
+            except OSError:
+                continue
+            sig[str(Path(_dirpath).relative_to(base_dir))] = [
+                _st.st_mtime_ns, _count,
+            ]
+            _dirnames[:] = []  # a __pycache__ has no subdirs of interest
+    return sig
+
+
+def _purge_stale_bytecode() -> int:
+    """Delete non-hash-checked .pyc ONLY in dirs changed since the last pass.
+
+    The guard's promise is unchanged: a stale .pyc can never be served, because
+    every dir that changed is still inspected before the next boot imports it.
+    The cost is no longer paid by the ~3,000 files that did not change.
+    """
+    import json
+
+    try:
+        _prev = json.loads(_PYC_STAMP.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        _prev = {}
+    _sig = _pycache_signature()
+    _purged = 0
+    for _rel, _fingerprint in _sig.items():
+        if _prev.get(_rel) == _fingerprint:
+            continue
+        try:
+            for _pyc in (Path(base_dir) / _rel).glob("*.pyc"):
+                if _is_checked_hash_pyc(_pyc):
+                    continue
                 try:
                     _pyc.unlink()
                     _purged += 1
                 except OSError:
                     pass
+        except OSError:
+            pass
+    # Re-read the dirs we touched, then stamp: the NEXT boot can skip them.
+    for _rel in _sig:
+        if _prev.get(_rel) == _sig[_rel]:
+            continue
+        try:
+            _st = os.stat(Path(base_dir) / _rel)
+            _count = sum(
+                1 for _e in os.scandir(Path(base_dir) / _rel)
+                if _e.name.endswith(".pyc")
+            )
+            _sig[_rel] = [_st.st_mtime_ns, _count]
+        except OSError:
+            pass
+    try:
+        _PYC_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        _tmp = _PYC_STAMP.with_suffix(".tmp")
+        _tmp.write_text(json.dumps(_sig), encoding="utf-8")
+        os.replace(_tmp, _PYC_STAMP)
+    except OSError:
+        pass
+    return _purged
+
+
+try:
+    _purged = _purge_stale_bytecode()
     if _purged:
         print(f"   Purged {_purged} non-hash-checked .pyc file(s)")
 except Exception:
@@ -263,6 +342,9 @@ def _write_checked_hash_bytecode() -> None:
                     continue
         if _written:
             print(f"   Bytecode warm-up: {_written} hash-checked .pyc written for the next boot")
+        # The warm-up replaced .pyc, so the dir mtimes moved: re-stamp now or
+        # the next boot re-opens every dir we just wrote (the old 144 s tax).
+        _purge_stale_bytecode()
     except Exception as _pyc_exc:  # never let a cache warm-up hurt the backend
         print(f"   Bytecode warm-up skipped: {_pyc_exc}")
 

@@ -338,7 +338,9 @@ def test_ct_gc13_failure_path_feeds_learning_hooks():
     assert "REQ-11 AC11.3" in src
     assert "_der_score_step_outcome(" in src
     assert "TASK_LEARNING" in src
-    assert "write_node_links(" in src
+    # db3f3f10 (D1) moved the link write onto lane("memory_events"): the
+    # failure path hands the bound method to the lane instead of calling it.
+    assert "_gc_links.write_node_links," in src
     from backend.agent.agent_kernel import AgentKernel
     from backend.agent.der_links import DerLinkWriter
 

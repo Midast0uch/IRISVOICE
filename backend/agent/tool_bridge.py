@@ -125,10 +125,20 @@ _DECISION_META_KEYS = (    "engine", "consumer_id", "route", "chosen",
     # are dropped in transit and every curve silently reads as incumbent-only.
     "outside_label",
     "label_source",
-    # tc-decide-v6 (2026-11-07): the step-outcome label's PROVENANCE. Off this
-    # list the stamp ran but the store showed only outside_label, so a reader
-    # could not tell a step-verified label from the old call-age one.
+    # tc-decide-v7 (2026-11-07): the step-completion label's PROVENANCE. Off
+    # this list the stamp ran but the store showed only outside_label, so a
+    # reader could not tell a step-completion label from the old call-age one.
     "label_reference", "step_outcome",
+    # tc-decide-v9 (2026-11-07): the owner's always-enforce policy marker, so a
+    # reader can tell an owner-forced pick from a bar-thresholded one.
+    "always",
+    "action_class_required", "action_class_chosen",
+    # candidate compression (2026-11-07): the ranked shortlist shown to the
+    # model, and whether the model's pick came from it.
+    "shortlist", "shortlist_served", "binding",
+    # class decision (2026-11-08): the d1-2b decided the class (read/write/run)
+    # and the model picked inside it; the margin is the evidence for the gate.
+    "class_decided", "class_margin",
     # job (2026-10-01): the Oracle job (decision_engine.ORACLE_JOBS) the row was
     # scored under - its input recipe and budget. Off this list it is dropped.
     "job",
@@ -392,6 +402,8 @@ def _run_command_description() -> str:
     base = ("Run one command in the project directory (npm, python, pytest, etc.). "
             "Each command runs fresh in the project directory with no input: "
             "to run a script, write it to a file first, then run the file. "
+            "Do NOT pipe or redirect (no '|', '>', '2>&1', 'tail'): the tool "
+            "captures the full output, and a pipe can stall the shell. "
             "A command that waits (no output, no CPU for 30 s) or a server returns "
             "early with a handle and keeps running: read_command_output / stop_command.")
     if _agent_shell_name() == "powershell":
@@ -1103,7 +1115,7 @@ class AgentToolBridge:
             {"name": "stop_command", "description": "Stop a run_command that is still running (by its handle) and return its last output.", "parameters": {"handle": {
                 "type": "string", "description": "The handle run_command returned"}}, "category": "shell"},
             {"name": "run_command", "description": _run_command_description(), "parameters": {"command": {
-                "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
+                "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Leave it out: the command runs in the project folder. Only for a subfolder of the project, as a relative path"}}, "category": "shell"},
 
             {
                 "name": "read_shell_output",
@@ -3345,9 +3357,31 @@ class AgentToolBridge:
         if not workdir or not isinstance(params, dict):
             return params
         anchored = dict(params)
+        _workdir_norm = os.path.normpath(workdir).lower()
         for key in self._FILE_PATH_KEYS:
             raw = anchored.get(key)
-            if not (isinstance(raw, str) and raw.strip()) or os.path.isabs(raw):
+            if not (isinstance(raw, str) and raw.strip()):
+                continue
+            if os.path.isabs(raw):
+                # STALE EVAL WORKDIR (measured 2026-11-07): the model carried
+                # an absolute path from an EARLIER iris-evals run into the
+                # current one (two c42 rows read a 2026-11-02 settings.ini and
+                # the step failed). The runner makes a fresh <timestamp>/<task>
+                # dir per run, so an absolute path under a DIFFERENT run is not
+                # this turn's tree. Rebase it into the bound workdir when the
+                # same file name exists there; any other absolute path (system
+                # files, a user path) is still left untouched.
+                _norm = os.path.normpath(raw)
+                if "iris-evals" in _norm.lower() and not _norm.lower().startswith(
+                        _workdir_norm + os.sep):
+                    _cand = self._reroot_into_workdir(raw, workdir)
+                    if (os.path.basename(_cand).lower()
+                            == os.path.basename(_norm).lower()
+                            and os.path.isdir(os.path.dirname(_cand))):
+                        anchored[key] = _cand
+                        logger.info(
+                            "[ToolBridge] session=%s stale eval path %r -> %r",
+                            session_id, raw, _cand)
                 continue
             if raw.startswith(("/", "\\")):
                 anchored[key] = self._reroot_into_workdir(raw, workdir)
@@ -3646,6 +3680,25 @@ class AgentToolBridge:
         rejected with the same explicit error as before.
         """
         self.__init_bridge_state__()
+
+        # A MODEL-supplied cwd stays inside the bound project folder. MEASURED
+        # 2026-11-09 (c14_run_and_report): the model passed a stale absolute
+        # path from an earlier eval run (the folder no longer existed:
+        # "[WinError 267] The directory name is invalid"), then `cwd=..`,
+        # which listed the eval root, read ANOTHER task's hidden tests, hit the
+        # 13-call limit and replied "could not verify" - a FAIL. A missing
+        # folder, or one outside the project, runs in the project folder.
+        _bound = self._session_workdirs.get(session_id)
+        _model_cwd = params.get("cwd") if isinstance(params, dict) else None
+        if _bound and isinstance(_model_cwd, str) and _model_cwd.strip():
+            _want = self._resolve_scope(_model_cwd, session_id)
+            if not (os.path.isdir(_want) and self._path_under(_want, _bound)):
+                logger.info(
+                    "[ToolBridge][%s] cwd %r is %s - running in the project folder %r",
+                    session_id, _model_cwd,
+                    "missing" if not os.path.isdir(_want) else "outside the project",
+                    _bound)
+                params = {k: v for k, v in params.items() if k != "cwd"}
 
         # Resolve working directory: explicit param > session workdir > repo root
         cwd = self._resolve_scope(

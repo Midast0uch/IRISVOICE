@@ -177,6 +177,48 @@ _FILE_NAME_RE = re.compile(
     re.IGNORECASE)
 
 
+_OUTPUT_TAIL_RE = re.compile(
+    r"\n(?:The last command in this step exited non-zero\.|\[node error:)")
+_OUTPUT_BLOCK_RE = re.compile(r"^\[([^\]\n]+)\]$", re.MULTILINE)
+
+
+def _tool_output(result: str) -> str:
+    """The step result's ``Output:`` section, from calls that RAN only.
+
+    The section is real tool output (node_executor.as_step_result), outside the
+    model's summary. A block headed ``[tool error]`` is a call that did not run;
+    its text is an error message, never evidence."""
+    _at = (result or "").find("\nOutput:")
+    if _at < 0:
+        return ""
+    _sec = result[_at + len("\nOutput:"):]
+    _end = _OUTPUT_TAIL_RE.search(_sec)
+    if _end:
+        _sec = _sec[:_end.start()]
+    _heads = list(_OUTPUT_BLOCK_RE.finditer(_sec))
+    _kept = []
+    for _k, _h in enumerate(_heads):
+        if _h.group(1).endswith(" error"):
+            continue
+        _stop = _heads[_k + 1].start() if _k + 1 < len(_heads) else len(_sec)
+        _kept.append(_sec[_h.end():_stop])
+    return "\n".join(_kept)
+
+
+# A fact that asks to RUN something ("Run the tests in this project").
+_RUN_ASK_RE = re.compile(r"\b(?:run|re-?run|execute)\b", re.IGNORECASE)
+
+
+def _check_ran(result: str) -> bool:
+    """True when the step ran the code or its tests and the run EXECUTED, any
+    exit code: an Actions line runs a check command and the Output section has
+    a ``[run_command]`` block (a call that did not run is headed "error")."""
+    if "\n[run_command]\n" not in (result or ""):
+        return False
+    return any(tool == "run_command" and _CHECK_CMD_RE.search(target)
+               for tool, target, _ok in _ACTION_RE.findall(result))
+
+
 def _asks_for_change(fact: str) -> bool:
     return bool(_CHANGE_ASK_RE.search(fact or "") and _FILE_NAME_RE.search(fact or ""))
 
@@ -481,6 +523,28 @@ def mark_coverage(
                         and _checked_after_change(_res)):
                     _hit = True
                     break
+                # A REPORT fact's outside evidence is the tool OUTPUT carrying
+                # the fact itself, whatever the exit code: "tell me how many
+                # tests fail" is answered by a RED pytest run ("3 failed").
+                # Same match rule as a verified step (own names, else own
+                # terms), read on the output of calls that RAN, never the
+                # summary. MEASURED 2026-11-09 (c14_run_and_report): every
+                # step ran pytest and found "3 failed", all UNVERIFIED, C
+                # stayed 0.000 and the streak-gate re-planned 2 steps that
+                # redid the run (reply 156 s); 14 of the 15 logged stalls with
+                # a fact diagnostic had this shape.
+                if (not _change_asks[_i] and _is_unverified(_oc) and _terms):
+                    # "Run the tests in this project": the evidence is that the
+                    # tests RAN. `pytest -q` prints no path and none of the
+                    # fact's words (live c14 2026-11-09: one cover push).
+                    if _RUN_ASK_RE.search(_fact) and _check_ran(_res):
+                        _hit = True
+                        break
+                    _out = _norm(_tool_output(_res))
+                    if _out and (_name_re.search(_out) is not None if _names
+                                 else any(_t in _out for _t in _match_terms)):
+                        _hit = True
+                        break
                 continue
             _low = _norm(_res)
             if not _terms:

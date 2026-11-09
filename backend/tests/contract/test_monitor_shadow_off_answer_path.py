@@ -111,6 +111,17 @@ class _SlowDecider:
 
 
 def test_review_verdict_scores_off_the_step_path():
+    """INPUT CHANGED 2026-11-05 (called out per the test rule). The setup used
+    to pass an EMPTY completed_steps list, which was fine while a plan line
+    alone still produced a frame. Since the v11 frame fix
+    (_review_frame_evidence now returns None when there is no EVIDENCE), that
+    setup produces no row at all - correctly, because an evidence-free frame
+    is what made the v10 cohort's confidence bands invert.
+
+    The test's claim is unchanged and still what it says: the score runs OFF
+    the step path. Only the input moved: one completed step now supplies the
+    evidence the frame requires. The load it drives (a slow decider that
+    blocks until released, proving the caller does not wait) is identical."""
     from types import SimpleNamespace
 
     from backend.agent.der_loop import Reviewer, ReviewVerdict
@@ -121,7 +132,11 @@ def test_review_verdict_scores_off_the_step_path():
     rv.set_review_engine(eng)
     rv.set_shadow_sink(lambda r: (rows.append(r), landed.set()))
     item = SimpleNamespace(description="edit utils.py", objective_anchor="fix bug")
-    assert rv._shadow_review_verdict(item, [], ReviewVerdict.PASS) is None
+    done = SimpleNamespace(
+        envelope=SimpleNamespace(line=lambda: "success, matched - proceed"),
+        result="patched utils.py",
+    )
+    assert rv._shadow_review_verdict(item, [done], ReviewVerdict.PASS) is None
     assert not rows, "the step must not wait for the score"
     eng.release.set()
     assert landed.wait(5)

@@ -169,14 +169,37 @@ def _load_model(language: str = "english") -> None:
     """Load Pocket-TTS model + voice state. Called once at startup."""
     global _model, _voice_state, _load_error
     try:
-        # Pocket-TTS v2.x applies beartype runtime type-checking to every
-        # function at import time, which adds ~40s to the first import.
-        # No-op it here — we don't need runtime type validation in production.
+        # pocket_tts/__init__ installs a beartype CLAW import hook and then
+        # imports the whole beartype wheel just to runtime-type-check. We need
+        # neither the hook nor the checks. Install a tiny stub instead of
+        # importing the real package: the old code imported beartype.claw to
+        # no-op ONE function, which still paid the full import (765 files,
+        # 6.2 MB; MEASURED 2026-11-04: 18 s warm, minutes on a cold disk).
+        # pocket_tts uses only BeartypeConf(...) and beartype_this_package(...);
+        # two modules import beartype.typing (a re-export of typing).
         try:
-            import beartype.claw as _bt
+            import types as _types
+            import typing as _typing
 
-            _bt.beartype_this_package = lambda **_: None
-        except ImportError:
+            if "beartype" not in sys.modules:
+                _bt = _types.ModuleType("beartype")
+
+                class _BeartypeConf:
+                    def __init__(self, *args, **kwargs):
+                        pass
+
+                def _fake_beartype(obj=None, *args, **kwargs):
+                    return obj if obj is not None else (lambda fn: fn)
+
+                _bt.BeartypeConf = _BeartypeConf
+                _bt.beartype = _fake_beartype
+                _bt.typing = _typing
+                _claw = _types.ModuleType("beartype.claw")
+                _claw.beartype_this_package = lambda *a, **k: None
+                sys.modules["beartype"] = _bt
+                sys.modules["beartype.claw"] = _claw
+                sys.modules["beartype.typing"] = _typing
+        except Exception:
             pass
 
         from pocket_tts import TTSModel

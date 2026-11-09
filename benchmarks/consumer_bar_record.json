@@ -11,10 +11,10 @@
     },
     "consumer_id": "call_closing",
     "ece": null,
-    "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
+    "gap": "",
     "precision": 0.0,
-    "rows": 1647,
-    "status": "shadow"
+    "rows": 2451,
+    "status": "enforced"
   },
   "depth_met": {
     "config": {
@@ -29,9 +29,9 @@
     },
     "consumer_id": "depth_met",
     "ece": null,
-    "gap": "oof AUROC 0.4946 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5673 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 557,
+    "rows": 884,
     "status": "shadow"
   },
   "depth_route": {
@@ -47,9 +47,9 @@
     },
     "consumer_id": "depth_route",
     "ece": null,
-    "gap": "oof AUROC 0.567 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5649 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 156,
+    "rows": 282,
     "status": "shadow"
   },
   "done": {
@@ -65,9 +65,9 @@
     },
     "consumer_id": "done",
     "ece": null,
-    "gap": "oof AUROC 0.5591 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5827 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 113,
+    "rows": 176,
     "status": "shadow"
   },
   "escalate_incomplete": {
@@ -82,9 +82,9 @@
     },
     "consumer_id": "escalate_incomplete",
     "ece": null,
-    "gap": "enforcement bar unmet (oof AUROC 0.4628 < 0.65 (confidence does not rank errors)); rung live",
+    "gap": "enforcement bar unmet (oof AUROC 0.4387 < 0.65 (confidence does not rank errors)); rung live",
     "precision": 0.0,
-    "rows": 399,
+    "rows": 771,
     "status": "sampled"
   },
   "event_family": {
@@ -99,9 +99,9 @@
     },
     "consumer_id": "event_family",
     "ece": null,
-    "gap": "distinct rows 32 < 100",
+    "gap": "distinct rows 50 < 100",
     "precision": 0.0,
-    "rows": 32,
+    "rows": 50,
     "status": "shadow"
   },
   "event_type:control": {
@@ -116,9 +116,9 @@
     },
     "consumer_id": "event_type:control",
     "ece": null,
-    "gap": "distinct rows 9 < 100",
+    "gap": "distinct rows 13 < 100",
     "precision": 0.0,
-    "rows": 9,
+    "rows": 13,
     "status": "shadow"
   },
   "event_type:delivery": {
@@ -167,9 +167,9 @@
     },
     "consumer_id": "event_type:knowledge",
     "ece": null,
-    "gap": "distinct rows 13 < 100",
+    "gap": "distinct rows 27 < 100",
     "precision": 0.0,
-    "rows": 13,
+    "rows": 27,
     "status": "shadow"
   },
   "event_type:memory": {
@@ -184,9 +184,9 @@
     },
     "consumer_id": "event_type:memory",
     "ece": null,
-    "gap": "distinct rows 15 < 100",
+    "gap": "distinct rows 17 < 100",
     "precision": 0.0,
-    "rows": 15,
+    "rows": 17,
     "status": "shadow"
   },
   "event_type:safety": {
@@ -218,10 +218,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "narration",
-    "ece": 0.1717,
+    "ece": 0.1262,
     "gap": "",
-    "precision": 0.9184,
-    "rows": 493,
+    "precision": 0.8883,
+    "rows": 804,
     "status": "enforced"
   },
   "needs_action": {
@@ -237,9 +237,9 @@
     },
     "consumer_id": "needs_action",
     "ece": null,
-    "gap": "enforcement bar unmet (no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows); rung live",
+    "gap": "enforcement bar unmet (minority class 4.9% < 5%); rung live",
     "precision": 0.0,
-    "rows": 2225,
+    "rows": 3107,
     "status": "sampled"
   },
   "presentation": {
@@ -254,11 +254,11 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "presentation",
-    "ece": null,
-    "gap": "distinct rows 24 < 100",
-    "precision": 0.0,
-    "rows": 24,
-    "status": "shadow"
+    "ece": 0.3943,
+    "gap": "",
+    "precision": 0.8596,
+    "rows": 403,
+    "status": "enforced"
   },
   "recovery_strategy": {
     "config": {
@@ -279,20 +279,20 @@
   },
   "review_verdict": {
     "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|2e6f65b0fa3a",
+      "backend_id": "d1-2b-q4_k_m+systemone|systemone|3368a26b3a9f",
       "backend_identity_source": "declared d1 variant",
       "calibrated_cap": 32,
       "candidate_cap": 32,
-      "criteria_hash": "2e6f65b0fa3a",
-      "criteria_version": "review_verdict/v8",
+      "criteria_hash": "3368a26b3a9f",
+      "criteria_version": "review_verdict/v11",
       "engine_id": "d1-2b-q4_k_m+systemone",
       "readout_mode": "systemone"
     },
     "consumer_id": "review_verdict",
     "ece": null,
-    "gap": "enforcement bar unmet (oof AUROC 0.4581 < 0.65 (confidence does not rank errors)); rung live",
+    "gap": "enforcement bar unmet (oof AUROC 0.5043 < 0.65 (confidence does not rank errors)); rung live",
     "precision": 0.0,
-    "rows": 2774,
+    "rows": 590,
     "status": "sampled"
   },
   "route_v2": {
@@ -307,10 +307,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "route_v2",
-    "ece": 0.0652,
+    "ece": 0.0369,
     "gap": "",
-    "precision": 0.9412,
-    "rows": 676,
+    "precision": 0.9606,
+    "rows": 1005,
     "status": "enforced"
   },
   "sufficient": {
@@ -343,9 +343,9 @@
     },
     "consumer_id": "tool_approval",
     "ece": null,
-    "gap": "oof AUROC 0.5287 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5015 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 4846,
+    "rows": 8756,
     "status": "shadow"
   },
   "tool_choice": {
@@ -360,10 +360,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "tool_choice",
-    "ece": 0.1955,
-    "gap": "enforcement bar unmet (oof AUROC 0.5867 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.8985,
-    "rows": 697,
+    "ece": 0.1942,
+    "gap": "enforcement bar unmet (oof AUROC 0.5849 < 0.65 (confidence does not rank errors)); rung live",
+    "precision": 0.8966,
+    "rows": 698,
     "status": "sampled"
   },
   "user_feedback": {
@@ -377,10 +377,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.244,
-    "gap": "no-error-mass waiver: 1 wrong in 257 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
+    "ece": 0.3002,
+    "gap": "no-error-mass waiver: 1 wrong in 504 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
     "precision": 1.0,
-    "rows": 257,
+    "rows": 504,
     "status": "enforced"
   },
   "web_intent": {
@@ -395,10 +395,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "web_intent",
-    "ece": 0.0213,
-    "gap": "minority class 1.8% < 5%",
-    "precision": 1.0,
-    "rows": 198,
+    "ece": 0.0061,
+    "gap": "minority class 3.8% < 5%",
+    "precision": 0.9846,
+    "rows": 534,
     "status": "shadow"
   }
 }

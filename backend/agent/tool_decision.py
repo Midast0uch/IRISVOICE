@@ -1906,9 +1906,29 @@ class ToolDecisionBox:
                 sampled_consult_ok,
             )
 
+            from backend.agent.tool_choice_action_class import (
+                CLASS_MARGIN_MIN,
+                READ,
+                RUN,
+                UNKNOWN,
+                WRITE,
+                allowed_tools,
+                always_enabled,
+                class_decision_enabled,
+                class_masses,
+                classify_tool,
+                shortlist_from_distribution,
+                shortlist_k,
+            )
+
+            _always = always_enabled()
+            _shortlist_k = shortlist_k()
+            _class_mode = class_decision_enabled()
             enforced = decides("tool_choice") is not None
-            sampled = (not enforced) and sampled_consult_ok("tool_choice", scope_key)
-            if not (enforced or sampled):
+            sampled = ((not enforced) and (not _always) and (not _shortlist_k)
+                       and (not _class_mode)
+                       and sampled_consult_ok("tool_choice", scope_key))
+            if not (_always or _shortlist_k or _class_mode or enforced or sampled):
                 return None
             registry = self._get_available_tools() or []
             names = self._order_engine_names(
@@ -1916,6 +1936,20 @@ class ToolDecisionBox:
                 [n for n in self._vision_tool_names(registry) if n in candidates],
                 goal or "",
             )
+            # THE CLASS GUARD is the candidate-pool SAFETY PRIOR for the
+            # forced policy. In CLASS-DECISION mode the d1-2b sees the FULL
+            # menu and decides the class itself; the rule is only the label.
+            _full_names = list(names)
+            _guarded_names, _action_need = allowed_tools(
+                names, goal or "", calls_this_step or "", step_id or "")
+            if _class_mode:
+                names = _full_names
+            else:
+                names = _guarded_names
+                if _action_need is not None and not names:
+                    return None
+                if (_always or enforced) and _action_need is None:
+                    return None
             _cap = getattr(getattr(eng, "_cfg", None), "candidate_cap", 6)
             menu = self._compose_engine_menu(
                 names, self._DE_DELEGATE, self._DE_NONE, _cap)
@@ -1930,7 +1964,50 @@ class ToolDecisionBox:
             ds = eng.decide("tool_choice", menu, frame)
             if ds is None or ds.chosen in (self._DE_DELEGATE, self._DE_NONE):
                 return None
-            if enforced and not oracle_acts("tool_choice", float(ds.confidence)):
+            if (enforced and not _always and not _shortlist_k
+                    and not oracle_acts("tool_choice", float(ds.confidence))):
+                return None
+            # tc-decide-v9 (2026-11-07): the SCORING label is the Oracle's own
+            # question - did it pick the right tool CLASS? With the guard it is
+            # true by construction; the row still records the required class
+            # and the pick for monitoring.
+            _action_ok = (
+                classify_tool(ds.chosen) in _action_need
+                if _action_need else None
+            )
+            # CANDIDATE COMPRESSION (2026-11-07): the Oracle ranks, the MODEL
+            # picks from the top-k. This is the standard tool-retrieval pattern
+            # (Toollery/Tool RAG): a smaller candidate set is faster and more
+            # accurate, and the model keeps the final decision. Unlike the
+            # single forced pick, a bad rank cannot push the model into a wrong
+            # tool - it only narrows the list.
+            _short = (shortlist_from_distribution(ds.distribution, _shortlist_k)
+                      if _shortlist_k else [])
+            # CLASS DECISION: the d1-2b's top-1 tool class, taken only when the
+            # class mass clears the measured margin (0.30). Below it, fall back
+            # to the shortlist: an uncertain class must not constrain the model.
+            _class_decided = None
+            _class_margin = None
+            if _class_mode:
+                _top_class = classify_tool(ds.chosen)
+                _, _class_margin = class_masses(ds.distribution, _top_class)
+                if (_top_class in (READ, WRITE, RUN)
+                        and _class_margin is not None
+                        and _class_margin >= CLASS_MARGIN_MIN):
+                    _class_tools = [n for n in names
+                                    if classify_tool(n) == _top_class]
+                    if _class_tools:
+                        _short = _class_tools
+                        _class_decided = _top_class
+                # The class map and the 93.7% measurement cover the CODING
+                # tools only (1 of 1581 stored rows offered a web/browser
+                # tool). A tool outside the map was never measured, so the
+                # narrowing never removes it: a research step keeps `search`.
+                if _short:
+                    _short = _short + [n for n in names
+                                       if classify_tool(n) == UNKNOWN
+                                       and n not in _short]
+            if (_shortlist_k or _class_mode) and not _short:
                 return None
             # AC6.6 Gate 1 (REVERSIBILITY), per PICK: a SAMPLED pick may only
             # force a READ-ONLY tool - a wrong one costs one wasted read. A
@@ -1957,7 +2034,15 @@ class ToolDecisionBox:
                     for c in (ds.distribution or ())
                 ],
                 "engine_latency_ms": ds.engine_latency_ms,
-                "route": "enforced" if enforced else "sampled",
+                "route": ("class" if _class_decided
+                          else ("shortlist" if (_shortlist_k or _class_mode)
+                                else ("enforced" if (enforced or _always)
+                                      else "sampled"))),
+                "always": _always,
+                "shortlist": (_short or None),
+                "class_decided": _class_decided,
+                "class_margin": _class_margin,
+                "binding": False,
                 "source": "der_node",
                 # v2 (2026-10-11): + step_facts, binding picks forced at the API
                 # v4 (2026-10-21): the LABEL reads the CALL-level outcome (see
@@ -1969,20 +2054,36 @@ class ToolDecisionBox:
                 # wrong picks; the call-level label takes the honest-key
                 # cohort from AUROC 0.657 to 0.7988 offline. Also carries
                 # input_key (one row per INPUT, however confidence collides).
-                "criteria_version": "tc-decide-v6",
+                "criteria_version": "tc-decide-v9",
                 "menu_fp": _menu_fingerprint(menu, option_criteria),
                 "state": _render_state("tool_choice", frame)[:2000],
                 "input_key": _tc_input_key(frame),
-                # tc-decide-v6 (2026-11-07): the row joins its step's settled
-                # outcome. `step_id` is the step's ORDINAL in a turn ("s2"), so
-                # the turn is part of the key too. See
-                # backend.agent.tool_choice_outcome_label.
+                # tc-decide-v9 (2026-11-07): action-class label, final at
+                # decision time. `label_source` keeps label_decided_row from
+                # overwriting it with the call-age label, and keeps defer() from
+                # holding the row (it holds ONLY label_source="outcome").
+                "label_source": "action_class",
+                "label_reference": ("action_class" if _action_ok is not None
+                                    else None),
+                "outside_label": (bool(_action_ok) if _action_ok is not None
+                                  else None),
+                "action_class_required": (sorted(_action_need) if _action_need
+                                          else None),
+                "action_class_chosen": classify_tool(ds.chosen),
+                # tc-decide-v7: the row joins its step's settled outcome too
+                # (kept for the separate outcome curve). `step_id` is the
+                # step's ORDINAL in a turn ("s2"), so the turn is part of the
+                # key. See backend.agent.tool_choice_outcome_label.
                 "step_id": step_id or None,
                 "turn_id": turn_id or None,
             }
             logger.info(
-                "[TOOL_DECISION] Oracle decides tool=%s conf=%.3f route=%s latency_ms=%s",
-                ds.chosen, float(ds.confidence), row["route"], ds.engine_latency_ms)
+                "[TOOL_DECISION] Oracle decides tool=%s conf=%.3f route=%s "
+                "shortlist=%s latency_ms=%s",
+                ds.chosen, float(ds.confidence), row["route"],
+                (",".join(_short) if _short else "-"), ds.engine_latency_ms)
+            if _shortlist_k or _class_mode:
+                return _short, row
             return ds.chosen, row
         except Exception as _e:  # noqa: BLE001 — the model decides on any failure
             logger.debug("[TOOL_DECISION] choose_node_tool failed: %r", _e)
@@ -1993,20 +2094,31 @@ class ToolDecisionBox:
                           session_id: str = "") -> None:
         """Label an Oracle-decided row with what happened and write it.
 
-        `outside_label` = the decided call EXECUTED (the model called the
-        chosen tool and the call did its job). v4 (2026-10-21): `ok` here is
-        the CALL-level outcome - a run_command that RAN counts as a
-        successful pick whatever its exit code reported about the WORK (the
-        tool_approval/v6 precedent; measured: 36 of 39 failed run_command
-        calls were ran-and-exited, and the v3 label held binding run_command
-        rows at chance-level ranking). Read by decision_label as
-        bool(chosen) == outside_label. A step the model FINISHED instead of
-        calling the tool carries `outcome_label` "finished" and NO outside
-        label: it is counted, never scored (a step that was already done is
-        not evidence the pick was wrong). Never raises."""
+        FLAG OFF (the default): `outside_label` = the decided call EXECUTED
+        (the model called the chosen tool and the call did its job). v4
+        (2026-10-21): `ok` here is the CALL-level outcome - a run_command that
+        RAN counts as a successful pick whatever its exit code reported about
+        the WORK (the tool_approval/v6 precedent; measured: 36 of 39 failed
+        run_command calls were ran-and-exited, and the v3 label held binding
+        run_command rows at chance-level ranking). Read by decision_label as
+        bool(chosen) == outside_label.
+
+        FLAG ON: the call-age label is dropped and the row is HELD; its step's
+        completion stamps it at settle (backend.agent.tool_choice_outcome_label,
+        tc-decide-v7). A step the model FINISHED instead of calling the tool
+        carries `outcome_label` "finished" and NO outside label: it is counted,
+        never scored (a step that was already done is not evidence the pick was
+        wrong).
+
+        ACTION-CLASS (tc-decide-v9, the default row): the scoring label is set
+        at decision time and is FINAL. `outside_label` already answers "did the
+        Oracle pick the right tool class", so this method keeps it, records the
+        call outcome in `outcome_label` for diagnostics, and never replaces the
+        class label with the call-age one. Never raises."""
         try:
             out = dict(row)
-            out["label_source"] = "outcome"
+            out.setdefault("label_source", "outcome")
+            _action_label = out.get("label_source") == "action_class"
             if called is None:
                 out["outcome_label"] = "finished"
             else:
@@ -2019,21 +2131,29 @@ class ToolDecisionBox:
                     out["outcome_label"] = "overridden"
                 else:
                     out["outcome_label"] = "ok" if ok else "failed"
-                out["outside_label"] = bool(called == row.get("chosen") and ok)
-                # tc-decide-v6 (2026-11-07): when the step-outcome label is on,
-                # the call-age label is NOT the answer - it measures the model's
-                # ARGUMENTS, not the Oracle's TOOL. Drop it and let the step's
-                # verified_label stamp it at settle (review_outcome_label's
-                # precedent). An unsettled row is then counted, never scored,
-                # instead of blending two label semantics into one curve.
-                try:
-                    from backend.agent import tool_choice_outcome_label as _tcol
+                # CANDIDATE COMPRESSION: the model is ALLOWED to pick another
+                # tool from the shortlist. The metric is whether its pick was
+                # served by the Oracle's shortlist, not whether it matched the
+                # Oracle's top-1.
+                if out.get("shortlist") is not None:
+                    try:
+                        out["shortlist_served"] = bool(
+                            called and called in out["shortlist"])
+                    except Exception:  # noqa: BLE001 - a label never blocks a node
+                        pass
+                if not _action_label:
+                    out["outside_label"] = bool(called == row.get("chosen") and ok)
+                    # tc-decide-v7 (2026-11-07): when the step-completion label
+                    # is on, the call-age label is NOT the answer - it measures
+                    # the model's ARGUMENTS, not the Oracle's TOOL. Drop it and
+                    # let the step's completion stamp it at settle.
+                    try:
+                        from backend.agent import tool_choice_outcome_label as _tcol
 
-                    if _tcol.enabled() and out["outcome_label"] in ("ok", "failed"):
-                        out.pop("outside_label", None)
-                        out["label_pending"] = True
-                except Exception:  # noqa: BLE001 - a label never blocks a node
-                    pass
+                        if _tcol.enabled() and out["outcome_label"] in ("ok", "failed"):
+                            out.pop("outside_label", None)
+                    except Exception:  # noqa: BLE001 - a label never blocks a node
+                        pass
                 out["brain_params"] = {
                     k: str(v)[:120] for k, v in (params or {}).items()
                     if k in ("path", "file_path", "command", "pattern", "query",
@@ -2829,11 +2949,11 @@ class ToolDecisionBox:
         if recorder is None:
             return
         try:
-            # tc-decide-v6 (2026-11-07): the DECIDED tool_choice row is held
-            # until its step settles, then written with the step's verified
-            # outcome (one row, one writer - the review_verdict precedent).
-            # Other rows (the failure-triage row, the RespondDirect shadow row)
-            # fall straight through: `defer` returns False for them.
+            # tc-decide-v7 (2026-11-07): the DECIDED tool_choice row is held
+            # until its step settles, then written with the step's COMPLETION
+            # (one row, one writer - the review_verdict precedent). Other rows
+            # (the failure-triage row, the RespondDirect shadow row) fall
+            # straight through: `defer` returns False for them.
             from backend.agent import tool_choice_outcome_label as _tcol
 
             if _tcol.defer(

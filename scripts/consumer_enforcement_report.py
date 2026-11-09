@@ -112,7 +112,9 @@ def _honest_with_acting(cid: str, grp: List[Dict[str, Any]]) -> Dict[str, Any]:
     carry it (measured 2026-10-19: needs_action aggregate 0.949, acting side
     0.706). The clause measures the side that acts."""
     honest = fit_consumer(
-        grp, acting=ACTING_ANSWER.get(cid) if cid in ACTING_ENFORCED else None
+        grp,
+        acting=ACTING_ANSWER.get(cid) if cid in ACTING_ENFORCED else None,
+        consumer_id=cid,
     )
     if cid in ACTING_ENFORCED:
         honest["acting_required"] = True

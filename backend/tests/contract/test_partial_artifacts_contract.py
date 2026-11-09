@@ -41,8 +41,14 @@ def test_the_der_loop_grafts_the_remainder_after_a_file_step():
 
     Before it, the step that owes the files is still in flight and the queue
     cannot accept the grafts.
+
+    The settle path (`_der_post_step`) is a MODULE-LEVEL function (it takes
+    `self` explicitly), so the source must be read from the module, not from
+    `AgentKernel`. The assertions are unchanged.
     """
-    src = inspect.getsource(AgentKernel)
+    from backend.agent import agent_kernel as ak
+
+    src = inspect.getsource(ak)
     finalize_at = src.find("_tokens_used = self._der_finalize_step(")
     graft_at = src.find("self._der_graft_missing_artifacts(")
     assert finalize_at != -1, "the DER step finalize call moved or was renamed"

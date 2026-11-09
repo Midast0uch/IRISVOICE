@@ -61,3 +61,5 @@
 {"at": "2026-11-03T14:26:31+00:00", "consumer": "tool_choice", "gap": "", "status": "enforced"}
 {"at": "2026-11-03T16:53:41+00:00", "consumer": "user_feedback", "gap": "no-error-mass waiver: 1 wrong in 239 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed", "status": "enforced"}
 {"at": "2026-11-03T22:24:02+00:00", "consumer": "tool_choice", "gap": "enforcement bar unmet (oof AUROC 0.5867 < 0.65 (confidence does not rank errors)); rung live", "status": "sampled"}
+{"at": "2026-11-06T15:56:52+00:00", "consumer": "call_closing", "gap": "", "status": "enforced"}
+{"at": "2026-11-06T15:56:52+00:00", "consumer": "presentation", "gap": "", "status": "enforced"}

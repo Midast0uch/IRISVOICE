@@ -1,0 +1,6 @@
+from calculator import mode
+
+
+def test_mode():
+    assert mode([1, 2, 2, 3]) == 2
+

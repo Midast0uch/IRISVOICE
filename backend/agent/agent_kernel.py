@@ -623,7 +623,23 @@ def _narrow_node_tools(tools, goal, engine=None, k=None):
     """
     try:
         if k is None:
-            k = int(os.environ.get("IRIS_NODE_TOOL_MENU_K", "12") or 12)
+            _k_env = os.environ.get("IRIS_NODE_TOOL_MENU_K", "")
+            if not _k_env.strip():
+                # With the class decision on, the Oracle narrows EVERY call on
+                # the step's live state; this goal-only cut would only remove
+                # tools for the whole step with no way back (live 2026-11-09:
+                # it dropped screenshot_page from a web step). MEASURED
+                # 2026-11-09 (c14, 3 runs each, same code): reply 64/26/42 s
+                # with the cut, 35/29/64 s without; the cut saves ~21% prompt
+                # tokens (median 2742 vs 3330) and costs one d1 call per step.
+                # An explicit IRIS_NODE_TOOL_MENU_K still wins.
+                from backend.agent.tool_choice_action_class import (
+                    class_decision_enabled,
+                )
+
+                if class_decision_enabled():
+                    return tools
+            k = int(_k_env or 12)
         names = [
             t.get("function", {}).get("name") for t in (tools or [])
         ]
@@ -1435,6 +1451,16 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
         logger.info("[DER] node %s settled as not needed (%s)", item.step_id, _why)
         return _tokens_used
     if not step_success:
+        # tc-decide-v7 (2026-11-07): the step FAILED, so every tool_choice row
+        # held for it is a wrong pick - including a recovered step: the pick
+        # that failed is what the retry had to replace. Stamp BEFORE routing so
+        # the rows are written once even when the recovery finalizes normally.
+        try:
+            from backend.agent import tool_choice_outcome_label as _tcol
+
+            _tcol.stamp(getattr(item, "step_id", None), _turn_id, False)
+        except Exception:  # noqa: BLE001 - a label never blocks a settle
+            logger.debug("[DER] tool_choice retry stamp failed")
         # REQ-4 (specs/dag-node-execution-model): before the graft
         # handler runs, consult the node router. A recovery node that
         # advertises this failure's reason executes in place of the
@@ -1545,11 +1571,26 @@ def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
     # A step is ONE tool call, so a step naming several files writes only
     # one. Detect the remainder and graft a step per missing file BEFORE
     # the loop settles, so the user gets the files that were asked for.
-    self._der_graft_missing_artifacts(
+    _grafted = self._der_graft_missing_artifacts(
         item, plan, queue, _session, _turn_id,
         _token_budget=_token_budget, _tokens_used=_tokens_used,
     )
+    # tc-decide-v7 (2026-11-07): a post-finalize artifact graft is a RETRY of
+    # this step - the pick wrote only part of the files the step named. The
+    # step's tool_choice rows are stamped HERE, after the graft count exists,
+    # so "completed" means "no failure, no graft, and the step really is in
+    # completed_ids" (a split parent is held, not completed).
     _der_settle_split(self, item, queue, inflight)
+    try:
+        from backend.agent import tool_choice_outcome_label as _tcol
+
+        _tc_step_ok = (
+            not int(_grafted or 0)
+            and item.step_id in getattr(queue, "completed_ids", ())
+        )
+        _tcol.stamp(getattr(item, "step_id", None), _turn_id, _tc_step_ok)
+    except Exception:  # noqa: BLE001 - a label never blocks a settle
+        logger.debug("[DER] tool_choice completion stamp failed")
     return _tokens_used
 
 def _der_settle_split(self, item, queue, inflight) -> None:
@@ -8070,9 +8111,9 @@ class AgentKernel:
                         )
                 except Exception:  # noqa: BLE001
                     pass
-                # tc-decide-v6 (2026-11-07): flush any DECIDED tool_choice row
+                # tc-decide-v7 (2026-11-07): flush any DECIDED tool_choice row
                 # whose step never settled (early turn end, exception). The row
-                # was written WITHOUT an outside_label, so a flushed row is
+                # is written WITHOUT an outside_label, so a flushed row is
                 # counted and never scored - two label semantics never blend.
                 try:
                     from backend.agent import tool_choice_outcome_label as _tcol
@@ -8081,10 +8122,11 @@ class AgentKernel:
                     if _tcol.enabled() and _tc_swept:
                         _tcol_st = _tcol.stats()
                         logger.info(
-                            "[Oracle] tool_choice step-outcome label: "
-                            "swept_parity_now=%d pending_rows=%d "
+                            "[Oracle] tool_choice step-completion label: "
+                            "swept_unsettled_now=%d flushed_unsettled_total=%d "
                             "dropped_overflow=%d",
-                            _tc_swept, _tcol_st.get("pending_rows", 0),
+                            _tc_swept,
+                            _tcol_st.get("flushed_unsettled", 0),
                             _tcol_st.get("dropped_overflow", 0),
                         )
                 except Exception:  # noqa: BLE001
@@ -9123,7 +9165,21 @@ class AgentKernel:
         "- Keep each step MINIMAL. A first step that reads ONE named file is "
         "enough. Do NOT plan a step that inspects the project structure, "
         "sweeps directories, checks git, or runs the test suite to 'see what "
-        "exists'; verification is its own later step.\n"
+        "exists'.\n"
+        # PLAN SHAPE (2026-11-09): measured on c14_run_and_report ("run the
+        # tests, tell me how many fail"), every plan added 1-2 steps after the
+        # run that only tallied, verified or reported it ("Determine the exact
+        # number of failing tests from the completed run", "Report the
+        # verified failure count") - each a full tool loop that ran pytest
+        # again. Over the logs: 72 'verify' and 29 'report' later steps. The
+        # final reply already reports from the earlier step's result. A check
+        # still follows a CHANGE (the goal contract needs that run).
+        "- Do NOT plan a step that only tallies, restates or reports what an "
+        "earlier step already produced; the final reply does that from the "
+        "earlier result. Plan a separate check step only after a step that "
+        "CHANGES a file. When the answer is the exact output of code (what a "
+        "function returns, what a script prints), plan a step that RUNS it "
+        "and reads the output; do not work the value out by reading.\n"
     )
 
         plan_raw: Optional[str] = None
@@ -16723,13 +16779,17 @@ Respond with a JSON object:
         _turn_id: str,
         _token_budget: int = 0,
         _tokens_used: int = 0,
-    ) -> None:
+    ) -> int:
         """Graft a step per artifact the task named but nothing wrote.
 
         Called after a FILE-WRITING step finalizes. Bounded three ways: only for
         file-writing tools, at most DER_MAX_GRAFTS steps per run, and each file
         name is attempted at most once (``_artifact_graft_attempted``). Never
-        raises â€” a missed graft must not break the turn.
+        raises — a missed graft must not break the turn.
+
+        Returns the number of steps grafted. A non-zero count means this step's
+        tool choice did not finish the job, so its tool_choice rows are labelled
+        as a retry (tc-decide-v7).
         """
         try:
             # What the step DID (_step_calls), not item.tool: a node step has no
@@ -16740,7 +16800,7 @@ Respond with a JSON object:
                 and c.get("ok", True)
                 for c in _step_calls(item)
             ):
-                return
+                return 0
             from backend.agent.der_constants import DER_MAX_GRAFTS
 
             # Node steps write in the session's project folder, not the
@@ -16755,7 +16815,7 @@ Respond with a JSON object:
                 _attempted = set()
                 self._artifact_graft_attempted = _attempted
             if len(_attempted) >= DER_MAX_GRAFTS:
-                return
+                return 0
             _task_text = str(getattr(plan, "original_task", "") or "")
             _text = " ".join([_task_text, str(getattr(item, "description", "") or "")])
             _done = set(getattr(queue, "completed_ids", ()) or ()) | set(
@@ -16773,7 +16833,7 @@ Respond with a JSON object:
                 and n not in _queued_text
             ][: max(DER_MAX_GRAFTS - len(_attempted), 0)]
             if not _missing:
-                return
+                return 0
             # A template helps the model produce the same shape the user asked for
             # ("each with one bullet about tea") and guarantees a body is written.
             _template = ""
@@ -16836,7 +16896,7 @@ Respond with a JSON object:
                 _token_budget=_token_budget, _tokens_used=_tokens_used,
                 _turn_id=_turn_id,
             ):
-                return
+                return 0
             _attempted.update(_missing)
             try:
                 queue.graft_attempts += 1
@@ -16847,8 +16907,10 @@ Respond with a JSON object:
                 "(one step = one tool call, so a multi-file step needs the rest)",
                 len(_missing), _missing,
             )
+            return len(_missing)
         except Exception as _graft_exc:
             logger.warning("[DER] artifact graft skipped: %s", _graft_exc)
+        return 0
 
     @staticmethod
     def _humanize_evidence(text: str) -> str:
@@ -18654,7 +18716,13 @@ Respond with a JSON object:
                 from backend.agent import surface_shadow as _ss_na
 
                 if _de_na.decides("needs_action") is not None:
-                    _na = _ss_na.score_surface_bool("needs_action", goal, engine=_ss_na.AUTO_ENGINE)
+                    # The SAME frame the calibrated v7 rows carry (the outcome
+                    # row below): goal + expected. A goal-only consult asked a
+                    # question the bar never measured (2026-11-09).
+                    _na = _ss_na.score_surface_bool(
+                        "needs_action", goal, engine=_ss_na.AUTO_ENGINE,
+                        frame={"goal": goal,
+                               "expected": str(getattr(item, "expected_output", "") or "")})
                     if _na is not None and not _na.true(0.5) and _de_na.oracle_acts(
                             "needs_action", max(float(_na.probability), 1.0 - float(_na.probability))):
                         logger.info("[DER] needs_action: step %s needs no tool (P(yes)=%.2f) - direct",
@@ -18759,6 +18827,13 @@ Respond with a JSON object:
             )
             if got is None:
                 return None
+            # CANDIDATE COMPRESSION (2026-11-07): the Oracle ranked the menu;
+            # the model picks from this shortlist. No single tool is forced, so
+            # a bad rank cannot push the model into a wrong tool. The row is
+            # labelled by the call that follows (shortlist_served).
+            if got[1].get("route") in ("shortlist", "class"):
+                _decided["row"] = got[1]
+                return got[0]
             # An ENFORCED pick already cleared its calibrated threshold. A
             # SAMPLED pick acts only at raw confidence >= IRIS_ORACLE_FORCE_MIN
             # (default 0.9; measured 96.7% held at >= 0.9 on 90 decided rows).
@@ -20830,16 +20905,10 @@ Respond with a JSON object:
         except Exception:  # noqa: BLE001 â€” a label never blocks a settle
             logger.debug("[DER] review outcome stamp failed")
 
-        # tc-decide-v6 (2026-11-07): the decided tool_choice rows of THIS step
-        # are held at call time; the step's verified_label now exists. Write
-        # them with the step's outcome (one row, one writer). Flag-gated and
-        # deletable; never delays or fails a settle.
-        try:
-            from backend.agent import tool_choice_outcome_label as _tcol
-
-            _tcol.stamp(getattr(item, "step_id", None), _turn_id, _verified)
-        except Exception:  # noqa: BLE001 - a label never blocks a settle
-            logger.debug("[DER] tool_choice outcome stamp failed")
+        # tc-decide-v7: the decided tool_choice rows are stamped in
+        # _der_post_step, after the post-finalize artifact graft decides whether
+        # this step was retried. A stamp here would run before the graft and
+        # call a grafted step "completed".
 
         try:
             _score_t0 = time.monotonic()

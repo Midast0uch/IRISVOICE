@@ -415,6 +415,8 @@ def _score_web_intent(
                 # DIFFERENT requests that the quantized engine answered with
                 # the same confidence.
                 "input_key": _web_intent_input_key(str(goal or "")),
+                # The frame the engine read (2026-11-04): replayable offline.
+                "state": {"goal": goal},
                 # REQ-6 AC6.3a (T5.0): the scope ids ride the row.
                 **_scope,
             }, goal)

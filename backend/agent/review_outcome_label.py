@@ -13,6 +13,18 @@ WHY (measured live 2026-10-09, data/memory.db)
     `verified_label` of VERIFIED / UNVERIFIED / FAILED for the same step. That
     is the outside label REQ-7 already prefers. This module carries it across.
 
+THE LABEL ANSWERS THE REVIEW'S QUESTION, NOT THE STEP'S (2026-11-05)
+    `verified_label` says whether the STEP worked. The consumer is asked whether
+    the REVIEW was right - "should this step have run as-is?". Those are
+    different questions, and only the second one has a determinate answer for
+    every label. An UNVERIFIED step leaves the step's success unknown, but it
+    settles the review: an unproven result should not have been waved through,
+    so `pass` was wrong and `refine` was right. UNVERIFIED therefore carries a
+    label (see GROUND_TRUTH). Before this, it carried none, and the measurement
+    showed the cost: der_commits holds 12,980 VERIFIED, 4,779 UNVERIFIED and
+    only 20 FAILED, so the outcome cohort was single-class, `chosen` predicted
+    `outside_label` perfectly, and oof AUROC sat at 0.4581 on 1,283 rows.
+
 THE TIMING PROBLEM THIS SOLVES
     The review row is written at REVIEW time (der_loop._shadow_review_verdict ->
     kernel._forward_consumer_rows -> the single ledger writer). The step settles
@@ -78,10 +90,27 @@ VERIFIED_LABELS = ("VERIFIED", "UNVERIFIED", "FAILED")
 #                 refuses is a separate operational choice. `veto` remains
 #                 the only answer that STOPS a failed step, and the bar
 #                 still measures what it measures.
-#   UNVERIFIED -> neither confirmed nor refuted. There is NO ground truth here,
-#                 so no label is emitted and the row stays on parity. Stamping
-#                 a guess would be the exact phantom-agreement failure the
-#                 review row already guards against for parse failures.
+#   UNVERIFIED -> the step's result did NOT demonstrate its expected output
+#                 (a non-zero exit, a partial assertion match, weak or
+#                 off-subject content). The STEP's success is unknown, but the
+#                 REVIEW's correctness is not: waving an unproven step through
+#                 was the wrong call, so `pass` is WRONG and `refine` (needs
+#                 another pass) is RIGHT. `veto` stays WRONG - a partial result
+#                 does not warrant refusing the step outright.
+#                 CHANGE 2026-11-05 (owner: "label fix first"): UNVERIFIED used
+#                 to emit NO label, on the reading "neither confirmed nor
+#                 refuted, so there is no ground truth". That reading answers
+#                 the WRONG QUESTION. It asks whether the STEP worked; the
+#                 consumer is asked whether the REVIEW was right. Those differ,
+#                 and the measurement proved it: with UNVERIFIED unlabelled the
+#                 outcome cohort held VERIFIED steps only (12,980 VERIFIED vs
+#                 20 FAILED vs 4,779 UNVERIFIED in der_commits), so `chosen`
+#                 perfectly predicted `outside_label` and oof AUROC sat at
+#                 0.4581 on 1,283 rows - a single-class cohort that can never
+#                 show the consumer catching a deficient step. 27% of all steps
+#                 were being thrown away. The old behaviour is preserved for
+#                 any label outside this table (an unknown value still emits
+#                 the row unstamped, never a guessed label).
 #
 # MEASURED CONSEQUENCE of an earlier incomplete map (VERIFIED carried only
 # `pass`): `refine` is the MOST COMMON verdict (2204 of 2881 live rows), so
@@ -89,6 +118,9 @@ VERIFIED_LABELS = ("VERIFIED", "UNVERIFIED", "FAILED")
 GROUND_TRUTH = {
     "VERIFIED": {"pass": True, "refine": False, "veto": False},
     "FAILED": {"pass": False, "refine": True, "veto": True},
+    # 2026-11-05 (owner: "label fix first"): see the UNVERIFIED note above. The
+    # step's success is unknown; the review's correctness is not.
+    "UNVERIFIED": {"pass": False, "refine": True, "veto": False},
 }
 
 _LOCK = threading.Lock()
@@ -164,10 +196,11 @@ def _apply_outcome(row: Dict[str, Any], label: str) -> None:
     """Attach the settled outcome to the row, when the map has an answer.
 
     The ONE place the label lands, shared by the normal path (`stamp`) and the
-    late path (`defer` winning the race). UNVERIFIED - or a verdict name we
-    cannot read - leaves the row UNSTAMPED: no ground truth exists, so it keeps
-    its parity reference. Dropping it would lose evidence; guessing would be the
-    phantom agreement the review row already guards against for parse failures.
+    late path (`defer` winning the race). A verdict name the table cannot read
+    (an unknown value) leaves the row UNSTAMPED: no ground truth exists, so it
+    keeps its parity reference. Dropping it would lose evidence; guessing would
+    be the phantom agreement the review row already guards against for parse
+    failures. UNVERIFIED IS in the table since 2026-11-05 - see its note above.
     """
     truth = GROUND_TRUTH.get(label) or {}
     verdict = _verdict_name(row)
@@ -335,9 +368,10 @@ def stamp(step_id: Optional[str], verified_label: Optional[str]) -> int:
     """Attach the outcome to the held row and WRITE it. Returns 1 when a row was
     emitted.
 
-    Idempotent per step: a step that settles twice does not double-write, and an
-    UNVERIFIED step emits the row UNSTAMPED (parity reference preserved) rather
-    than dropping a real measurement.
+    Idempotent per step: a step that settles twice does not double-write. A step
+    whose label the table cannot read emits the row UNSTAMPED (parity reference
+    preserved) rather than dropping a real measurement; UNVERIFIED is read since
+    2026-11-05.
 
     When NO row is held yet the outcome is not discarded: the row is built on the
     shadow lane and may still be in flight, so the outcome is remembered for
@@ -363,8 +397,9 @@ def stamp(step_id: Optional[str], verified_label: Optional[str]) -> int:
             return 0
     row = entry["row"]
     _apply_outcome(row, label)
-    # UNVERIFIED (or an unknown verdict) emits the row UNSTAMPED: it is still a
-    # real measurement on its parity reference. Dropping it would lose evidence.
+    # An unknown verdict emits the row UNSTAMPED: it is still a real measurement
+    # on its parity reference. Dropping it would lose evidence. (UNVERIFIED is
+    # read since 2026-11-05.)
     try:
         with _Emitting():
             entry["write"](row)

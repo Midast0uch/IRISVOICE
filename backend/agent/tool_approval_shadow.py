@@ -214,6 +214,7 @@ def shadow_row(
     brain_bool: Optional[bool],
     scope: Optional[Dict[str, str]] = None,
     input_key: Optional[str] = None,
+    state: Any = None,
 ) -> Optional[dict]:
     """The row for one approval judgment, or None.
 
@@ -244,6 +245,11 @@ def shadow_row(
         # The report's honest dedupe key (docs/architecture/oracle.md 6.1
         # rule 1): a row counts once per distinct INPUT.
         row["input_key"] = input_key
+    if state is not None:
+        # The pre-call frame (the exact dict the engine read). Until now it
+        # existed only in a DEBUG log, so a question change had to be measured
+        # with fresh live traffic; replay_consumer can now read it directly.
+        row["state"] = state
     if scope:
         row.update(scope)
     return row
@@ -408,7 +414,8 @@ def record_tool_approval(
         # v4 fix chain possible). Off the answer path (lane).
         logger.debug("[tool_approval] frame: %r", _frame)
         emit_row(shadow_row(noul, brain_bool=_brain, scope=_scope,
-                             input_key=_approval_input_key(_frame)))
+                             input_key=_approval_input_key(_frame),
+                             state=_frame))
 
     try:
         from backend.utils.durability_queue import lane

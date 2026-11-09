@@ -8,6 +8,61 @@ Source of truth is the code. Names in `code font` are real identifiers.
 
 ---
 
+## CURRENT STATE — 2026-11-08 (read before §2–§7)
+
+`tool_choice` no longer uses the bar-thresholded forced pick described in §2–§7.
+The production role is **candidate compression + class decision**:
+
+- **Class decision (default).** The d1-2b ranks the FULL offered menu; its top-1
+  tool's class (READ / WRITE / RUN) is the class when the class-mass margin is at
+  least 0.30. The model receives the tools of that class and picks one.
+- **Shortlist fallback.** When the class margin is below 0.30, the top-5 tools
+  of the FULL menu's distribution (low-value tools demoted by 0.20) go to the
+  model and it picks. (The safe pool applies only when the class mode is off.)
+- **Unmapped tools are never removed** (2026-11-09). The class map covers the
+  coding tools only, and the 93.7% was measured on coding menus (1 of 1581
+  stored decided rows offered a web/browser tool). Every offered tool outside
+  the map (`search`, `crawler_query`, the browser and desktop tools,
+  `get_system_info`) rides along with the class list and the shortlist, and
+  the margin counts their mass as a competitor. Guard:
+  `test_tool_choice_class_unmapped_contract.py`.
+- **Forced top-1 is OFF** (`IRIS_ORACLE_TOOL_CHOICE_ALWAYS=0`). It caused the
+  301 s c14 regression: the top-1 `list_directory` was worse than the model's
+  own pick.
+- **The d1-2b decides the class, not the specific tool.** The model keeps the
+  final tool and writes the arguments. This is deliberate and measured; see §10.
+
+Measured: class accuracy **93.7%** on 398 stored rows. Margin buckets:
+< 0.1 → 64.7%, 0.1–0.3 → 88.5%, 0.3–0.7 → 92.4%, ≥ 0.7 → 97.7%.
+
+E2E, c14, same backend: no Oracle 126 s, shortlist 103.5 s, **class decision
+73 s**, forced 301 s. The eval standards (23.6 s) are stale for this machine;
+compare same-session baselines.
+
+Flags (`.env`): `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION=1`,
+`IRIS_ORACLE_TOOL_CHOICE_SHORTLIST_K=5`,
+`IRIS_ORACLE_TOOL_CHOICE_ALWAYS=0`,
+`IRIS_ORACLE_SAMPLE_FRACTION_TOOL_CHOICE=1`.
+
+**Who decides on d1-2B (boot log, 2026-11-09).** `deciding=['narration',
+'presentation', 'route_v2']`. Every other allow-listed consumer
+(`needs_action`, `tool_approval`, `review_verdict`, `depth_met`,
+`escalate_incomplete`, `tool_choice` on the bar path) logs "not earned (no
+enforced bar record for the active engine)": their bars were earned on d1-3B
+and fail on the d1-2B identity (`needs_action`: minority 4.9% < 5%; the rest
+AUROC 0.44-0.58). The "ENFORCED" marks in §2.3 and §3.1 are the d1-3B state;
+the code fails closed correctly. `needs_action`'s pre-step consult now sends
+`{goal, expected}`, the frame its v7 rows carry (it sent the goal alone; guard
+`test_needs_action_decide_frame_contract.py`).
+
+The `tool_choice` bar record and calibration are the stale v4/v7 era and do
+**not** describe this role. Do not write a bar record under the
+class/shortlist labels; the bar measures the thresholded outcome label. See
+§10 (the role and evidence) and §11 (handoff and next steps).
+
+---
+
+
 ## 1. What the Oracle is
 
 One small local model answers ONE question per run and returns a probability
@@ -231,7 +286,7 @@ Each has an id, a declared decision type and criteria, and one job.
 
 | Consumer | Job | Type | Incumbent that decides today | Where |
 |---|---|---|---|---|
-| `tool_choice` | route | choice | the tool model | node loop (`choose_node_tool`, enforced) and post-hoc shadow row |
+| `tool_choice` | route | choice | the tool model | node loop (`choose_node_tool`): class decision + shortlist (§10); the forced path is OFF |
 | `tool_approval` | approve | noul | none (labelled by the call-level outcome) | `tool_approval_shadow` post-hoc; ENFORCED: the pre-call guard in `node_executor.run_node` |
 | `browser_next` | route | choice | the tool model's element pick | `browser_next_shadow`, each `browser_act` |
 | `click_safety` | guard | choice (safe/unsafe/unsure) | rules, then Brain judge, then ask the user | `tools/browser_tools.py`, `click_safety_shadow` |
@@ -464,6 +519,11 @@ threshold stale and enforcement is refused.
 ---
 
 ## 4. The decide path for a tool call
+
+> **HISTORICAL (v4-era).** This section describes the bar-thresholded forced
+> path. The CURRENT role is the class decision + shortlist in §10: the d1-2b
+> decides the class, the model picks the tool, and no tool is forced
+> (`IRIS_ORACLE_TOOL_CHOICE_ALWAYS=0`).
 
 1. **Ask first.** Before every model call in `run_node`, unless the previous call was a
    model slip (a malformed or empty tool-call reply), `ctx.choose_tool()` runs. After a
@@ -746,6 +806,10 @@ Figures in 7.1 are as of 2026-10-12 unless dated. Table 7.2 is the measurement o
 | `browser_next` | shadow only |
 
 ### 7.2 Per consumer (from `consumer_bar_record.json` and `oracle_calibration.json`)
+
+> The `tool_choice` row below is the historical v4 bar cohort. The current
+> `tool_choice` role does not use the bar; see §10. Do not read that row as the
+> running behavior.
 
 Distinct rows and out-of-fold numbers on the running identity. "On" means in the
 owner's `IRIS_DECISION_ENFORCE`; "earned" means the bar record says `enforced`.
@@ -1160,6 +1224,9 @@ stack.
 | `IRIS_ORACLE_SAMPLE_FRACTION` | 0.05 | sampled share for every samplable consumer |
 | `IRIS_ORACLE_SAMPLE_FRACTION_<CONSUMER>` | unset | per-consumer share, for example `_TOOL_CHOICE=1` |
 | `IRIS_ORACLE_SAMPLE_SIDE_EFFECTS` | unset | `1` lets a sampled pick force a side-effect tool (eval work folders only) |
+| `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION` | unset (`.env` 1) | the d1-2b decides the tool CLASS (READ/WRITE/RUN) when the class-mass margin is >= 0.30; the model picks the tool. See §10 |
+| `IRIS_ORACLE_TOOL_CHOICE_SHORTLIST_K` | unset (`.env` 5) | candidate-compression depth: the Oracle ranks, the top-k go to the model; also the class-mode fallback depth at low margin. `0` = off |
+| `IRIS_ORACLE_TOOL_CHOICE_ALWAYS` | unset (`.env` 0) | `1` = the owner's forced top-1 policy. OFF: it measured 301 s on c14 (the wrong top-1 pick). See §10 |
 | `IRIS_ORACLE_PHASE`, `IRIS_ORACLE_PHASE_EXIT` | off in code; `.env` sets both to 1 | phase-model admission; `0` returns to the engine lock |
 | `IRIS_ORACLE_PHASE_PERIOD_S`, `_MAX_WAIT_S`, `_K` | 0.3, 0.3, 0.6 | phase gate tuning (timed gate) |
 | `IRIS_ORACLE_BATCH_CAP` | 8 | width of a batched pass (no production caller) |
@@ -1167,10 +1234,13 @@ stack.
 | `IRIS_D1_CHECK_TTL_S`, `IRIS_D1_TIMEOUT_S` | 300, 20 | serving check cache, HTTP timeout |
 | `IRIS_LOCAL_MODEL_PORT` | 8082 | the shared llama-server port |
 
-**Off switches.** Remove `tool_choice` from `IRIS_DECISION_ENFORCE`: the tool model
-decides every call again (the sampled rung then applies at 5%, read-only tools,
-confidence >= 0.9; set `IRIS_ORACLE_SAMPLE=0` to remove that too). Stop the shared
-server or serve another model: every consumer returns to its incumbent.
+**Off switches.** The current `tool_choice` role is controlled by its own flags,
+not `IRIS_DECISION_ENFORCE`: set
+`IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION=0` and
+`IRIS_ORACLE_TOOL_CHOICE_SHORTLIST_K=0` to return the full menu to the model
+(the bar/sampled path then applies only if `decides("tool_choice")` is
+non-None; today it is not). Stop the shared server or serve another model:
+every consumer returns to its incumbent.
 
 ### 8.2 Scripts
 
@@ -1213,8 +1283,11 @@ python scripts/finetune_d1_lora.py --model <d1-3B dir> --data data/training/tool
 
 - `Oracle enforcement: deciding=[...]; allow-listed but NOT deciding=[...]` - once per
   process; names the missing key for each listed consumer that does not decide.
-- `[TOOL_DECISION] Oracle decides tool=... conf=... route=enforced|sampled` - a decided
-  node pick. `Oracle decide ... decision_latency_ms=...` - one line per decision.
+- `[TOOL_DECISION] Oracle decides tool=... conf=... route=enforced|sampled|shortlist|class shortlist=...` -
+  a decided node pick. `route=class` means the d1-2b decided the class and the
+  model will pick inside it; `route=shortlist` means the top-k went to the
+  model; `route=enforced|sampled` is the historical forced path.
+  `Oracle decide ... decision_latency_ms=...` - one line per decision.
 - `NOT enforcing <consumer> - its bar was measured on ...` - running identity differs
   from the one the bar was earned on. `thresholds are STALE` - deployed cap differs
   from `calibrated_cap`.
@@ -1248,9 +1321,12 @@ Under `backend/tests/` (`contract/` unless a path is given).
 
 - `test_oracle_tool_hints_contract.py` - every node tool declares an `ORACLE_HINTS` line.
 - `test_menu_composition_contract.py`, `test_tool_choice_menu_reachability_contract.py`, `test_shadow_tool_choice_menu.py` - control labels survive the cap; every tool is reachable; the shadow scores the offered menu.
-- `unit/test_node_executor.py` - the node loop, including the forced pick.
+- `unit/test_node_executor.py` - the node loop, including the forced pick and the shortlist/class list branch.
 - `test_sampled_rung_contract.py` - tiers, fraction, deterministic draw, read-only gate, outcome join.
 - `unit/test_tool_decision_threshold_resolution.py`, `unit/test_threshold_retune.py` - the threshold is keyed to the active backend.
+- `unit/test_tool_choice_action_class.py`, `test_tool_choice_label_contract.py`, `test_tool_choice_outcome_label_contract.py` - the v9 action-class row, the class decision + margin gate, the shortlist + demotion, the always flag, and the v7 outcome-label mechanics (separate curve). See §10.
+- `unit/test_run_command_description.py` - run_command forbids pipes/redirection.
+- `test_tool_path_anchor_contract.py` - a stale absolute `iris-evals` path is rebased into the session workdir; other absolute paths stay untouched.
 
 **Rows, labels, calibration**
 
@@ -1270,3 +1346,211 @@ Under `backend/tests/` (`contract/` unless a path is given).
 
 
 
+
+---
+
+## 10. The tool_choice role, 2026-11-08: class decision + shortlist
+
+### 10.1 Why the role changed
+
+The v4 bar label ("the call ran") and the v7 outcome label ("the step
+completed") both graded the model's execution: its arguments, its file paths,
+its verification. The 5 outcome failures in the v7 cohort were correct
+`read_file` picks with a wrong target (a stale 2026-11-02 eval path, a wrong
+file), not wrong tools. The v8/v9 action-class label asked the Oracle's own
+question, but the confidence still did not rank the class errors (AUROC
+0.61-0.62), and forcing the top-1 regressed c14 from 126 s to 301 s (it picked
+`list_directory`). The evidence is in §7.2 and the pins.
+
+The role that is both fast and measured-correct is:
+
+> **the d1-2b decides the CLASS; the model picks the specific tool.**
+
+That is candidate compression (Toollery / Tool RAG / BFCL practice): a small
+ranker narrows the action space; the LLM resolves the specific call.
+
+### 10.2 The chain (current)
+
+```
+DER step -> choose_node_tool
+  frame: goal, done_when, calls_this_step, step_facts, last_result
+  menu: FULL offered tools in class mode; safe pool in shortlist mode
+  -> DecisionEngine.decide("tool_choice", menu, frame)  [route job, systemone]
+  -> CLASS DECISION:
+       top1 class = classify_tool(ds.chosen)
+       masses, margin = class_masses(ds.distribution, top1 class)
+         # margin = mass(top1 class) - max(other two classes,
+         #                                 mass of the UNMAPPED tools)
+       if class in {READ, WRITE, RUN} and margin >= 0.30:
+           tools = every offered tool of that class
+           route = "class"; class_decided = class; class_margin = margin
+       else:
+           tools = shortlist_from_distribution(dist, K=5)   # full menu
+           route = "shortlist"
+       tools += every offered UNMAPPED tool (never measured, never removed)
+  -> _choose_tool returns the LIST (no binding, no named tool_choice)
+  -> node_executor: gen_tools = that list; NO tool_choice
+  -> the tool model picks the specific tool and writes the arguments
+  -> _on_result labels: shortlist_served, outcome_label, action class
+  -> one row through the bridge -> system_events
+```
+
+### 10.3 The pieces
+
+- `backend/agent/tool_choice_action_class.py`
+  - `classify_tool`, `required_classes`, `action_class_ok`: the class map and
+    the monitoring label (first verb primary, phase secondary; READ is always
+    allowed).
+  - `allowed_tools`: the safe pool for the shortlist/forced modes (read + the
+    required side effect).
+  - `class_masses`: READ/WRITE/RUN mass + margin. With the top-1 class, the
+    margin is that class against its strongest rival, the unmapped-tool mass
+    included (2026-11-09; the same 1342 of 1361 labelled rows clear 0.30
+    under both forms, so the coding measurement stands).
+  - `shortlist_from_distribution`: top-k, controls removed, low-value tools
+    demoted by 0.20 (`list_directory`, `recall_memory`, `read_command_output`,
+    `stop_command`).
+  - `class_decision_enabled`, `shortlist_k`, `always_enabled`: the env flags.
+- `backend/agent/tool_decision.py` `choose_node_tool`
+  - class mode: full menu, class decision, class-tool list; low margin ->
+    shortlist.
+  - shortlist mode: safe pool, top-k.
+  - forced mode (`ALWAYS`): safe pool, top-1, threshold; OFF.
+  - the row carries `route`, `shortlist`, `class_decided`, `class_margin`,
+    `shortlist_served`, `action_class_required/chosen`,
+    `label_source="action_class"`.
+- `backend/agent/agent_kernel.py` `_choose_tool`: returns the list for
+  `route in ("shortlist", "class")`; no binding.
+- `backend/agent/node_executor.py` `run_node`: a list from `choose_tool`
+  becomes `gen_tools` with NO `tool_choice`; a string still forces one tool.
+- `backend/agent/tool_bridge.py`: the whitelist carries the new fields; the
+  stale-eval path fix; the run_command no-pipe guidance.
+- `scripts/action_class_label.py`: the action-class measurement.
+
+### 10.4 The evidence (2026-11-08)
+
+- Class accuracy: **93.7%** on 398 stored rows. The class-mass argmax is
+  92.96%, so the top-1 tool's class is the readout.
+- Margin buckets: < 0.1 64.7%, 0.1-0.3 88.5%, 0.3-0.7 92.4%, >= 0.7 97.7%.
+  The 0.30 gate is the measured cut; below it the shortlist fallback runs.
+- E2E c14, same backend: no Oracle 126.0 s; shortlist 103.5 s; **class
+  decision 73 s**; forced 301 s. c13: shortlist 77.6 s, class 59.7 s.
+- `shortlist_served=True` in the sampled rows; the model's pick is inside the
+  Oracle's list. The class rows record `class_decided` and `class_margin`.
+- The eval standards (23.6 s / 13.5 s) are stale for this machine; compare
+  same-session baselines.
+
+### 10.5 The label and the bar
+
+- The row's scoring label is the action class (`label_source="action_class"`,
+  `label_reference="action_class"`, `outside_label` = the class verdict). The
+  outcome label (`ok` / `failed` / `overridden` / `finished`) is diagnostics.
+- The v7 outcome label and its hold/stamp are kept for the separate outcome
+  curve; they do not gate the class/shortlist role.
+- The bar (`consumer_bar_record.json` / `oracle_calibration.json`) is the
+  thresholded outcome mechanism. It is NOT used by the class/shortlist role.
+  The current `tool_choice` record is the stale v4/v7 era. Do not write a bar
+  record under the class/shortlist labels without a spec decision.
+
+### 10.6 Two fixes met on the way
+
+- **Stale eval path.** `_anchor_file_paths` rebases an ABSOLUTE path under a
+  different `iris-evals` run into the current workdir. It fixed two c42 rows
+  that read a 2026-11-02 `settings.ini` during a 2026-11-07 run. Other
+  absolute paths stay untouched. `test_tool_path_anchor_contract.py`.
+- **run_command pipes.** The model ran `pytest -v 2>&1 | tail -40`; pytest is
+  0.26 s, the piped command took 52.3 s in the dev CLI. The tool description now
+  says not to pipe or redirect; `unit/test_run_command_description.py`.
+
+### 10.7 Known costs
+
+- The Oracle decision is 19-358 ms; the turn is 20-90 s. The model/CLI is the
+  cost, not the Oracle.
+- The native `0xC0000005` crash under load (~30 min) still occurs; the watchdog
+  was stopped during the experiments. Restart it for long eval runs.
+- A "STANDARDS: regression" line on c13/c14 in this environment is not a
+  regression against the same-session baseline; the stored standards are stale.
+
+---
+
+## 11. Handoff for the next agent (2026-11-08)
+
+### 11.1 What is done
+
+- The d1-2b role for `tool_choice` is **decide the class, rank the shortlist;
+  the model picks the tool**. Live behind
+  `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION=1` + `...SHORTLIST_K=5`;
+  `...ALWAYS=0`.
+- 39 targeted tests pass (action class, label, anchor, pipe, partial
+  artifacts). The measurement script is `scripts/action_class_label.py`.
+- The empirical comparison is in §10.4. The forced top-1 is off.
+
+### 11.2 What is NOT done (be explicit)
+
+- This role is an **owner policy**, not a bar certification. The bar is the
+  thresholded outcome mechanism; the class/shortlist role does not use it.
+  If the owner wants it certified, that is a **spec decision**: the evidence
+  would be class selection accuracy + the margin gate + the error rate, not
+  AUROC/threshold.
+- The current `tool_choice` bar record/calibration is stale (v4/v7). Do not
+  "fix" it by writing a record under the class/shortlist labels.
+- The class is 93.7%; the 6.3% wrong-class cases are the risk. The margin gate
+  falls back below 0.30. The remaining error mass is the low-margin rows and
+  the specific-tool choice inside the class (the model's).
+
+### 11.3 How to proceed, in order
+
+1. **Measure against a same-session baseline, not the stale standards.**
+   `python evals/run_evals.py --task c14_run_and_report` and c13; compare with
+   a no-Oracle run (`CLASS_DECISION=0`, `SHORTLIST_K=0`) in the same backend
+   state. Last: 126 s baseline, 103.5 s shortlist, 73 s class.
+2. **Profile the model/CLI execution** (the biggest remaining cost). The
+   `[WinError 267]` invalid-cwd retry, the piped command, the command count.
+   This is outside the Oracle role but it is the real speed lever.
+3. **If the class errors matter, test the binary (one-vs-rest) per-class
+   frame.** The search supports OvR calibration; it needs a new `systemone`
+   job/template and a replay on the recorded rows before any live run. The
+   current route class is 93.7%; the low-margin rows are the target. Do not
+   assume it is better; measure offline.
+4. **A larger frame is an experiment, not a free win.** The `route` budget is
+   384 ids / 1536 chars; the caps are goal 200, done_when 200, calls 400,
+   step_facts 400, last_result 600. Changing the budget or the caps changes the
+   identity/`criteria_hash`; replay first. The current cap is not the measured
+   bottleneck; the low-margin cases are.
+5. **Do not re-enable `ALWAYS`** (301 s). Do not force the top-1.
+6. **Web and browser menus are unmeasured** (audit 2026-11-09). 1 of 1581
+   stored decided rows offered a web/browser tool, so the class gate and the
+   shortlist were proven on coding menus only. The fix keeps every unmapped
+   tool on the menu (§10.2). A web live gate (r02/b01/r06) could not run on
+   2026-11-09: the machine's network blocked the web (`example.com` timed out,
+   DuckDuckGo answered 202), so every `search`/`crawler_query`/`browser_open`
+   call failed before the Oracle mattered. Re-run it where the web works.
+7. **RESOLVED 2026-11-09: one narrowing, not two.** `_narrow_node_tools`
+   (goal-only, once per node, no way back inside the step; live it dropped
+   `screenshot_page` from a web step) no longer runs while the class decision
+   is on, unless `IRIS_NODE_TOOL_MENU_K` is set explicitly. Measured on c14,
+   3 runs each, same code: reply 64/26/42 s with the cut, 35/29/64 s without;
+   the cut saved ~21% tool-model prompt tokens (median 2742 vs 3330) and cost
+   one d1 call per step. Guard:
+   `test_node_menu_cut_yields_to_class_decision_contract.py`.
+
+### 11.4 The operational facts
+
+- Current `.env`: `CLASS_DECISION=1`, `SHORTLIST_K=5`, `ALWAYS=0`,
+  `SAMPLE_FRACTION_TOOL_CHOICE=1`.
+- Tests: `backend/tests/unit/test_tool_choice_action_class.py`,
+  `backend/tests/contract/test_tool_choice_label_contract.py`,
+  `test_tool_choice_outcome_label_contract.py`,
+  `test_tool_path_anchor_contract.py`,
+  `unit/test_run_command_description.py`.
+- Files changed (working tree uncommitted):
+  `backend/agent/tool_choice_action_class.py` (new),
+  `backend/agent/tool_decision.py`, `backend/agent/agent_kernel.py`,
+  `backend/agent/node_executor.py`, `backend/agent/tool_bridge.py`,
+  `backend/tests/...`, `scripts/action_class_label.py` (new).
+- The native crash: if the backend dies (`0xC0000005`), restart it; the
+  watchdog was stopped during the experiments. `.env` loads on restart.
+- Pins: `pin_556999f49848` (d1-2b role), `pin_93f325661ae3` (class decision),
+  `pin_69d39b395afe` (shortlist), `pin_e59321ae449d` (k tuning),
+  `pin_18c5b162e211` / `pin_2a694164146d` (v8/v9 bar failures),
+  `pin_59047feb9045` (always policy + latency).

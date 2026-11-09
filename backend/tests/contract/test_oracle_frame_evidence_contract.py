@@ -132,7 +132,11 @@ def test_sync_shadow_row_carries_the_frame_stamp():
     # new cohort. The row also carries the replay keys and the menu fingerprint.
     # v7 (2026-10-11): + step_facts (files named: exists / read / changed).
     # v8: + files seen in the last result, + paged-read counts.
-    assert row["criteria_version"] == "tc-frame-v8"
+    # v9/v10 (2026-11-04, the oracle-traffic work): v9 reshaped the call list;
+    # v10 kept the v9 frame and changed only how the variant is stamped, so a
+    # replay can tell the two apart. The stamp is a COHORT separator, not a
+    # behaviour claim; the test pins the current one, as it always has.
+    assert row["criteria_version"] == "tc-frame-v10"
     assert row["state"].startswith("fix the failing test in utils.py")
     assert isinstance(row["menu_fp"], str) and len(row["menu_fp"]) == 10
 

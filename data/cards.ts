@@ -434,6 +434,14 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           type: 'toggle',
           label: 'Save Conversations',
           defaultValue: true
+        },
+        {
+          // Release-mode fallback: the user started IRIS without the launcher
+          // passphrase, so the encrypted store is still locked. Renders nothing
+          // in development (key_source = "keychain").
+          id: 'memory_key_unlock',
+          type: 'custom',
+          label: 'Memory Key'
         }
       ]
     }
