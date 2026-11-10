@@ -52,6 +52,32 @@ reproduces (re-measured: 16/50). Both sent work in the wrong direction. Rules:
 
 ## 1. Current state at a glance
 
+**Measured 2026-11-10 after 104 traffic tasks** (scoped report, every consumer on
+its live stamp, engine `d1-2b-q4_k_m+systemone`, app store; traffic on commit
+58a47ff5, manifest per section 0 rule 3). One row per job, with the solution:
+
+| Job (live stamp) | Rows | Verdict | Solution |
+|---|---|---|---|
+| tool_choice (`tc-decide-v9`) | 2772 | above threshold 0.968 / Wilson 0.959, AUROC 0.736; the MINORITY clause now reads 4.7% < 5% (110 wrong of 2353) | DECIDES (persisted bar record). OWNER: the 5% minority clause fails a job for being too accurate while 110 errors are plenty to rank; a `--write` would switch it off |
+| web_intent (`web_intent/v3`) | 938 | earned (waiver) | DECIDES (allow-listed after its live gate) |
+| route_v2 (`route_v2/binary-v1`) | 1346 | earned on a parity label | no decision site; off the allow-list |
+| user_feedback | 955 | earned (waiver) | not switchable |
+| tool_approval (`safety-v3`) | 470 bench | in-sample only; held-out fails (section 9) | shadow; live rows from the user's permission answers |
+| narration (`shape-v3`) | 172 | loses to the trivial rule 0.820 vs 0.872 (AUROC 0.878) | rule-owned; off the allow-list; shadow rows continue |
+| presentation (`shape-v3`) | 238 | loses 0.378 vs 0.937 | rule-owned; off the allow-list (observer only, never on the reply path) |
+| review_verdict (`v13`) | 944 | AUROC 0.483 | no decision site, no step-level truth: shadow; off the allow-list |
+| depth_route (`v3`) / depth_met (`v4`) | 356 / 417 | AUROC 0.543 / 0.591 | shadow / rule-owned |
+| needs_action (`v7`) | 4367 | no threshold holds 0.90 | rule-owned |
+| call_closing | 2909 | earned | refused by design |
+| done (`done/v4`) | 8 | fires ~1 per 9 tasks, every row right | shadow; not fillable by traffic in useful time |
+| sufficient (`sufficient/verdict-v1`) | 0 | its gate was dead since 2026-09-29 (`item.tool` on node steps) | FIXED (commit 68bc2f80): runs on failed gather steps, labelled by the turn verdict when the Brain said "enough" |
+| recovery_strategy, click_safety (sampled rows) | 57 / 33 sampled | never scored: choice rows got no outside label | FIXED (68bc2f80): a sampled row's label is its turn outcome |
+| recovery_strategy (parity rows) | 581 | reference is the constant "delegate": no label | no honest parity label; sampled rows only |
+| browser_next (`v1`) | 14 on this engine | the tool model has not clicked since 2026-10-23 | shadow; no honest label |
+
+Allow-list (owner's local `.env`): `tool_choice,web_intent`.
+
+
 | Area | State |
 |---|---|
 | Model | d1-2B (`d1-2B-Q4_K_M.gguf`), native Decision Index API, identity `d1-2b-q4_k_m+systemone` |
