@@ -145,18 +145,29 @@ def test_a_failed_turn_labels_the_sampled_row_against_it(monkeypatch):
     assert rows[0]["outcome_label"] == "turn_fail"
 
 
-def test_a_choice_rowed_sampled_consult_carries_the_outcome_only(monkeypatch):
-    """A choice consumer's answer is a NAME - it has no boolean reading, so
-    the row carries the turn outcome label but NO outside_label (never
-    rank-scored against an incommensurable reference)."""
+def test_a_choice_rowed_sampled_consult_is_scored_by_the_turn_outcome(monkeypatch):
+    """A sampled row is one where the ENGINE'S pick acted, so the turn
+    outcome is that pick's label for a choice consumer too (changed
+    2026-11-10, owner: "best solution for each job"; it used to carry the
+    outcome_label alone and was never scored - 57 recovery_strategy and 33
+    click_safety sampled rows). Passed -> its own pick; failed -> a value no
+    pick can equal, so decision_label scores exactly the outcome."""
+    from scripts.calibrate_decision_threshold import decision_label
+
     rows: list = []
     monkeypatch.setattr(de, "_TURN_PENDING", de.OrderedDict())
     monkeypatch.setattr(de, "_OUTCOME_SINK", rows.append)
     de.register_turn_pending({"turn_id": "tB2"}, de.sampled_row(
         "recovery_strategy", "retry_same", 0.7))
+    de.register_turn_pending({"turn_id": "tB3"}, de.sampled_row(
+        "recovery_strategy", "decompose", 0.8))
     assert de.resolve_turn_pending("tB2", False) == 1
-    assert rows[0]["outcome_label"] == "turn_fail"
-    assert "outside_label" not in rows[0]
+    assert de.resolve_turn_pending("tB3", True) == 1
+    failed, passed = rows
+    assert failed["outcome_label"] == "turn_fail" and failed["outside_label"] == "turn_fail"
+    assert passed["outside_label"] == "decompose"
+    assert decision_label(None, {}, failed) is False
+    assert decision_label(None, {}, passed) is True
 
 
 # ── AC6.1: `sampled` in the bar record ──────────────────────────────────────

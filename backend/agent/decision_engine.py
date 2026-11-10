@@ -1794,14 +1794,18 @@ def resolve_turn_pending(turn_id: str, ok: bool) -> int:
         row.update(ent["scope"])
         row["outcome_label"] = label
         row["label_source"] = "outcome"
-        # AC6.3: the label is the TURN'S outcome. It only joins a NAMED or
-        # BOOL decision when the comparison is meaningful: a noul row's
-        # chosen is a bool, so "turn_ok" maps to "the engine's answer was
-        # borne out"; a choice row's answer is a NAME with no boolean reading,
-        # so it carries the outcome_label alone (counted by the integrity
-        # metric, never rank-scored against an incommensurable reference).
+        # AC6.3: the label is the TURN'S outcome, and a sampled row is one
+        # where the ENGINE'S pick acted - so "turn_ok" means "the engine's
+        # answer was borne out" for a noul AND a choice row. A choice row
+        # used to carry the outcome_label alone and was never scored (all 57
+        # recovery_strategy and 33 click_safety sampled rows unlabelled,
+        # measured 2026-11-10): now its outside label is its own pick when the
+        # turn passed and a value no pick can equal when it failed, so
+        # decision_label scores exactly the outcome.
         if isinstance(row.get("chosen"), bool):
             row["outside_label"] = bool(ok)
+        elif row.get("chosen") is not None:
+            row["outside_label"] = str(row["chosen"]) if ok else OUTCOME_TURN_FAIL
         _emit_outcome_row({}, row, label)
     return len(entries)
 

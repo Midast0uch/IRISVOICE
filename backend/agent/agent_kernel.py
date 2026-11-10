@@ -15190,7 +15190,12 @@ Respond with a JSON object:
             # failure â€” failure recorded AND shown, never hidden).
             # Advisory on failure: any gate error falls through to the graft,
             # preserving the pre-existing behavior exactly.
-            if (getattr(item, "tool", None) or "").lower() in self._DER_GATHER_TOOLS:
+            # What the step DID (_step_calls), not item.tool: a node step has
+            # no tool (since 2026-09-29), so this gate - and the `sufficient`
+            # consumer behind it - never ran again (last row 2026-09-29;
+            # found 2026-11-10).
+            if any(str(c.get("tool") or "").lower() in self._DER_GATHER_TOOLS
+                   for c in _step_calls(item)):
                 try:
                     # Session 248 FIX (live conv-53): the gate digested only
                     # COMPLETED steps - but the failed step ITSELF may carry

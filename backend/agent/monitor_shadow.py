@@ -353,6 +353,23 @@ def _submit_shadow(consumer_id: str, statement: str, engine: Any,
                          state=statement)
         if row is not None and criteria_version:
             row["criteria_version"] = criteria_version
+        # `sufficient` JOINED 2026-11-10: only after the Brain said "enough"
+        # does the loop go straight to synthesis, so only then does the turn
+        # verdict test that judgment. After "not enough" the loop grafts more
+        # work and the verdict says nothing about the call: that row keeps the
+        # Brain's answer for replay but no reference (unlabelled, counted).
+        # Parity with the Brain is never this consumer's label.
+        if row is not None and consumer_id == "sufficient":
+            row["brain_said"] = brain_bool
+            row["brain_bool"] = None
+            if brain_bool is True:
+                try:
+                    from backend.agent import turn_verdict_label as _tvl
+
+                    if _tvl.defer(row, emit_row):
+                        return
+                except Exception:  # noqa: BLE001 - fall through to the plain emit
+                    pass
         # `done` JOINED 2026-11-06: measured 2,214 done rows, EVERY ONE
         # outside_label=None / label_source=None. This path emitted the row at
         # once, so the turn verdict (the eval harness's hidden tests; a user
@@ -403,6 +420,8 @@ def sufficiency_gate(
             brain_bool_fn=brain_bool_fn, brain_text_fn=brain_text_fn,
             engine=engine, enforced=enforced, threshold=threshold,
             defer=defer, acts=acts,
+            # verdict-labelled rows (2026-11-10); older rows are parity rows
+            criteria_version="sufficient/verdict-v1",
         )
         # AC14.1: the row reaches the sink from HERE, so a caller that only
         # wants (value, text) cannot accidentally drop the calibration data.
