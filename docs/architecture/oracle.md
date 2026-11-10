@@ -1554,3 +1554,112 @@ DER step -> choose_node_tool
   `pin_69d39b395afe` (shortlist), `pin_e59321ae449d` (k tuning),
   `pin_18c5b162e211` / `pin_2a694164146d` (v8/v9 bar failures),
   `pin_59047feb9045` (always policy + latency).
+
+---
+
+## 12. Re-earning the bar on a new model (method, 2026-11-09)
+
+A bar belongs to ONE model: a threshold describes that model's confidence
+curve, so a model swap resets every consumer to "not earned" (fail-closed, by
+design). On d1-2B (2026-11-01) only `narration`, `presentation` and
+`route_v2` re-earned; `needs_action`, `review_verdict`,
+`escalate_incomplete`, `tool_approval`, `depth_met` and the `tool_choice` bar
+path did not. A week of sessions went into live traffic (about 2 h per cohort)
+while labels and questions changed at the same time. This section is the
+faster, measured method.
+
+### 12.1 Why they did not transfer (measured)
+
+- The questions were tuned BY REPLAY ON d1-3B (e.g. needs_action/v7's closed
+  verb list) and were carried over untuned.
+- The d1-3B cohorts of needs_action, escalate_incomplete, depth_met and
+  tool_approval stored NO question state (0 replayable rows each), so they
+  could not be re-tuned against the old evidence. Since 2026-11-04 every
+  writer records `state`; d1-2B rows are replayable.
+- THE COMMON FAILURE IS THE ACTING ANSWER. On d1-2B the answer that changes
+  behaviour is given far too often and is mostly wrong, while the other answer
+  is right: needs_action "no" 30% (v7, 314 rows) vs "yes" 99.5%;
+  tool_approval "no" 19% vs "yes" 87%; depth_met "no" 5% vs "yes" 98%;
+  review_verdict "veto" 0%; escalate_incomplete "yes" 59%. Confidence is not
+  collapsed (distinct values close to the row count).
+
+### 12.2 Two bar fixes (2026-11-09)
+
+1. `consumer_bar.ACTING_ENFORCED` now holds EVERY asymmetric consumer
+   (needs_action, depth_met, tool_approval, review_verdict,
+   escalate_incomplete). depth_met/v4 failed ONLY on ECE (0.0516 vs 0.05) while
+   its acting answer was right 5% of the time: a few more rows would have
+   certified a consumer that pushes wrong extra work 95% of the time. None of
+   the four decided, so no status changed.
+2. `consumer_enforcement_report.build_report` applies the record's fail-closed
+   rule (no fitted block and no threshold -> shadow): the printed report could
+   say "flipped" where the persisted record refused.
+
+### 12.3 The loop, per consumer (hours, not days)
+
+1. TRIAGE (minutes, read-only): `consumer_enforcement_report.py --json
+   --scope C=STAMP` on the newest stamp of the ACTIVE engine, plus accuracy,
+   confidence quartiles and the acting side. Classify: (A) accurate but
+   unprovable, (B) accurate but confidence does not rank, (C) often wrong
+   (fix the question or the label), (D) too few rows.
+2. REPLAY (minutes per variant): `scripts/replay_consumer.py --consumer C
+   --stamps STAMP --variants current,bare,custom --options <json>
+   --instruction <text|live>`. It now prints the BAR's own verdict per variant
+   (`fit_consumer` 5-fold out-of-fold + `derive_status`, the same derivation
+   as the report) and the acting side. Before 2026-11-09 it printed only an
+   in-sample AUROC labelled "oof", so a variant could look good in replay and
+   fail the bar.
+3. ONE change per variant; a new `criteria_version` stamp per shipped change;
+   never blend stamps.
+4. ONE confirming live cohort, only for the replay winner; then `--write`
+   with a `--scope` for every enforced consumer.
+5. Never add traffic to a consumer that fails on quality (rule 6.1.3).
+
+### 12.4 Four replay defects found and fixed (2026-11-09)
+
+Every yes/no replay before this date measured a different question than the
+live one. Fixed in `scripts/replay_consumer.py`, guarded by
+`contract/test_replay_consumer_instrument_contract.py`:
+
+1. The label was `brain_bool` only (needs_action: the incumbent's constant
+   True on 1233/1233 rows, so an acting "no" could never score right). Now the
+   bar's rule: `outside_label` first (`bool_reference`).
+2. `--variants`/`--options` changed nothing for yes/no consumers (the d1
+   backend reads their criteria from the declaration). Now `bool_criteria`
+   swaps them per variant.
+3. "live" asked NO question for yes/no consumers. Now `live_instruction`
+   returns the SURFACE_CONSUMERS / TOOL_APPROVAL_INSTRUCTION text, and
+   `--instruction` defaults to `live`.
+4. The raw frame reached the backend, which read `goal` only (tool_approval
+   lost tool/args/last result: 817/1500 picks reproduced). Now `job_input()`
+   renders the job's fields as the live engine does: 1500/1500 and 1233/1233.
+
+RULE: a replay counts only after its "fresh ask vs the recorded row: same
+pick" line reproduces the recorded picks. Each variant also prints the BAR
+verdict and the per-answer precision.
+
+### 12.5 Results on d1-2B (faithful replay, 2026-11-09)
+
+| Consumer | Best variant | Accuracy / OOF AUROC | Acting answer precision | Why it cannot pass now |
+|---|---|---|---|---|
+| needs_action v7 | bare criteria | 95.1% / 0.927 | "no" 35.6% (59 answers) | only 44 of 1233 rows truly need no tool; the frame lacks whether the facts are already gathered |
+| tool_approval v6 | bare criteria | - / 0.667 | "no" 27% | most failures (search, browser, env) are not visible in the frame; wrong "no" on cheap read/list calls |
+| review_verdict v11/v13 | none | 56-63% / 0.43-0.56 | "veto" 0-44% | a PRE-execution gate labelled by the step's POST-execution outcome; same model ranks agreement with the Brain's plan verdict at 0.82 |
+| depth_met v4 | none | - / <=0.65 | "no" 5% | asks about ONE step against the whole goal; the label is the final TURN verdict (True on 194/201) |
+| escalate_incomplete | not measurable | - | - | its 202 outcome rows stored no question; fixed (sampled rows now store `state`, stamp escalate_incomplete/v2) |
+| tool_choice tc-decide-v9 | (live) | 85.8% / 0.6646 | - | PASSES the bar, but its label is the action-class RULE: owner decision whether that counts as outside evidence |
+
+Conclusion: d1-2B ranks well (needs_action 0.93), but none of the ACTING
+roles can be earned by wording. The blockers are design: missing frame
+information, a rare acting class, and labels that measure a different question
+than the one asked. Those are owner decisions (pin_ of 2026-11-09).
+
+Also fixed: every sampled (outcome-labelled) writer now stores `state`
+(escalate_incomplete, needs_action, click_safety;
+`contract/test_sampled_rows_store_state_contract.py`).
+
+### 12.6 For the next model swap
+
+Every consumer now stores its question. Before switching models, replay every
+consumer's newest cohort on the candidate model with step 2 and keep the
+switch only if the bars that matter hold. That gate was missing for d1-2B.

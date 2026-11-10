@@ -435,7 +435,8 @@ def _goal_needs_action(goal: str) -> bool:
                 "needs_action", _decision,
                 max(float(_noul.probability), 1.0 - float(_noul.probability)),
                 probability=round(float(_noul.probability), 4),
-                engine_latency_ms=_noul.engine_latency_ms))
+                engine_latency_ms=_noul.engine_latency_ms,
+                state={"goal": goal}))  # the frame read: replayable (oracle.md 12)
             return _decision
         _value, _row = _ss.surface_bool(
             "needs_action", goal,

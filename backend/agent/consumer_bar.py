@@ -71,7 +71,17 @@ ACTING_ANSWER: Dict[str, str] = {
 # consumer that is deciding today, which is a policy change disguised as a tool
 # run. needs_action adopted it first because its aggregate bar passed while its
 # acting side did not.
-ACTING_ENFORCED = {"needs_action"}
+# 2026-11-09: every asymmetric consumer adopts it. Measured on the d1-2B
+# cohorts (all four below decide nothing today, so no status changes): the
+# ACTING answer is right far less often than the other one - depth_met "no"
+# 5% (yet depth_met/v4 fails only ECE 0.0516: a few more rows would have
+# certified a consumer that pushes wrong extra work 95% of the time),
+# tool_approval "no" 19%, review_verdict "veto" 0%, escalate_incomplete "yes"
+# 59%. The pooled precision is carried by the side that changes nothing.
+ACTING_ENFORCED = {
+    "needs_action", "depth_met", "tool_approval", "review_verdict",
+    "escalate_incomplete",
+}
 MIN_ACTING_ROWS_ABOVE = 50
 
 # THE HARDENED BAR (2026-10-05, Oracle Stage A). The three clauses above were

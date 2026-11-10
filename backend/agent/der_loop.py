@@ -613,7 +613,12 @@ class DirectorQueue:
                         max(float(_noul.probability),
                             1.0 - float(_noul.probability)),
                         probability=round(float(_noul.probability), 4),
-                        engine_latency_ms=_noul.engine_latency_ms))
+                        engine_latency_ms=_noul.engine_latency_ms,
+                        # the frame the model read: without it the 202
+                        # outcome-labelled rows could not be replayed
+                        # (oracle.md 12, 2026-11-09)
+                        state={"goal": tool_result_summary},
+                        criteria_version="escalate_incomplete/v2"))
             else:
                 _value, _row = _ss.surface_bool(
                     "escalate_incomplete", tool_result_summary,

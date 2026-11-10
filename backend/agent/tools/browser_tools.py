@@ -710,7 +710,11 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
                 if _row is not None:
                     register_turn_pending(_scope_for_sample, sampled_row(
                         "click_safety", _row["chosen"], _row["confidence"],
-                        engine_latency_ms=_row.get("engine_latency_ms")))
+                        engine_latency_ms=_row.get("engine_latency_ms"),
+                        # the statement the model read (the screenshot is not
+                        # stored): replayable text (oracle.md 12, 2026-11-09)
+                        state={"goal": click_safety_shadow.statement(
+                            what, ctx.get("goal") or "")}))
                     if _row.get("chosen") in ("unsafe", "unsure"):
                         verdict = click_safety.UNSURE  # falls through to ask
         except Exception as exc:  # noqa: BLE001 - a shadow never blocks

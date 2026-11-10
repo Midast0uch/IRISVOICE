@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -72,6 +73,21 @@ def declaration_text(consumer: str) -> dict:
         return {}
 
 
+def bool_reference(d: dict):
+    """The label of a yes/no row by THE BAR's rule (decision_label): the
+    outside label first, else the incumbent's answer (brain_bool).
+
+    Before 2026-11-09 the replay read brain_bool only. For needs_action that
+    is the incumbent's constant True (1233 of 1233 replayable v7 rows), so an
+    acting "no" could never score right, and rows labelled ONLY by an outside
+    label were dropped."""
+    if d.get("outside_label") is not None:
+        return bool(d["outside_label"])
+    if d.get("brain_bool") is not None:
+        return bool(d["brain_bool"])
+    return None
+
+
 def load_rows(consumer: str, limit: int, stamps=None, engine: str = SOURCE_ENGINE):
     """The recorded questions of one consumer (the newest first)."""
     c = open_store_read_only(app_store_path())
@@ -98,11 +114,10 @@ def load_rows(consumer: str, limit: int, stamps=None, engine: str = SOURCE_ENGIN
         if not menu or ref not in menu:
             # BOOL consumers (2026-11-04): depth_met, done, needs_action,
             # escalate_incomplete and tool_approval answer a yes/no question, so
-            # there is no candidate menu. Their reference is `brain_bool`; the
-            # question is `state` (now recorded by every writer). Without this
-            # branch the replay skipped all five, which are exactly the ones the
-            # bar fails on AUROC.
-            ref = d.get("brain_bool")
+            # there is no candidate menu. The question is `state` (now recorded
+            # by every writer). Without this branch the replay skipped all five,
+            # which are exactly the ones the bar fails on AUROC.
+            ref = bool_reference(d)
             if ref is None:
                 continue
             ref = bool(ref)
@@ -146,7 +161,41 @@ def live_instruction(consumer: str) -> str:
         from backend.agent.der_loop import Reviewer
 
         return Reviewer.REVIEW_INSTRUCTION
-    return ""
+    # 2026-11-09: the yes/no consumers ask a question too. Without it every
+    # replay of them asked the backend's DEFAULT question, not the live one.
+    if consumer == "tool_approval":
+        from backend.agent.tool_approval_shadow import TOOL_APPROVAL_INSTRUCTION
+
+        return TOOL_APPROVAL_INSTRUCTION
+    from backend.agent.surface_shadow import SURFACE_CONSUMERS
+
+    return SURFACE_CONSUMERS.get(consumer, "")
+
+
+@contextlib.contextmanager
+def bool_criteria(consumer: str, variant: str, live: dict, custom: dict):
+    """The yes/no criteria block for one variant, for the length of a run.
+
+    The d1 backend reads a yes/no consumer's criteria from its declaration
+    (decision_backend_d1.declared_criteria), never from the frame, so before
+    2026-11-09 `--variants` and `--options` changed NOTHING for these
+    consumers: every variant asked the live criteria. current = the
+    declaration; bare = no criteria block; custom = the declaration overlaid
+    with --options (keys "true"/"false"). Restored on exit."""
+    import backend.agent.decision_backend_d1 as d1mod
+
+    orig = d1mod.declared_criteria
+    if variant == "bare":
+        crit = None
+    elif variant == "custom":
+        crit = {**(live or {}), **(custom or {})}
+    else:
+        crit = live
+    d1mod.declared_criteria = lambda cid: crit if cid == consumer else orig(cid)
+    try:
+        yield
+    finally:
+        d1mod.declared_criteria = orig
 
 
 def trim_state(text: str, mode: str) -> str:
@@ -175,6 +224,16 @@ def trim_state(text: str, mode: str) -> str:
 
 def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custom: dict,
         instruction: str = "", raw_frame: bool = False, frame_mode: str = "live"):
+    if rows and rows[0].get("mode") == "bool":
+        with bool_criteria(consumer, variant, live, custom):
+            return _run(variant, consumer, rows, backend, live, custom,
+                        instruction, raw_frame, frame_mode)
+    return _run(variant, consumer, rows, backend, live, custom,
+                instruction, raw_frame, frame_mode)
+
+
+def _run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custom: dict,
+         instruction: str = "", raw_frame: bool = False, frame_mode: str = "live"):
     # The consumer's OWN job (name, fields, budget) - the live question. The
     # job changes the prompt and the text budget, so a replay with another
     # job measures another question (MEASURED 2026-11-04: review_verdict with
@@ -192,14 +251,18 @@ def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custo
             # `state` is the frame when the site passed one, else the
             # statement. Score the SAME frame here so the replay reproduces
             # the live prompt.
+            from backend.agent.decision_engine import job_input
             from backend.agent.surface_shadow import register_surface_consumers
 
             register_surface_consumers()
             st = r["state"]
-            if isinstance(st, dict):
-                frame = st
-            else:
-                frame = {"goal": str(st)}
+            # THE ENGINE'S INPUT, not the raw frame (2026-11-09): the live
+            # DecisionEngine.decide renders the job's declared fields
+            # (job_input) before the backend reads them; the raw dict made the
+            # backend read `goal` ONLY - tool_approval lost tool/args/last
+            # result (fresh picks matched 817 of 1500 recorded ones; with
+            # job_input 1500 of 1500), needs_action lost `expected`.
+            frame = job_input(consumer, st if isinstance(st, dict) else {"goal": str(st)})
             ds = backend.decide(consumer, ["yes", "no"], frame,
                                 instruction=instruction or None)
             if ds is None:
@@ -210,6 +273,14 @@ def run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, custo
                     p = float(c.prob)
                     break
             chosen = p >= 0.5
+            # FIDELITY: the fresh pick against the recorded one. A replay that
+            # does not reproduce the recorded picks measures another question,
+            # and none of its variant numbers count (oracle.md 12.3).
+            _rec = r.get("chosen")
+            if _rec is not None:
+                _rec_yes = (_rec is True) or str(_rec).strip().lower() in ("yes", "true")
+                same_pick += 1 if chosen == _rec_yes else 0
+                compared += 1
             out.append((max(p, 1.0 - p), chosen == bool(r["ref"]),
                         chosen, bool(r["ref"])))
             continue
@@ -284,14 +355,70 @@ def report(variant: str, res):
             print(f"   conf[{lo:.2f},{hi:.2f}) n={len(b):4d} agree={sum(x[1] for x in b) / len(b):.3f}")
     wrong = collections.Counter((x[2], x[3]) for x in res if not x[1])
     print("   top disagreements (chosen, reference):", wrong.most_common(6))
+    # PER ANSWER (2026-11-09): the answer that ACTS is what the bar's acting
+    # clause judges, and with no threshold the BAR line below prints nothing
+    # for it. Count and precision of each answer, and at confidence >= 0.9.
+    by = collections.defaultdict(list)
+    for x in res:
+        by[x[2]].append(x)
+    parts = []
+    for ans, xs in sorted(by.items(), key=lambda kv: str(kv[0])):
+        hi = [x for x in xs if x[0] >= 0.9]
+        parts.append(f"{ans}: n={len(xs)} prec={sum(x[1] for x in xs) / len(xs):.3f}"
+                     + (f" (conf>=0.9: n={len(hi)} prec={sum(x[1] for x in hi) / len(hi):.3f})"
+                        if hi else ""))
+    print("   per answer:", " | ".join(parts))
     pos = [x[0] for x in res if x[1]]
     neg = [x[0] for x in res if not x[1]]
+    # IN-SAMPLE, not out-of-fold (it was printed as "oof_auroc"): a quick read
+    # only. The BAR line below is the verdict that counts.
     if pos and neg:
         wins = sum((p > n) + 0.5 * (p == n) for p in pos for n in neg)
-        print(f"   oof_auroc={wins / (len(pos) * len(neg)):.4f} "
+        print(f"   in_sample_auroc={wins / (len(pos) * len(neg)):.4f} "
               f"(correct={len(pos)} wrong={len(neg)})")
     else:
-        print(f"   oof_auroc=untestable (correct={len(pos)} wrong={len(neg)})")
+        print(f"   in_sample_auroc=untestable (correct={len(pos)} wrong={len(neg)})")
+
+
+def bar_verdict(consumer: str, res) -> None:
+    """The BAR's own verdict on a replayed variant (2026-11-09).
+
+    The replay used to print only an in-sample AUROC and agreement, so a
+    variant could look good here and still fail the bar (threshold, precision,
+    Wilson bound, rows above, ECE, the acting side). This runs the SAME fit
+    (fit_oracle_calibration.fit_consumer, 5-fold out-of-fold) and the SAME
+    clause order (consumer_bar.derive_status) as consumer_enforcement_report.py,
+    so "passes in replay" means "would pass the bar on this cohort". The
+    acting-side numbers are printed for every asymmetric consumer; they gate
+    only the consumers in ACTING_ENFORCED, as in the report."""
+    if not res:
+        return
+    try:
+        from backend.agent.consumer_bar import ACTING_ANSWER, ACTING_ENFORCED, derive_status
+        from scripts.fit_oracle_calibration import fit_consumer
+    except Exception as exc:  # noqa: BLE001 - the quick numbers above still stand
+        print(f"   BAR: unavailable ({exc!r})")
+        return
+    rows = [{"confidence": c, "correct": bool(ok), "chosen": ch} for c, ok, ch, _ref in res]
+    honest = fit_consumer(rows, acting=ACTING_ANSWER.get(consumer), consumer_id=consumer)
+    if consumer in ACTING_ENFORCED:
+        honest["acting_required"] = True
+    oof = honest.get("oof") or {}
+    status, gap = derive_status(len(rows), float(oof.get("precision_at_t") or 0.0),
+                                oof.get("ece"), honest=honest)
+
+    def _f(v):
+        return f"{v:.4f}" if isinstance(v, (int, float)) else str(v)
+
+    print(f"   BAR: status={status} gap={gap or '-'}")
+    print(f"        rows={honest.get('rows_distinct')} classes={honest.get('classes')} "
+          f"oof_auroc={_f(oof.get('auroc'))} oof_ece={_f(oof.get('ece'))} "
+          f"threshold={_f(honest.get('threshold'))} precision={_f(oof.get('precision_at_t'))} "
+          f"wilson={_f(oof.get('wilson_lb'))} rows_above={honest.get('rows_above')}")
+    acting = {k: v for k, v in oof.items() if "acting" in k and k != "acting_answer"}
+    if acting:
+        print(f"        acting({ACTING_ANSWER.get(consumer)}): "
+              + " ".join(f"{k}={_f(v)}" for k, v in sorted(acting.items())))
 
 
 def main() -> int:
@@ -302,7 +429,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=300)
     ap.add_argument("--stamps", default="")
     ap.add_argument("--engine", default=SOURCE_ENGINE)
-    ap.add_argument("--instruction", default="", help="the live criteria text, or 'live' for the consumer's own")
+    ap.add_argument("--instruction", default="live",
+                    help="the question: 'live' (default: the consumer's own, as the live "
+                         "call asks it), 'none' (no question), a text, or a file path")
     ap.add_argument("--since", default="", help="only rows created at/after this ISO stamp")
     ap.add_argument("--raw-frame", action="store_true",
                     help="ask with the raw frame, like the live call site")
@@ -328,12 +457,15 @@ def main() -> int:
             raw = Path(raw).read_text(encoding="utf-8")
         custom = json.loads(raw)
     backend = D1Backend()
-    instr = live_instruction(args.consumer) if args.instruction == "live" else args.instruction
+    instr = (live_instruction(args.consumer) if args.instruction == "live"
+             else "" if args.instruction == "none" else args.instruction)
     if instr and Path(instr).exists():
         instr = Path(instr).read_text(encoding="utf-8")
     for variant in [v.strip() for v in args.variants.split(",") if v.strip()]:
-        report(variant, run(variant, args.consumer, rows, backend, live, custom, instr,
-                            args.raw_frame, args.frame))
+        res = run(variant, args.consumer, rows, backend, live, custom, instr,
+                  args.raw_frame, args.frame)
+        report(variant, res)
+        bar_verdict(args.consumer, res)
     return 0
 
 

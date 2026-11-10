@@ -546,11 +546,18 @@ def build_report(
         # backend" from the LEGACY yaml threshold - None for every d1 consumer
         # - while the record could say "enforced". The honest block carries
         # its own fitted threshold; _derive_hardened refuses without it.
-        status, gap = derive_status(
-            m["rows"], m["precision"], m["ece"], honest=m.get("honest"),
-            sampling_eligible=cid in tiers,
-            outcome_rows=int(m.get("outcome_rows") or 0),
-        )
+        if m.get("honest") is None and m.get("threshold") is None:
+            # AC25.8 fail-closed, the SAME rule bar_rows applies to the record:
+            # without a fitted block AND without a threshold for the active
+            # backend, numbers alone never flip a consumer. The report flipped
+            # here while the persisted record refused (found 2026-11-09).
+            status, gap = "shadow", "fail-closed: no threshold for the active backend"
+        else:
+            status, gap = derive_status(
+                m["rows"], m["precision"], m["ece"], honest=m.get("honest"),
+                sampling_eligible=cid in tiers,
+                outcome_rows=int(m.get("outcome_rows") or 0),
+            )
         consumers[cid] = {**m, "status": status, "gap": gap}
     return {
         "config": config,
