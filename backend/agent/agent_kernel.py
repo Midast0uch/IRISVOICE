@@ -8376,7 +8376,10 @@ class AgentKernel:
                 # 25.6.3: the criteria version rides on every row (the key is on
                 # tool_bridge._DECISION_META_KEYS, or the ledger would drop it).
                 if _depth_row is not None:
-                    _depth_row["criteria_version"] = "depth_met/v3"
+                    # the SAME stamp as the shadow path above (2026-11-10:
+                    # an enforced inline row was stamped v3 while it was
+                    # asked the v4 question - two questions, one cohort)
+                    _depth_row["criteria_version"] = "depth_met/v4"
                     # v3 (2026-10-18): an ENFORCED row is held for the EXTERNAL
                     # verdict too - the same hold the deferred shadow path uses
                     # (surface_shadow._submit_shadow). Enforced mode returns the
@@ -22408,7 +22411,10 @@ Respond with a JSON object:
                     # against 0.6549 - a strict improvement, no trade-off. A
                     # question change is a new calibrated identity, so the stamp
                     # moves and the v2 cohort is never blended in.
-                    criteria_version="done/v3",
+                    # v4 (2026-11-10): the declared question reaches the
+                    # model for the first time (monitor registrar fix); the
+                    # v3 rows were asked the generic AUTO_INSTRUCTION.
+                    criteria_version="done/v4",
                     brain_bool_fn=lambda: data.get("done") is True,
                     brain_text_fn=lambda: str(data.get("description", "") or ""),
                     engine=_ms.AUTO_ENGINE,

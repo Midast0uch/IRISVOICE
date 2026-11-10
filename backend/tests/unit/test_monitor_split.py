@@ -143,7 +143,9 @@ class TestMonitorConsumersRegistered:
     def test_monitor_consumers_have_criteria(self):
         """AC14.1/AC19.3: each bool consumer is scored under its OWN criteria
         (a consumer without criteria is refused, not borrowed)."""
-        from backend.agent.decision_backend_onnx import get_consumer_spec
+        # decision_engine holds the registry (decision_backend_onnx was deleted;
+        # this import had failed since - fixed 2026-11-10).
+        from backend.agent.decision_engine import get_consumer_spec, needs_upgrade
 
         added = ms.register_monitor_consumers()
         assert added == 0 or added == len(ms.MONITOR_CONSUMERS)
@@ -152,3 +154,17 @@ class TestMonitorConsumersRegistered:
             assert spec is not None, cid
             assert spec.instruction == instruction
             assert list(spec.labels) == ["yes", "no"]
+
+    def test_the_declared_question_survives_the_backend(self):
+        """2026-11-10: the registrar wrote a spec with NO decision type, so the
+        d1 backend's ensure_consumer_spec re-registered it under the generic
+        AUTO_INSTRUCTION and the done / sufficient questions never reached the
+        model. The spec now carries its declared type and keeps its question."""
+        from backend.agent.decision_engine import ensure_consumer_spec
+        from backend.agent.decision_engine import get_consumer_spec, needs_upgrade
+
+        ms.register_monitor_consumers()
+        for cid, instruction in ms.MONITOR_CONSUMERS.items():
+            assert not needs_upgrade(get_consumer_spec(cid)), cid
+            ensure_consumer_spec(cid, ["yes", "no"], None)
+            assert get_consumer_spec(cid).instruction == instruction, cid

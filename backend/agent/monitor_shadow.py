@@ -106,25 +106,26 @@ def register_monitor_consumers() -> int:
     A consumer with no criteria is REFUSED by the engine rather than scored
     under another consumer's head, so this must run before any shadow scoring.
     """
+    # FIXED 2026-11-10: this registered a spec with NO decision type, so the
+    # d1 backend's ensure_consumer_spec saw needs_upgrade() and re-registered
+    # it under AUTO_INSTRUCTION: the done / sufficient questions never reached
+    # the model (the done/v3 wording change never took effect live). The
+    # declared type and criteria come from the declaration table, exactly as
+    # surface_shadow.register_surface_consumers does.
     try:
         from backend.agent.decision_engine import (
-            ConsumerSpec,
             get_consumer_spec,
-            register_consumer_spec,
+            needs_upgrade,
+            register_declared,
         )
     except Exception as e:  # noqa: BLE001 — criteria are best-effort
         logger.warning("[monitor] consumer specs unavailable: %s", e)
         return 0
     added = 0
     for cid, instruction in MONITOR_CONSUMERS.items():
-        if get_consumer_spec(cid) is not None:
+        if not needs_upgrade(get_consumer_spec(cid)):
             continue
-        register_consumer_spec(ConsumerSpec(
-            consumer_id=cid,
-            task_name=cid,
-            instruction=instruction,
-            labels=(_TRUE_LABEL, _FALSE_LABEL),
-        ))
+        register_declared(cid, instruction, (_TRUE_LABEL, _FALSE_LABEL))
         added += 1
     return added
 

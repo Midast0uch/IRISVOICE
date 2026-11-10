@@ -23,15 +23,15 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "8e96c5b6695e",
-      "criteria_version": "depth_met/v3",
+      "criteria_version": "depth_met/v4",
       "engine_id": "d1-2b-q4_k_m+systemone",
       "readout_mode": "systemone"
     },
     "consumer_id": "depth_met",
     "ece": null,
-    "gap": "oof AUROC 0.546 < 0.65 (confidence does not rank errors)",
+    "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
     "precision": 0.0,
-    "rows": 904,
+    "rows": 200,
     "status": "shadow"
   },
   "depth_route": {
@@ -362,7 +362,7 @@
     "consumer_id": "tool_choice",
     "ece": 0.3562,
     "gap": "",
-    "precision": 0.9814,
+    "precision": 0.9563,
     "rows": 1014,
     "status": "enforced"
   },

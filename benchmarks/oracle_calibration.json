@@ -6,7 +6,7 @@
         "correct": 1878,
         "wrong": 692
       },
-      "fitted_at": "2026-11-10T05:43:05+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 364,
@@ -90,60 +90,52 @@
       "baseline": {
         "keys": 1,
         "metric": "truth_auroc",
-        "model": 0.6967,
-        "rule": 0.4448
+        "model": 0.7861,
+        "rule": 0.2131
       },
       "classes": {
-        "correct": 541,
-        "wrong": 363
+        "correct": 144,
+        "wrong": 56
       },
-      "criteria_version": "depth_met/v3",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "criteria_version": "depth_met/v4",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
-        "groups": 434,
+        "groups": 47,
         "split_rows": 0
       },
       "knots": [
         [
-          0.523299,
-          0.447368
+          0.619334,
+          0.485714
         ],
         [
-          0.624642,
-          0.487923
+          0.748327,
+          0.681818
         ],
         [
-          0.759186,
-          0.63
+          0.864203,
+          0.793103
         ],
         [
-          0.898971,
-          0.648415
-        ],
-        [
-          0.973098,
-          0.6875
-        ],
-        [
-          0.989231,
-          0.846154
+          0.965782,
+          0.98
         ]
       ],
       "label_source": "step outcome (verified_label)",
       "method": "isotonic",
       "mixed_dropped": 0,
       "oof": {
-        "auroc": 0.546,
-        "brier": 0.2405,
-        "ece": 0.051,
+        "auroc": 0.733,
+        "brier": 0.1757,
+        "ece": 0.0635,
         "precision_at_t": null,
         "wilson_lb": null
       },
       "reference": "outcome",
       "rows_above": 0,
-      "rows_distinct": 904,
-      "rows_raw": 916,
+      "rows_distinct": 200,
+      "rows_raw": 200,
       "threshold": null
     },
     "depth_route": {
@@ -158,7 +150,7 @@
         "wrong": 91
       },
       "criteria_version": "depth_route/v3",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 163,
@@ -214,7 +206,7 @@
         "wrong": 49
       },
       "criteria_version": "done/v2",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 116,
@@ -261,7 +253,7 @@
         "correct": 4,
         "wrong": 50
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 41,
@@ -299,7 +291,7 @@
         "correct": 1,
         "wrong": 14
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -324,7 +316,7 @@
         "correct": 2,
         "wrong": 6
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -349,7 +341,7 @@
         "correct": 0,
         "wrong": 1
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -374,7 +366,7 @@
         "correct": 1,
         "wrong": 1
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -399,7 +391,7 @@
         "correct": 26,
         "wrong": 2
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -424,7 +416,7 @@
         "correct": 0,
         "wrong": 17
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -449,7 +441,7 @@
         "correct": 0,
         "wrong": 1
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -485,7 +477,7 @@
         "wrong": 398
       },
       "criteria_version": "narration/shape-v2",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 427,
@@ -549,7 +541,7 @@
         "wrong": 236
       },
       "criteria_version": "needs_action/v7",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 470,
@@ -678,7 +670,7 @@
         "wrong": 335
       },
       "criteria_version": "presentation/shape-v2",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 125,
@@ -717,7 +709,7 @@
         "wrong": 251
       },
       "criteria_version": "review_verdict/v11",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 58,
@@ -774,7 +766,7 @@
         "wrong": 149
       },
       "criteria_version": "route_v2/binary-v1",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 652,
@@ -818,7 +810,7 @@
         "wrong": 5714
       },
       "criteria_version": "tool_approval/v6",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 522,
@@ -873,7 +865,7 @@
         "wrong": 69
       },
       "criteria_version": "tc-decide-v9",
-      "fitted_at": "2026-11-10T05:43:07+00:00",
+      "fitted_at": "2026-11-10T07:36:51+00:00",
       "folds": {
         "grouped": true,
         "groups": 117,
@@ -953,7 +945,7 @@
         "correct": 740,
         "wrong": 3
       },
-      "fitted_at": "2026-11-10T05:43:07+00:00",
+      "fitted_at": "2026-11-10T07:36:51+00:00",
       "folds": {
         "grouped": true,
         "groups": 286,
@@ -1002,7 +994,7 @@
         "wrong": 11
       },
       "criteria_version": "web_intent/v3",
-      "fitted_at": "2026-11-10T05:43:07+00:00",
+      "fitted_at": "2026-11-10T07:36:51+00:00",
       "folds": {
         "grouped": true,
         "groups": 121,
@@ -1048,7 +1040,7 @@
         "wrong": 5714
       },
       "criteria_version": "tool_approval/v6",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 522,
@@ -1115,7 +1107,7 @@
         "wrong": 11
       },
       "criteria_version": "web_intent/v3",
-      "fitted_at": "2026-11-10T05:43:07+00:00",
+      "fitted_at": "2026-11-10T07:36:51+00:00",
       "folds": {
         "grouped": true,
         "groups": 121,
@@ -1205,7 +1197,7 @@
         "wrong": 149
       },
       "criteria_version": "route_v2/binary-v1",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 652,
@@ -1250,7 +1242,7 @@
         "correct": 4,
         "wrong": 50
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 41,
@@ -1288,7 +1280,7 @@
         "correct": 1,
         "wrong": 14
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1313,7 +1305,7 @@
         "correct": 2,
         "wrong": 6
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1338,7 +1330,7 @@
         "correct": 0,
         "wrong": 1
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1363,7 +1355,7 @@
         "correct": 1,
         "wrong": 1
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1388,7 +1380,7 @@
         "correct": 26,
         "wrong": 2
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1413,7 +1405,7 @@
         "correct": 0,
         "wrong": 17
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1438,7 +1430,7 @@
         "correct": 0,
         "wrong": 1
       },
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": null,
       "knots": [],
       "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
@@ -1464,7 +1456,7 @@
         "wrong": 251
       },
       "criteria_version": "review_verdict/v11",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 58,
@@ -1511,7 +1503,7 @@
         "wrong": 69
       },
       "criteria_version": "tc-decide-v9",
-      "fitted_at": "2026-11-10T05:43:07+00:00",
+      "fitted_at": "2026-11-10T07:36:51+00:00",
       "folds": {
         "grouped": true,
         "groups": 117,
@@ -1591,7 +1583,7 @@
         "correct": 740,
         "wrong": 3
       },
-      "fitted_at": "2026-11-10T05:43:07+00:00",
+      "fitted_at": "2026-11-10T07:36:51+00:00",
       "folds": {
         "grouped": true,
         "groups": 286,
@@ -1637,7 +1629,7 @@
         "wrong": 49
       },
       "criteria_version": "done/v2",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 116,
@@ -1687,7 +1679,7 @@
         "wrong": 91
       },
       "criteria_version": "depth_route/v3",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 163,
@@ -1737,60 +1729,52 @@
       "baseline": {
         "keys": 1,
         "metric": "truth_auroc",
-        "model": 0.6967,
-        "rule": 0.4448
+        "model": 0.7861,
+        "rule": 0.2131
       },
       "classes": {
-        "correct": 541,
-        "wrong": 363
+        "correct": 144,
+        "wrong": 56
       },
-      "criteria_version": "depth_met/v3",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "criteria_version": "depth_met/v4",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
-        "groups": 434,
+        "groups": 47,
         "split_rows": 0
       },
       "knots": [
         [
-          0.523299,
-          0.447368
+          0.619334,
+          0.485714
         ],
         [
-          0.624642,
-          0.487923
+          0.748327,
+          0.681818
         ],
         [
-          0.759186,
-          0.63
+          0.864203,
+          0.793103
         ],
         [
-          0.898971,
-          0.648415
-        ],
-        [
-          0.973098,
-          0.6875
-        ],
-        [
-          0.989231,
-          0.846154
+          0.965782,
+          0.98
         ]
       ],
       "label_source": "step outcome (verified_label)",
       "method": "isotonic",
       "mixed_dropped": 0,
       "oof": {
-        "auroc": 0.546,
-        "brier": 0.2405,
-        "ece": 0.051,
+        "auroc": 0.733,
+        "brier": 0.1757,
+        "ece": 0.0635,
         "precision_at_t": null,
         "wilson_lb": null
       },
       "reference": "outcome",
       "rows_above": 0,
-      "rows_distinct": 904,
-      "rows_raw": 916,
+      "rows_distinct": 200,
+      "rows_raw": 200,
       "threshold": null
     }
   },
@@ -1807,7 +1791,7 @@
         "wrong": 236
       },
       "criteria_version": "needs_action/v7",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 470,
@@ -1938,7 +1922,7 @@
         "wrong": 398
       },
       "criteria_version": "narration/shape-v2",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 427,
@@ -2009,7 +1993,7 @@
         "wrong": 335
       },
       "criteria_version": "presentation/shape-v2",
-      "fitted_at": "2026-11-10T05:43:06+00:00",
+      "fitted_at": "2026-11-10T07:36:50+00:00",
       "folds": {
         "grouped": true,
         "groups": 125,
@@ -2049,7 +2033,7 @@
         "correct": 1878,
         "wrong": 692
       },
-      "fitted_at": "2026-11-10T05:43:05+00:00",
+      "fitted_at": "2026-11-10T07:36:49+00:00",
       "folds": {
         "grouped": true,
         "groups": 364,
