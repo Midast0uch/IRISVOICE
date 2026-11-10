@@ -9904,11 +9904,19 @@ class AgentKernel:
         # the turn text for the bounded-ask veto below.
         self._current_turn_text = text or ""
         _needs_planning = self._needs_planning(text, context)
+        # route_v2's decision site (2026-11-10): the Oracle's route acts when
+        # the bar lets it decide, or on the sampled rung's bounded share of
+        # turns (labelled by the turn verdict). Otherwise the gate's route
+        # stands and the Oracle is only shadowed below.
+        _oracle_route = self._route_v2_route(text, task_id, _needs_planning)
+        if _oracle_route is not None:
+            _needs_planning = _oracle_route
         self._log_route_shadow(
             turn_id=task_id,
             text=text,
             planned=_needs_planning,
             web_mode=self._web_mode_on(),
+            oracle_acted=_oracle_route is not None,
         )
         # Planning only runs when the message explicitly requests a tool-backed
         # action (search, open, create, etc.).  Everything else â€” greetings,
@@ -17512,6 +17520,71 @@ Respond with a JSON object:
         except Exception:
             return False
 
+    @staticmethod
+    def _route_v2_frame(text: Optional[str], web_mode: bool) -> Dict[str, Any]:
+        """The ONE frame route_v2 reads - the shadow and the site share it, so
+        their rows are one cohort (route_v2/binary-v1)."""
+        return {"goal": (text or "")[:200], "task_class": "personal",
+                "last_result": "", "chars": len(text or ""),
+                "web_mode": bool(web_mode)}
+
+    def _route_v2_route(
+        self, text: Optional[str], turn_id: Optional[str], gate_plans: bool
+    ) -> Optional[bool]:
+        """route_v2's decision site: True = plan (DER), False = answer direct,
+        None = the gate's route stands.
+
+        It acts (a) when the bar lets it decide (allow-list + earned bar +
+        a confident answer, `oracle_acts`), or (b) on the sampled rung: a
+        bounded, deterministic share of turns (`sampled_consult_ok`,
+        SAMPLE_FRACTION) where its route drives the turn and the row is held
+        for the turn verdict - the outcome label the parity bar lacks (on a
+        parity label a "direct" pick the gate would have planned is unscored).
+        One synchronous Oracle call (~0.3 s) on those turns only; any fault
+        returns None, so the gate decides."""
+        try:
+            from backend.agent.decision_engine import (
+                decides, get_decision_engine, oracle_acts, sampled_consult_ok,
+                sampled_row,
+            )
+
+            _enforced = decides("route_v2") is not None
+            _sampled = (not _enforced) and sampled_consult_ok(
+                "route_v2", f"{turn_id or ''}|{(text or '')[:80]}")
+            if not (_enforced or _sampled):
+                return None
+            eng = get_decision_engine()
+            if eng is None:
+                return None
+            frame = self._route_v2_frame(text, self._web_mode_on())
+            ds = eng.decide("route_v2", ["direct", "der"], frame)
+            if ds is None or ds.chosen not in ("direct", "der"):
+                return None
+            if _enforced:
+                return (ds.chosen == "der") if oracle_acts("route_v2", ds.confidence) else None
+            row = sampled_row(
+                "route_v2", ds.chosen, float(ds.confidence),
+                engine=str(eng.model_id or ""),
+                engine_latency_ms=ds.engine_latency_ms,
+                brain_choice="der" if gate_plans else "direct",
+                criteria_version="route_v2/binary-v1",
+                # outcome-labelled from birth: without a verdict (a live turn
+                # swept unlabelled) decision_label leaves it unscored, never
+                # "right" by default
+                label_source="outcome",
+                turn_id=str(turn_id or ""), state=frame)
+            from backend.agent import turn_verdict_label as _tvl
+
+            if not _tvl.defer(row, self._shadow_row_sink):
+                self._shadow_row_sink(row)
+            logger.info("[route_v2] sampled turn=%s oracle=%s gate=%s conf=%.3f",
+                        turn_id, ds.chosen, "der" if gate_plans else "direct",
+                        float(ds.confidence))
+            return ds.chosen == "der"
+        except Exception as e:  # noqa: BLE001 - the gate decides on any fault
+            logger.debug("[route_v2] site failed: %r", e)
+            return None
+
     def _log_route_shadow(
         self,
         *,
@@ -17519,6 +17592,7 @@ Respond with a JSON object:
         text: Optional[str],
         planned: bool,
         web_mode: bool,
+        oracle_acted: bool = False,
     ) -> None:
         """Route shadow (REQ-18 AC1, task T30) â€” one JSONL row per turn.
 
@@ -17577,12 +17651,10 @@ Respond with a JSON object:
                 from backend.agent.decision_engine import get_decision_engine
 
                 _eng = get_decision_engine()
-                if _eng is not None:
+                # A turn the Oracle's route drove has its own sampled row.
+                if _eng is not None and not oracle_acted:
                     _incumbent = "der" if planned else "direct"
-                    _frame = {"goal": (text or "")[:200],
-                              "task_class": "personal", "last_result": "",
-                              "chars": len(text or ""),
-                              "web_mode": bool(web_mode)}
+                    _frame = self._route_v2_frame(text, web_mode)
                     # input_key: the report's honest dedupe key. Without it the
                     # same goal rescored counts as NEW evidence (confidence
                     # jitters on every rescore), so "distinct rows" overstates

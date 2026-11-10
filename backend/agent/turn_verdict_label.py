@@ -82,7 +82,14 @@ def report_verdict(turn_id: str, passed: bool) -> int:
     for ent in entries:
         row = ent.get("row") or {}
         try:
-            row["outside_label"] = bool(passed)
+            # A NAMED answer (route_v2's "direct"/"der", 2026-11-10) is scored
+            # by name: its own name when the turn passed, a value no name can
+            # equal when it failed - as decision_engine.resolve_turn_pending.
+            _ch = row.get("chosen")
+            if _ch is not None and not isinstance(_ch, bool):
+                row["outside_label"] = str(_ch) if passed else "turn_fail"
+            else:
+                row["outside_label"] = bool(passed)
             row["label_source"] = "outcome"
             labelled += 1
         except Exception:  # noqa: BLE001 — a bad row never blocks the rest

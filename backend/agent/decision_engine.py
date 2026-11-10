@@ -1287,7 +1287,9 @@ _ENFORCEMENT_IDENTITY: Optional[str] = None
 # below said "deciding=['route_v2@0.6148']" while the kernel only calls
 # eng.shadow() for it. Guard: contract/test_no_decision_site_contract.py pins
 # this set against the source (it fails when a site is added or removed).
-NO_DECISION_SITE = frozenset({"route_v2", "narration", "review_verdict", "depth_route",
+# route_v2 left 2026-11-10: agent_kernel._route_v2_route acts on it (sampled
+# rung + oracle_acts) at the turn-route fork.
+NO_DECISION_SITE = frozenset({"narration", "review_verdict", "depth_route",
                               # 2026-11-10: the safety question is shadow only
                               # (its old reliability guard was removed)
                               "tool_approval"})
@@ -1701,6 +1703,9 @@ def call_closing_counters() -> Dict[str, int]:
 # 57.8% agreement with the decision lines).
 TIER_SAMPLABLE: frozenset = frozenset({
     "needs_action", "recovery_strategy", "tool_choice",
+    # 2026-11-10: the turn route; labelled by the turn verdict
+    # (turn_verdict_label), since a direct turn has no DER run grade.
+    "route_v2",
 })
 # AC6.6: refuse-direction ONLY - sampled, but the engine may only ever tighten
 # (refuse/veto where the incumbent allowed), never loosen. Wired at the
