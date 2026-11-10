@@ -308,7 +308,9 @@ class TestSurfaceGateBehavior:
         revision), so a turn WITH a card already emitted must STILL yield an
         observer verdict — otherwise "engine wanted plain, live produced card"
         is never measured (reply-surface-contract REQ-15 AC4 was blind for
-        card turns). The frame must admit the card exists."""
+        card turns). 2026-11-10 (owner: fix the job setups): the frame no
+        longer carries `card_already_rendered` - on the card path it IS the
+        reference, so a question that read it measured copying."""
         frames = []
 
         def decide(consumer_id, options, frame):
@@ -325,7 +327,7 @@ class TestSurfaceGateBehavior:
         ks = self._kernel_self()
         ks._last_render_emitted = True
         assert self._call(ks) == "card"
-        assert frames and frames[0]["card_already_rendered"] is True
+        assert frames and "card_already_rendered" not in frames[0]
 
 
 class TestNarrationBackstopBehavior:

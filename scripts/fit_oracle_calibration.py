@@ -567,7 +567,7 @@ def main() -> int:
     # Lazy: the report imports this module for fit_consumer.
     from scripts.consumer_enforcement_report import (
         declared_only,
-        load_rows,
+        load_ledgers,
         parse_scopes,
         scope_rows,
         thresholds_by_consumer,
@@ -592,7 +592,7 @@ def main() -> int:
         print("UNVERIFIED: active backend id unresolved; a map belongs to one backend")
         return 4
     try:
-        rows, skipped = load_rows(str(db), engine_id)
+        rows, skipped = load_ledgers(str(db), engine_id)
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4

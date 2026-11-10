@@ -60,7 +60,7 @@ MAX_ECE = 0.05
 # Which answer acts, per consumer (the site's change, not the engine's guess):
 ACTING_ANSWER: Dict[str, str] = {
     "needs_action": "no",          # a confident "no tool" moves the step to DIRECT
-    "tool_approval": "no",         # a confident "this call will fail" refuses the call
+    "tool_approval": "yes",        # a confident "safe" would skip the user's prompt
     "review_verdict": "veto",      # a confident "veto" refuses the step
     "depth_met": "no",             # a confident "not deep enough" pushes more work
 }

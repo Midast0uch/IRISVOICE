@@ -216,3 +216,6 @@ models/kws/
 /w
 /y
 /[[]input removed due to failed tool call]
+
+# simulated Oracle traffic (scripts/bench_tool_safety.py regenerates it)
+data/oracle_bench/

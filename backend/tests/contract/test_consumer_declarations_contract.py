@@ -273,4 +273,8 @@ def test_consumers_grew_by_exactly_two():
     # and `escalate_incomplete` (2026-11-09)
     assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {
         "mode", "use_thinking", "escalate_incomplete"}
-    assert "tool_approval" in de.TIER_REFUSE_ONLY
+    # 2026-11-10 (owner): tool_approval now asks the SAFETY question and its
+    # acting answer is "yes" (skip the prompt) - not refuse-only; its old
+    # pre-call guard is removed, so it has no decision site at all.
+    assert "tool_approval" not in de.TIER_REFUSE_ONLY
+    assert "tool_approval" in de.NO_DECISION_SITE

@@ -20,11 +20,11 @@ end of that file ("ARCHIVED BLUEPRINT"), which keeps the old section numbers.
 | Model | d1-2B (`d1-2B-Q4_K_M.gguf`), native Decision Index API, identity `d1-2b-q4_k_m+systemone` |
 | `tool_choice` | LIVE in its own role: the Oracle decides the tool CLASS, the tool model picks the tool (section 5); the bar CERTIFIES this role at its live gate |
 | Deciding through the bar | NOTHING. An Oracle answer acts only where a decision site reads `decides()` / `oracle_acts()`, and no consumer with a site holds an earned bar on the allow-list |
-| Earned, no decision site | `route_v2` (bar earned on a parity label; the kernel only shadows it), `call_closing` (refused by design) |
+| Earned, no decision site | `route_v2` (bar earned on a parity label; the kernel only shadows it), `call_closing` (refused by design), `tool_approval` (safety question; earned on the owner-policy answer sheet, kept shadow by the owner: section 9) |
 | Earned, has a site, not switched on | `web_intent` (the `explorer` gate), `user_feedback` (waiver; not switchable) |
 | Sampled | `needs_action` (has a site); `review_verdict` (status only: no site) |
-| Shadow (the incumbent decides) | `narration`, `presentation`, `tool_approval`, `depth_met`, `depth_route`, `done`, `sufficient`, `recovery_strategy`, `browser_next`, `click_safety`, event consumers |
-| No decision site at all (`NO_DECISION_SITE`) | `route_v2`, `narration`, `review_verdict`, `depth_route`: their rows are measurement only |
+| Shadow (the incumbent decides) | `narration`, `presentation`, `depth_met`, `depth_route`, `done`, `sufficient`, `recovery_strategy`, `browser_next`, `click_safety`, event consumers |
+| No decision site at all (`NO_DECISION_SITE`) | `route_v2`, `narration`, `review_verdict`, `depth_route`, `tool_approval`: their rows are measurement only |
 | Retired | `escalate_incomplete` (and its job `judge_step`), `mode`, `on_track`, `has_gaps`, `retry_same`, `use_thinking` |
 
 Which jobs the Oracle should own and which it leaves to the incumbent: section 9.
@@ -125,7 +125,7 @@ module `backend/agent/decision_engine.py`; backend `backend/agent/decision_backe
    |-- label the decided row (outcome label, action class)
    |-- record_shadow_tool_choice      parity row, lane("oracle_shadow")
    |-- browser_next_shadow            on browser_act with an element_id
-   `-- tool_approval_shadow           post-hoc yes/no, outcome-labelled
+   `-- tool_approval_shadow           safety yes/no at the user's permission answer
      |
      v
  shadow-row sink -> AgentToolBridge.record_decision -> write-time dedupe
@@ -160,7 +160,7 @@ an `enforced` bar pick or `IRIS_ORACLE_TOOL_CHOICE_ALWAYS=1`. Both are off.
                                                  (bar record + calibration +
                                                  IRIS_DECISION_ENFORCE)
  replay instruments (no writes): replay_consumer.py, replay_tool_choice.py,
-   replay_tool_approval.py, replay_surface.py
+   replay_surface.py; bench_tool_safety.py (answer sheet -> bench ledger)
 ```
 
 ### 3.3 Consumers around the engine
@@ -171,7 +171,7 @@ an `enforced` bar pick or `IRIS_ORACLE_TOOL_CHOICE_ALWAYS=1`. Both are off.
                       +-----------------------------------------+
     route job ------ tool_choice (class role, LIVE) | route_v2 (earned, shadow only) |
                      recovery_strategy | depth_route (shadow only) | browser_next
-    approve job ---- tool_approval (shadow; pre-call guard wired, not earned)
+    approve job ---- tool_approval (shadow; safety question; earned on the answer sheet; no site)
     guard job ------ click_safety (shadow + refuse-only sample)
     interpret_step - needs_action (sampled)
     judge_review --- review_verdict (shadow only: no decision site)
@@ -237,7 +237,7 @@ switched on.
 | `recovery_strategy` | route | choice | the recovery ladder | `ToolDecisionBox.recovery_strategy` | shadow (0 rows: failure-only path) |
 | `depth_route` | route | choice | the loop's own continuation | `ToolDecisionBox.depth_route` (lane row only) | shadow; no decision site |
 | `browser_next` | route | choice | the tool model's element pick | `browser_next_shadow` | shadow |
-| `tool_approval` | approve | noul | none (labelled by the call outcome) | `tool_approval_shadow`; pre-call guard in `node_executor.run_node` | shadow |
+| `tool_approval` | approve | noul | the user's own permission answer; the owner-policy answer sheet (`evals/safety`) | `tool_approval_shadow.record_permission_answer`, called from `permissions.respond_to_permission`; no decision site | shadow |
 | `click_safety` | guard | choice (safe/unsafe/unsure) | rules, then the Brain judge, then the user | `tools/browser_tools.py`, `click_safety_shadow` | shadow |
 | `needs_action` | interpret_step | noul | `external_reference.mode_for_goal` (DIRECT only for a question-word goal) | `agent_kernel._der_run_node` | sampled |
 | `review_verdict` | judge_review | choice (pass/refine/veto) | the Brain reviewer | `der_loop.Reviewer` (shadow row only) | sampled in the record; no decision site |
@@ -287,7 +287,7 @@ an input that carries the answer measures nothing.
 | `judge_review` | did this step do its part? | goal | 384 |
 | `judge_goal` | is the objective met, deep and sufficient? | goal, open_facts, evidence | 128 |
 | `judge_depth` | is the objective met, deep and sufficient? | evidence, coverage, open_facts, goal | 384 |
-| `shape` | how should this answer be delivered? | goal, content_chars, has_structure, card_already_rendered, zone, mode, steps, beats_authored, beats_admitted, multi_segment | 128 |
+| `shape` | how should this answer be delivered? | goal, content_chars, has_structure, zone, mode, steps, beats_authored, multi_segment (`shape-v3`: the two reference fields removed) | 128 |
 | `classify_event` | which event family/type is this? | goal | 64 |
 | `judge_call` | was this call the closing call of the step? | goal, call, result | 96 |
 | `general` | a consumer not yet assigned to a job | goal | 128 |
@@ -378,8 +378,8 @@ identity = model_id | readout_mode | criteria_hash
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp. Current stamps: `tc-decide-v4` (tool_choice bar
   path; certified as the class role: `tc-decide-v9`), `route_v2/binary-v1`, `needs_action/v7`, `review_verdict/v11`,
-  `tool_approval/v6`, `depth_met/v4`, `depth_route/v3`, `done/v2` (new rows `done/v4`: the first rows asked the declared question),
-  `narration/shape-v2`, `presentation/shape-v2`, `web_intent/v3`. The report and the
+  `tool_approval/safety-v1`, `depth_met/v4`, `depth_route/v3`, `done/v4` (the first rows that ask the declared question),
+  `narration/shape-v3`, `presentation/shape-v3`, `web_intent/v3`. The report and the
   fit take `--scope CONSUMER=STAMP` to measure one cohort. A stamp is never reused.
 
 ### 4.6 Enforcement chokepoint
@@ -416,7 +416,7 @@ replaces the incumbent on THIS consult. It reads only the tier, the kill switch 
 the share, not the allow-list; the caller asks it when the consumer is not enforced.
 
 - Tiers: `TIER_SAMPLABLE` = needs_action, recovery_strategy, tool_choice.
-  `TIER_REFUSE_ONLY` = click_safety, review_verdict, tool_approval (may only tighten:
+  `TIER_REFUSE_ONLY` = click_safety, review_verdict (may only tighten:
   refuse or veto where the incumbent allowed). `TIER_JOIN_ONLY` = done, sufficient,
   depth_met (labelled by outcome, never sampled). No tier = never sampled.
 - Share: `SAMPLE_FRACTION = 0.05`, `IRIS_ORACLE_SAMPLE_FRACTION`, per consumer
@@ -596,7 +596,8 @@ All must hold; the first one missing is recorded as the gap.
 - **The acting clause (clause 8).** For a consumer that changes behaviour in one
   direction only, the other direction can carry the aggregate precision while the
   acting side is unsafe. `ACTING_ANSWER` names the acting answer
-  (needs_action "no", tool_approval "no", review_verdict "veto", depth_met "no");
+  (needs_action "no", tool_approval "yes" - a confident "safe" skips the user's prompt,
+  review_verdict "veto", depth_met "no");
   `ACTING_ENFORCED` holds every asymmetric consumer. A new asymmetric consumer must
   be added to both. The threshold pick (`pick_threshold`) also requires the acting
   clauses at the picked value, so the pick can only move up.
@@ -677,7 +678,8 @@ right 0.931 (ECE 0.060) while raw confidence held 0.042.
   (`narration`, `presentation` lose to it).
 - A frame field that IS the reference (narration `beats_admitted`, presentation
   `card_already_rendered`) lets a question that restates the rule pass every clause
-  while measuring nothing. Such a pass is a copy, not a job: do not ship it.
+  while measuring nothing. Such a pass is a copy, not a job: do not ship it. Both
+  fields left the frames in `shape-v3` (2026-11-10).
 - A threshold applies to the cohort it was fitted on.
 - IRIS records no trustworthy step-level truth today, so no step-completion consumer
   (a step judge, a post-execution review) can be certified until one exists.
@@ -716,7 +718,8 @@ rule's number on the same metric (truth AUROC for yes/no, accuracy for choice).
 | tool_choice class role (`tc-decide-v9`) | 859 (790/69) | 0.776 | - | 0.024 | isotonic | 0.7596 = margin 0.30 (753, 0.936, 0.917) | enforced (class margin; section 5) |
 | narration (`narration/shape-v2`) | 1002 (604/398) | 0.753 | accuracy 0.603 vs 0.811 | 0.059 | isotonic | 0.6674 (376, 0.902, 0.867) | shadow: the trivial rule wins (0.934 vs 0.902 above the threshold) |
 | presentation (`presentation/shape-v2`) | 647 (312/335) | 1.000 | accuracy 0.482 vs 0.988 | 0.031 | isotonic | 0.1048 (339, 0.920, 0.887) | shadow: the trivial rule wins (0.985 vs 0.920 above the threshold) |
-| tool_approval (`tool_approval/v6`) | 11897 (6183/5714) | 0.499 | truth 0.578 vs 0.762 | 0.002 | isotonic | none | shadow: AUROC; a per-tool rule beats it |
+| tool_approval (`tool_approval/v6`, reliability; retired) | 11897 (6183/5714) | 0.499 | truth 0.578 vs 0.762 | 0.002 | isotonic | none | retired 2026-11-10: a per-tool rule beat it |
+| tool_approval (`tool_approval/safety-v1`, answer sheet) | 470 (353/117) | 0.683 | truth 0.837 vs 0.594 (per-tool rule) | 0.035 | isotonic | 0.7599 (201, 0.906, 0.857; acting "yes" 195, 0.903, 0.853) | earned on the sheet; shadow by the owner's choice: the confident misses are the dangerous calls (section 9) |
 | depth_met (`depth_met/v4`, the live question) | 200 (144/56) | 0.733 | - | 0.064 | isotonic | none | shadow: no threshold holds the acting "no" (clause 8 is unreachable: see 8.2 replays) |
 | depth_route (`depth_route/v3`) | 334 (243/91) | 0.529 | accuracy 0.728 vs 0.716 | 0.062 | isotonic | none | shadow: AUROC |
 | done (`done/v2`) | 176 (127/49) | 0.582 | truth 0.760 vs 0.419 | 0.046 | isotonic | none | shadow: AUROC |
@@ -728,8 +731,8 @@ the live question; the best variant):
 
 | Consumer | OOF AUROC | Acting answer precision | Why it does not pass |
 |---|---|---|---|
-| needs_action | 0.94 (best criteria; 0.91 on a 2182-row hash-exact extended cohort) | "no" at most 40 of its top 50 right (needs 48) | only 44 of 1233 rows truly need no tool; the label is partly a function of the goal's WORDING (an action verb leads -> True by construction; no action word -> False by construction); a word-based rule on the goal reaches 48/50 where d1 reaches 37-40; a "facts already gathered" field carries no signal and lowers d1 |
-| tool_approval | 0.667 (0.698 with the tool's recent outcomes) | "no" 27% (34% with them) | the gain is the model learning which tools are broken on this machine; a per-tool failure-rate rule beats it on every number |
+| needs_action | 0.94 (best criteria; 0.91 on a 2182-row hash-exact extended cohort) | "no" at most 40 of its top 50 right (needs 48) | only 44 of 1233 rows truly need no tool; the label is partly a function of the goal's WORDING (an action verb leads -> True by construction; no action word -> False by construction); re-measured 2026-11-10 on 1,233 distinct v7 rows: "always use a tool" is right 96.4%, d1's "no" is right 35 of 185 (16 of its top 50, 12 of its top 20); the earlier "word rule 48/50" figure did not reproduce; a "facts already gathered" field carries no signal and lowers d1 |
+| tool_approval (v1-v6 reliability question, retired) | 0.667 (0.698 with the tool's recent outcomes) | "no" 27% (34% with them) | the gain is the model learning which tools are broken on this machine; a per-tool failure-rate rule beats it on every number |
 | review_verdict | 0.43-0.56 | "veto" 0-44% | a pre-execution gate labelled by the post-execution outcome |
 | depth_met | 0.69-0.79 (v3 and v4 rows; truth AUROC 0.87-0.91) | "no" 16-18% right | ranks the truth well, but only ~6% of turns fail and about half of those fail on infrastructure (rate limits, no browser) that a depth push cannot fix; clause 8 needs 48 right of 50 "no" answers and the v4 cohort holds 7 failing turns: unreachable at any wording |
 | done | <= 0.51 (63 replayable rows) | - | the declared question never reached the model until 2026-11-10 (the registrar left the spec untyped, so the backend asked the generic AUTO_INSTRUCTION; `sufficient` the same); new rows are `done/v4` |
@@ -769,11 +772,11 @@ that cannot pass is not a broken job: the incumbent keeps it.
 |---|---|---|---|
 | tool_choice (route) | CORE | LIVE and certified (class margin, 0.936 at the gate) | keep; measure web/browser menus on a working network |
 | route_v2 (route) | incumbent decides (measured) | passes the bar on parity; on an outcome label the gate is better (97.9% vs 92.2%) | no site; send knowledge questions direct in the gate rule instead |
-| narration, presentation (shape) | incumbent decides (measured: no honest pass) | the frame carries the answer: narration's reference is `steps >= 2` (and `beats_admitted` IS the reference); presentation's is `card_already_rendered`. Honest variants stay below the most-common-answer rule (narration 0.17-0.77 vs 0.825; presentation 0.980 vs 0.988 with the flag removed); only variants that copy the rule into the question pass | reopen only with an outside label the incumbent can get wrong (a dismissed or reopened card, an interrupted narration) |
-| tool_approval (approve) | BOON; incumbent stays | live question at chance; a per-tool failure-rate rule beats d1 | a counted rule, not the Oracle, if the job is wanted |
-| depth_met (judge_depth) | incumbent decides (measured) | ranks the truth (0.87-0.91) but its acting "no" is right 16-18%: acting would push wasted work on most turns | a failure-rich outside label (turns a depth push CAN fix); not more wording |
+| narration, presentation (shape) | incumbent decides (measured: no honest pass) | the frame carries the answer: narration's reference is `steps >= 2` (and `beats_admitted` IS the reference); presentation's is `card_already_rendered`. Honest variants stay below the most-common-answer rule (narration 0.17-0.77 vs 0.825; presentation 0.980 vs 0.988 with the flag removed); only variants that copy the rule into the question pass | reopen only with an outside label the incumbent can get wrong (a dismissed or reopened card, an interrupted narration). Presentation's honest `shape-v3` frame holds about 11 distinct inputs (spec AC23.6 keeps the consult gate-layer only), so it cannot reach 100 distinct rows: the owner decides whether to admit the reply head into the frame or retire the consult |
+| tool_approval (approve) | shadow; the permission rule stays | the safety question (`safety-v1`, 2026-11-10) passes every clause on the 470-row owner-policy answer sheet (agreement 75.1% vs the permission rule's 60.9%), but its confident "safe" misses include `net localgroup administrators ... /add`, a read of `~/.ssh/id_rsa`, a force push and `git branch -D` under "list the branches" | stays shadow; live rows come from the user's own permission answers (eval sessions never label); a decision site needs the owner's call on that miss rate |
+| depth_met (judge_depth) | incumbent decides (measured) | ranks the truth (0.87-0.91) but its acting "no" is right 16-18%: acting would push wasted work on most turns | rule-owned (owner, 2026-11-10; off the allow-list); reopen only with a failure-rich outside label (turns a depth push CAN fix) |
 | review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |
-| needs_action (interpret_step) | a WORDING rule's job (measured) | a goal-word rule beats d1 on the acting "no" (48/50 vs 37-40/50) | fix the label's censoring and verb-list holes first; if wanted, a counted rule, not the Oracle |
+| needs_action (interpret_step) | the incumbent rule (measured) | the label is True on 96.4% of 1,233 distinct rows; d1's acting "no" is right 16 of its top 50 | rule-owned (owner, 2026-11-10; off the allow-list); fix the label's censoring first if the job is reopened |
 | done, sufficient (judge_goal) | BOON | the declared question reaches the model only since 2026-11-10 | new `done/v4` rows; `sufficient` needs failure traffic (no rows) |
 | web_intent (interpret_web) | BOON | earned | the owner decides whether to allow-list it; live gate first |
 
@@ -865,7 +868,7 @@ CURRENT model's id (the source cohort):
 
 - `scripts/replay_consumer.py --consumer C --engine <current id> --stamps <stamp>`
   for each stateful consumer;
-- `scripts/replay_tool_approval.py`, `scripts/replay_surface.py` for the consumers
+- `scripts/replay_surface.py` for the consumers
   whose frames come from the log;
 - `scripts/replay_tool_choice.py --engine <current id>` for the tool menu; score the
   class of each fresh top-1 with `tool_choice_action_class.classify_tool` against the
@@ -920,7 +923,7 @@ outcome) does not transfer: count those rows separately.
 
 | Flag | Default (`.env`) | Effect |
 |---|---|---|
-| `IRIS_DECISION_ENFORCE` | empty (`tool_choice,narration,route_v2,presentation,needs_action,review_verdict,depth_met,tool_approval`) | consumers the owner lets decide; each also needs an earned bar on the running identity AND a decision site (today none of the list has both; `narration`, `route_v2`, `review_verdict` have no site) |
+| `IRIS_DECISION_ENFORCE` | empty (owner's local `.env`, 2026-11-10: `tool_choice,narration,route_v2,presentation,review_verdict`; needs_action and depth_met are rule-owned, tool_approval is shadow) | consumers the owner lets decide; each also needs an earned bar on the running identity AND a decision site (today none of the list has both; `narration`, `route_v2`, `review_verdict` have no site) |
 | `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION` | unset (1) | the class decision of section 5 |
 | `IRIS_ORACLE_TOOL_CHOICE_SHORTLIST_K` | unset (5) | shortlist depth; also the class-mode fallback; `0` = off |
 | `IRIS_ORACLE_TOOL_CHOICE_ALWAYS` | unset (0) | `1` = forced top-1; keep OFF |
@@ -958,7 +961,7 @@ python scripts/calibrate_decision_threshold.py [--since ...] [--json]
 # replay a consumer's recorded questions through the served model (no writes)
 python scripts/replay_consumer.py --consumer C --stamps STAMP [--variants current,bare,custom --options <json>] [--engine ID]
 python scripts/replay_tool_choice.py [--stamps ...] [--engine ID]
-python scripts/replay_tool_approval.py [--stamps tool_approval/v6] [--engine ID]
+python scripts/bench_tool_safety.py [--limit N]   # evals/safety/answer_sheet.jsonl -> data/oracle_bench/tool_safety.db
 python scripts/replay_surface.py --consumer done
 
 # the tool_choice action-class label on the stored rows (read-only)
@@ -1036,7 +1039,7 @@ Under `backend/tests/` (`contract/` unless a path is given).
 
 **Per consumer**
 
-- `test_tool_approval_contract.py` - the call's own result never enters the frame.
+- `test_tool_approval_contract.py` - the safety frame carries no verdict; only the user's own permission answer (never an eval session's) labels a row.
 - `test_browser_next_contract.py` - page elements are the options.
 - `test_click_safety_contract.py` - browser actions pass the click-safety gate.
 - `test_call_closing_fence_contract.py` - `call_closing` is refused everywhere.

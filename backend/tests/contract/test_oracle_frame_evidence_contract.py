@@ -179,7 +179,6 @@ def test_presentation_frame_renders_summary_evidence():
     state = job_input("presentation", {
         "content_chars": "medium",
         "has_structure": True,
-        "card_already_rendered": False,
         "zone": "chat",
         "mode": "personal",
     })
@@ -189,8 +188,10 @@ def test_presentation_frame_renders_summary_evidence():
 
 
 def test_narration_frame_renders_beat_counts():
-    """The reference is speak_all iff beats; the beat counts decide it, so the
-    model must see them."""
+    """The model sees the plan's own numbers - but never `beats_admitted`:
+    the reference is speak_all exactly when it is > 0, so reading it measured
+    copying (2026-11-10, owner: fix the job setups). Even a stale frame that
+    still carries it must not render it."""
     state = job_input("narration", {
         "goal": "NARRATE: fix the login bug",
         "steps": 3,
@@ -199,7 +200,7 @@ def test_narration_frame_renders_beat_counts():
         "multi_segment": True,
     })
     assert "beats_authored: 2" in state.text
-    assert "beats_admitted: 2" in state.text
+    assert "beats_admitted" not in state.text
 
 
 # ── 3. the route job must render its consumers' evidence ──────────────────

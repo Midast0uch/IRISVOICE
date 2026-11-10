@@ -116,8 +116,9 @@ class TestMetaRowShapeBothPaths:
         )
 
     def test_card_turn_frame_is_truthful(self, monkeypatch):
-        """AC23.2: a card turn still yields a verdict, and the frame admits the
-        card exists."""
+        """AC23.2: a card turn still yields a verdict. 2026-11-10 (owner: fix
+        the job setups): the frame no longer carries `card_already_rendered` -
+        set before this observer on the card path, it IS the reference."""
         engine = _Engine()
         k = _kernel(engine, monkeypatch, card_emitted=True)
         seen: dict = {}
@@ -130,8 +131,8 @@ class TestMetaRowShapeBothPaths:
         engine.decide = _capture
 
         assert k._engine_gate_surface("a short reply") is not None
-        assert seen["card_already_rendered"] is True, (
-            "the frame hardcoded card_already_rendered=False on a card turn"
+        assert "card_already_rendered" not in seen, (
+            "the frame carries the reference (the card the turn rendered)"
         )
 
 
@@ -159,6 +160,5 @@ class TestGateLayerOnly:
         assert "content" not in seen
         # gate-layer signals only
         assert set(seen) <= {
-            "content_chars", "has_structure", "card_already_rendered",
-            "zone", "mode",
+            "content_chars", "has_structure", "zone", "mode",
         }, seen.keys()

@@ -480,10 +480,18 @@ def main() -> int:
     ap.add_argument("--frame", default="live", choices=["live", "trim", "trim2"],
                     help="the frame variant: live, trim (drop the step_facts and "
                          "the last_result) or trim2 (keep a short head of each)")
+    ap.add_argument("--drop-fields", default="",
+                    help="comma list of frame keys to remove before asking (a field "
+                         "that carries the reference, e.g. narration beats_admitted)")
     args = ap.parse_args()
 
     stamps = {s.strip() for s in args.stamps.split(",") if s.strip()} or None
     rows = load_rows(args.consumer, args.limit, stamps, args.engine)
+    drop = [f.strip() for f in args.drop_fields.split(",") if f.strip()]
+    for r in rows:
+        if drop and isinstance(r.get("state"), dict):
+            for f in drop:
+                r["state"].pop(f, None)
     if args.since:
         rows = [r for r in rows if str(r.get("ts") or "") >= args.since]
     print(f"replayable distinct rows: {len(rows)}")

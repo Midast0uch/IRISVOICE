@@ -108,7 +108,7 @@ def _honest_with_acting(cid: str, grp: List[Dict[str, Any]]) -> Dict[str, Any]:
     clause (consumer_bar.ACTING_ENFORCED).
 
     Asymmetric consumers change behaviour in ONE direction only: needs_action
-    acts on 'no', tool_approval on 'no', review_verdict on 'veto'. The bar's
+    acts on 'no', tool_approval on 'yes' (skip the prompt), review_verdict on 'veto'. The bar's
     precision pools both directions, so the direction that changes nothing can
     carry it (measured 2026-10-19: needs_action aggregate 0.949, acting side
     0.706). The clause measures the side that acts."""
@@ -141,6 +141,12 @@ def scope_rows(rows: List[Dict[str, Any]], scopes: Dict[str, str]) -> List[Dict[
     return [r for r in rows
             if r["consumer_id"] not in scopes
             or r.get("criteria_version") == scopes[r["consumer_id"]]]
+
+
+# Ledgers of SIMULATED traffic, read beside the app store when present. Their
+# rows carry an owner-policy label and are kept out of IRIS's own memory
+# (scripts/bench_tool_safety.py writes the first: tool_approval/safety-v1).
+BENCH_LEDGERS = (_REPO / "data" / "oracle_bench" / "tool_safety.db",)
 
 
 _EVAL_RUN = re.compile(r"^(eval-.+)-[0-9a-f]{6}$")
@@ -369,6 +375,20 @@ def load_rows(
             rows.append(row)
     finally:
         c.close()
+    return rows, skipped
+
+
+def load_ledgers(db: str, backend_id: Optional[str] = None
+                 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    """load_rows over the app store AND every existing BENCH_LEDGERS file:
+    rows concatenated, skip counters summed."""
+    rows, skipped = load_rows(db, backend_id)
+    for extra in BENCH_LEDGERS:
+        if Path(extra).is_file() and Path(extra).resolve() != Path(db).resolve():
+            more, sk = load_rows(str(extra), backend_id)
+            rows += more
+            for k, v in sk.items():
+                skipped[k] = skipped.get(k, 0) + v
     return rows, skipped
 
 
@@ -729,7 +749,7 @@ def main() -> int:
         # for the model actually deployed (AC25.8).
         # REQ-2: the row filter matches the row's `engine` field, which holds
         # the MODEL id - not the decision identity.
-        rows, skipped = load_rows(str(db), config.get("engine_id"))
+        rows, skipped = load_ledgers(str(db), config.get("engine_id"))
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4

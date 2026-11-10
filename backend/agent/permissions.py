@@ -84,6 +84,7 @@ class ToolPermissionRequest:
     session_id: Optional[str] = None  # session this request belongs to (REQ-19 cache key)
     session_approved: bool = False  # True when auto-approved from the per-session cache
     standing_approved: bool = False  # True when auto-approved from the standing list
+    goal: str = ""  # the user's request this turn - the tool_approval safety frame
 
     def is_expired(self) -> bool:
         return time.time() > self.created_at + self.timeout_seconds
@@ -572,6 +573,16 @@ def get_permission_action(
 # ── Permission system ──────────────────────────────────────────────────────
 
 
+def _request_for(session_id: Optional[str]) -> str:
+    """The session's noted request (tool_approval_shadow), '' on any fault."""
+    try:
+        from backend.agent.tool_approval_shadow import request_for
+
+        return request_for(session_id)
+    except Exception:  # noqa: BLE001 - evidence is best-effort
+        return ""
+
+
 def _emit_permission_event(req: ToolPermissionRequest, label: str, evidence: str = "none",
                            **kw: Any) -> None:
     """Taxonomy FEEDBACK: the user's answer to a permission request (APPROVAL / DENIAL,
@@ -689,6 +700,7 @@ class ToolPermissionSystem:
                 timeout_seconds=timeout,
                 turn_id=turn_id,
                 session_id=session_id,
+                goal=_request_for(session_id),
             )
 
             self._pending[req.request_id] = req
@@ -779,6 +791,17 @@ class ToolPermissionSystem:
                 req, "APPROVAL" if approved else "DENIAL", evidence="user",
                 cost={"ms": int((time.time() - req.created_at) * 1000)},
             )
+            # tool_approval (safety, 2026-11-10): the user's answer labels the
+            # Oracle's shadow safety question on this call (lane, never blocks).
+            try:
+                from backend.agent.tool_approval_shadow import record_permission_answer
+
+                record_permission_answer(
+                    goal=req.goal, tool_name=req.tool_name, params=req.params,
+                    approved=bool(approved), session_id=req.session_id,
+                )
+            except Exception:  # noqa: BLE001 - a shadow never blocks an answer
+                logger.debug("[Permissions] tool_approval row skipped", exc_info=True)
 
             return req
 

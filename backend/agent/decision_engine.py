@@ -312,7 +312,11 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # caps calls_this_step and last_result at 300 and description/offered at
     # 150 so goal 200 + 300 + 300 + 150 + args 400 + 150 + labels fit with
     # args intact (the cap trims from the END; offered names go first).
-    OracleJob("approve", "is this the right tool for this goal?",
+    # 2026-11-10 (owner): the question is now SAFETY - "may this call run
+    # without asking the user?" (tool_approval_shadow). Its frame carries
+    # goal, proposed_tool, tool_description and args; the other fields stay
+    # declared and are simply absent (the renderer skips absent keys).
+    OracleJob("approve", "may this call run without asking the user?",
               ("goal", "calls_this_step", "last_result", "proposed_tool",
                "tool_description", "args", "offered_tools"), 384),
     OracleJob("guard", "is this action safe to take without asking?",
@@ -382,10 +386,12 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # consumers' frames carry; the renderer skips absent keys, so each consumer
     # renders what it has (a frame holding only goal renders as before).
     # Budget 96 -> 128: narration renders goal[:300] plus four short fields.
+    # 2026-11-10: `card_already_rendered` (presentation) and `beats_admitted`
+    # (narration) REMOVED - each IS its consumer's reference, so reading it
+    # measured copying (oracle.md 8.2).
     OracleJob("shape", "how should this answer be delivered?",
-              ("goal", "content_chars", "has_structure",
-               "card_already_rendered", "zone", "mode",
-               "steps", "beats_authored", "beats_admitted", "multi_segment"),
+              ("goal", "content_chars", "has_structure", "zone", "mode",
+               "steps", "beats_authored", "multi_segment"),
               128),
     OracleJob("classify_event", "which event family/type is this?",
               ("goal",), 64),
@@ -581,9 +587,13 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     # 238 replayed frames - no gain, because the INSTRUCTION carries the
     # question. So the lines stay as they are (the minimality ladder: no
     # change without a measured gain).
+    # 2026-11-10 (owner): the SAFETY question replaces "will this call
+    # succeed" (a reliability question a per-tool failure count beat). The
+    # label is outside: the user's answer to a permission prompt, or the
+    # owner-reviewed answer sheet (evals/safety).
     "tool_approval": ConsumerDeclaration("noul", {
-        "true": "This tool is the right next tool for the goal, given the last result",
-        "false": "This tool is not the right next tool for the goal",
+        "true": "Safe to run now: the request asks for this, or it stays inside the user's work",
+        "false": "Ask the user first: it can destroy data, reach outside this computer, or change the system",
     }),
     # NOTE (declared from the CODE, not the spec's prose): click_safety's real
     # label set is ("safe", "unsafe", "unsure") - three options, so it is a
@@ -1277,7 +1287,10 @@ _ENFORCEMENT_IDENTITY: Optional[str] = None
 # below said "deciding=['route_v2@0.6148']" while the kernel only calls
 # eng.shadow() for it. Guard: contract/test_no_decision_site_contract.py pins
 # this set against the source (it fails when a site is added or removed).
-NO_DECISION_SITE = frozenset({"route_v2", "narration", "review_verdict", "depth_route"})
+NO_DECISION_SITE = frozenset({"route_v2", "narration", "review_verdict", "depth_route",
+                              # 2026-11-10: the safety question is shadow only
+                              # (its old reliability guard was removed)
+                              "tool_approval"})
 
 
 def _log_enforcement_once() -> None:
@@ -1694,10 +1707,6 @@ TIER_SAMPLABLE: frozenset = frozenset({
 # incumbent's own refuse junction.
 TIER_REFUSE_ONLY: frozenset = frozenset({
     "click_safety", "review_verdict",
-    # tool_approval (2026-10-18): the pre-call guard may only REJECT a call
-    # the model was allowed to make - it never forces one, and its correction
-    # budget (_MAX_GUARD_CORRECTIONS) bounds it so it can never deadlock.
-    "tool_approval",
 })
 TIER_JOIN_ONLY: frozenset = frozenset({
     "done", "sufficient", "depth_met",

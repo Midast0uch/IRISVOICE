@@ -1,19 +1,24 @@
-"""tool_approval — the binary outcome-referenced approval consumer (2026-10-10).
+"""tool_approval - the SAFETY question for one tool call (2026-11-10, owner).
 
-Build spec: pin_1fb3ce63bb3b. The consumer asks "is this tool the right next
-tool for this goal, given this result?" (a noul) and is labelled by the call's
-OUTCOME (brain_bool = success), so the reference is GROUND TRUTH, not parity.
+"May this call run without asking the user first?" - shadow only. The label is
+OUTSIDE the model and outside the permission rule it is measured against: the
+user's own answer to a permission prompt, or the owner-reviewed answer sheet
+(evals/safety). Replaces the v1-v6 reliability question ("will this call
+succeed?", labelled by the call's outcome), which a per-tool failure count
+beat and which never measured safety; its post-hoc consult on every tool call
+and its pre-call guard are removed.
 
-These guards pin the contract. Each FAILS on the pre-change code (no `approve`
-job, no `tool_approval` declaration, no module): the import/KeyError is the
-proof the guard is real.
+Each guard FAILS on the pre-change code: the old module has no safety_frame,
+no record_permission_answer, and the permission answer wrote no row.
 """
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 
 from backend.agent import decision_engine as de
 from backend.agent import tool_approval_shadow as ta
+
+_ROOT = Path(__file__).resolve().parents[3]
 
 
 class _StubNoul:
@@ -27,203 +32,140 @@ class _StubNoul:
         return self.probability >= cut
 
 
-# ── the job ────────────────────────────────────────────────────────────────
+class _Lane:
+    def __init__(self, sink: dict) -> None:
+        self.sink = sink
+
+    def submit(self, name, job):
+        self.sink["name"] = name
+        self.sink["job"] = job
+        return True
 
 
-def test_approve_job_declares_the_pre_call_fields():
-    """The `approve` job carries the PRE-CALL evidence only: goal, last_result,
-    proposed_tool, tool_description, the call's ARGUMENTS and the offered tool
-    list (the v2 additions — the evidence v1 lacked). The call's own result is
-    NOT a field — it is the label, and a row whose input carries its answer
-    measures nothing."""
-    job = de.ORACLE_JOBS["approve"]
-    # STALE-BY-SPEC update (2026-10-11, v3): `calls_this_step` added (the
-    # step's own calls so far); still no post-call field.
-    assert job.fields == (
-        "goal", "calls_this_step", "last_result", "proposed_tool",
-        "tool_description", "args", "offered_tools")
-    assert job.budget_ids <= 384
+# ── the job and the declaration ────────────────────────────────────────────
+
+
+def test_tool_approval_asks_the_safety_question():
     assert de.CONSUMER_JOBS["tool_approval"] == "approve"
-    assert de.oracle_job("tool_approval").name == "approve"
-
-
-def test_approve_job_renders_every_declared_field():
-    """job_input renders all six declared fields (the frame/job mismatch rule:
-    an undeclared key is silently dropped)."""
-    state = de.job_input("tool_approval", {
-        "goal": "fix the parser",
-        "last_result": "read_file: 12 lines",
-        "proposed_tool": "edit_file",
-        "tool_description": "Edit a file's contents",
-        "args": {"path": "parser.py", "old": "def run("},
-        "offered_tools": ["read_file", "edit_file", "run_command"],
-    })
-    assert state.job == "approve"
-    assert state.fields == de.ORACLE_JOBS["approve"].fields
-    for needle in ("fix the parser", "read_file: 12 lines", "edit_file",
-                   "Edit a file's contents", "parser.py", "run_command"):
-        assert needle in state.text, f"declared field dropped: {needle}"
-
-
-def test_approve_job_declares_no_reference_field():
-    for f in de.ORACLE_JOBS["approve"].fields:
-        assert not f.startswith("brain_") and f != "incumbent_route"
-
-
-# ── the declaration ────────────────────────────────────────────────────────
-
-
-def test_tool_approval_is_a_declared_noul():
+    assert "without asking the user" in de.ORACLE_JOBS["approve"].question
+    assert "without asking the user first" in ta.TOOL_APPROVAL_INSTRUCTION
+    assert ta.CRITERIA_VERSION == "tool_approval/safety-v1"
     assert de.declared_type("tool_approval") == "noul"
-    assert de.is_declared("tool_approval")
-    crit = de.declared_criteria("tool_approval")
-    assert isinstance(crit, dict) and "true" in crit and "false" in crit
 
 
 def test_tool_approval_is_a_binary_consumer():
-    """The report recomputes a binary consumer's confidence from `probability`;
-    that set is read from the registered specs' ("yes","no") labels."""
     from backend.agent.oracle_calibration import binary_consumers
 
     assert "tool_approval" in binary_consumers()
 
 
+def test_the_acting_answer_is_safe_and_there_is_no_site():
+    """"yes" would skip the user's prompt - the side the bar must hold. No code
+    acts on it yet (shadow), so it is declared as having no decision site."""
+    from backend.agent.consumer_bar import ACTING_ANSWER, ACTING_ENFORCED
+
+    assert ACTING_ANSWER["tool_approval"] == "yes"
+    assert "tool_approval" in ACTING_ENFORCED
+    assert "tool_approval" in de.NO_DECISION_SITE
+
+
+# ── the frame ──────────────────────────────────────────────────────────────
+
+
+def test_the_frame_carries_no_verdict():
+    """The frame holds what the call does and what was asked - never the
+    permission tier, the pattern verdict or the answer."""
+    f = ta.safety_frame("clean the build folder", "run_command",
+                        {"command": "rm -rf build/"})
+    assert set(f) == {"goal", "proposed_tool", "tool_description", "args"}
+    assert "rm -rf build/" in f["args"]
+    text = de.job_input("tool_approval", f).text
+    assert "clean the build folder" in text and "rm -rf build/" in text
+    for leak in ("destructive", "side_effect", "approved", "denied"):
+        assert leak not in str(f).lower()
+
+
 # ── the row ────────────────────────────────────────────────────────────────
 
 
-def test_row_carries_the_outcome_as_brain_bool():
-    """The reference is the call's OUTCOME. `chosen` is a BOOL (the report's
-    decision_label compares bool(chosen) == bool(brain_bool); a string "no"
-    would read as True)."""
-    row = ta.shadow_row(_StubNoul(0.9), brain_bool=True)
-    assert row["consumer_id"] == "tool_approval"
-    assert row["job"] == "approve"
-    assert row["chosen"] is True
-    assert row["brain_bool"] is True
-    assert row["confidence"] == 0.9
-    assert row["probability"] == 0.9
-    assert row["shadow"] is True
-    # STALE-BY-SPEC update (2026-10-17): v6 - the label is now the CALL-level
-    # outcome (a run_command that RAN is a successful call; its exit code is
-    # the work's answer), fixing the pytest-iteration label noise that held
-    # the consumer below chance. Question and frame unchanged from v5.
-    assert row["criteria_version"] == "tool_approval/v6"
-
-    # A sure "no": confidence is in the CHOSEN answer, not P(true).
-    no = ta.shadow_row(_StubNoul(0.05), brain_bool=False)
-    assert no["chosen"] is False
-    assert no["confidence"] == 0.95
-    assert no["probability"] == 0.05
+def test_row_carries_the_outside_label():
+    f = ta.safety_frame("delete notes.txt", "delete_file", {"path": "notes.txt"})
+    row = ta.shadow_row(_StubNoul(0.2), True, label_source=ta.LABEL_USER, state=f)
+    assert row["chosen"] is False and row["confidence"] == 0.8
+    assert row["outside_label"] is True and row["brain_bool"] is True
+    assert row["label_source"] == "user"
+    assert row["criteria_version"] == "tool_approval/safety-v1"
+    assert row["state"] == f and row["input_key"]
 
 
 def test_no_row_without_a_noul():
-    """A missing engine must never fabricate a shadow row."""
-    assert ta.shadow_row(None, brain_bool=True) is None
+    assert ta.shadow_row(None, True, label_source=ta.LABEL_USER, state={}) is None
 
 
-# ── the consult ────────────────────────────────────────────────────────────
+# ── the live label: the user's answer ──────────────────────────────────────
 
 
-def test_consult_runs_on_the_oracle_shadow_lane(monkeypatch):
-    """The consult is OFF the reply path: it submits to lane("oracle_shadow")
-    and the row lands from there, never on the caller."""
+def test_an_answer_is_scored_on_the_lane(monkeypatch):
     import backend.utils.durability_queue as dq
 
-    submitted = {}
-
-    class _FakeLane:
-        def submit(self, name, job):
-            submitted["name"] = name
-            submitted["job"] = job
-            return True
-
-    monkeypatch.setattr(dq, "lane", lambda _n: _FakeLane())
-
+    sub = {}
+    monkeypatch.setattr(dq, "lane", lambda _n: _Lane(sub))
     rows = []
     ta.set_row_sink(rows.append)
     try:
-        ta.record_tool_approval(
-            goal="fix the parser", last_result="read_file: 12 lines",
-            proposed_tool="edit_file", tool_description="Edit a file",
-            outcome_success=True,
-        )
+        ta.record_permission_answer(goal="tidy up", tool_name="run_command",
+                                    params={"command": "rm old.log"},
+                                    approved=False, session_id="ws-1",
+                                    engine=type("E", (), {"noul": lambda *a, **k: _StubNoul(0.9)})())
+        assert sub["name"] == "tool_approval:run_command"
+        assert rows == [], "the caller must not wait for the score"
+        sub["job"]()
     finally:
         ta.set_row_sink(None)
-
-    assert submitted.get("name") == "tool_approval:edit_file"
-    assert callable(submitted.get("job"))
-    assert rows == [], "the caller must not wait for the score"
+    assert rows and rows[0]["outside_label"] is False and rows[0]["chosen"] is True
 
 
-def test_record_passes_auto_engine_by_default(monkeypatch):
-    """`engine=None` means NO ENGINE (fail-safe); the default must be
-    AUTO_ENGINE so a live consult adopts the process singleton. Measured live
-    2026-10-10: a None default silently produced ZERO rows for a whole coding
-    group while tool_choice (which resolves the engine itself) grew normally."""
+def test_an_eval_session_answer_is_not_a_label(monkeypatch):
+    """The eval runner grants every prompt; that is not the user's judgment."""
     import backend.utils.durability_queue as dq
 
-    captured = {}
-
-    class _FakeLane:
-        def submit(self, name, job):
-            captured["job"] = job
-            return True
-
-    monkeypatch.setattr(dq, "lane", lambda _n: _FakeLane())
-
-    def _fake_score(frame, *, engine=None):
-        captured["engine"] = engine
-        return _StubNoul(0.8)
-
-    monkeypatch.setattr(ta, "score_tool_approval", _fake_score)
-    ta.set_row_sink(lambda r: None)
-    try:
-        ta.record_tool_approval(
-            goal="g", last_result=None, proposed_tool="edit_file",
-            outcome_success=True,
-        )
-        captured["job"]()
-    finally:
-        ta.set_row_sink(None)
-    assert captured["engine"] is ta.AUTO_ENGINE
+    sub = {}
+    monkeypatch.setattr(dq, "lane", lambda _n: _Lane(sub))
+    before = ta.SKIPPED["eval_session"]
+    ta.record_permission_answer(goal="x", tool_name="run_command", params={},
+                                approved=True, session_id="eval-c13-abc123")
+    assert sub == {} and ta.SKIPPED["eval_session"] == before + 1
 
 
-def test_pre_call_frame_never_carries_the_call_result(monkeypatch):
-    """The frame bound at submit time holds the PRE-CALL evidence only — the
-    call's own result would leak the answer the row is measuring."""
-    import backend.utils.durability_queue as dq
-
-    captured = {}
-
-    class _FakeLane:
-        def submit(self, name, job):
-            captured["job"] = job
-            return True
-
-    monkeypatch.setattr(dq, "lane", lambda _n: _FakeLane())
+def test_the_permission_answer_writes_the_row_with_the_request(monkeypatch):
+    """note_request at turn entry -> the prompt carries the request -> the
+    user's answer reaches record_permission_answer with it."""
+    from backend.agent import permissions as perm
 
     seen = {}
+    monkeypatch.setattr(ta, "record_permission_answer", lambda **kw: seen.update(kw))
 
-    def _fake_score(frame, *, engine=None):
-        seen.update(frame)
-        return _StubNoul(0.8)
+    class _Bus:
+        def emit(self, *a, **k):
+            pass
 
-    monkeypatch.setattr(ta, "score_tool_approval", _fake_score)
-    rows = []
-    ta.set_row_sink(rows.append)
-    try:
-        ta.record_tool_approval(
-            goal="fix the parser", last_result="read_file: 12 lines",
-            proposed_tool="edit_file", tool_description="Edit a file",
-            outcome_success=True,
-        )
-        captured["job"]()  # run the lane job
-    finally:
-        ta.set_row_sink(None)
+    ps = perm.ToolPermissionSystem(event_bus=_Bus())
+    ta.note_request("ws-7", "remove the temp folder")
+    req = ps.request_permission(
+        tool_name="delete_file", tier=perm.PermissionTier.DESTRUCTIVE,
+        params={"path": "tmp/"}, session_id="ws-7", auto_approve=False)
+    assert req.status == "pending" and req.goal == "remove the temp folder"
+    ps.respond_to_permission(req.request_id, approved=False)
+    assert seen["goal"] == "remove the temp folder"
+    assert seen["tool_name"] == "delete_file" and seen["approved"] is False
+    assert seen["session_id"] == "ws-7" and seen["params"] == {"path": "tmp/"}
 
-    # STALE-BY-SPEC update (2026-10-11, v3): `calls_this_step` is PRE-CALL
-    # evidence (the calls before this one); the call's own result stays out.
-    assert set(seen) == {"goal", "calls_this_step", "last_result", "proposed_tool",
-                         "tool_description", "args", "offered_tools"}
-    assert "result" not in seen and "outcome" not in seen
-    assert rows and rows[0]["brain_bool"] is True
+
+def test_the_reliability_consult_is_gone():
+    """The v1-v6 consult ran a d1 call on every tool result for a job nobody
+    wanted; its guard decided nothing (never enforced)."""
+    assert not hasattr(ta, "record_tool_approval")
+    assert not hasattr(ta, "pre_call_guard")
+    for rel in ("backend/agent/agent_kernel.py", "backend/agent/node_executor.py"):
+        src = (_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        assert "record_tool_approval" not in src and "pre_call_guard" not in src, rel

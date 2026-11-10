@@ -2041,8 +2041,8 @@ class AgentKernel:
             from backend.agent import event_oracle as _eo_rows
 
             _eo_rows.set_row_sink(_shadow_sink)
-            # tool_approval (2026-10-10): the binary outcome-referenced approval
-            # consumer. Same single-writer sink as the other shadow consumers.
+            # tool_approval (safety, 2026-11-10): rows from the user's answers
+            # to permission prompts. Same single-writer sink.
             from backend.agent import tool_approval_shadow as _ta_rows
 
             _ta_rows.set_row_sink(_shadow_sink)
@@ -4926,16 +4926,6 @@ class AgentKernel:
                                 break
                     except Exception:  # noqa: BLE001
                         _lr = ""
-                    # the offered tools' descriptions, rendered into the option
-                    # lines (measured: 5/5 with, 5/6 without). Hoisted so the
-                    # tool_approval consult below can carry the proposed tool's
-                    # own description.
-                    _crit = {
-                        (t.get("function") or {}).get("name"):
-                        ((t.get("function") or {}).get("description") or "")
-                        for t in (_tools or [])
-                        if (t.get("function") or {}).get("name")
-                    }
                     # tc-frame-v5: this turn's calls BEFORE this one, in order
                     # (names + targets; the ReAct transcript holds no ok flag).
                     _hist = ""
@@ -5014,34 +5004,6 @@ class AgentKernel:
                             ),
                         ).result(timeout=60)
                 _content = self._format_tool_result(_raw)
-                # tool_approval (2026-10-10): the call's OUTCOME is now known.
-                # Submit the post-hoc approval consult with the PRE-CALL frame
-                # (goal + last_result + proposed tool + its description) and the
-                # outcome as the label. Off the reply path; never blocks.
-                try:
-                    from backend.agent import tool_approval_shadow as _ta
-
-                    _ta.record_tool_approval(
-                        goal=text,
-                        last_result=_lr or None,
-                        proposed_tool=_name,
-                        tool_description=(_crit or {}).get(_name) or "",
-                        # v2: the arguments the Brain executed and the menu it
-                        # was offered â€” the evidence the v1 frame lacked.
-                        args=_params if isinstance(_params, dict) else None,
-                        offered_tools=[(t.get("function") or {}).get("name")
-                                       for t in (_tools or [])] or None,
-                        outcome_success=bool(
-                            isinstance(_raw, dict) and _raw.get("success")
-                        ),
-                        calls_this_step=_hist or None,
-                        session_id=self.conversation_id or "voice",
-                        conversation_id=self.conversation_id or "",
-                    )
-                except Exception as _ta_err:  # noqa: BLE001
-                    logger.debug(
-                        "[RespondDirect] tool_approval row failed: %r", _ta_err
-                    )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": _tc_id,
@@ -8762,11 +8724,14 @@ class AgentKernel:
             eng = get_decision_engine()
             if eng is None:
                 return
+            # v3 (2026-11-10): `beats_admitted` is gone - it IS the reference
+            # (speak_all exactly when it is > 0), so a question that read it
+            # passed every clause by copying. Replay without it on 547 v2
+            # rows: accuracy 0.66 vs 0.83 for the majority rule, oof AUROC 0.53.
             frame = {
                 "goal": f"NARRATE: {(task or '')[:300]}",
                 "steps": int(n_steps),
                 "beats_authored": len(authored),
-                "beats_admitted": len(beats),
                 "multi_segment": n_steps >= 2,
             }
             # engine.shadow(): scored on the oracle_shadow lane, the row goes to
@@ -8780,10 +8745,9 @@ class AgentKernel:
                 sink=self._shadow_row_sink,
                 reference={
                     "brain_choice": "speak_all" if beats else "stay_silent",
-                    # FRAME SHAPE CHANGE (2026-10-10): the shape job now renders
-                    # steps/beats_authored/beats_admitted - the numbers that
-                    # determine the reference. Before, d1 saw only the goal.
-                    "criteria_version": "narration/shape-v2",
+                    # FRAME SHAPE CHANGE (2026-10-10): the shape job renders
+                    # steps/beats_authored. v3: beats_admitted removed (above).
+                    "criteria_version": "narration/shape-v3",
                 },
             )
         except Exception as _e:  # noqa: BLE001 â€” a shadow never blocks a turn
@@ -9720,6 +9684,14 @@ class AgentKernel:
         # (this WebSocket) is what tool calls must run under - see
         # _respond_direct. The DER path already receives it as a parameter.
         self._turn_session_id = session_id
+        # tool_approval (safety, 2026-11-10): the permission site knows only the
+        # session, so the request rides here for the safety frame.
+        try:
+            from backend.agent.tool_approval_shadow import note_request
+
+            note_request(session_id, text)
+        except Exception:  # noqa: BLE001 - bookkeeping never blocks a turn
+            logger.debug("[AgentKernel] tool_approval request note skipped")
         # D3 (2026-10-31): the turn's monotonic start. The reply exit accepts a
         # memory-deletion claim only against a `forget` tool event after this
         # stamp, so a previous turn's delete can never justify this turn's claim.
@@ -17384,7 +17356,12 @@ Respond with a JSON object:
         # so a turn WITH a card already emitted must STILL yield an observer
         # verdict â€” otherwise "engine wanted plain, live produced card" is
         # never measured. The frame admits the card exists (truthful).
-        already = bool(getattr(self, "_last_render_emitted", False))
+        # v3 (2026-11-10): `card_already_rendered` is gone - on the card path
+        # it is set before this observer runs, so it IS the reference (the
+        # copy the bar's trivial rule caught). What remains is gate-layer only
+        # (AC23.6: the reply text never enters the frame) and takes about 11
+        # distinct values in total, so this consumer cannot reach the 100
+        # distinct-row bar as specified.
         frame = {
             "content_chars": (
                 "small" if n < 300 else "medium" if n < 1500 else "large"
@@ -17392,7 +17369,6 @@ Respond with a JSON object:
             "has_structure": any(
                 m in response for m in ("```", "\n|", "\n- ", "\n# ", "\n1. ")
             ),
-            "card_already_rendered": already,
             "zone": self._pacman_zone_for_turn(),
             "mode": getattr(self, "_launcher_mode", "personal"),
         }
@@ -17440,7 +17416,8 @@ Respond with a JSON object:
             # before this, presentation rendered an EMPTY state (the job
             # declared only `goal`, which this frame never carried). Rows
             # before/after the change are different frames; never blend them.
-            "criteria_version": "presentation/shape-v2",
+            # v3 (2026-11-10): card_already_rendered out (it is the reference).
+            "criteria_version": "presentation/shape-v3",
             # The report's honest dedupe key (docs/architecture/oracle.md 6.1
             # rule 1): a row counts once per distinct INPUT. Without it the
             # ledger key (consumer, engine, confidence, chosen, reference,
@@ -18758,14 +18735,6 @@ Respond with a JSON object:
                 _lr = f"{_p.get('description') or ''}: {_p.get('result') or ''}"
         except Exception:  # noqa: BLE001 â€” a shadow never needs context
             _lr = ""
-        _crit = {}
-        try:
-            for t in tools or []:
-                _fn = t.get("function") or {}
-                if _fn.get("name"):
-                    _crit[_fn["name"]] = _fn.get("description") or ""
-        except Exception:  # noqa: BLE001 â€” a shadow never needs context
-            _crit = {}
         # tc-frame-v10 (2026-11-04): the option lines are the BARE tool
         # names. MEASURED by replay on the active engine (1200 recorded
         # tc-frame-v8 states, the same rows for both variants): the tools'
@@ -18917,25 +18886,6 @@ Respond with a JSON object:
                 )
             except Exception as _tc_err:  # noqa: BLE001 â€” a shadow never blocks
                 logger.debug("[DER] tool_choice row failed: %r", _tc_err)
-            # tool_approval (2026-10-10): post-hoc approval consult with the
-            # PRE-CALL frame + the outcome label (v2 args/menu, v3 history).
-            try:
-                from backend.agent import tool_approval_shadow as _ta
-
-                _ta.record_tool_approval(
-                    goal=goal, last_result=_last or None,
-                    proposed_tool=name, tool_description=_crit.get(name) or "",
-                    args=params if isinstance(params, dict) else None,
-                    offered_tools=_offered or None,
-                    outcome_success=bool(
-                        approval_ok if approval_ok is not None else ok
-                    ),
-                    session_id=self.conversation_id or "voice",
-                    conversation_id=self.conversation_id or "",
-                    calls_this_step=_hist or None,
-                )
-            except Exception as _ta_err:  # noqa: BLE001 â€” a shadow never blocks
-                logger.debug("[DER] tool_approval row failed: %r", _ta_err)
 
         # Eval C (owner 2026-10-02): the Brain helps a struggling tool model -
         # only when they are different models (a model cannot help itself).
