@@ -12,8 +12,9 @@ Needs the d1 llama-server on :8082 (the backend boots it). Read-only on the stor
 
 Since 2026-11-01 the live backend is d1-2B and answers through the native
 `/v1/systemone` API. `--engine` selects the SOURCE cohort of recorded rows
-(default: the retired d1-3B letter era). Replaying that cohort through the new
-model is how a model swap is measured before any live traffic.
+(default: the rows of the model serving today). Replaying that cohort through a
+candidate model is how a model swap is measured before any live traffic
+(docs/architecture/oracle.md, "Replacing the decision model").
 
 Usage:
     python scripts/replay_tool_choice.py [--variants descriptions,hints] [--stamps tc-frame-v8] [--limit N] [--engine ID]
@@ -40,7 +41,7 @@ from backend.agent.decision_engine import OracleState  # noqa: E402
 from backend.agent.tool_registry import oracle_hint, resolve_tool  # noqa: E402
 from backend.memory.db import open_store_read_only  # noqa: E402
 
-SOURCE_ENGINE = "d1-3b-ad-q4_k_m+letters"   # the recorded cohort to replay
+SOURCE_ENGINE = "d1-2b-q4_k_m+systemone"   # the recorded cohort to replay
 CONTROL = {"DELEGATE", "NONE"}
 
 

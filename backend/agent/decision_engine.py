@@ -1263,6 +1263,14 @@ def _enforcement(consumer_id: str) -> Tuple[Optional[float], str]:
 _ENFORCEMENT_LOGGED = False
 _ENFORCEMENT_IDENTITY: Optional[str] = None
 
+# Consumers in CONSUMERS that only ever write SHADOW rows: no call site reads
+# decides() / oracle_acts() / enforced_consumers() for them, so an earned bar
+# changes nothing. Found 2026-11-09: route_v2 earned the bar and the line
+# below said "deciding=['route_v2@0.6148']" while the kernel only calls
+# eng.shadow() for it. Guard: contract/test_no_decision_site_contract.py pins
+# this set against the source (it fails when a site is added or removed).
+NO_DECISION_SITE = frozenset({"route_v2", "narration", "review_verdict", "depth_route"})
+
 
 def _log_enforcement_once() -> None:
     """One INFO line per process: who decides, and why each allow-listed
@@ -1288,7 +1296,9 @@ def _log_enforcement_once() -> None:
     deciding, refused = [], []
     for c in allowed:
         t, why = _enforcement(c)
-        if t is not None:
+        if t is not None and c in NO_DECISION_SITE:
+            refused.append(f"{c} (earned @{t}, but no decision site: shadow only)")
+        elif t is not None:
             deciding.append(f"{c}@{t}")
         else:
             refused.append(f"{c} ({why})")

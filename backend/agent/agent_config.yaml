@@ -21,7 +21,7 @@ models:
   # Select actual model names in the IRIS Settings → Configure → Models card.
   - id: "oracle"
     # Wave 3 (specs/phonon2-d1-model-swap T3.1/T3.2): the resident decision
-    # backend is d1-3B on the shared llama-server (backend/agent/
+    # backend is the d1 build on the shared llama-server (backend/agent/
     # decision_backend_d1.py; borrow-only — the server must already host the
     # d1 GGUF, the same server vision uses). The GLiNER ONNX directory below
     # is RETIRED from construction (its code + history stay until the T5.3
@@ -63,7 +63,7 @@ models:
       backend_thresholds:
         lfm2-350m-extract: 0.85           # retiring backend (REQ-21); historical rows only
         gliner25-decide-onnx-int8: 0.40   # retired backend (Wave 3); historical rows only
-        # d1-3b-ad-q4_k_m (Wave 3): the ACTIVE identity has NO entry here.
+        # The ACTIVE d1 identity has NO entry here.
         # Its curves live in benchmarks/oracle_calibration.json (written by
         # fit_oracle_calibration.py); threshold_for falls back to that file
         # and returns the fitted threshold on the RAW confidence scale. No
