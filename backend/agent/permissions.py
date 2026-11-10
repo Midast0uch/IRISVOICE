@@ -375,6 +375,119 @@ _DESTRUCTIVE_COMMAND_FORMS: List[str] = [
     "shred",
 ]
 
+# 2026-11-10 (owner): the policy's other ask-first classes (evals/safety/
+# POLICY.md rules 7-10). With auto-approve on, only this tier prompts, and the
+# delete forms above let 150 of the answer sheet's 179 unsafe calls run
+# unasked: secrets read, packages installed, code pushed, the system changed.
+# The rule cannot see the request, so a call the user DID ask for prompts too
+# (one click) - the cheap side of the trade. Regexes on the lowercased shell
+# command text; word-boundaried like the delete forms.
+_ASK_FIRST_COMMAND_FORMS: List[str] = [
+    # reaching outside this computer (rule 7)
+    r"git\s+push", r"\bgh\s+(pr|release|repo|issue|gist)\s+(create|merge|delete|edit|close|comment)",
+    r"\b(npm|yarn|pnpm)\s+publish", r"\btwine\s+upload", r"\bdocker\s+push",
+    r"\b(scp|sftp|ftp|rsync)\b", r"\bssh\s+\S+@", r"\bsend-mailmessage\b", r"\bsendmail\b",
+    r"\bcurl\b[^|;&\n]*\s(-x\s*(post|put|patch|delete)|-d\b|--data|-f\b|--form|-t\b|--upload-file)",
+    r"\b(invoke-webrequest|iwr|invoke-restmethod|irm)\b[^|;&\n]*-(method\s+(post|put|patch|delete)|body|infile)",
+    r"(^|\s)\\\\[a-z0-9._-]+\\",  # a UNC share
+    r"\baws\s+s3\b", r"\bgsutil\s+(cp|rsync|mv|rm)\b", r"\baz\s+storage\b",
+    # running code from the internet (rule 10)
+    r"(?<!\|)\|(?!\|)\s*(sh|bash|zsh|iex|invoke-expression|python3?|pwsh|powershell)\b",  # a pipe, not "||"
+    r"\binvoke-expression\b", r"\biex\s*\(",
+    r"exec\([^\n]*(urlopen|requests\.get|urllib)", r"downloads[\\/]+[^\s'\"]+\.(exe|msi|bat|cmd|ps1|sh)\b",
+    r"-outfile\s+\S+\.(exe|msi|bat|cmd|ps1)\b[^\n]*[;&]",
+    # changing the system (rule 8)
+    r"\bsudo\b", r"\brunas\b", r"-verb\s+runas", r"\bnet\s+(user|localgroup|share|stop|start)\b", r"\bnetsh\b",
+    r"\breg(\.exe)?\s+(add|delete|import|load)\b", r"\b(set|new|remove)-itemproperty\b[^\n]*\bhk(lm|cu|cr|u)\b",
+    r"\bschtasks\b", r"\bsc(\.exe)?\s+(config|create|delete|stop|start)\b",
+    r"\b(stop|start|restart|set|new|remove)-service\b", r"\bsystemctl\b", r"\bservice\s+\S+\s+(start|stop|restart)",
+    r"\bsetx\b", r"setenvironmentvariable", r"\bbcdedit\b", r"\bdiskpart\b", r"\bwevtutil\s+cl\b",
+    r"\bset-executionpolicy\b", r"\b(add|set|remove)-mppreference\b", r"\bicacls\b", r"\btakeown\b",
+    r"\bchmod\s+-r\b", r"\bchown\b", r"\bshutdown\b", r"\b(restart|stop)-computer\b",
+    r"\btaskkill\b", r"\bstop-process\b", r"\bkill\s+-9\b", r"\b(pkill|killall)\b",
+    r"\bgit\s+config\s+--(global|system)\b", r"\bnpm\s+config\s+set\b",
+    # installing or removing software (rule 8)
+    r"\b(pip3?|python3?\s+-m\s+pip|uv\s+pip)\s+(install|uninstall)\b",
+    r"\b(npm|pnpm)\s+(install|i|uninstall|remove|rm|add|ci|update|audit\s+fix)\b", r"\byarn\s+(add|remove|global|install)\b",
+    r"\b(cargo|go|gem|dotnet\s+tool)\s+install\b", r"\b(choco|winget|scoop|brew|apt|apt-get|dnf|yum|pacman|snap)\s+(install|uninstall|remove|purge|upgrade|-s)\b",
+    r"\bmake\s+install\b",
+    # destroying history or work (rule 6) beyond the delete forms
+    r"\bgit\s+reset\s+--hard\b", r"\bgit\s+clean\s+-[a-z]*f", r"\bgit\s+stash\s+(drop|clear)\b",
+    r"\bgit\s+checkout\s+--\s", r"\bmanage\.py\s+flush\b", r"\bdropdb\b",
+    r"\bformat-volume\b", r"\bclear-disk\b", r"\bmkfs\b", r"\bdocker\s+(system|volume|image)\s+prune\b",
+    r"\brobocopy\b[^\n]*/mir\b", r"\btype\s+nul\s*>(?!>)", r"\becho\s+(\"\"|'')?\s*>(?!>)",
+    r"\bsed\s+-i\s+['\"]?s/\.\*//",
+    # printing secrets (rule 9)
+    r"\$env:\w*(token|key|secret|password|passwd|pwd|credential)", r"\$\{?\w*(token|secret|password|passwd|api_key|apikey)\w*\}?",
+    r"%\w*(token|key|secret|password|passwd|pwd|credential)\w*%",
+    r"\bprintenv\b", r"(^|[;&|]\s*)(env|set)\s*($|[;&|])", r"\bget-childitem\s+env:", r"\bcmdkey\s+/list\b",
+    r"\bsecurity\s+find-(generic|internet)-password\b",
+]
+_ASK_FIRST_COMMAND_RES = [re.compile(p) for p in _ASK_FIRST_COMMAND_FORMS]
+
+# Secret locations (rule 9), matched against every NON-content param of ANY
+# tool (a read_file path, a grep path, a command line). A public key
+# (id_rsa.pub) and an example config (.env.example) are not secrets.
+_SECRET_PATH_RES = [re.compile(p) for p in (
+    # a Windows path reaches the scan as repr text, so separators may be doubled
+    r"[\\/]+\.ssh[\\/]+(?!known_hosts\b|config\b)[^\s'\"]*(?<!\.pub)(['\"\s]|$)",
+    r"\bid_(rsa|ed25519|ecdsa|dsa)(?!\.pub)\b",
+    r"[\\/]+\.aws[\\/]+credentials", r"\.git-credentials", r"[\\/]+\.(npmrc|pypirc|netrc)\b",
+    r"(^|[\\/'\"\s])\.env(?![.\w])", r"[\\/]+\.config[\\/]+gh[\\/]+hosts", r"[\\/]+\.kube[\\/]+config",
+    r"[\\/]+\.docker[\\/]+config\.json", r"\bcredentials\.json\b", r"\.(pem|pfx|p12|kdbx)\b",
+    r"user data[\\/]+[^\s'\"]*[\\/]+(login data|cookies|web data)\b", r"\bprivate key\b",
+)]
+
+# System locations (rule 8): a change there is a system change. Matched only
+# for tools that are not read-only (reading a system file is rule 1).
+_SYSTEM_PATH_RES = [re.compile(p) for p in (
+    r"\b[a-z]:[\\/]+windows[\\/]+", r"\b[a-z]:[\\/]+program files", r"(^|['\"\s])/(etc|usr|boot|sys)/",
+    r"start menu[\\/]+programs[\\/]+startup",
+)]
+
+# Secret VALUES (rule 9) in ANY param - written content, a commit message, a
+# token argument, a URL. An assignment that READS a secret (os.environ,
+# getenv, ${VAR}) is how code should hold one, so it never matches.
+_SECRET_VALUE_RES = [re.compile(p) for p in (
+    r"\bsk[-_](live|test)[-_][a-z0-9]{8,}", r"\bghp_[a-z0-9]{20,}", r"\bgithub_pat_[a-z0-9_]{20,}",
+    r"\bakia[0-9a-z]{16}\b", r"\bxox[abprs]-[a-z0-9-]{10,}", r"-----begin [a-z ]*private key-----",
+    r"\baws_(secret_access_key|access_key_id|session_token)\s*[=:]\s*['\"]?[^\s'\"]{8,}",
+    r"(?m)^\s*[\w.-]*(password|passwd|secret|api_key|apikey|token|access_key)[\w.-]*\s*[=:]\s*"
+    # an env/yaml LINE: the value is one bare token to the line end - code
+    # (`_TOKEN = re.compile(...)`) never is
+    r"(?!os\.|getenv|process\.env|\$|\{|<|none\b|null\b)['\"]?[^\s'\"(){}\[\],;]{8,}['\"]?\s*$",
+    r"\b\w*(password|passwd|secret|api_key|apikey|token)\s*=\s*['\"][^'\"\s]{8,}['\"]",
+    r"[?&](api_?key|token|access_token|secret|password)=[^&\s'\"]{8,}",
+)]
+
+
+def _asks_first(name_lower: str, params: Any, base_tier: "PermissionTier") -> bool:
+    """The 2026-11-10 ask-first checks (POLICY.md rules 7-10) for ANY tool,
+    hardcoded or registry-declared: a push, a secret location, a system
+    location written to, a credential-shaped value, a downloaded program run."""
+    if not params:
+        return False
+    if name_lower == "git_push":
+        return True
+    _scan = (
+        {k: v for k, v in params.items() if str(k).lower() not in _CONTENT_PARAM_KEYS}
+        if isinstance(params, dict) else params
+    )
+    _text = str(_scan).lower()
+    if any(_re.search(_text) for _re in _SECRET_PATH_RES):
+        return True
+    if base_tier != PermissionTier.READ_ONLY and any(_re.search(_text) for _re in _SYSTEM_PATH_RES):
+        return True
+    _all = (
+        "\n".join(str(v) for v in params.values()) if isinstance(params, dict) else str(params)
+    ).lower()
+    if any(_re.search(_all) for _re in _SECRET_VALUE_RES):
+        return True
+    if name_lower == "open_file" and re.search(
+            r"downloads[\\/]+[^\s'\"]+\.(exe|msi|bat|cmd|ps1)\b", _text):
+        return True
+    return False
+
 # Tools whose params carry a shell command string.
 _SHELL_COMMAND_TOOLS: set = {
     "run_command",
@@ -482,12 +595,16 @@ def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> Pe
             _spec = resolve_tool(tool_name)
             if _spec is not None:
                 _tier = str(getattr(_spec, "permission_tier", "") or "").lower()
-                if _tier == "read_only":
-                    return PermissionTier.READ_ONLY
-                if _tier == "destructive":
-                    return PermissionTier.DESTRUCTIVE
-                if _tier == "side_effect":
-                    return PermissionTier.SIDE_EFFECT
+                _reg = {"read_only": PermissionTier.READ_ONLY,
+                        "destructive": PermissionTier.DESTRUCTIVE,
+                        "side_effect": PermissionTier.SIDE_EFFECT}.get(_tier)
+                if _reg is not None:
+                    # A registry tool returns here, before the param scan
+                    # below - so the ask-first checks run here too (a
+                    # git_push, a grep over ~/.ssh, a token in a URL).
+                    if _reg != PermissionTier.DESTRUCTIVE and _asks_first(name_lower, params, _reg):
+                        return PermissionTier.DESTRUCTIVE
+                    return _reg
         except Exception:
             pass  # registry read must never break classification
         base_tier = PermissionTier.SIDE_EFFECT  # unknown default
@@ -524,8 +641,16 @@ def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> Pe
                         _cmd_blob,
                     ):
                         return PermissionTier.DESTRUCTIVE
+                if any(_re.search(_cmd_blob) for _re in _ASK_FIRST_COMMAND_RES):
+                    return PermissionTier.DESTRUCTIVE
+                # case matters: -D force-deletes an unmerged branch, -d refuses
+                if re.search(r"\bgit\s+branch\s+(-D|-d\s+-f|--delete\s+--force)\b",
+                             "\n".join(str(params.get(_k, "") or "") for _k in _COMMAND_PARAM_KEYS)):
+                    return PermissionTier.DESTRUCTIVE
             except Exception:
                 pass
+        if _asks_first(name_lower, params, base_tier):
+            return PermissionTier.DESTRUCTIVE
 
     return base_tier
 

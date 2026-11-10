@@ -13,6 +13,43 @@ end of that file ("ARCHIVED BLUEPRINT"), which keeps the old section numbers.
 
 ---
 
+## 0. Never mix up results (MANDATORY - read before quoting any number)
+
+Owner, 2026-11-10: two costly mistakes in one session came from mixing results.
+(1) `tool_choice` was reported as FAILING the bar from an unscoped report that
+pooled every question version since v1 (13664 rows, AUROC 0.646); on its live
+stamp `tc-decide-v9` it PASSES (1575 rows, AUROC 0.770, 0.950 / Wilson 0.936)
+and decides live. (2) A "word rule beats d1 48/50" figure was quoted that no run
+reproduces (re-measured: 16/50). Both sent work in the wrong direction. Rules:
+
+1. **Every number names its cohort.** Consumer, criteria stamp, engine id,
+   ledger (app store live rows vs `data/oracle_bench` bench rows), label source
+   (user / answer sheet / parity / outcome), and how it was measured (in-sample,
+   out-of-fold, held-out, live eval). A number without these is not reported.
+2. **Status comes only from the scoped report.** Run
+   `scripts/consumer_enforcement_report.py --scope <consumer>=<live stamp>` for
+   every consumer whose status you state. The unscoped report mixes question
+   versions and engines; it is a ledger census, never a verdict. The live stamp
+   is the `criteria_version` the code writes today - grep it, do not remember it.
+3. **No figure without its command.** Quote a number only from a run you can
+   name (the command, or the results file / log path). If you cannot re-run it,
+   say "not reproduced" and do not use it.
+4. **Same-conditions comparison only.** Compare two runs only when model,
+   provider, code and machine load match, or run the A/B back to back in one
+   session (the committed code vs the change, same tasks). Never compare a
+   DeepSeek run with a MiniMax run, a cold run with a warm one, or a run that
+   overlapped other work, as evidence about a code change.
+5. **In-sample is not proof.** A question, threshold or rule worded or tuned
+   against a sheet is in-sample for that sheet. Only the held-out sheet
+   (`evals/safety/heldout_sheet.jsonl`, scored ONCE per change) or live rows
+   prove it. Never read held-out misses to reword a question.
+6. **Bench rows never pass as live rows.** Simulated traffic (answer sheet) and
+   the user's real answers are different evidence; report them separately.
+7. **Before writing "passes" or "fails", re-run the scoped command.** A verdict
+   from memory, from an earlier session, or from a summary is re-measured first.
+
+---
+
 ## 1. Current state at a glance
 
 | Area | State |
@@ -781,7 +818,7 @@ that cannot pass is not a broken job: the incumbent keeps it.
 | tool_choice (route) | CORE | LIVE and certified (class margin, 0.936 at the gate) | keep; measure web/browser menus on a working network |
 | route_v2 (route) | incumbent decides (measured) | passes the bar on parity; on an outcome label the gate is better (97.9% vs 92.2%) | no site; send knowledge questions direct in the gate rule instead |
 | narration, presentation (shape) | incumbent decides (measured: no honest pass) | the frame carries the answer: narration's reference is `steps >= 2` (and `beats_admitted` IS the reference); presentation's is `card_already_rendered`. Honest variants stay below the most-common-answer rule (narration 0.17-0.77 vs 0.825; presentation 0.980 vs 0.988 with the flag removed); only variants that copy the rule into the question pass | reopen only with an outside label the incumbent can get wrong (a dismissed or reopened card, an interrupted narration). Presentation's honest `shape-v3` frame holds about 11 distinct inputs (spec AC23.6 keeps the consult gate-layer only), so it cannot reach 100 distinct rows: the owner decides whether to admit the reply head into the frame or retire the consult |
-| tool_approval (approve) | shadow; the permission rule stays | the safety question beats the permission rule on agreement (sheet 0.783 vs 0.609; held-out 0.735 vs 0.560) but does NOT hold the bar on held-out rows (acting "yes" 0.869, Wilson 0.781). As "ask more" (refuse-only: P(safe) < t adds a prompt) no threshold reaches 0.90 on 50 rows. The real gap is the rule: with auto-approve on, 150 of the sheet's 179 unsafe calls run unasked | stays shadow; live rows from the user's own permission answers (eval sessions never label). `evals/safety/heldout_sheet.jsonl` is the gate for any new wording - never word a question against it |
+| tool_approval (approve) | shadow; the permission rule stays | the safety question beats the permission rule on agreement (sheet 0.783 vs 0.609; held-out 0.735 vs 0.560) but does NOT hold the bar on held-out rows (acting "yes" 0.869, Wilson 0.781). As "ask more" (refuse-only: P(safe) < t adds a prompt) no threshold reaches 0.90 on 50 rows. The real gap was the rule: with auto-approve on, 150 of the sheet's 179 unsafe calls ran unasked - fixed in the rule itself (`permissions.classify_tool`, 2026-11-10: 27/179 on the sheet, 24/86 held-out; PROGRESS S167) | stays shadow; live rows from the user's own permission answers (eval sessions never label). `evals/safety/heldout_sheet.jsonl` is the gate for any new wording - never word a question against it |
 | depth_met (judge_depth) | incumbent decides (measured) | ranks the truth (0.87-0.91) but its acting "no" is right 16-18%: acting would push wasted work on most turns | rule-owned (owner, 2026-11-10; off the allow-list); reopen only with a failure-rich outside label (turns a depth push CAN fix) |
 | review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |
 | needs_action (interpret_step) | the incumbent rule (measured) | the label is True on 96.4% of 1,233 distinct rows; d1's acting "no" is right 16 of its top 50 | rule-owned (owner, 2026-11-10; off the allow-list); fix the label's censoring first if the job is reopened |
