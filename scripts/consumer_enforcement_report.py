@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 from collections import defaultdict
@@ -142,6 +143,36 @@ def scope_rows(rows: List[Dict[str, Any]], scopes: Dict[str, str]) -> List[Dict[
             or r.get("criteria_version") == scopes[r["consumer_id"]]]
 
 
+_EVAL_RUN = re.compile(r"^(eval-.+)-[0-9a-f]{6}$")
+
+
+def fold_group(session_id: Any) -> Optional[str]:
+    """The out-of-fold GROUP of a row (fit_oracle_calibration.assign_folds).
+
+    An eval session is one run of one task (``eval-<task>-<6 hex>``) and the
+    task is run many times, so every run of a task is ONE group: a fold that
+    trained on run 1 must not be scored on run 2. Any other session is its own
+    group; no session, no group (the row stands alone)."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+    m = _EVAL_RUN.match(sid)
+    return m.group(1) if m else sid
+
+
+def declared_only(rows: List[Dict[str, Any]], skipped: Dict[str, int]) -> List[Dict[str, Any]]:
+    """Only a DECLARED consumer's rows (an event_type:<family> inherits
+    event_family). A RETIRED consumer's old rows stay in the ledger and must
+    never write a bar record or a calibration entry again (escalate_incomplete
+    reappeared on 2026-11-09). Dropped rows are counted under ``undeclared``."""
+    from backend.agent.decision_engine import CONSUMER_DECLARATIONS
+
+    kept = [r for r in rows if r["consumer_id"] in CONSUMER_DECLARATIONS
+            or str(r["consumer_id"]).startswith("event_type:")]
+    skipped["undeclared"] = len(rows) - len(kept)
+    return kept
+
+
 def load_rows(
     db: str, backend_id: Optional[str] = None,
     *, binary: Optional[frozenset] = None, dedupe: bool = True,
@@ -185,15 +216,20 @@ def load_rows(
     seen: Dict[tuple, Dict[str, Any]] = {}
     c = open_store_read_only(db)
     try:
+        # an older or minimal ledger may lack session_id: its rows have no group
+        has_sid = any(col[1] == "session_id"
+                      for col in c.execute("PRAGMA table_info(system_events)"))
         cur = c.execute(
-            "SELECT outcome, interaction_payload FROM system_events "
-            "WHERE event_type='tool_execution'"
+            "SELECT outcome, interaction_payload, "
+            + ("session_id" if has_sid else "NULL")
+            + " FROM system_events WHERE event_type='tool_execution'"
         )
         for r in cur:
             # The encrypted store returns plain tuples, the plaintext store
             # sqlite3 rows: read by POSITION so both work.
             outcome = r[0]
             payload_text = r[1]
+            session_id = r[2]
             try:
                 payload = json.loads(payload_text or "{}")
             except Exception:
@@ -287,6 +323,13 @@ def load_rows(
                 # the INPUT identity (surface_shadow.input_key) when the call
                 # site bound one - the honest dedupe key for new rows
                 "input_key": ik,
+                # the bar's fold group and the trivial rule's input key
+                # (2026-11-09, oracle.md 12.8): runs of one eval task never
+                # straddle a fold, and the model must beat a rule that
+                # decides from the proposed tool alone (no key: the base rate)
+                "group": fold_group(session_id),
+                "rule_key": (str(d["state"].get("proposed_tool") or "")
+                             if isinstance(d.get("state"), dict) else ""),
             }
             seen[key] = row
             rows.append(row)
@@ -586,7 +629,9 @@ def _print_report(rep: Dict[str, Any]) -> None:
           f"out-of-fold AUROC >= {b['min_auroc']}; a calibrated threshold with "
           f"precision >= {b['min_precision']} (Wilson LB >= {b['min_wilson_lb']}) "
           f"on >= {b['min_rows_above']} distinct rows; "
-          f"out-of-fold calibrated ECE <= {b['max_ece']}")
+          f"out-of-fold calibrated ECE <= {b['max_ece']}; beats a trivial rule "
+          f"that decides from the input key alone (folds grouped by eval task / "
+          f"session)")
     print("label: a DISPATCHED row judges on the event outcome; a SHADOW row "
           "judges on engine-vs-Brain agreement (parity)")
     print("rows: DISTINCT inputs (a repeat counts once); a yes/no consumer's "
@@ -654,7 +699,7 @@ def main() -> int:
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
-    rows = scope_rows(rows, scopes)
+    rows = declared_only(scope_rows(rows, scopes), skipped)
     # A threshold lookup for every CONSUMERS entry and every consumer in the ledger.
     thresholds, config = thresholds_by_consumer(sorted({r["consumer_id"] for r in rows}))
 

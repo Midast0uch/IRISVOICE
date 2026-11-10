@@ -44,7 +44,9 @@ Flags (`.env`): `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION=1`,
 `IRIS_ORACLE_TOOL_CHOICE_ALWAYS=0`,
 `IRIS_ORACLE_SAMPLE_FRACTION_TOOL_CHOICE=1`.
 
-**Who decides on d1-2B (boot log, 2026-11-09).** `deciding=['narration',
+**Who decides on d1-2B (2026-11-09, after the bar fix of 12.9).** Nothing on
+the allow-list decides: narration and presentation lose to a trivial rule,
+route_v2 misses ECE under grouped folds. Before the fix: `deciding=['narration',
 'presentation', 'route_v2']`. Every other allow-listed consumer
 (`needs_action`, `tool_approval`, `review_verdict`, `depth_met`,
 `tool_choice` on the bar path) logs "not earned (no
@@ -629,6 +631,7 @@ All must hold, and the first one missing is recorded as the gap:
 | 1 | distinct rows | >= 100 (`MIN_ROWS`) |
 | 2 | both classes present; minority share | >= 5% (`MIN_MINORITY`) - or the NO-ERROR-MASS WAIVER: when the wrong class is under 5% because the data statistically EXCLUDES a 5% error rate (one-sided binomial, p <= `WAIVER_ALPHA` 0.01), clauses 2 and 3 are untestable rather than failed and the remaining clauses carry the certification; the waiver is re-derived on every recompute and recloses the moment real errors reach 5% (2026-10-22, owner-approved after measurement: tool_choice/v4 held 2 wrong in 275 rows where a 5% rate would have shown ~14) |
 | 3 | out-of-fold AUROC (does confidence rank errors?) | >= 0.65 (`MIN_AUROC`) |
+| 3b | TRIVIAL-RULE clause (2026-11-09): the model beats a rule that decides WITHOUT it, from the input key alone (the proposed tool; no key = the base rate / the most common answer), learnt on the same folds. Yes/no consumer: P(yes) ranks the truth better (AUROC); choice consumer: higher accuracy against the reference | model > rule (`baseline` in the fit; not lifted by the waiver) |
 | 4 | a calibrated threshold exists with out-of-fold precision at it | >= 0.90 (`MIN_PRECISION`) |
 | 5 | Wilson 95% lower bound at that threshold | >= 0.85 (`MIN_WILSON_LB`) |
 | 6 | distinct rows at or above the threshold | >= 50 (`MIN_ROWS_ABOVE`) |
@@ -648,7 +651,19 @@ acting gap recorded. `ACTING_ANSWER` declares which answer acts per consumer;
 demote a consumer that is already deciding (that would be a policy change
 disguised as a measurement).
 
-The report checks the clauses in this order and names the first one that fails: rows, both classes, minority share, AUROC, a threshold exists, rows at or above it, precision, Wilson bound, ECE.
+The report checks the clauses in this order and names the first one that fails: rows, both classes, minority share, AUROC, the trivial rule, a threshold exists, rows at or above it, precision, Wilson bound, ECE.
+
+**Out-of-fold folds are GROUPED (2026-11-09).** `fit_oracle_calibration.assign_folds`
+keeps every run of one eval task (`eval-<task>-<6 hex>` -> `eval-<task>`), or one
+session, in ONE fold, dealt so each fold stays even in rows and in the rarer label.
+A group larger than one fold is split into single rows (`split_rows`); rows with no
+session stand alone. Without groups the split is the old one, row for row. Why: the
+eval cohorts repeat the same ~90 tasks, and a row split trained and scored on
+near-identical runs of one task (oracle.md 12.8). The fit records `folds` and
+`baseline` (with `acting_region`: model vs rule on the rows above the threshold).
+Guard: `contract/test_bar_grouped_folds_rule_contract.py`. The report and the fit
+measure DECLARED consumers only (`declared_only`): a retired consumer's old rows
+never write a record again.
 
 How the numbers are made:
 
@@ -1701,7 +1716,8 @@ classes:
 | Job (consumer) | Class | State on d1-2B | What it needs next |
 |---|---|---|---|
 | tool_choice (route) | CORE | live: class decision + shortlist (§10) | keep; the bar record is stale for this role |
-| route_v2, narration, presentation (route / shape) | CORE | deciding | keep |
+| route_v2 (route) | CORE | shadow since 12.9: beats the trivial rule, ECE 0.0601 > 0.05 under grouped folds | the nearest to re-earning: more rows or a calibration fix |
+| narration, presentation (shape) | incumbent decides (12.9) | a "most common answer" rule beats d1 against their deterministic incumbents | reopen only with an outside label the incumbent can get wrong |
 | tool_approval (approve) | BOON; the incumbent stays | live criteria at chance (0.49); a per-tool failure-rate RULE beats d1 (12.8) | a plain rule, not the Oracle, if the job is wanted; never enforce on eval-only rows |
 | depth_met (judge_depth) | BOON | AUROC <= 0.65 | ask at TURN level to match its turn-verdict label |
 | review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |
@@ -1757,3 +1773,35 @@ Two METHOD defects the bar must fix before any further certification:
 Scripts: scratchpad ta_recent/ (session afc32cf8): common.py, leak_check.py,
 run_ab.py, analyze.py, diag.py.
 
+### 12.9 The bar re-measured with grouped folds and the trivial rule (2026-11-09)
+
+Both bar defects from 12.8 fixed (section 5, clause 3b and grouped folds), then
+every consumer re-measured on its stored cohort and the bar record and the
+calibration rewritten (`--write`, same scopes). Before -> after:
+
+| Consumer | Before | After | Model vs rule (whole cohort) | Where the Oracle acts (above its threshold) |
+|---|---|---|---|---|
+| presentation | enforced | shadow (rule) | accuracy 0.482 vs 0.988 | 0.920 vs 0.985 on 339 rows |
+| narration | enforced | shadow (rule) | accuracy 0.603 vs 0.811 | 0.902 vs 0.934 on 376 rows |
+| route_v2 | enforced | shadow (ECE 0.0601) | accuracy 0.880 vs 0.867 | 0.906 vs 0.882 on 1182 rows |
+| web_intent | shadow | enforced (waiver; not on the allow-list, no live change) | truth AUROC 0.993 vs 0.464 | 0.974 vs 0.900 |
+| user_feedback | enforced | enforced (waiver) | accuracy 0.996 vs 0.992 | same |
+| call_closing | enforced | enforced (REFUSED, never decides) | - | - |
+| tool_approval | shadow | shadow | truth AUROC 0.578 vs 0.762 (the per-tool rule wins) | - |
+| needs_action, review_verdict, tool_choice | sampled | sampled | needs_action truth AUROC 0.953 vs 0.424 | - |
+
+Reading:
+- presentation and narration copy a deterministic incumbent (they are labelled
+  by parity with it). "Always give the most common answer" matches that
+  incumbent better than d1 does, even on the rows where d1 is confident. The
+  Oracle adds a model call and no decision quality there, so the incumbent
+  decides. Their place in the job map (12.7) moves from CORE-deciding to
+  "incumbent decides; reopen only with an outside label that the incumbent
+  itself can get wrong".
+- route_v2 does beat the rule. Under honest (grouped) folds its calibration
+  error is 0.0601, just over 0.05; it is the nearest consumer to re-earning.
+- Live effect (checked with `_enforcement` on the new record vs the old one):
+  narration, presentation and route_v2 no longer decide; nothing else on the
+  allow-list changed. Restored-from copies of both files: scratchpad
+  `consumer_bar_record.before-grouped.json`, `oracle_calibration.before-grouped.json`
+  (session afc32cf8).

@@ -13,7 +13,7 @@
     "ece": null,
     "gap": "",
     "precision": 0.0,
-    "rows": 2451,
+    "rows": 2570,
     "status": "enforced"
   },
   "depth_met": {
@@ -29,9 +29,9 @@
     },
     "consumer_id": "depth_met",
     "ece": null,
-    "gap": "oof AUROC 0.5673 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.546 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 884,
+    "rows": 904,
     "status": "shadow"
   },
   "depth_route": {
@@ -47,9 +47,9 @@
     },
     "consumer_id": "depth_route",
     "ece": null,
-    "gap": "oof AUROC 0.5649 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5439 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 282,
+    "rows": 334,
     "status": "shadow"
   },
   "done": {
@@ -65,7 +65,7 @@
     },
     "consumer_id": "done",
     "ece": null,
-    "gap": "oof AUROC 0.5827 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5823 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
     "rows": 176,
     "status": "shadow"
@@ -82,9 +82,9 @@
     },
     "consumer_id": "event_family",
     "ece": null,
-    "gap": "distinct rows 50 < 100",
+    "gap": "distinct rows 54 < 100",
     "precision": 0.0,
-    "rows": 50,
+    "rows": 54,
     "status": "shadow"
   },
   "event_type:control": {
@@ -99,9 +99,9 @@
     },
     "consumer_id": "event_type:control",
     "ece": null,
-    "gap": "distinct rows 13 < 100",
+    "gap": "distinct rows 15 < 100",
     "precision": 0.0,
-    "rows": 13,
+    "rows": 15,
     "status": "shadow"
   },
   "event_type:delivery": {
@@ -116,9 +116,26 @@
     },
     "consumer_id": "event_type:delivery",
     "ece": null,
-    "gap": "distinct rows 7 < 100",
+    "gap": "distinct rows 8 < 100",
     "precision": 0.0,
-    "rows": 7,
+    "rows": 8,
+    "status": "shadow"
+  },
+  "event_type:feedback": {
+    "config": {
+      "backend_id": "d1-2b-q4_k_m+systemone|systemone|3368a26b3a9f",
+      "backend_identity_source": "declared d1 variant",
+      "calibrated_cap": 32,
+      "candidate_cap": 32,
+      "criteria_hash": "3368a26b3a9f",
+      "engine_id": "d1-2b-q4_k_m+systemone",
+      "readout_mode": "systemone"
+    },
+    "consumer_id": "event_type:feedback",
+    "ece": null,
+    "gap": "distinct rows 1 < 100",
+    "precision": 0.0,
+    "rows": 1,
     "status": "shadow"
   },
   "event_type:intent": {
@@ -150,9 +167,9 @@
     },
     "consumer_id": "event_type:knowledge",
     "ece": null,
-    "gap": "distinct rows 27 < 100",
+    "gap": "distinct rows 28 < 100",
     "precision": 0.0,
-    "rows": 27,
+    "rows": 28,
     "status": "shadow"
   },
   "event_type:memory": {
@@ -201,11 +218,11 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "narration",
-    "ece": 0.1262,
-    "gap": "",
-    "precision": 0.8883,
-    "rows": 804,
-    "status": "enforced"
+    "ece": 0.1153,
+    "gap": "does not beat a trivial rule (accuracy: model 0.6028, rule 0.8114 from the input key alone)",
+    "precision": 0.8881,
+    "rows": 1002,
+    "status": "shadow"
   },
   "needs_action": {
     "config": {
@@ -220,9 +237,9 @@
     },
     "consumer_id": "needs_action",
     "ece": null,
-    "gap": "enforcement bar unmet (minority class 4.9% < 5%); rung live",
+    "gap": "enforcement bar unmet (no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows); rung live",
     "precision": 0.0,
-    "rows": 3107,
+    "rows": 3570,
     "status": "sampled"
   },
   "presentation": {
@@ -237,11 +254,11 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "presentation",
-    "ece": 0.3943,
-    "gap": "",
-    "precision": 0.8596,
-    "rows": 403,
-    "status": "enforced"
+    "ece": 0.3365,
+    "gap": "does not beat a trivial rule (accuracy: model 0.4822, rule 0.9876 from the input key alone)",
+    "precision": 1.0,
+    "rows": 647,
+    "status": "shadow"
   },
   "recovery_strategy": {
     "config": {
@@ -273,9 +290,9 @@
     },
     "consumer_id": "review_verdict",
     "ece": null,
-    "gap": "enforcement bar unmet (oof AUROC 0.5043 < 0.65 (confidence does not rank errors)); rung live",
+    "gap": "enforcement bar unmet (oof AUROC 0.492 < 0.65 (confidence does not rank errors)); rung live",
     "precision": 0.0,
-    "rows": 590,
+    "rows": 598,
     "status": "sampled"
   },
   "route_v2": {
@@ -290,11 +307,11 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "route_v2",
-    "ece": 0.0369,
-    "gap": "",
-    "precision": 0.9606,
-    "rows": 1005,
-    "status": "enforced"
+    "ece": 0.0423,
+    "gap": "oof calibrated ECE 0.0601 > 0.05",
+    "precision": 0.9679,
+    "rows": 1240,
+    "status": "shadow"
   },
   "sufficient": {
     "config": {
@@ -326,9 +343,9 @@
     },
     "consumer_id": "tool_approval",
     "ece": null,
-    "gap": "oof AUROC 0.5015 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.499 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 8756,
+    "rows": 11897,
     "status": "shadow"
   },
   "tool_choice": {
@@ -344,8 +361,8 @@
     },
     "consumer_id": "tool_choice",
     "ece": 0.1942,
-    "gap": "enforcement bar unmet (oof AUROC 0.5849 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.8966,
+    "gap": "enforcement bar unmet (oof AUROC 0.5298 < 0.65 (confidence does not rank errors)); rung live",
+    "precision": 0.9023,
     "rows": 698,
     "status": "sampled"
   },
@@ -360,10 +377,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.3002,
-    "gap": "no-error-mass waiver: 1 wrong in 504 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
-    "precision": 1.0,
-    "rows": 504,
+    "ece": 0.3069,
+    "gap": "no-error-mass waiver: 3 wrong in 742 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
+    "precision": 0.9973,
+    "rows": 742,
     "status": "enforced"
   },
   "web_intent": {
@@ -378,10 +395,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "web_intent",
-    "ece": 0.0061,
-    "gap": "minority class 3.8% < 5%",
-    "precision": 0.9846,
-    "rows": 534,
-    "status": "shadow"
+    "ece": 0.0054,
+    "gap": "no-error-mass waiver: 11 wrong in 430 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
+    "precision": 0.9892,
+    "rows": 753,
+    "status": "enforced"
   }
 }

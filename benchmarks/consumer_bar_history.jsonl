@@ -63,3 +63,7 @@
 {"at": "2026-11-03T22:24:02+00:00", "consumer": "tool_choice", "gap": "enforcement bar unmet (oof AUROC 0.5867 < 0.65 (confidence does not rank errors)); rung live", "status": "sampled"}
 {"at": "2026-11-06T15:56:52+00:00", "consumer": "call_closing", "gap": "", "status": "enforced"}
 {"at": "2026-11-06T15:56:52+00:00", "consumer": "presentation", "gap": "", "status": "enforced"}
+{"at": "2026-11-10T04:01:58+00:00", "consumer": "narration", "gap": "does not beat a trivial rule (accuracy: model 0.6028, rule 0.8114 from the input key alone)", "status": "shadow"}
+{"at": "2026-11-10T04:01:58+00:00", "consumer": "presentation", "gap": "does not beat a trivial rule (accuracy: model 0.4822, rule 0.9876 from the input key alone)", "status": "shadow"}
+{"at": "2026-11-10T04:01:58+00:00", "consumer": "route_v2", "gap": "oof calibrated ECE 0.0601 > 0.05", "status": "shadow"}
+{"at": "2026-11-10T04:01:58+00:00", "consumer": "web_intent", "gap": "no-error-mass waiver: 11 wrong in 430 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed", "status": "enforced"}

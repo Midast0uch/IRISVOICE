@@ -131,7 +131,7 @@ def _thin(knots: Any, limit: int = ORACLE_CURVE_MAX) -> list:
 
 
 def _bar_clauses(cid: str, bar_row: dict, entry: dict) -> list[dict]:
-    """The bar as a ladder of nine clauses, in the order a reader asks them. Values come from the ACTIVE engine's
+    """The bar as a ladder of ten clauses, in the order a reader asks them. Values come from the ACTIVE engine's
     calibration entry, the limits from agent/consumer_bar.py (the bar's own constants, never copies). met is true | false |
     null: null = waived, not applicable, or not reached (an earlier clause already fails and this one has no number)."""
     from backend.agent import consumer_bar as cb
@@ -183,6 +183,16 @@ def _bar_clauses(cid: str, bar_row: dict, entry: dict) -> list[dict]:
                f"ranks its errors - AUROC {auroc}, needs {cb.MIN_AUROC}",
                f"needs to rank its errors better - AUROC {auroc}, needs {cb.MIN_AUROC}",
                "its error ranking (AUROC) is not measured yet")
+    bl = entry.get("baseline") or {}
+    m_v, r_v = bl.get("model"), bl.get("rule")
+    if m_v is None or r_v is None:     # a record fitted before the clause, or a truth with one class
+        out.append({"id": "rule", "met": None, "value": None, "need": None,
+                    "words": "not measured: no trivial rule was fitted for this record"})
+    else:                              # judges the decision, so the waiver does not lift it (consumer_bar)
+        clause("rule", m_v, r_v, m_v > r_v,
+               f"beats a rule that decides without it - {bl.get('metric')} {m_v} against the rule's {r_v}",
+               f"a rule that decides without it does as well - {bl.get('metric')} {m_v} against the rule's {r_v}",
+               "")
     t, prec = entry.get("threshold"), oof.get("precision_at_t")
     clause("precision", prec if t is not None else None, cb.MIN_PRECISION, prec is not None and prec >= cb.MIN_PRECISION,
            f"precision {prec} above its cut-off, needs {cb.MIN_PRECISION:.2f}",

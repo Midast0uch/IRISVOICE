@@ -183,20 +183,150 @@ def pick_threshold(
     return best
 
 
+def assign_folds(
+    correct: Sequence[bool], groups: Optional[Sequence[Optional[str]]] = None,
+    folds: int = FOLDS, seed: int = 0,
+) -> Tuple[List[int], Dict[str, Any]]:
+    """Each row's fold, plus how the split was made.
+
+    Without groups: stratified by label so a small minority is spread across
+    folds (the original split, unchanged row for row).
+
+    GROUPED (2026-11-09): rows of one group never sit on both sides of a fold.
+    Measured on tool_approval/v6: 6482 rows came from 92 eval tasks run again
+    and again, so near-identical rows of one task were trained on and scored in
+    the same fit and the OOF numbers were optimistic (oracle.md 12.8). Whole
+    groups are dealt, largest first, to the fold that stays most even in rows
+    AND in the rarer label. A group larger than one fold cannot be held out and
+    is split into single rows (counted in ``split_rows``: the synthetic
+    ``de-shadow-battery`` session holds most tool_choice rows, all distinct
+    inputs). Fewer whole units than folds falls back to the ungrouped split."""
+    rng = random.Random(seed)
+    n = len(correct)
+    fold_of = [0] * n
+
+    def _ungrouped(info: Dict[str, Any]) -> Tuple[List[int], Dict[str, Any]]:
+        for label in (True, False):
+            idx = [i for i in range(n) if bool(correct[i]) is label]
+            rng.shuffle(idx)
+            for pos, i in enumerate(idx):
+                fold_of[i] = pos % folds
+        return fold_of, info
+
+    if not groups or not any(groups):
+        return _ungrouped({"grouped": False})
+    members: Dict[Any, List[int]] = {}
+    for i, g in enumerate(groups):
+        members.setdefault(g if g else ("row", i), []).append(i)
+    units: List[List[int]] = []
+    split = 0
+    for idx in members.values():
+        if len(idx) > n / folds:
+            units.extend([i] for i in idx)
+            split += len(idx)
+        else:
+            units.append(idx)
+    if len(units) < folds:
+        return _ungrouped({"grouped": False, "reason": f"{len(units)} groups < {folds} folds"})
+    rare = sum(1 for v in correct if v) * 2 < n  # the rarer label
+    tot_rare = max(1, sum(1 for v in correct if bool(v) is rare))
+    rng.shuffle(units)
+    units.sort(key=len, reverse=True)
+    f_rows = [0] * folds
+    f_rare = [0] * folds
+    for u in units:
+        u_rare = sum(1 for i in u if bool(correct[i]) is rare)
+        f = min(range(folds), key=lambda k: (
+            (f_rare[k] + u_rare) / tot_rare + (f_rows[k] + len(u)) / n, k))
+        f_rows[f] += len(u)
+        f_rare[f] += u_rare
+        for i in u:
+            fold_of[i] = f
+    return fold_of, {"grouped": True, "groups": len(members), "split_rows": split}
+
+
+def rule_baseline(
+    keys: Sequence[str], chosen: Sequence[Any], correct: Sequence[bool],
+    probability: Sequence[Optional[float]], reference: Sequence[Any],
+    fold_of: Sequence[int], folds: int = FOLDS, prior: float = 2.0,
+) -> Optional[Dict[str, Any]]:
+    """The model against a TRIVIAL RULE that decides without it, on the same folds.
+
+    The rule sees only the input's key (the proposed tool when the question
+    has one; otherwise nothing, so it is the base rate / most common answer)
+    and learns from the other folds. Measured 2026-11-09 (oracle.md 12.8): on
+    tool_approval a per-tool failure rate passed the bar by itself and beat d1
+    on every number - it measured which tools were broken on this machine.
+
+      * yes/no consumer (rows carry P(yes)): the TRUTH is the chosen answer
+        when it was right, the other one when wrong. Metric: how well P(yes)
+        ranks the truth (AUROC), model vs the rule's P(yes | key).
+      * choice consumer: the rule gives the most common reference answer for
+        the key. Metric: accuracy, model vs rule.
+
+    ``_rule_ok`` (popped by ``fit_consumer``) holds, per row, whether the
+    rule's own answer would have been right - for the acting-region numbers.
+
+    None when it cannot be measured (one truth class; a choice consumer whose
+    reference is an outcome, not an answer)."""
+    n = len(keys)
+    binary = n > 0 and all(p is not None for p in probability)
+    if binary:
+        truth = [(_answer_key(chosen[i]) == "yes") == bool(correct[i]) for i in range(n)]
+    elif n > 0 and all(ref is not None for ref in reference):
+        truth = [_answer_key(ref) for ref in reference]
+    else:
+        return None
+    rule: List[Any] = [None] * n
+    for f in range(folds):
+        train = [i for i in range(n) if fold_of[i] != f]
+        if not train:
+            continue
+        stats: Dict[str, Dict[Any, int]] = {}
+        overall: Dict[Any, int] = {}
+        for i in train:
+            st = stats.setdefault(keys[i], {})
+            st[truth[i]] = st.get(truth[i], 0) + 1
+            overall[truth[i]] = overall.get(truth[i], 0) + 1
+        base_yes = overall.get(True, 0) / len(train)
+        top = max(sorted(overall, key=str), key=lambda a: overall[a])
+        for i in range(n):
+            if fold_of[i] != f:
+                continue
+            st = stats.get(keys[i], {})
+            if binary:
+                cnt = sum(st.values())
+                rule[i] = (st.get(True, 0) + prior * base_yes) / (cnt + prior)
+            else:
+                rule[i] = max(sorted(st, key=str), key=lambda a: st[a]) if st else top
+    if binary:
+        if len(set(truth)) < 2:
+            return None
+        model = _auroc([{"confidence": probability[i], "correct": truth[i]} for i in range(n)])
+        base = _auroc([{"confidence": rule[i], "correct": truth[i]} for i in range(n)])
+        metric = "truth_auroc"
+    else:
+        model = round(sum(1 for v in correct if v) / n, 4)
+        base = round(sum(1 for i in range(n) if rule[i] == truth[i]) / n, 4)
+        metric = "accuracy"
+    if binary:
+        rule_ok = [rule[i] is not None and (rule[i] >= 0.5) == truth[i] for i in range(n)]
+    else:
+        rule_ok = [rule[i] == truth[i] for i in range(n)]
+    return {"metric": metric, "model": model, "rule": base, "keys": len(set(keys)),
+            "_rule_ok": rule_ok}
+
+
 def oof_calibrated(
     xs: Sequence[float], correct: Sequence[bool],
     folds: int = FOLDS, min_block: int = MIN_BLOCK, seed: int = 0,
+    fold_of: Optional[Sequence[int]] = None,
 ) -> List[float]:
     """Each row's calibrated confidence from a map that never saw that row.
 
-    Stratified by label so a small minority is spread across folds."""
-    rng = random.Random(seed)
-    fold_of = [0] * len(xs)
-    for label in (True, False):
-        idx = [i for i in range(len(xs)) if bool(correct[i]) is label]
-        rng.shuffle(idx)
-        for pos, i in enumerate(idx):
-            fold_of[i] = pos % folds
+    ``fold_of`` from ``assign_folds``; omitted, the ungrouped stratified split."""
+    if fold_of is None:
+        fold_of, _ = assign_folds(correct, None, folds, seed)
     out = [0.0] * len(xs)
     for f in range(folds):
         train = [i for i in range(len(xs)) if fold_of[i] != f]
@@ -245,13 +375,19 @@ def fit_consumer(
     else:
         mixed_dropped = 0  # nothing was dropped: there was no other curve
     data = sorted(
-        ((float(r["confidence"]), bool(r["correct"]), r.get("chosen"))
+        ((float(r["confidence"]), bool(r["correct"]), r.get("chosen"),
+          r.get("group"), str(r.get("rule_key") or ""), r.get("probability"),
+          r.get("reference"))
          for r in rows),
         key=lambda p: p[0],
     )
     xs = [d[0] for d in data]
     ok = [d[1] for d in data]
     ch = [d[2] for d in data]
+    grp = [d[3] for d in data]
+    rkey = [d[4] for d in data]
+    prob = [d[5] for d in data]
+    ref = [d[6] if source == "parity" else None for d in data]
     a, b = sum(ok), len(ok) - sum(ok)
     entry: Dict[str, Any] = {
         "method": "isotonic",
@@ -262,6 +398,8 @@ def fit_consumer(
         "rows_above": 0,
         "oof": {"ece": None, "brier": None, "auroc": None,
                 "precision_at_t": None, "wilson_lb": None},
+        "folds": None,
+        "baseline": None,
         "classes": {"correct": a, "wrong": b},
         "fitted_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "label_source": (
@@ -273,10 +411,13 @@ def fit_consumer(
     if len(data) < MIN_FIT_ROWS or a == 0 or b == 0:
         return entry  # nothing honest to fit; the bar's own clauses name why
     entry["knots"] = fit_isotonic(xs, [1.0 if v else 0.0 for v in ok])
-    cal = oof_calibrated(xs, ok)
+    fold_of, entry["folds"] = assign_folds(ok, grp)
+    cal = oof_calibrated(xs, ok, fold_of=fold_of)
     scored = [{"confidence": c, "correct": v} for c, v in zip(cal, ok)]
     ece, brier = _ece_brier(scored)
     entry["oof"].update(ece=ece, brier=brier, auroc=_auroc(scored))
+    entry["baseline"] = rule_baseline(rkey, ch, ok, prob, ref, fold_of)
+    rule_ok = entry["baseline"].pop("_rule_ok") if entry["baseline"] else None
     pick = pick_threshold(
         cal, ok,
         chosen=ch if acting else None,
@@ -288,6 +429,15 @@ def fit_consumer(
         entry["rows_above"] = n_above
         entry["oof"].update(precision_at_t=round(k / n_above, 4),
                             wilson_lb=round(wilson_lb(k, n_above), 4))
+        if rule_ok is not None:
+            # where the Oracle would ACT: its precision there vs the rule's
+            # accuracy on the same rows (reported; the clause reads model/rule)
+            sel = [i for i in range(len(xs)) if cal[i] >= t]
+            entry["baseline"]["acting_region"] = {
+                "rows": len(sel),
+                "model": round(k / n_above, 4),
+                "rule": round(sum(1 for i in sel if rule_ok[i]) / len(sel), 4) if sel else None,
+            }
         if acting:
             want = _answer_key(acting)
             sel = [i for i in range(len(xs))
@@ -363,6 +513,7 @@ def main() -> int:
 
     # Lazy: the report imports this module for fit_consumer.
     from scripts.consumer_enforcement_report import (
+        declared_only,
         load_rows,
         parse_scopes,
         scope_rows,
@@ -393,7 +544,7 @@ def main() -> int:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
     scopes = parse_scopes(args.scope)
-    rows = scope_rows(rows, scopes)
+    rows = declared_only(scope_rows(rows, scopes), skipped)
 
     fitted = fit_all(rows)
     for cid, e in fitted.items():

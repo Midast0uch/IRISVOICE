@@ -3,10 +3,12 @@
   GET /api/memory/oracle   {consumers: [<consumer>...], states}
 
   consumer = {consumer, state, rows, auroc, ece, ece_oof, precision, threshold, gap, fitted_at,   (phase 0, unchanged)
-              job, owner_switch, clauses[9], first_missing, curve, classes, history}
+              job, owner_switch, clauses[10], first_missing, curve, classes, history}
   clause   = {id, met: true|false|null, value, need, words}   ids in order:
-             rows, classes, minority, auroc, precision, wilson, rows_above, ece, acting
-             null = waived (minority, auroc), not applicable (acting), or not reached (an earlier clause fails first)
+             rows, classes, minority, auroc, rule, precision, wilson, rows_above, ece, acting
+             (rule: AUROC must beat the trivial answer + tool rule; added 2026-11-09, oracle.md 12.8)
+             null = waived (minority, auroc, rule), not applicable (acting), not measured (rule, a record
+             fitted before the clause), or not reached (an earlier clause fails first)
   history  = [{at, state}] oldest first, only the CHANGES of state
   oracle_decision tap item = {consumer, job, confidence, chosen, acted, options: [{name, p}], ts}
 
@@ -39,7 +41,7 @@ import backend.gateway.iris_ffi as _ffi
 from backend.agent.tool_bridge import AgentToolBridge
 from backend.utils import memory_live
 
-CLAUSE_IDS = ["rows", "classes", "minority", "auroc", "precision", "wilson", "rows_above", "ece", "acting"]
+CLAUSE_IDS = ["rows", "classes", "minority", "auroc", "rule", "precision", "wilson", "rows_above", "ece", "acting"]
 ENGINE = "eng|1"
 FITTED = "2026-10-24T15:38:01+00:00"
 
@@ -101,7 +103,7 @@ def test_a_passing_consumer_shows_nine_clauses_in_order_job_and_the_owner_switch
     assert c["job"] == "route" and c["owner_switch"] is False and c["first_missing"] is None
     assert [x["id"] for x in c["clauses"]] == CLAUSE_IDS
     k = _by_id(c["clauses"])
-    assert [(k[i]["met"], k[i]["value"], k[i]["need"]) for i in CLAUSE_IDS[:8]] == [
+    assert [(k[i]["met"], k[i]["value"], k[i]["need"]) for i in CLAUSE_IDS[:4] + CLAUSE_IDS[5:9]] == [
         (True, 1000, cb.MIN_ROWS), (True, 100, 1), (True, 0.1, cb.MIN_MINORITY), (True, 0.72, cb.MIN_AUROC),
         (True, 0.93, cb.MIN_PRECISION), (True, 0.91, cb.MIN_WILSON_LB), (True, 700, cb.MIN_ROWS_ABOVE),
         (True, 0.02, cb.MAX_ECE)]
@@ -145,7 +147,7 @@ def test_a_consumer_below_the_row_floor_has_unreached_clauses_not_invented_numbe
         c = got[cid]
         k = _by_id(c["clauses"])
         assert c["first_missing"] == "rows" and (k["rows"]["met"], k["rows"]["value"]) == (False, rows)
-        assert all(k[i]["met"] is None and k[i]["value"] is None for i in CLAUSE_IDS[1:8]), cid
+        assert all(k[i]["met"] is None and k[i]["value"] is None for i in CLAUSE_IDS[1:9]), cid
         assert "not reached" in k["classes"]["words"]
         assert c["curve"] == [] and c["classes"] is None and c["history"] == []
 

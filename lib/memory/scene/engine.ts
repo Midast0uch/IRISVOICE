@@ -3131,7 +3131,7 @@ function hover(x,y){
 // clauses (met lit, the first missing one amber and said in words), its history (demotions shown), and - focused -
 // its calibration curve. The view never switches anything.
 const STATE_WORD={enforced:'trusted',sampled:'trying out',shadow:'watching'};
-const CLAUSE_WORD={rows:'enough examples',classes:'both right and wrong seen',minority:'enough wrong ones to learn from',auroc:'ranks its own errors',
+const CLAUSE_WORD={rows:'enough examples',classes:'both right and wrong seen',minority:'enough wrong ones to learn from',auroc:'ranks its own errors',rule:'beats a simple rule',
   precision:'a sure-enough threshold',wilson:'sure even at worst',rows_above:'enough examples above that threshold',ece:'its confidence is honest',acting:'right when it acts'};
 function secAnchor(sec){const th=(sec+.5)/NSEC*Math.PI*2+Math.PI/2;return project(new V3(Math.cos(th)*R*1.02,Math.sin(th)*R*1.02,0))}
 function ladderHTML(o){if(!o.clauses)return '';const cl=o.clauses.filter(c=>!(c.id==='acting'&&c.met===null));

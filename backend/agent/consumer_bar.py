@@ -255,6 +255,21 @@ def _derive_hardened(
     auroc = oof.get("auroc")
     if not waiver and (auroc is None or auroc < MIN_AUROC):
         return "shadow", f"oof AUROC {auroc} < {MIN_AUROC} (confidence does not rank errors)"
+    # THE TRIVIAL-RULE CLAUSE (2026-11-09, owner): the model must beat a
+    # rule that decides WITHOUT it - from the proposed tool alone, or the
+    # base rate / most common answer (fit_oracle_calibration.rule_baseline,
+    # same folds). Measured: on tool_approval such a rule passed the bar by
+    # itself - it measured which tools were broken on this machine. It
+    # judges the DECISION, so the no-error-mass waiver does not lift it. A
+    # record fitted before the clause carries no baseline and is judged
+    # without it until it is refitted.
+    bl = h.get("baseline") or {}
+    if bl.get("model") is not None and bl.get("rule") is not None \
+            and bl["model"] <= bl["rule"]:
+        return "shadow", (
+            f"does not beat a trivial rule ({bl.get('metric')}: model "
+            f"{bl['model']}, rule {bl['rule']} from the input key alone)"
+        )
     t = h.get("threshold")
     above = int(h.get("rows_above") or 0)
     prec, wlb = oof.get("precision_at_t"), oof.get("wilson_lb")
