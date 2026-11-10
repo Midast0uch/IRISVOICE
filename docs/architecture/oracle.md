@@ -47,7 +47,7 @@ Flags (`.env`): `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION=1`,
 **Who decides on d1-2B (boot log, 2026-11-09).** `deciding=['narration',
 'presentation', 'route_v2']`. Every other allow-listed consumer
 (`needs_action`, `tool_approval`, `review_verdict`, `depth_met`,
-`escalate_incomplete`, `tool_choice` on the bar path) logs "not earned (no
+`tool_choice` on the bar path) logs "not earned (no
 enforced bar record for the active engine)": their bars were earned on d1-3B
 and fail on the d1-2B identity (`needs_action`: minority 4.9% < 5%; the rest
 AUROC 0.44-0.58). The "ENFORCED" marks in §2.3 and §3.1 are the d1-3B state;
@@ -59,6 +59,11 @@ The `tool_choice` bar record and calibration are the stale v4/v7 era and do
 **not** describe this role. Do not write a bar record under the
 class/shortlist labels; the bar measures the thresholded outcome label. See
 §10 (the role and evidence) and §11 (handoff and next steps).
+
+**2026-11-09: `escalate_incomplete` is RETIRED** (owner) with its only job
+`judge_step`: no step-level truth exists to certify it (§12.5). The keyword
+list in `der_loop.check_escalation` decides alone. Which jobs the Oracle must
+own and which are a boon: §12.7.
 
 ---
 
@@ -230,7 +235,6 @@ keys every calibrated threshold, so these keys are never renamed as a label chan
     approve job --- tool_approval (ENFORCED: the pre-call guard; post-hoc rows keep flowing)
     guard job ----- click_safety (shadow + refuse-only sample) | needs_action (v7, ENFORCED: the DIRECT/REACT mode rule)
     judge_review -- review_verdict (ENFORCED, refuse-only)
-    judge_step ---- escalate_incomplete (ENFORCED)
     judge_goal ---- done | sufficient
     judge_depth --- depth_met (ENFORCED, tighten-only)
     judge_call ---- call_closing (REFUSED: measurement only)
@@ -293,7 +297,6 @@ Each has an id, a declared decision type and criteria, and one job.
 | `recovery_strategy` | route | choice | the recovery ladder | `ToolDecisionBox.recovery_strategy` |
 | `depth_route` | route | choice | the loop's own continuation | `ToolDecisionBox.depth_route` |
 | `review_verdict` | judge_review | choice (pass/refine/veto) | the Brain reviewer | `der_loop.Reviewer`; ENFORCED, refuse-only, outcome-labelled |
-| `escalate_incomplete` | judge_step | noul | incomplete-result keyword list | `der_loop` |
 | `done`, `sufficient` | judge_goal | noul | Brain done-bit / sufficiency gate | `monitor_shadow` |
 | `depth_met` | judge_depth | noul | the loop's run grade below threshold | `surface_shadow`, run-grade point; ENFORCED, tighten-only, labelled by the EXTERNAL turn verdict |
 | `needs_action` | interpret_step | noul | the node mode rule (`external_reference.mode_for_goal`: DIRECT only for a question-word goal) | `agent_kernel._der_run_node`: outcome row at each REACT node end; v7, shadow (see 7.2/7.4) |
@@ -316,7 +319,9 @@ Rules of the registry:
 - The owner's allow-list (`IRIS_DECISION_ENFORCE`) only accepts ids that are members
   of `CONSUMERS`. `tool_approval`, `click_safety`, `browser_next`, `user_feedback` and
   the event consumers cannot be switched on by that flag.
-- Retired and absent: `mode`, `on_track`, `has_gaps`, `retry_same`. `tier0_classify`
+- Retired and absent: `mode`, `on_track`, `has_gaps`, `retry_same`,
+  `escalate_incomplete` (2026-11-09, with its job `judge_step`: §12.5, §12.7;
+  guard `contract/test_escalate_incomplete_retired_contract.py`). `tier0_classify`
   is a recorded non-fit (a sub-millisecond rule would become a ~150 ms model call). `use_thinking` (removed 2026-10-13, owner: models think natively, Mercury ignores the thinking flag, and its only callers were dead dispatch paths; `_needs_thinking` keeps its phrase rule).
 
 ### 3.2 Jobs (`ORACLE_JOBS`)
@@ -334,7 +339,6 @@ declared, because an input that carries the answer measures nothing.
 | `guard` | is this action safe without asking? | goal; image field `screenshot` | 128 |
 | `interpret_step` | does this STEP need a tool, or does it only answer from what is known? | goal, expected | 160 |
 | `interpret` | what does the user's message mean? | goal | 64 |
-| `judge_step` | did this step do its part? | goal | 96 |
 | `judge_review` | did this step do its part? | goal | 288 |
 | `judge_goal` | is the objective met, deep and sufficient? | goal, open_facts, evidence | 128 |
 | `judge_depth` | is the objective met, deep and sufficient? | evidence, coverage, open_facts, goal | 384 |
@@ -487,8 +491,7 @@ enforcement bar but is sampling-eligible and has at least one outcome-labelled r
 `sampled_consult_ok(consumer, scope_key)` decides whether the Oracle's answer may
 replace the incumbent on THIS consult:
 
-- Tiers: `TIER_SAMPLABLE` = needs_action, recovery_strategy, escalate_incomplete,
-  tool_choice. `TIER_REFUSE_ONLY` = click_safety, review_verdict (may only tighten:
+- Tiers: `TIER_SAMPLABLE` = needs_action, recovery_strategy, tool_choice. `TIER_REFUSE_ONLY` = click_safety, review_verdict (may only tighten:
   refuse or veto where the incumbent allowed, never loosen). `TIER_JOIN_ONLY` = done,
   sufficient, depth_met (labelled by outcome, never sampled). A consumer in no tier
   (and every refused consumer) is never sampled.
@@ -574,7 +577,7 @@ enforced but the calibrated confidence is below the threshold; sampled below
 `IRIS_ORACLE_FORCE_MIN`, or sampled on a side-effect tool.
 
 Other call sites read the same chokepoint (`needs_action`,
-`sufficient`, `depth_met`, `done`, `escalate_incomplete`, `web_intent`,
+`sufficient`, `depth_met`, `done`, `web_intent`,
 `recovery_strategy`, `presentation`). `ToolDecisionBox.resolve()` and
 `explorer.propose()` also gate on `decides("tool_choice")` but have no production
 caller; the DER node path is the live deciding path.
@@ -1218,7 +1221,7 @@ stack.
 
 | Flag | Default | Effect |
 |---|---|---|
-| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,escalate_incomplete,needs_action,review_verdict,depth_met,tool_approval`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
+| `IRIS_DECISION_ENFORCE` | empty (`.env` sets `tool_choice,narration,route_v2,presentation,needs_action,review_verdict,depth_met,tool_approval`) | comma list of consumers the owner lets decide; remove a name to return that decision to the incumbent |
 | `IRIS_ORACLE_FORCE_MIN` | 0.9 | raw confidence a SAMPLED tool pick needs to be binding |
 | `IRIS_ORACLE_SAMPLE` | on | `0` kills all sampling |
 | `IRIS_ORACLE_SAMPLE_FRACTION` | 0.05 | sampled share for every samplable consumer |
@@ -1646,7 +1649,7 @@ verdict and the per-answer precision.
 | tool_approval v6 | bare criteria | - / 0.667 | "no" 27% | most failures (search, browser, env) are not visible in the frame; wrong "no" on cheap read/list calls |
 | review_verdict v11/v13 | none | 56-63% / 0.43-0.56 | "veto" 0-44% | a PRE-execution gate labelled by the step's POST-execution outcome; same model ranks agreement with the Brain's plan verdict at 0.82 |
 | depth_met v4 | none | - / <=0.65 | "no" 5% | asks about ONE step against the whole goal; the label is the final TURN verdict (True on 194/201) |
-| escalate_incomplete | not measurable | - | - | its 202 outcome rows stored no question; fixed (sampled rows now store `state`, stamp escalate_incomplete/v2) |
+| escalate_incomplete | not measurable | - | - | its 202 outcome rows stored no question; then measured at chance on every label (below); RETIRED 2026-11-09 |
 | tool_choice tc-decide-v9 | (live) | 85.8% / 0.6646 | - | PASSES the bar, but its label is the action-class RULE: owner decision whether that counts as outside evidence |
 
 Conclusion: d1-2B ranks well (needs_action 0.93), but none of the ACTING
@@ -1680,3 +1683,33 @@ Also fixed: every sampled (outcome-labelled) writer now stores `state`
 Every consumer now stores its question. Before switching models, replay every
 consumer's newest cohort on the candidate model with step 2 and keep the
 switch only if the bars that matter hold. That gate was missing for d1-2B.
+
+### 12.7 Core or boon: the job map (owner, 2026-11-09)
+
+Every consumer is a JOB the application needs done. Every job already has an
+INCUMBENT that does it today (a rule, the tool model, the Brain). The Oracle
+does not create the job; it takes a job over only when it is measurably better
+than the incumbent AND a trustworthy outside label exists to prove that. So a
+consumer that cannot pass is not a broken job: the incumbent keeps it. Two
+classes:
+
+- CORE: the Oracle's answer changes speed or accuracy on the answer path in a
+  way the incumbent cannot match. Worth label work.
+- BOON: the incumbent is adequate; the Oracle is an improvement only if it
+  earns the bar. No label work until a cheap label appears.
+
+| Job (consumer) | Class | State on d1-2B | What it needs next |
+|---|---|---|---|
+| tool_choice (route) | CORE | live: class decision + shortlist (§10) | keep; the bar record is stale for this role |
+| route_v2, narration, presentation (route / shape) | CORE | deciding | keep |
+| tool_approval (approve) | BOON, best next candidate | AUROC 0.667, acting "no" 27% | the frame lacks the tool's recent outcomes; replay with them (next experiment) |
+| depth_met (judge_depth) | BOON | AUROC <= 0.65 | ask at TURN level to match its turn-verdict label |
+| review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |
+| needs_action (interpret_step) | BOON, low priority | AUROC 0.93, acting "no" rare (44/1233) | the frame needs "facts already gathered" |
+| escalate_incomplete (judge_step) | RETIRED | at chance on every label | the keyword list decides; reopen only when a step-level truth exists |
+
+The rule for the next agent: before label or prompt work on a consumer, name
+its class here. Spend effort on CORE first, and on a BOON only when a cheap,
+outside label exists. A job with no trustworthy label stays with its
+incumbent; it is never forced to a pass.
+

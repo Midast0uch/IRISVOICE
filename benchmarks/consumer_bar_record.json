@@ -70,23 +70,6 @@
     "rows": 176,
     "status": "shadow"
   },
-  "escalate_incomplete": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|d5b2501149c2",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "d5b2501149c2",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "escalate_incomplete",
-    "ece": null,
-    "gap": "enforcement bar unmet (oof AUROC 0.4387 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.0,
-    "rows": 771,
-    "status": "sampled"
-  },
   "event_family": {
     "config": {
       "backend_id": "d1-2b-q4_k_m+systemone|systemone|3368a26b3a9f",

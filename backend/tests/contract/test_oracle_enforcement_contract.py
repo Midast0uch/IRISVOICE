@@ -296,17 +296,6 @@ def _drive_web_intent(eng):
         "please grab that article for me", engine=eng, turn_key=object())
 
 
-def _drive_escalate_incomplete(eng):
-    from backend.agent.der_loop import DirectorQueue, ExecutionMode
-
-    q = DirectorQueue(objective="test")
-    q.mode = ExecutionMode.QUICK
-    q.items = []
-    return q.check_escalation(
-        review_verdict=None, tool_result_summary="all good, nothing more to do",
-        token_budget_remaining=11000)
-
-
 def _drive_needs_action(eng):
     return tool_decision._goal_needs_action("ponder the meaning of it all")
 
@@ -345,8 +334,6 @@ def _drive_tool_choice(eng):
 # the Oracle acts, does the Oracle still SCORE (off path) when it does not decide
 SITES = {
     "web_intent": ("web_intent", _drive_web_intent, {}, False, True, True),
-    "escalate_incomplete": ("escalate_incomplete", _drive_escalate_incomplete,
-                            {}, False, True, True),
     "needs_action": ("needs_action", _drive_needs_action, {}, False, True, True),
     "sufficient": ("sufficient", _drive_sufficient, {}, False, True, True),
     "recovery_strategy": ("recovery_strategy", _drive_recovery_strategy,
@@ -408,7 +395,7 @@ def test_deciding_below_the_calibrated_threshold_keeps_the_incumbent(
     path decides. Fails on the old code: web_intent acted at 0.85 >= 0.8,
     recovery_strategy at 0.85 >= 0.40, tool_choice at 0.85 >= its raw threshold,
     mode replaced the confidence; consumers that never acted on the old code
-    (escalate_incomplete, needs_action, sufficient) fail the
+    (needs_action, sufficient) fail the
     chokepoint-was-asked assertion."""
     consumer, driver, kw, _r, _o, _s = SITES[site]
     chokepoint.enable([consumer], threshold=0.95)

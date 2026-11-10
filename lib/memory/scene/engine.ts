@@ -184,7 +184,7 @@ const OUTSIDE=new Set(['user','recurrence','corroboration','test','completion'])
 const CLUSTER_WORD={preference:'your preferences',implement:'building',research:'research',debug:'fixing things',
   voice:'voice',environment:'this machine',workflow:'ways of working'};
 const KIND_WORD={screen:'screenshots',web:'web captures',code:'code',doc:'documents',chart:'charts',audio:'audio',image:'images',terminal:'test runs',video:'videos'};
-const ORACLE_PLAIN={tool_choice:'picking the next tool',escalate_incomplete:'knowing a result is incomplete',needs_action:'knowing when a step needs a tool',
+const ORACLE_PLAIN={tool_choice:'picking the next tool',needs_action:'knowing when a step needs a tool',
   review_verdict:'judging its own steps',user_feedback:'reading what you meant',narration:'deciding what to say aloud',browser_next:'choosing where to click next',
   tool_approval:'predicting if a tool call will work',depth_met:'knowing when research is deep enough',web_intent:'knowing when to search the web',
   click_safety:'knowing if a click is safe',call_closing:'knowing a call was the last one',recovery_strategy:'choosing how to recover',
@@ -354,7 +354,7 @@ function synthMemory(){
   for(const [k,n] of AK)for(let i=0;i<n;i++){const s=pick(sessions);artifacts.push({id:'art_'+artifacts.length,kind:k,name:ANAMES[k][i%ANAMES[k].length],folder:pick(FOLDERS[k]),
     session:s.id,ts:s.started+rand(60,3600),weight:rand(.6,1.6)*(rng()<.15?2:1),seed:randi(1,1e6)})}
   const oracle=[
-    ['tool_choice','enforced',688,.76,.019,.91],['escalate_incomplete','enforced',513,.84,.03,.9],['needs_action','enforced',216,.80,.04,.92],
+    ['tool_choice','enforced',688,.76,.019,.91],['needs_action','enforced',216,.80,.04,.92],
     ['review_verdict','sampled',1381,.63,.04,.86],['user_feedback','shadow',165,.91,.054,.88],['narration','shadow',332,.7,.054,.84],
     ['browser_next','shadow',126,.66,.08,.7],['tool_approval','shadow',1880,.56,.07,.75],['depth_met','shadow',401,.40,.12,.5],
     ['web_intent','shadow',199,.49,.11,.55],['click_safety','shadow',92,.6,.09,.7],['call_closing','shadow',657,.6,.06,.8],
@@ -592,7 +592,7 @@ const helixY=s=>lerp(-HELIX_H,HELIX_H,s);
 const STATE_RANK={enforced:2,sampled:1,shadow:0};
 // grouped by job (UX-PLAN 9.2), trusted first inside a job; up to MAXSEC sectors (16 hid 9 of 25 consumers)
 const MAXSEC=32;
-const JOB_ORDER=['route','approve','guard','interpret_step','judge_review','judge_step','judge_goal','judge_depth','shape','interpret','classify_event','judge_call'];
+const JOB_ORDER=['route','approve','guard','interpret_step','judge_review','judge_goal','judge_depth','shape','interpret','classify_event','judge_call'];
 const jobRank=o=>{const i=JOB_ORDER.indexOf(o.job);return i<0?JOB_ORDER.length:i};
 const ORC=M.oracle.slice().sort((a,b)=>(jobRank(a)-jobRank(b))||(STATE_RANK[b.state]-STATE_RANK[a.state])||(b.rows-a.rows)).slice(0,MAXSEC);
 const NSEC=Math.max(1,ORC.length);

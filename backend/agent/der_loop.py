@@ -541,7 +541,6 @@ class DirectorQueue:
         # Trigger 1: Budget minimum — never escalate if budget too low
         if token_budget_remaining < BUDGET_ABSOLUTE_MIN:
             return False
-            return False
         if token_budget_remaining >= mode_budget:
             # Budget was bumped beyond this mode — don't escalate via budget trigger
             # but still check the other triggers (veto, incomplete)
@@ -572,66 +571,14 @@ class DirectorQueue:
             "more work needed",
         ]
         summary_lower = tool_result_summary.lower()
-        _lexical_incomplete = any(kw in summary_lower for kw in incomplete_keywords)
-        # REQ-29 AC29.3 (T48): shadow-score `escalate_incomplete`. Escalation
-        # and EVERY budget / veto-cap safety check stay unchanged — the
-        # `self.escalate` call below still owns them, and the engine may never
-        # permit an escalation. The keyword list decides (it is also the
-        # engine-unavailable fallback, AC29.7) unless the enforcement chokepoint
-        # lets the Oracle act (Stage B, 2026-10-05); not deciding, the score runs
-        # on the lane (measured 326 ms/turn inline).
-        try:
-            from backend.agent import surface_shadow as _ss
-            from backend.agent.decision_engine import (
-                decides,
-                oracle_acts,
-                register_turn_pending,
-                sampled_consult_ok,
-                sampled_row,
-                scope_now,
-            )
-
-            _dec = decides("escalate_incomplete") is not None
-            _scope = scope_now()
-            # REQ-6 AC6.2 (Wave 5): the sampled rung decides on a bounded,
-            # deterministic fraction of consults; the incumbent owns the rest.
-            _sampled = not _dec and sampled_consult_ok(
-                "escalate_incomplete",
-                "|".join((_scope.get("turn_id", ""),
-                          _scope.get("step_id", ""),
-                          tool_result_summary[:80])))
-            if _sampled:
-                _noul = _ss.score_surface_bool(
-                    "escalate_incomplete", tool_result_summary,
-                    engine=_ss.AUTO_ENGINE)
-                if _noul is None:
-                    _incomplete = _lexical_incomplete  # incumbent fallback
-                else:
-                    _incomplete = bool(_noul.true(0.5))
-                    register_turn_pending(_scope, sampled_row(
-                        "escalate_incomplete", _incomplete,
-                        max(float(_noul.probability),
-                            1.0 - float(_noul.probability)),
-                        probability=round(float(_noul.probability), 4),
-                        engine_latency_ms=_noul.engine_latency_ms,
-                        # the frame the model read: without it the 202
-                        # outcome-labelled rows could not be replayed
-                        # (oracle.md 12, 2026-11-09)
-                        state={"goal": tool_result_summary},
-                        criteria_version="escalate_incomplete/v2"))
-            else:
-                _value, _row = _ss.surface_bool(
-                    "escalate_incomplete", tool_result_summary,
-                    brain_bool_fn=lambda: _lexical_incomplete,
-                    engine=_ss.AUTO_ENGINE,
-                    enforced=_dec, defer=True,  # defer is ignored once enforced
-                    acts=lambda c: oracle_acts("escalate_incomplete", c),
-                )
-                _ss.emit_row(_row)
-                _incomplete = bool(_value)
-        except Exception:  # noqa: BLE001 — the keyword list is the fallback
-            _incomplete = _lexical_incomplete
-        if _incomplete:
+        # The keyword list decides. The Oracle consumer `escalate_incomplete`
+        # that shadowed it is RETIRED (2026-11-09, owner): measured offline on
+        # 494 d1-2B rows against every available label (the step verdict, a
+        # recurrence label) and frame (result only; goal + expected + result),
+        # every cell sat at chance (OOF AUROC 0.46-0.58) because IRIS records
+        # no trustworthy step-level truth to certify it against. Completion is
+        # judged by the goal contract from the tool's own output.
+        if any(kw in summary_lower for kw in incomplete_keywords):
             self.escalate(
                 reason=f"Tool result indicates more work: '{tool_result_summary[:80]}'",
                 turn_id=turn_id,

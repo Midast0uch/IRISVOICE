@@ -4,8 +4,11 @@ Choice-shaped Brain decisions that the §8.4 wiring survey missed. Each is a
 BOOLEAN question the common case answers negatively, and each currently costs a
 Brain call or a keyword list:
 
-  ``escalate_incomplete`` the incomplete-result keyword list that escalates
   ``needs_action``        the heuristics that gate the engine's OWN NONE commit
+
+(``escalate_incomplete``, which shadowed der_loop's incomplete-result keyword
+list, was RETIRED 2026-11-09: no trustworthy step-level truth exists to certify
+it - see decision_engine.CONSUMERS. The keyword list still decides.)
 
 FOUNDATION SCOPE (AC29.1–AC29.4): every site is UNCHANGED. The engine is scored
 in shadow and its row recorded, so the parity data a Wave 7/TG-13 flip needs
@@ -21,10 +24,8 @@ was deleted 2026-08-06, so it had no live site.)
 Three invariants this module exists to hold:
   * THE ENGINE NEVER WRITES PROSE. The Brain still writes any text a positive
     verdict calls for (AC29.1).
-  * SAFETY IS NOT NEGOTIABLE. `escalate_incomplete` still passes through the
-    existing budget and veto-cap checks, which the engine may never permit
-    (AC29.3). `needs_action` keeps its documented SAFE direction — when in
-    doubt, ACT (AC29.4).
+  * SAFETY IS NOT NEGOTIABLE. `needs_action` keeps its documented SAFE
+    direction — when in doubt, ACT (AC29.4).
   * ENGINE UNAVAILABLE → today's behaviour, byte-identical, at all four sites
     (AC29.7).
 
@@ -64,9 +65,6 @@ def input_key(consumer_id: str, statement: str,
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
 
 SURFACE_CONSUMERS: Dict[str, str] = {
-    "escalate_incomplete": (
-        "Is this step result too incomplete to proceed without more work?"
-    ),
     "needs_action": (
         # v4 (2026-10-19, measured on 294 REAL goal+outcome pairs). Two
         # defects in v3, both reproduced before the change:

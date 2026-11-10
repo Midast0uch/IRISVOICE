@@ -19,7 +19,8 @@ from backend.agent.decision_engine import CONSUMERS
 _REPO = Path(__file__).resolve().parents[3]
 
 # `has_gaps` removed 2026-10-05 (Oracle Stage B, owner-approved): no live site.
-_SURFACE = ("escalate_incomplete", "needs_action")
+# `escalate_incomplete` removed 2026-11-09 (owner retirement).
+_SURFACE = ("needs_action",)
 _NON_FIT = "tier0_classify"
 
 
@@ -30,7 +31,7 @@ class TestConsumerRegistry:
             "tier0_classify was added to CONSUMERS — it is a recorded NON-FIT "
             "(pure, <1ms, no I/O); a model there is a regression (AC29.5)"
         )
-        for mod in ("decision_engine.py", "decision_backend_onnx.py",
+        for mod in ("decision_engine.py", "decision_backend_d1.py",
                     "surface_shadow.py"):
             src = (_REPO / "backend" / "agent" / mod).read_text(
                 encoding="utf-8", errors="replace")

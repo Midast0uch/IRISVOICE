@@ -160,7 +160,9 @@ class TestCtDe1Shapes:
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
             "web_intent",
-            "escalate_incomplete", "needs_action",
+            # `escalate_incomplete` REMOVED 2026-11-09 (owner retirement;
+            # test_escalate_incomplete_retired_contract pins the removal).
+            "needs_action",
             "depth_met",
             "depth_route", "call_closing",
             "tool_approval",

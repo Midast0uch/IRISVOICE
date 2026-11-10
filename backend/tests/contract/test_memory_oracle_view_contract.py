@@ -168,16 +168,18 @@ def test_a_consumer_with_no_error_mass_is_waived_not_failed(bench, client):
 
 
 def test_the_acting_clause_applies_only_to_a_consumer_in_acting_enforced(bench, client):
-    assert "needs_action" in cb.ACTING_ENFORCED and "tool_approval" not in cb.ACTING_ENFORCED
+    # the outsider was tool_approval until it joined ACTING_ENFORCED (2026-11-09);
+    # web_intent is a yes/no consumer still outside the set
+    assert "needs_action" in cb.ACTING_ENFORCED and "web_intent" not in cb.ACTING_ENFORCED
     acting = dict(acting_answer="no", acting_rows_above=17, acting_precision=0.706, acting_wilson_lb=0.49)
-    _write(bench, {"needs_action": _bar("shadow", 111), "tool_approval": _bar("shadow", 111)},
-           {"needs_action": _entry(rows=111, **acting), "tool_approval": _entry(rows=111, **acting)})
+    _write(bench, {"needs_action": _bar("shadow", 111), "web_intent": _bar("shadow", 111)},
+           {"needs_action": _entry(rows=111, **acting), "web_intent": _entry(rows=111, **acting)})
     got = _get(client)
     k = _by_id(got["needs_action"]["clauses"])
     assert (k["acting"]["met"], k["acting"]["value"], k["acting"]["need"]) == (False, 0.706, cb.MIN_PRECISION)
     assert "'no'" in k["acting"]["words"] and got["needs_action"]["first_missing"] == "acting"
-    ta = _by_id(got["tool_approval"]["clauses"])["acting"]
-    assert ta["met"] is None and got["tool_approval"]["first_missing"] is None
+    ta = _by_id(got["web_intent"]["clauses"])["acting"]
+    assert ta["met"] is None and got["web_intent"]["first_missing"] is None
     # the same consumer, its acting side holding
     good = dict(acting_answer="no", acting_rows_above=60, acting_precision=0.95, acting_wilson_lb=0.89)
     _write(bench, {"needs_action": _bar("enforced", 111)}, {"needs_action": _entry(rows=111, **good)})

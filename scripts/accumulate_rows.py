@@ -39,10 +39,6 @@ WS_URL = "ws://127.0.0.1:8090/ws/row-accumulator?session_id=row-accumulator"
 # - web_intent: messages that need web search
 # - review_verdict: any completed step
 # - sufficient/done/on_track: any step completion
-# - mode: any message
-# - has_gaps: any completed step
-# - use_thinking: any message
-# - escalate_incomplete: any step with incomplete results
 # - needs_action: any message
 MESSAGES = [
     # ── LOCAL-TOOL prompts FIRST (2026-09-27) ──

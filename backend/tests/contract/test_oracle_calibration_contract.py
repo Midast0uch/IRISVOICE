@@ -172,11 +172,12 @@ class TestLoadRows:
 
     def test_the_binary_set_is_read_from_the_engine_specs(self):
         b = binary_consumers()
-        # `on_track` and `has_gaps` were removed 2026-10-05 (Stage B, owner-approved).
+        # `on_track` and `has_gaps` were removed 2026-10-05 (Stage B, owner-approved);
+        # `escalate_incomplete` 2026-11-09 (owner).
         assert {"sufficient", "done",
-                "escalate_incomplete", "needs_action", "depth_met",
+                "needs_action", "depth_met",
                 WEB_INTENT_CONSUMER} <= b
-        assert not ({"on_track", "has_gaps"} & b)
+        assert not ({"on_track", "has_gaps", "escalate_incomplete"} & b)
         assert not ({"mode", "tool_choice", "presentation", "narration",
                      "review_verdict", "recovery_strategy"} & b)
 

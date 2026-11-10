@@ -121,7 +121,7 @@ def test_backend_cuts_text_at_the_job_budget():
 
     b = D1Backend()
     long_state = " ".join(f"word{i}" for i in range(300))  # ~1900 chars
-    cap = 40 * 4  # the judge_step budget x 4
+    cap = 40 * 4  # a 40-id budget x 4
     assert len(long_state) > cap
 
     # The trim is inside decide(); pin the cap arithmetic it uses (the

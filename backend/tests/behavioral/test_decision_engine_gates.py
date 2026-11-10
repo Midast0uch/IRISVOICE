@@ -161,7 +161,9 @@ class TestCtDe7Registry:
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
             "web_intent",
-            "escalate_incomplete", "needs_action",
+            # `escalate_incomplete` REMOVED 2026-11-09 (owner retirement;
+            # test_escalate_incomplete_retired_contract pins the removal).
+            "needs_action",
             # Session 364 (owner request): the DEPTH consumer.
             "depth_met",
             # STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface

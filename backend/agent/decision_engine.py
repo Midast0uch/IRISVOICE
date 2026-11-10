@@ -112,7 +112,14 @@ CONSUMERS: Tuple[str, ...] = (
     # producer (trailing_director.py) was deleted 2026-08-06, so it had no live
     # site. `tier0_classify` is a recorded NON-FIT and is deliberately absent
     # (AC29.5).
-    "escalate_incomplete",
+    # `escalate_incomplete` REMOVED 2026-11-09 (owner): measured offline on 494
+    # d1-2B rows against the step verdict and a recurrence label, with the
+    # result-only and the goal + expected + result frames: every cell at chance
+    # (OOF AUROC 0.46-0.58). IRIS records no trustworthy step-level truth, so
+    # it could never be certified; the goal contract judges completion. The
+    # incomplete-result keyword list in der_loop is UNTOUCHED; only the Oracle
+    # consult is gone. The pinned enumerations are updated in the SAME change;
+    # the ledger's historical rows stay (retired, never blended back).
     "needs_action",
     # Session 364 (owner request): the DEPTH question, asked against the task's
     # SUCCESS CRITERIA rather than against coverage alone. The complaint it
@@ -319,17 +326,17 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               # action itself. The cap is a ceiling for the other guard
               # consumer (needs_action), not a floor.
               ("goal",), 128, image_fields=("screenshot",)),
-    OracleJob("judge_step", "did this step do its part?",
-              ("goal",), 96),
+    # `judge_step` (96 ids, goal only) REMOVED 2026-11-09 with its only
+    # consumer, escalate_incomplete (retired; see CONSUMERS).
     # review_verdict gets its OWN job (2026-10-16). It shared `judge_step` with
-    # the ENFORCED `escalate_incomplete`, and `judge_step`'s 96-id budget is 384
+    # the then-enforced `escalate_incomplete`, and `judge_step`'s 96-id budget is 384
     # chars — but review_verdict's frame (der_loop._shadow_review_verdict) is
     # STEP[:300] + OBJECTIVE[:200] + "RECENT RESULTS: <3 x result[:120]>", which
     # its call site caps at 800. The backend cap trims from the END, so RECENT
     # RESULTS — the completed steps' own results, the evidence the question
     # ("did this step do its part?") is about — were cut on every row.
     # A SEPARATE job rather than a raise of `judge_step`: the budget is not part
-    # of the identity hash, but escalate_incomplete ACTS on its threshold and
+    # of the identity hash, but escalate_incomplete then ACTED on its threshold and
     # must keep its own input untouched. The job IS part of the identity, so the
     # new cohort separates from the old judge_step rows.
     # Budget 288 = 1152 chars (2026-10-17, v3 frame): the v3 evidence is 3
@@ -413,7 +420,6 @@ CONSUMER_JOBS: Dict[str, str] = {
     # Its own job since v4: the step's EXPECTED OUTPUT is part of the frame.
     "needs_action": "interpret_step",
     "review_verdict": "judge_review",
-    "escalate_incomplete": "judge_step",
     # REQ-10: the per-call closing question has its own job (AC10.7).
     "call_closing": "judge_call",
     "done": "judge_goal", "depth_met": "judge_depth", "sufficient": "judge_goal",
@@ -550,10 +556,6 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     "depth_met": ConsumerDeclaration("noul", {
         "true": "Done to the depth the success criteria require",
         "false": "Only superficially complete",
-    }),
-    "escalate_incomplete": ConsumerDeclaration("noul", {
-        "true": "Too incomplete to proceed without more work",
-        "false": "Complete enough to proceed",
     }),
     # 2026-10-13 replay on real d1, 16 hand-labelled step goals: "requires
     # calling a tool" 11/16 (it said NO to opening a URL, editing a file,
@@ -1667,7 +1669,7 @@ def call_closing_counters() -> Dict[str, int]:
 # list_directory / glob_files) score two of them "wrong" (replay 2026-10-11:
 # 57.8% agreement with the decision lines).
 TIER_SAMPLABLE: frozenset = frozenset({
-    "needs_action", "recovery_strategy", "escalate_incomplete", "tool_choice",
+    "needs_action", "recovery_strategy", "tool_choice",
 })
 # AC6.6: refuse-direction ONLY - sampled, but the engine may only ever tighten
 # (refuse/veto where the incumbent allowed), never loosen. Wired at the

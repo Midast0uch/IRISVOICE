@@ -2071,7 +2071,7 @@ class AgentKernel:
 
         REQ-14 AC14.1 / REQ-29 (T18, T46-T49). The monitor consumers
         (`sufficient`, `done`, `on_track`) and the surface consumers
-        (`has_gaps`, `escalate_incomplete`, `needs_action`) are
+        (`needs_action`; `has_gaps` and `escalate_incomplete` retired) are
         SHADOW: they must write a calibration row and change no decision.
 
         Why this method exists: the consumer modules emitted their rows to a

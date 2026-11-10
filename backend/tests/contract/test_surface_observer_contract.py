@@ -65,7 +65,7 @@ class TestConsumerSetIsPinned:
             "tool_choice", "presentation", "narration", "recovery_strategy",
             "review_verdict", "sufficient", "done",
             "web_intent",
-            "escalate_incomplete", "needs_action",
+            "needs_action",  # escalate_incomplete retired 2026-11-09 (owner)
             "depth_met",
             "depth_route", "call_closing",
             "tool_approval",

@@ -168,7 +168,9 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     # + 1 browser_next (2026-10-11, now with a call site)
     # - 1 use_thinking (owner removal, 2026-10-13)
     # + 1 route_v2 (2026-10-30, shadow-only memory route)
-    assert len(de.CONSUMER_JOBS) == 19
+    # - 1 escalate_incomplete (owner retirement, 2026-11-09)
+    assert len(de.CONSUMER_JOBS) == 18
+    assert "escalate_incomplete" not in de.CONSUMER_JOBS
     assert "mode" not in de.CONSUMER_JOBS
 
 
@@ -206,7 +208,10 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # only); MEASURED on 294 real pairs, the goal alone leaves a write/edit
     # step ambiguous ("Write the slugify function to textutils.py" read as an
     # answer at p=0.11) and the step's EXPECTED OUTPUT resolves it.
-    assert len(de.ORACLE_JOBS) == 14
+    # 13, not 14 (2026-11-09): `judge_step` removed with its only consumer,
+    # escalate_incomplete (owner retirement).
+    assert len(de.ORACLE_JOBS) == 13
+    assert "judge_step" not in de.ORACLE_JOBS
     assert de.ORACLE_JOBS["interpret_web"].fields == ("goal",)
     assert de.ORACLE_JOBS["interpret_web"].budget_ids == 128
     assert de.CONSUMER_JOBS["web_intent"] == "interpret_web"
@@ -233,8 +238,6 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # purpose is unchanged: the budget fits the frame.
     assert de.ORACLE_JOBS["judge_review"].budget_ids == 384
     assert de.CONSUMER_JOBS["review_verdict"] == "judge_review"
-    assert de.CONSUMER_JOBS["escalate_incomplete"] == "judge_step"
-    assert de.ORACLE_JOBS["judge_step"].budget_ids == 96
     assert de.ORACLE_JOBS["judge_call"].fields == ("goal", "call", "result")
     # STALE-BY-SPEC update (2026-10-11, tool_approval/v3): `calls_this_step`
     # joins the approve job - the step's own calls were invisible (the frame
@@ -266,6 +269,8 @@ def test_consumers_grew_by_exactly_two():
     its correction budget bounds it."""
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {
         "depth_route", "call_closing", "tool_approval", "route_v2"}
-    # owner-directed removals: `mode` (2026-10-10) and `use_thinking` (2026-10-13)
-    assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {"mode", "use_thinking"}
+    # owner-directed removals: `mode` (2026-10-10), `use_thinking` (2026-10-13)
+    # and `escalate_incomplete` (2026-11-09)
+    assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {
+        "mode", "use_thinking", "escalate_incomplete"}
     assert "tool_approval" in de.TIER_REFUSE_ONLY

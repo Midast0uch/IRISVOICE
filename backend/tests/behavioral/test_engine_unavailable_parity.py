@@ -79,9 +79,11 @@ class TestAllFourSitesUnchangedWhenDead:
             "why does the sky look blue during the day") is True
         assert k._needs_thinking("what time is it") is False
 
-        # ── sites 3 & 4: the two surface_bool consumers ────────────────────
+        # ── sites 3 & 4: the surface_bool consumers ────────────────────────
         # With no engine the legacy decider's value passes through untouched.
-        for cid in ("escalate_incomplete", "has_gaps"):
+        # (`has_gaps` and `escalate_incomplete` are retired; the helper still
+        # passes ANY consumer id through, so the retired ids remain valid inputs.)
+        for cid in ("needs_action", "has_gaps"):
             for legacy in (True, False):
                 value, row = ss.surface_bool(
                     cid, "some step result",
@@ -102,7 +104,7 @@ class TestAllFourSitesUnchangedWhenDead:
     def test_every_site_is_opt_in_on_the_engine(self, dead_engine):
         """`engine=None` means NO ENGINE: the shadow must not adopt the
         singleton implicitly, or a unit test would load a 642MB model."""
-        for cid in ("has_gaps", "escalate_incomplete", "needs_action"):
+        for cid in ("has_gaps", "needs_action"):
             assert ss.score_surface_bool(cid, "x", engine=None) is None, cid
 
     def test_the_surface_bool_helper_is_fail_safe(self, dead_engine):
@@ -111,7 +113,7 @@ class TestAllFourSitesUnchangedWhenDead:
         def _boom():
             raise ValueError("decider exploded")
 
-        for cid in ("has_gaps", "escalate_incomplete", "needs_action"):
+        for cid in ("has_gaps", "needs_action"):
             value, row = ss.surface_bool(
                 cid, "x", brain_bool_fn=_boom, engine=ss.AUTO_ENGINE)
             assert value is False

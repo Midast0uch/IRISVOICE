@@ -63,7 +63,6 @@ ACTING_ANSWER: Dict[str, str] = {
     "tool_approval": "no",         # a confident "this call will fail" refuses the call
     "review_verdict": "veto",      # a confident "veto" refuses the step
     "depth_met": "no",             # a confident "not deep enough" pushes more work
-    "escalate_incomplete": "yes",  # a confident "incomplete" escalates
 }
 
 # MEASURED ADOPTION. A consumer joins this set only after its cohort has been
@@ -76,11 +75,11 @@ ACTING_ANSWER: Dict[str, str] = {
 # ACTING answer is right far less often than the other one - depth_met "no"
 # 5% (yet depth_met/v4 fails only ECE 0.0516: a few more rows would have
 # certified a consumer that pushes wrong extra work 95% of the time),
-# tool_approval "no" 19%, review_verdict "veto" 0%, escalate_incomplete "yes"
-# 59%. The pooled precision is carried by the side that changes nothing.
+# tool_approval "no" 19%, review_verdict "veto" 0% (escalate_incomplete "yes"
+# 59%, since retired). The pooled precision is carried by the side that
+# changes nothing.
 ACTING_ENFORCED = {
     "needs_action", "depth_met", "tool_approval", "review_verdict",
-    "escalate_incomplete",
 }
 MIN_ACTING_ROWS_ABOVE = 50
 

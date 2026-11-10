@@ -2,7 +2,7 @@
 
 scripts/replay_consumer.py is the method instrument for re-earning a consumer's
 bar (docs/architecture/oracle.md section 12). Found 2026-11-09, for the yes/no
-consumers (needs_action, depth_met, escalate_incomplete, tool_approval):
+consumers (needs_action, depth_met, tool_approval; escalate_incomplete since retired):
   * the label was brain_bool only - for needs_action the incumbent's constant
     True on 1233 of 1233 rows, so an acting "no" could never score right;
   * --variants / --options changed nothing: the d1 backend reads the yes/no

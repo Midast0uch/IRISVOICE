@@ -3,8 +3,8 @@
 Found 2026-11-09 (oracle.md section 12): the sampled rung's rows are the ones
 the turn outcome labels - the evidence the bar needs - and none of the three
 writers stored `state`. escalate_incomplete had 202 outcome-labelled rows on
-d1-2B and not one could be replayed, so no question change could be measured
-on its real labels. Pinned structurally (the call sites sit inside large
+d1-2B and not one could be replayed (it was retired the same day; the other
+sampled writers keep the rule). Pinned structurally (the call sites sit inside large
 methods): each sampled_row(...) call passes state=.
 """
 import re
@@ -43,4 +43,4 @@ def test_every_sampled_row_call_stores_state():
         for call in _calls((_ROOT / rel).read_text(encoding="utf-8", errors="replace")):
             seen += 1
             assert "state=" in call, f"{rel}: a sampled row without its question:\n{call}"
-    assert seen >= 3, "the three sampled writers moved; re-pin them"
+    assert seen >= 2, "the sampled writers moved; re-pin them"
