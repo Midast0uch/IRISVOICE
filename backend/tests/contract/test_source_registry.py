@@ -278,3 +278,71 @@ class TestAgeDays:
         assert _age_days("2026-07-17T00:00:00", now) == 0
         assert _age_days("", now) == 999
         assert _age_days("invalid", now) == 999
+
+
+# ── One question's sources never answer another (2026-11-10) ────────────
+
+
+class TestSourcesBelongToTheirQuestion:
+    """Research gate 2026-11-10 (commit 68bc2f80): r07 "first iPhone release
+    year company" shared ONE topic ("release year") with r01's Python query
+    and got its 4 Python URLs as a cache HIT; r29 (Git) failed the same way.
+    A source counts only when its learned topics cover half the query's
+    topics. Fails on the old lookup, which matched any one topic."""
+
+    async def _topics(self, q, topics):
+        return topics
+
+    async def test_one_shared_generic_topic_is_not_a_hit(self, store):
+        registry = SourceRegistry(store=store, threshold=2.0, ttl_days=7)
+        python_topics = ["python programming language", "creator", "first version", "release year"]
+        registry._extract_topics = lambda q: self._topics(q, python_topics)
+        await registry.learn(
+            "who created Python",
+            _make_result([f"https://en.wikipedia.org/wiki/Python_{i}" for i in range(4)],
+                         domain="en.wikipedia.org"),
+            {"en.wikipedia.org": 0.5})
+        registry._extract_topics = lambda q: self._topics(
+            q, ["first iphone", "release year", "apple", "company"])
+        result = await registry.resolve("first iPhone release year company")
+        assert result["hit"] is False
+        assert result["sources"] == []
+
+    async def test_the_same_question_still_hits(self, store):
+        registry = SourceRegistry(store=store, threshold=2.0, ttl_days=7)
+        topics = ["python programming language", "creator", "first version", "release year"]
+        registry._extract_topics = lambda q: self._topics(q, topics)
+        await registry.learn(
+            "who created Python",
+            _make_result([f"https://en.wikipedia.org/wiki/Python_{i}" for i in range(4)],
+                         domain="en.wikipedia.org"),
+            {"en.wikipedia.org": 0.5})
+        registry._extract_topics = lambda q: self._topics(
+            q, ["python programming language", "creator", "release year", "guido"])
+        result = await registry.resolve("who made Python and when")
+        assert result["hit"] is True and len(result["sources"]) == 4
+
+
+async def test_a_registry_hit_crawl_learns_nothing(monkeypatch):
+    """The HIT's URLs were learned for an earlier question; re-learning them
+    under this question's topics stored the Python pages as the iPhone
+    answer (2026-11-10). Fails on the old learn step, which had no plan."""
+    from backend.crawler import source_registry as sr
+    from backend.crawler.crawl_planner import CrawlPlan
+    from backend.crawler.orchestrator import CrawlOrchestrator
+
+    def _no_registry():
+        raise AssertionError("a registry-HIT crawl must not reach learn()")
+
+    monkeypatch.setattr(sr, "get_source_registry", _no_registry)
+    plan = CrawlPlan(urls=["https://en.wikipedia.org/wiki/History_of_Python"],
+                     instructions="", result_type="mixed", title="q",
+                     from_registry=True)
+    from backend.crawler.crawler_engine import PageData
+
+    page = PageData(url=plan.urls[0], title="History of Python",
+                    markdown="Python was created by Guido van Rossum. " * 20,
+                    html=None, metadata={})
+    fetched = type("F", (), {"pages": [page]})()
+    await CrawlOrchestrator._learn_from_crawl(object(), fetched, "first iPhone", plan)
+    assert CrawlPlan(urls=[], instructions="", result_type="mixed", title="q").from_registry is False

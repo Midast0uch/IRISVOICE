@@ -40,6 +40,11 @@ class CrawlPlan:
     instructions: str
     result_type: str       # 'table' | 'cards' | 'metrics' | 'mixed'
     title: str
+    # True when the URLs came from the SourceRegistry (a cache HIT): they were
+    # learned for an earlier question, so this crawl must not learn them
+    # again under the new question's topics (2026-11-10: one wrong HIT then
+    # stored the Python pages as the answer to the iPhone question).
+    from_registry: bool = False
 
 
 # Known bot-blocking / paywalled domains — the LLM tends to recommend these
@@ -166,6 +171,7 @@ class CrawlPlanner:
                 instructions="Extract all relevant information from the provided pages.",
                 result_type="mixed",
                 title=query[:60],
+                from_registry=True,
             )
 
         # ── Step 1.5: configured search provider (e.g. Exa) ─────────────

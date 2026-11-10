@@ -744,7 +744,7 @@ class CrawlOrchestrator:
         self._apply_har_penalties(fetched, query)
         # Wave 0 (REQ-18/REQ-19): register successful URLs so future crawls for
         # this topic seed from learned knowledge (memory-first).
-        await self._learn_from_crawl(fetched, query)
+        await self._learn_from_crawl(fetched, query, plan)
 
         # W3 (T15-T20): Exa retry — if the first batch returned no usable pages,
         # rewrite the query to be broader and retry once.
@@ -828,7 +828,7 @@ class CrawlOrchestrator:
                 setattr(fetched, "_retried", True)
                 self._stamp_discovery_provenance(fetched, discovered_urls)
                 self._apply_har_penalties(fetched, broader_query)
-                await self._learn_from_crawl(fetched, broader_query)
+                await self._learn_from_crawl(fetched, broader_query, plan)
 
         if fetched.error:
             _emit("CRAWLER_ERROR", {"message": fetched.error})
@@ -900,7 +900,7 @@ class CrawlOrchestrator:
                 setattr(fetched, "_retried", True)
                 self._stamp_discovery_provenance(fetched, discovered_urls)
                 self._apply_har_penalties(fetched, query)
-                await self._learn_from_crawl(fetched, query)
+                await self._learn_from_crawl(fetched, query, plan)
                 ok_pages = [p for p in fetched.pages if page_is_usable(p).usable]
                 self._record_yield(session_id, len(ok_pages))
         if not ok_pages:
@@ -956,7 +956,7 @@ class CrawlOrchestrator:
                     )
                     setattr(fetched, "_retried", True)
                     self._apply_har_penalties(fetched, broader_query)
-                    await self._learn_from_crawl(fetched, broader_query)
+                    await self._learn_from_crawl(fetched, broader_query, plan)
                     ok_pages = [p for p in fetched.pages if page_is_usable(p).usable]
                     if not ok_pages:
                         # retry produced nothing usable -> honest failure,
@@ -2732,12 +2732,18 @@ class CrawlOrchestrator:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[CrawlOrchestrator] penalize_url failed: %s", exc)
 
-    async def _learn_from_crawl(self, fetched: CrawlResult, query: str) -> None:
+    async def _learn_from_crawl(self, fetched: CrawlResult, query: str, plan: Optional[object] = None) -> None:
         """Register successfully-crawled URLs into SourceRegistry for this topic
         (REQ-18/REQ-19). Reuses the existing ``learn()`` — no new method. The
         more the agent researches, the smarter (and cheaper) later crawls become
         because ``resolve()`` then seeds from updated knowledge. Never raises.
+
+        A crawl of a registry HIT learns nothing (2026-11-10): its URLs were
+        learned for an earlier question, and re-learning them under THIS
+        question's topics turned one wrong HIT into a stored wrong answer.
         """
+        if getattr(plan, "from_registry", False):
+            return
         # REQ-1 AC1/AC3: judged by the SHARED predicate, not by `not p.error`.
         # This was the third instance of the three-way disagreement and the most
         # damaging one: a page with error=None and EMPTY markdown was learned as

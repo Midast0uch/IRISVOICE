@@ -252,7 +252,17 @@ class SourceRegistry:
     # ── Store helpers ───────────────────────────────────────────────────
 
     def _lookup_topics(self, topics: list[str]) -> list[dict]:
-        """Collect all unique sources matching any of the given topics."""
+        """Collect the unique sources learned for THIS question.
+
+        A source counts only when the topics it was learned under cover at
+        least half of the query's topics (2026-11-10). Matching on ANY one
+        topic let a generic topic carry another question's pages: "first
+        iPhone release year company" shared only "release year" with a Python
+        history query and got its 4 Python URLs (coverage 2.00 = the threshold,
+        a cache HIT); the Eiffel Tower query got Kilimanjaro's pages through
+        "metres". Entries without a stored topic list are judged on the topic
+        key they sit under."""
+        wanted = {_topic_key(t) for t in topics if t}
         seen_urls: set[str] = set()
         sources: list[dict] = []
         for topic in topics:
@@ -265,9 +275,13 @@ class SourceRegistry:
                 continue
             for entry in entries:
                 url = entry.get("url", "")
-                if url and url not in seen_urls:
-                    seen_urls.add(url)
-                    sources.append(entry)
+                if not url or url in seen_urls:
+                    continue
+                learned = {_topic_key(t) for t in (entry.get("topics") or [topic]) if t}
+                if wanted and len(learned & wanted) * 2 < len(wanted):
+                    continue
+                seen_urls.add(url)
+                sources.append(entry)
         return sources
 
     def _score_coverage(self, sources: list[dict]) -> float:
