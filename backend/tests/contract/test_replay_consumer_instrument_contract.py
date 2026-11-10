@@ -58,3 +58,27 @@ def test_each_variant_gets_the_bars_verdict(capsys):
     rc.bar_verdict("needs_action", res)
     out = capsys.readouterr().out
     assert "BAR: status=" in out and "oof_auroc=" in out
+
+
+def test_the_replay_verdict_uses_the_bars_folds_and_rule(monkeypatch):
+    """2026-11-10: bar_verdict passed only (confidence, correct, chosen), so a
+    replay verdict skipped grouped folds and the trivial-rule clause and read
+    more optimistic than the bar. Every row now carries its group, rule key,
+    P(yes) and reference into the fit."""
+    import scripts.fit_oracle_calibration as fit
+
+    seen = {}
+    real = fit.fit_consumer
+
+    def spy(rows, **kw):
+        seen["rows"] = list(rows)
+        return real(rows, **kw)
+
+    monkeypatch.setattr(fit, "fit_consumer", spy)
+    res = [(0.8, i % 5 != 0, True, True,
+            {"group": f"task{i % 30}", "rule_key": "read_file", "probability": 0.8,
+             "reference": None, "outside": True}) for i in range(200)]
+    rc.bar_verdict("tool_approval", res)
+    r0 = seen["rows"][0]
+    assert r0["group"] == "task0" and r0["rule_key"] == "read_file"
+    assert r0["probability"] == 0.8 and r0["outside_label"] is not None

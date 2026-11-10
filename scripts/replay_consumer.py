@@ -92,8 +92,10 @@ def load_rows(consumer: str, limit: int, stamps=None, engine: str = SOURCE_ENGIN
     """The recorded questions of one consumer (the newest first)."""
     c = open_store_read_only(app_store_path())
     rows, seen = [], set()
-    for ts, p in c.execute(
-            "SELECT created_at, interaction_payload FROM system_events "
+    from scripts.consumer_enforcement_report import fold_group
+
+    for ts, p, sid in c.execute(
+            "SELECT created_at, interaction_payload, session_id FROM system_events "
             "WHERE event_type='tool_execution' ORDER BY rowid DESC"):
         try:
             d = json.loads(p or "{}").get("decision")
@@ -131,7 +133,13 @@ def load_rows(consumer: str, limit: int, stamps=None, engine: str = SOURCE_ENGIN
         rows.append({"state": state, "menu": menu, "ref": ref, "mode": mode,
                      "stamp": d.get("criteria_version"), "ts": ts,
                      "confidence": d.get("confidence"), "chosen": d.get("chosen"),
-                     "outside_label": d.get("outside_label")})
+                     "outside_label": d.get("outside_label"),
+                     # the bar's fold group and trivial-rule key (2026-11-10):
+                     # without them the replay verdict skipped grouped folds
+                     # and clause 3b, so it read more optimistic than the bar
+                     "group": fold_group(sid),
+                     "rule_key": (str(state.get("proposed_tool") or "")
+                                  if isinstance(state, dict) else "")})
     # SPREAD the sample over the whole cohort, newest first. MEASURED
     # 2026-11-04: taking the newest N rows sampled only the test-running
     # steps (AUROC 0.8448) and hid the read/add steps, where the Oracle
@@ -282,7 +290,7 @@ def _run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, cust
                 same_pick += 1 if chosen == _rec_yes else 0
                 compared += 1
             out.append((max(p, 1.0 - p), chosen == bool(r["ref"]),
-                        chosen, bool(r["ref"])))
+                        chosen, bool(r["ref"]), _meta(r, probability=p)))
             continue
         st = r["state"]
         if isinstance(st, dict):
@@ -335,11 +343,23 @@ def _run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, cust
         # measures the same population the report measures.
         if ds.chosen in CONTROL_LABELS:
             continue
-        out.append((float(ds.confidence), ok, ds.chosen, r["ref"]))
+        out.append((float(ds.confidence), ok, ds.chosen, r["ref"],
+                    _meta(r, reference=(r["ref"] if r.get("outside_label") is None
+                                        else None))))
     if compared:
         print(f"   fresh ask vs the recorded row: same pick {same_pick}/{compared}, "
               f"same confidence {same_conf}/{compared}")
     return out
+
+
+def _meta(r, probability=None, reference=None) -> dict:
+    """What the bar's fit needs beside (confidence, correct, chosen): the fold
+    group, the trivial-rule key, P(yes) for a yes/no consumer, the reference
+    for a parity-labelled choice row, and whether the row is outcome-labelled
+    (the fit never blends an outcome curve with a parity curve)."""
+    return {"group": r.get("group"), "rule_key": r.get("rule_key"),
+            "probability": probability, "reference": reference,
+            "outside": r.get("outside_label") is not None}
 
 
 def report(variant: str, res):
@@ -399,7 +419,14 @@ def bar_verdict(consumer: str, res) -> None:
     except Exception as exc:  # noqa: BLE001 - the quick numbers above still stand
         print(f"   BAR: unavailable ({exc!r})")
         return
-    rows = [{"confidence": c, "correct": bool(ok), "chosen": ch} for c, ok, ch, _ref in res]
+    rows = []
+    for x in res:
+        m = x[4] if len(x) > 4 else {}
+        rows.append({"confidence": x[0], "correct": bool(x[1]), "chosen": x[2],
+                     "group": m.get("group"), "rule_key": m.get("rule_key"),
+                     "probability": m.get("probability"),
+                     "reference": m.get("reference"),
+                     "outside_label": bool(x[1]) if m.get("outside") else None})
     honest = fit_consumer(rows, acting=ACTING_ANSWER.get(consumer), consumer_id=consumer)
     if consumer in ACTING_ENFORCED:
         honest["acting_required"] = True
@@ -411,6 +438,8 @@ def bar_verdict(consumer: str, res) -> None:
         return f"{v:.4f}" if isinstance(v, (int, float)) else str(v)
 
     print(f"   BAR: status={status} gap={gap or '-'}")
+    print(f"        folds={honest.get('folds')} map={honest.get('method')} "
+          f"baseline={honest.get('baseline')}")
     print(f"        rows={honest.get('rows_distinct')} classes={honest.get('classes')} "
           f"oof_auroc={_f(oof.get('auroc'))} oof_ece={_f(oof.get('ece'))} "
           f"threshold={_f(honest.get('threshold'))} precision={_f(oof.get('precision_at_t'))} "
