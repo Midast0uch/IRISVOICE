@@ -1702,7 +1702,7 @@ classes:
 |---|---|---|---|
 | tool_choice (route) | CORE | live: class decision + shortlist (§10) | keep; the bar record is stale for this role |
 | route_v2, narration, presentation (route / shape) | CORE | deciding | keep |
-| tool_approval (approve) | BOON, best next candidate | AUROC 0.667, acting "no" 27% | the frame lacks the tool's recent outcomes; replay with them (next experiment) |
+| tool_approval (approve) | BOON; the incumbent stays | live criteria at chance (0.49); a per-tool failure-rate RULE beats d1 (12.8) | a plain rule, not the Oracle, if the job is wanted; never enforce on eval-only rows |
 | depth_met (judge_depth) | BOON | AUROC <= 0.65 | ask at TURN level to match its turn-verdict label |
 | review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |
 | needs_action (interpret_step) | BOON, low priority | AUROC 0.93, acting "no" rare (44/1233) | the frame needs "facts already gathered" |
@@ -1712,4 +1712,48 @@ The rule for the next agent: before label or prompt work on a consumer, name
 its class here. Spend effort on CORE first, and on a BOON only when a cheap,
 outside label exists. A job with no trustworthy label stays with its
 incumbent; it is never forced to a pass.
+
+### 12.8 tool_approval + the tool's recent outcomes (offline, 2026-11-09)
+
+Hypothesis: many call failures are environmental and recur per tool, so the
+proposed tool's earlier outcomes in the session ("search: 3 prior calls this
+session, 2 failed (last failed)") should let d1 predict failure. Cohort
+tool_approval/v6 on d1-2B: 6482 distinct rows, success 85%, all 578 sessions
+`eval-*` (92 tasks). Prior outcomes from the labelled rows themselves, strictly
+earlier rowid, same session and tool; leakage checked (independent recount
+6482/6482; flipping a row's own label never changed its line). No frame trimmed.
+
+| Variant | OOF AUROC | Threshold / precision | Acting "no" | Status |
+|---|---|---|---|---|
+| live criteria, A (today) | 0.494 | none | 3437 at 18.5% | shadow |
+| live criteria, B (+ field) | 0.493 | none | 3296 at 20.1% | shadow |
+| bare criteria, A | 0.667 | none | 2205 at 27.2% | shadow |
+| bare criteria, B (+ field) | 0.698 | 0.908 / 0.932 (692 rows) | 153 at 90.9% (Wilson 0.852) | passes, narrowly |
+| RULE: session prior failure rate (no model) | 0.671 | precision 0.902 | 359 at 97.2% | passes |
+| RULE: tool identity (cross-session rate) | 0.644 | - | 648 at 98.8% | AUROC only |
+
+Reading:
+- The live question stays at chance with or without the field: d1 answers "no"
+  on 53% of rows, mostly cheap read/list calls.
+- The bare + field "pass" is the model learning WHICH TOOLS ARE BROKEN in the
+  eval environment: 91% of its confident "no" answers are `search`,
+  `browser_open`, `crawler_query`, which failed ~99% in those sessions. On the
+  other tools its "no" precision is 13%.
+- A per-tool failure-rate rule beats d1 on every number, with no model call.
+  By the job rule (12.7) the Oracle does not take this job. If the app wants a
+  pre-call failure guard, it is a counted rule, not a model.
+- The ~99% web-tool failure rate in the eval cohort is itself an ENVIRONMENT
+  finding (this machine's DNS; the browser install of 2026-11-09 came after
+  most of these rows), not a decision to learn.
+
+Two METHOD defects the bar must fix before any further certification:
+1. The bar's out-of-fold split is not grouped by session or task. Eval rows
+   repeat the same 92 tasks, so near-identical rows sit on both sides of a fold
+   and the OOF numbers are optimistic.
+2. The bar passed a rule built on tool identity. A bar that certifies "this
+   tool is broken here" measures the environment, not decision quality. Every
+   certification should state the best trivial rule's numbers beside the
+   model's, and the model must beat it.
+Scripts: scratchpad ta_recent/ (session afc32cf8): common.py, leak_check.py,
+run_ab.py, analyze.py, diag.py.
 
