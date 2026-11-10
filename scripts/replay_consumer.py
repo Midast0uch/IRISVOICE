@@ -108,7 +108,12 @@ def load_rows(consumer: str, limit: int, stamps=None, engine: str = SOURCE_ENGIN
         if stamps and d.get("criteria_version") not in stamps:
             continue
         state = d.get("state")
-        menu = [x["name"] for x in (d.get("candidates") or []) if isinstance(x, dict)]
+        # `candidates` is the scored menu on most rows but a COUNT on some
+        # (presentation): a fixed-menu consumer then replays its declared
+        # options (2026-11-10: the int crashed load_rows).
+        _cands = d.get("candidates")
+        menu = ([x["name"] for x in _cands if isinstance(x, dict)]
+                if isinstance(_cands, list) else list(declaration_text(consumer) or {}))
         ref = d.get("brain_choice")
         mode = "choice"
         if not state:
@@ -175,6 +180,10 @@ def live_instruction(consumer: str) -> str:
         from backend.agent.tool_approval_shadow import TOOL_APPROVAL_INSTRUCTION
 
         return TOOL_APPROVAL_INSTRUCTION
+    if consumer == "narration":
+        from backend.agent.decision_engine import NARRATION_INSTRUCTION
+
+        return NARRATION_INSTRUCTION
     from backend.agent.surface_shadow import SURFACE_CONSUMERS
 
     return SURFACE_CONSUMERS.get(consumer, "")
@@ -294,13 +303,17 @@ def _run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, cust
             continue
         st = r["state"]
         if isinstance(st, dict):
-            # 2026-11-04: the state is now the EXACT frame the live call
-            # passed, so replay hands the dict back unchanged. The backend
-            # reads `goal` from a raw mapping, which is what the live call
-            # did; re-wrapping it in an OracleState would change the prompt.
-            state_text = trim_state(str(st.get("goal") or ""), frame_mode)
+            # The state is the EXACT frame the live call passed. The live
+            # engine renders the job's declared fields from it (job_input),
+            # so the replay renders them too - not the goal alone
+            # (2026-11-10: narration replayed goal-only reproduced 38/60
+            # picks; with job_input 521/521). --raw-frame keeps the raw mapping
+            # for a site that bypasses the engine.
+            from backend.agent.decision_engine import job_input
+
             raw = dict(st)
-            raw["goal"] = state_text
+            raw["goal"] = trim_state(str(st.get("goal") or ""), frame_mode)
+            state_text = job_input(consumer, raw).text
         else:
             state_text = trim_state(st, frame_mode)
             raw = {"goal": state_text}

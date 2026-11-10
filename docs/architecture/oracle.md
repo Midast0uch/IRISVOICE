@@ -675,6 +675,9 @@ right 0.931 (ECE 0.060) while raw confidence held 0.042.
 - A parity label caps a consumer at its incumbent's quality. When the incumbent is a
   deterministic rule, "always the most common answer" is a strong rival
   (`narration`, `presentation` lose to it).
+- A frame field that IS the reference (narration `beats_admitted`, presentation
+  `card_already_rendered`) lets a question that restates the rule pass every clause
+  while measuring nothing. Such a pass is a copy, not a job: do not ship it.
 - A threshold applies to the cohort it was fitted on.
 - IRIS records no trustworthy step-level truth today, so no step-completion consumer
   (a step judge, a post-execution review) can be certified until one exists.
@@ -765,7 +768,7 @@ that cannot pass is not a broken job: the incumbent keeps it.
 |---|---|---|---|
 | tool_choice (route) | CORE | LIVE and certified (class margin, 0.936 at the gate) | keep; measure web/browser menus on a working network |
 | route_v2 (route) | incumbent decides (measured) | passes the bar on parity; on an outcome label the gate is better (97.9% vs 92.2%) | no site; send knowledge questions direct in the gate rule instead |
-| narration, presentation (shape) | incumbent decides | "the most common answer" beats d1 against their deterministic incumbents | reopen only with an outside label the incumbent can get wrong |
+| narration, presentation (shape) | incumbent decides (measured: no honest pass) | the frame carries the answer: narration's reference is `steps >= 2` (and `beats_admitted` IS the reference); presentation's is `card_already_rendered`. Honest variants stay below the most-common-answer rule (narration 0.17-0.77 vs 0.825; presentation 0.980 vs 0.988 with the flag removed); only variants that copy the rule into the question pass | reopen only with an outside label the incumbent can get wrong (a dismissed or reopened card, an interrupted narration) |
 | tool_approval (approve) | BOON; incumbent stays | live question at chance; a per-tool failure-rate rule beats d1 | a counted rule, not the Oracle, if the job is wanted |
 | depth_met (judge_depth) | BOON | AUROC 0.55 | ask at TURN level to match its turn-verdict label |
 | review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |

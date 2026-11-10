@@ -8753,10 +8753,9 @@ class AgentKernel:
             # REQ-4: the DECLARED type + criteria come from the declaration
             # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
             if needs_upgrade(get_consumer_spec("narration")):
-                register_declared("narration", (
-                    "How much of this plan's narration should be spoken "
-                    "aloud: every beat, only the first, or nothing?"
-                ), options)
+                from backend.agent.decision_engine import NARRATION_INSTRUCTION
+
+                register_declared("narration", NARRATION_INSTRUCTION, options)
             eng = get_decision_engine()
             if eng is None:
                 return

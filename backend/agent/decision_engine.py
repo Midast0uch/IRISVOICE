@@ -719,6 +719,14 @@ CONSUMER_TASKS: Dict[str, ConsumerSpec] = {
 # way; the bar then decides whether it deserves a better question. Deliberately
 # generic: an honest vague question beats no measurement, and an uncalibrated
 # consumer can never enforce.
+# The narration consumer's question, registered by the kernel at its site and
+# read by the offline replay (scripts/replay_consumer.live_instruction), so the
+# replay asks the live question (2026-11-10: without it 27/40 picks reproduced).
+NARRATION_INSTRUCTION = (
+    "How much of this plan's narration should be spoken "
+    "aloud: every beat, only the first, or nothing?"
+)
+
 AUTO_INSTRUCTION = (
     "Choose the single best option for the goal below. The options are the "
     "candidate answers to one question about the current step."
