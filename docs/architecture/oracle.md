@@ -18,11 +18,11 @@ end of that file ("ARCHIVED BLUEPRINT"), which keeps the old section numbers.
 | Area | State |
 |---|---|
 | Model | d1-2B (`d1-2B-Q4_K_M.gguf`), native Decision Index API, identity `d1-2b-q4_k_m+systemone` |
-| `tool_choice` | LIVE in its own role: the Oracle decides the tool CLASS, the tool model picks the tool (section 5) |
+| `tool_choice` | LIVE in its own role: the Oracle decides the tool CLASS, the tool model picks the tool (section 5); the bar CERTIFIES this role at its live gate |
 | Deciding through the bar | NOTHING. An Oracle answer acts only where a decision site reads `decides()` / `oracle_acts()`, and no consumer with a site holds an earned bar on the allow-list |
 | Earned, no decision site | `route_v2` (bar earned on a parity label; the kernel only shadows it), `call_closing` (refused by design) |
 | Earned, has a site, not switched on | `web_intent` (the `explorer` gate), `user_feedback` (waiver; not switchable) |
-| Sampled | `needs_action`, `tool_choice` bar path (both have sites); `review_verdict` (status only: no site) |
+| Sampled | `needs_action` (has a site); `review_verdict` (status only: no site) |
 | Shadow (the incumbent decides) | `narration`, `presentation`, `tool_approval`, `depth_met`, `depth_route`, `done`, `sufficient`, `recovery_strategy`, `browser_next`, `click_safety`, event consumers |
 | No decision site at all (`NO_DECISION_SITE`) | `route_v2`, `narration`, `review_verdict`, `depth_route`: their rows are measurement only |
 | Retired | `escalate_incomplete` (and its job `judge_step`), `mode`, `on_track`, `has_gaps`, `retry_same`, `use_thinking` |
@@ -232,7 +232,7 @@ switched on.
 
 | Consumer | Job | Type | Incumbent | Where | Status |
 |---|---|---|---|---|---|
-| `tool_choice` | route | choice | the tool model | `ToolDecisionBox.choose_node_tool` | class role LIVE (section 5); bar path sampled |
+| `tool_choice` | route | choice | the tool model | `ToolDecisionBox.choose_node_tool` | class role LIVE and certified (section 5) |
 | `route_v2` | route | choice | the kernel's turn route (`"der" if planned else "direct"`) | kernel, `eng.shadow` only | earned; no decision site |
 | `recovery_strategy` | route | choice | the recovery ladder | `ToolDecisionBox.recovery_strategy` | shadow (0 rows: failure-only path) |
 | `depth_route` | route | choice | the loop's own continuation | `ToolDecisionBox.depth_route` (lane row only) | shadow; no decision site |
@@ -377,7 +377,7 @@ identity = model_id | readout_mode | criteria_hash
   every consumer starts "not earned". This is the fail-closed design, not a fault.
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp. Current stamps: `tc-decide-v4` (tool_choice bar
-  path), `route_v2/binary-v1`, `needs_action/v7`, `review_verdict/v11`,
+  path; certified as the class role: `tc-decide-v9`), `route_v2/binary-v1`, `needs_action/v7`, `review_verdict/v11`,
   `tool_approval/v6`, `depth_met/v3`, `depth_route/v3`, `done/v2`,
   `narration/shape-v2`, `presentation/shape-v2`, `web_intent/v3`. The report and the
   fit take `--scope CONSUMER=STAMP` to measure one cohort. A stamp is never reused.
@@ -498,16 +498,25 @@ pick was better. Web and browser menus are not yet measured (almost every stored
 decided row offered coding tools only); the unmapped-tool rule keeps them safe until
 a web live gate runs on a working network.
 
-The bar record for `tool_choice` measures the forced thresholded path
-(`tc-decide-v4`), not this role. Do not write a bar record under the class or
-shortlist labels: certifying the class role would need its own evidence (class
-accuracy, the margin gate, the error rate) and is an owner decision.
+**Certification.** The bar certifies this role on cohort `tc-decide-v9`:
+- the label is the action class (did the Oracle pick the right CLASS?);
+- the confidence is the class margin (`consumer_enforcement_report.class_margin_confidence`), not the tool confidence;
+- a pick of a tool with no class is unscoreable (`unscoreable_unmapped`): the
+  action-class label cannot judge it and the role never class-decides it;
+- the policy point is the live gate (`POLICY_RAW_THRESHOLD["tool_choice"] =
+  CLASS_MARGIN_MIN`), so the bar measures precision exactly where the app acts.
+
+Result: 859 rows (790 right / 69 wrong), OOF AUROC 0.776, ECE 0.024, 753 rows
+above the gate at precision 0.936 (Wilson 0.917): enforced. The record certifies
+the class role only: `enforced` counts only in class mode, and the forced path's
+tool-confidence check never runs in class mode, so a margin threshold never gates
+a tool confidence. Guard: `test_tool_choice_class_certification_contract.py`.
 
 ---
 
 ## 6. Other decision sites
 
-### 6.1 route_v2: the turn route (shadow only)
+### 6.1 route_v2: the turn route (shadow only, by measurement)
 
 `route_v2` asks whether a turn should answer `direct` (from what is known) or run
 a `der` plan (job `route`, choice). The incumbent is the kernel's own fork,
@@ -518,6 +527,17 @@ which the kernel comment notes is not truth (the rule calls every memory ask
 `direct`). To give it a job it needs (1) an outcome label, for example whether the
 turn ran a tool, (2) a decision site that reads `decides("route_v2")`, and then
 (3) a live gate.
+
+Measured on an outcome label (2026-11-10, 1207 labelled eval turns: "der needed" =
+the DER turn made a project action and passed; "direct was enough" = it passed on
+the direct route, or on DER with no tool call): the gate is right 97.9%, the
+Oracle 92.2%. Even its confident der -> direct switches (conf >= 0.95) are right
+25 of 32. The label itself is partly wrong where the planner read files it did not
+need ("Explain how binary search works... Do not use the web" ran `list_directory`),
+and the truth there is readable from the prompt's own words. So route_v2 gets NO
+decision site: wiring it would lower quality against the gate and add a model call
+(0.2-0.3 s) to every turn. The speed it could bring - knowledge questions skipping
+DER planning - belongs to the gate (`compile_dag`), as a rule.
 
 ### 6.2 needs_action: the step mode
 
@@ -690,7 +710,7 @@ rule's number on the same metric (truth AUROC for yes/no, accuracy for choice).
 | call_closing | 2570 (1878/692) | 0.681 | - | 0.030 | isotonic | 0.9594 (77, 0.935, 0.857) | enforced in the record; refused, never decides |
 | needs_action (`needs_action/v7`) | 3570 (3334/236) | 0.823 | truth 0.953 vs 0.424 | 0.005 | isotonic | none | sampled: no threshold holds the acting "no" |
 | review_verdict (`review_verdict/v11`) | 572 (321/251) | 0.492 | - | 0.070 | isotonic | none | sampled: AUROC; no decision site |
-| tool_choice bar path (`tc-decide-v4`) | 698 (624/74) | 0.530 | - | 0.050 | isotonic | 0.8782 (355, 0.887, 0.850) | sampled: AUROC (the class role does not use this) |
+| tool_choice class role (`tc-decide-v9`) | 859 (790/69) | 0.776 | - | 0.024 | isotonic | 0.7596 = margin 0.30 (753, 0.936, 0.917) | enforced (class margin; section 5) |
 | narration (`narration/shape-v2`) | 1002 (604/398) | 0.753 | accuracy 0.603 vs 0.811 | 0.059 | isotonic | 0.6674 (376, 0.902, 0.867) | shadow: the trivial rule wins (0.934 vs 0.902 above the threshold) |
 | presentation (`presentation/shape-v2`) | 647 (312/335) | 1.000 | accuracy 0.482 vs 0.988 | 0.031 | isotonic | 0.1048 (339, 0.920, 0.887) | shadow: the trivial rule wins (0.985 vs 0.920 above the threshold) |
 | tool_approval (`tool_approval/v6`) | 11897 (6183/5714) | 0.499 | truth 0.578 vs 0.762 | 0.002 | isotonic | none | shadow: AUROC; a per-tool rule beats it |
@@ -743,8 +763,8 @@ that cannot pass is not a broken job: the incumbent keeps it.
 
 | Job (consumer) | Class | State | What it needs next |
 |---|---|---|---|
-| tool_choice (route) | CORE | LIVE: class decision + shortlist | keep; measure web/browser menus on a working network |
-| route_v2 (route) | CORE candidate | bar earned on a PARITY label; no decision site | an outcome label (did the turn run a tool?), then a decision site, then a live gate |
+| tool_choice (route) | CORE | LIVE and certified (class margin, 0.936 at the gate) | keep; measure web/browser menus on a working network |
+| route_v2 (route) | incumbent decides (measured) | passes the bar on parity; on an outcome label the gate is better (97.9% vs 92.2%) | no site; send knowledge questions direct in the gate rule instead |
 | narration, presentation (shape) | incumbent decides | "the most common answer" beats d1 against their deterministic incumbents | reopen only with an outside label the incumbent can get wrong |
 | tool_approval (approve) | BOON; incumbent stays | live question at chance; a per-tool failure-rate rule beats d1 | a counted rule, not the Oracle, if the job is wanted |
 | depth_met (judge_depth) | BOON | AUROC 0.55 | ask at TURN level to match its turn-verdict label |

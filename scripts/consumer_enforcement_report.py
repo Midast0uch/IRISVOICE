@@ -160,6 +160,34 @@ def fold_group(session_id: Any) -> Optional[str]:
     return m.group(1) if m else sid
 
 
+def class_margin_confidence(d: Dict[str, Any]) -> Optional[float]:
+    """A tool_choice action-class row's confidence: the CLASS margin.
+
+    The class role (oracle.md section 5) decides the tool CLASS and acts when
+    the class margin clears CLASS_MARGIN_MIN; its label is the action class.
+    So its confidence is the margin of the top-1 tool's class, from the stored
+    distribution (`candidates`), clipped to [0, 1]. None when the pick's tool
+    has no class: the action-class label cannot score it (measured 2026-11-10:
+    all 62 such outcome rows read "wrong" - crawler_query, browser_open,
+    search, stop_command - a label artifact, not an error the class role
+    makes, since it never class-decides an unmapped tool)."""
+    from types import SimpleNamespace
+
+    from backend.agent.tool_choice_action_class import (
+        READ, RUN, WRITE, class_masses, classify_tool,
+    )
+
+    top = classify_tool(str(d.get("chosen") or ""))
+    if top not in (READ, WRITE, RUN):
+        return None
+    dist = [SimpleNamespace(name=c.get("name"), prob=c.get("prob"))
+            for c in (d.get("candidates") or []) if isinstance(c, dict)]
+    _, margin = class_masses(dist, top)
+    if margin is None:
+        return None
+    return max(0.0, min(1.0, float(margin)))
+
+
 def declared_only(rows: List[Dict[str, Any]], skipped: Dict[str, int]) -> List[Dict[str, Any]]:
     """Only a DECLARED consumer's rows (an event_type:<family> inherits
     event_family). A RETIRED consumer's old rows stay in the ledger and must
@@ -210,7 +238,7 @@ def load_rows(
     rows: List[Dict[str, Any]] = []
     skipped = {"unreadable": 0, "no_confidence": 0, "no_label": 0,
                "unscoreable_control": 0, "unscoreable_offmenu": 0,
-               "other_backend": 0, "duplicates": 0}
+               "other_backend": 0, "duplicates": 0, "unscoreable_unmapped": 0}
     if binary is None:
         binary = binary_consumers()
     seen: Dict[tuple, Dict[str, Any]] = {}
@@ -267,6 +295,12 @@ def load_rows(
                     skipped["unscoreable_offmenu"] += 1
                 continue
             conf = float(conf)
+            if str(cid) == "tool_choice" and d.get("label_source") == "action_class":
+                _m = class_margin_confidence(d)
+                if _m is None:
+                    skipped["unscoreable_unmapped"] += 1
+                    continue
+                conf = _m
             prob = None
             if str(cid) in binary:
                 prob = (float(d["probability"]) if d.get("probability") is not None

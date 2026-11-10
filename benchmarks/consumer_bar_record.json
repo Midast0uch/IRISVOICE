@@ -254,10 +254,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "presentation",
-    "ece": 0.3365,
-    "gap": "does not beat a trivial rule (accuracy: model 0.4822, rule 0.9876 from the input key alone)",
-    "precision": 0.9204,
-    "rows": 647,
+    "ece": 0.3342,
+    "gap": "does not beat a trivial rule (accuracy: model 0.4862, rule 0.9877 from the input key alone)",
+    "precision": 0.9215,
+    "rows": 652,
     "status": "shadow"
   },
   "recovery_strategy": {
@@ -309,8 +309,8 @@
     "consumer_id": "route_v2",
     "ece": 0.0423,
     "gap": "",
-    "precision": 0.9679,
-    "rows": 1240,
+    "precision": 0.968,
+    "rows": 1242,
     "status": "enforced"
   },
   "sufficient": {
@@ -343,9 +343,9 @@
     },
     "consumer_id": "tool_approval",
     "ece": null,
-    "gap": "oof AUROC 0.499 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.4995 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
-    "rows": 11897,
+    "rows": 11899,
     "status": "shadow"
   },
   "tool_choice": {
@@ -355,16 +355,16 @@
       "calibrated_cap": 32,
       "candidate_cap": 32,
       "criteria_hash": "3368a26b3a9f",
-      "criteria_version": "tc-decide-v4",
+      "criteria_version": "tc-decide-v9",
       "engine_id": "d1-2b-q4_k_m+systemone",
       "readout_mode": "systemone"
     },
     "consumer_id": "tool_choice",
-    "ece": 0.1942,
-    "gap": "enforcement bar unmet (oof AUROC 0.5298 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.9101,
-    "rows": 698,
-    "status": "sampled"
+    "ece": 0.3562,
+    "gap": "",
+    "precision": 0.9814,
+    "rows": 1014,
+    "status": "enforced"
   },
   "user_feedback": {
     "config": {
@@ -377,10 +377,10 @@
       "readout_mode": "systemone"
     },
     "consumer_id": "user_feedback",
-    "ece": 0.3069,
-    "gap": "no-error-mass waiver: 3 wrong in 742 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
-    "precision": 0.9979,
-    "rows": 742,
+    "ece": 0.3066,
+    "gap": "no-error-mass waiver: 3 wrong in 743 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
+    "precision": 0.998,
+    "rows": 743,
     "status": "enforced"
   },
   "web_intent": {
@@ -397,7 +397,7 @@
     "consumer_id": "web_intent",
     "ece": 0.0054,
     "gap": "no-error-mass waiver: 11 wrong in 430 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
-    "precision": 0.9892,
+    "precision": 0.9827,
     "rows": 753,
     "status": "enforced"
   }

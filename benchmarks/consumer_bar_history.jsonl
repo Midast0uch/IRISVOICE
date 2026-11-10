@@ -68,3 +68,4 @@
 {"at": "2026-11-10T04:01:58+00:00", "consumer": "route_v2", "gap": "oof calibrated ECE 0.0601 > 0.05", "status": "shadow"}
 {"at": "2026-11-10T04:01:58+00:00", "consumer": "web_intent", "gap": "no-error-mass waiver: 11 wrong in 430 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed", "status": "enforced"}
 {"at": "2026-11-10T04:20:35+00:00", "consumer": "route_v2", "gap": "", "status": "enforced"}
+{"at": "2026-11-10T05:42:58+00:00", "consumer": "tool_choice", "gap": "", "status": "enforced"}

@@ -72,7 +72,13 @@ FOLDS = 5
 # Measured 2026-11-07 (action-class label): raw 0.70 selects 122 of 290 rows at
 # 95.9% precision (Wilson 90.8%) vs 90.7% overall. Only applies when that
 # consumer's rows are fitted; the bar still checks every other clause.
-POLICY_RAW_THRESHOLD = {"tool_choice": 0.70}
+# 2026-11-10: tool_choice is certified as the CLASS ROLE - its confidence is
+# the class margin (consumer_enforcement_report.class_margin_confidence) and its
+# policy point is the live class gate, CLASS_MARGIN_MIN (0.30): the bar measures
+# precision exactly where the app acts (753 rows above at 0.936 on tc-decide-v9).
+from backend.agent.tool_choice_action_class import CLASS_MARGIN_MIN  # noqa: E402
+
+POLICY_RAW_THRESHOLD = {"tool_choice": CLASS_MARGIN_MIN}
 # Below two blocks of evidence there is nothing to fit: a map would be one
 # constant and its out-of-fold score would measure the fold split, not the map.
 MIN_FIT_ROWS = 2 * MIN_BLOCK

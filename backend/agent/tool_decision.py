@@ -1919,7 +1919,10 @@ class ToolDecisionBox:
             _always = always_enabled()
             _shortlist_k = shortlist_k()
             _class_mode = class_decision_enabled()
-            enforced = decides("tool_choice") is not None
+            # The bar certifies the CLASS ROLE: its threshold is on the class
+            # margin scale (oracle.md section 5), so it counts only in class
+            # mode and never gates the forced path's TOOL confidence.
+            enforced = _class_mode and decides("tool_choice") is not None
             sampled = ((not enforced) and (not _always) and (not _shortlist_k)
                        and (not _class_mode)
                        and sampled_consult_ok("tool_choice", scope_key))
@@ -1959,7 +1962,7 @@ class ToolDecisionBox:
             ds = eng.decide("tool_choice", menu, frame)
             if ds is None or ds.chosen in (self._DE_DELEGATE, self._DE_NONE):
                 return None
-            if (enforced and not _always and not _shortlist_k
+            if (enforced and not _always and not _shortlist_k and not _class_mode
                     and not oracle_acts("tool_choice", float(ds.confidence))):
                 return None
             # tc-decide-v9 (2026-11-07): the SCORING label is the Oracle's own
