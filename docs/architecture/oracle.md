@@ -19,9 +19,9 @@ end of that file ("ARCHIVED BLUEPRINT"), which keeps the old section numbers.
 |---|---|
 | Model | d1-2B (`d1-2B-Q4_K_M.gguf`), native Decision Index API, identity `d1-2b-q4_k_m+systemone` |
 | `tool_choice` | LIVE in its own role: the Oracle decides the tool CLASS, the tool model picks the tool (section 5); the bar CERTIFIES this role at its live gate |
-| Deciding through the bar | NOTHING. An Oracle answer acts only where a decision site reads `decides()` / `oracle_acts()`, and no consumer with a site holds an earned bar on the allow-list |
-| Earned, no decision site | `route_v2` (bar earned on a parity label; the kernel only shadows it), `call_closing` (refused by design), `tool_approval` (safety question; earned on the owner-policy answer sheet, kept shadow by the owner: section 9) |
-| Earned, has a site, not switched on | `web_intent` (the `explorer` gate), `user_feedback` (waiver; not switchable) |
+| Deciding through the bar | `tool_choice` (row above; `tc-decide-v9`: 1575 distinct rows, OOF AUROC 0.770, precision 0.950 / Wilson 0.936 - measured 2026-11-10; 132 class decisions in 8 coding tasks, none fell back) and `web_intent` (allow-listed 2026-11-10 after its live gate: research 31/35 = the 2026-11-05 run, no standard regressed; on those goals it agreed with the keywords 10/10, median 50 ms per goal). Measure `tool_choice` ONLY on its live stamp: the unscoped report mixes every stamp since v1 (13664 rows, AUROC 0.646) and reads as a failure it is not |
+| Earned, no decision site | `route_v2` (bar earned on a parity label; the kernel only shadows it), `call_closing` (refused by design), `tool_approval` (safety question: the v3 question earns the bar on the answer sheet it was worded against, and FAILS on the held-out sheet - section 9) |
+| Earned, has a site, not switched on | `user_feedback` (waiver; not switchable) |
 | Sampled | `needs_action` (has a site); `review_verdict` (status only: no site) |
 | Shadow (the incumbent decides) | `narration`, `presentation`, `depth_met`, `depth_route`, `done`, `sufficient`, `recovery_strategy`, `browser_next`, `click_safety`, event consumers |
 | No decision site at all (`NO_DECISION_SITE`) | `route_v2`, `narration`, `review_verdict`, `depth_route`, `tool_approval`: their rows are measurement only |
@@ -378,7 +378,7 @@ identity = model_id | readout_mode | criteria_hash
 - The frame is NOT inside `criteria_hash`. A frame or question change is tracked by
   the row's `criteria_version` stamp. Current stamps: `tc-decide-v4` (tool_choice bar
   path; certified as the class role: `tc-decide-v9`), `route_v2/binary-v1`, `needs_action/v7`, `review_verdict/v11`,
-  `tool_approval/safety-v1`, `depth_met/v4`, `depth_route/v3`, `done/v4` (the first rows that ask the declared question),
+  `tool_approval/safety-v3`, `depth_met/v4`, `depth_route/v3`, `done/v4` (the first rows that ask the declared question),
   `narration/shape-v3`, `presentation/shape-v3`, `web_intent/v3`. The report and the
   fit take `--scope CONSUMER=STAMP` to measure one cohort. A stamp is never reused.
 
@@ -680,6 +680,12 @@ right 0.931 (ECE 0.060) while raw confidence held 0.042.
   `card_already_rendered`) lets a question that restates the rule pass every clause
   while measuring nothing. Such a pass is a copy, not a job: do not ship it. Both
   fields left the frames in `shape-v3` (2026-11-10).
+- The engine's `confidence` field is documented upstream (System One API) as
+  `1 - H(p)/ln(N)`, distribution concentration, "not calibrated correctness".
+  Checked 2026-11-10 on every stored choice row: it ranks errors exactly as the
+  top probability does (identical AUROC on browser_next, depth_route, narration,
+  review_verdict, tool_choice), and the top-1 minus top-2 margin gains nothing
+  outside tool_choice's class role. The readout is not why a job fails.
 - A threshold applies to the cohort it was fitted on.
 - IRIS records no trustworthy step-level truth today, so no step-completion consumer
   (a step judge, a post-execution review) can be certified until one exists.
@@ -719,7 +725,9 @@ rule's number on the same metric (truth AUROC for yes/no, accuracy for choice).
 | narration (`narration/shape-v2`) | 1002 (604/398) | 0.753 | accuracy 0.603 vs 0.811 | 0.059 | isotonic | 0.6674 (376, 0.902, 0.867) | shadow: the trivial rule wins (0.934 vs 0.902 above the threshold) |
 | presentation (`presentation/shape-v2`) | 647 (312/335) | 1.000 | accuracy 0.482 vs 0.988 | 0.031 | isotonic | 0.1048 (339, 0.920, 0.887) | shadow: the trivial rule wins (0.985 vs 0.920 above the threshold) |
 | tool_approval (`tool_approval/v6`, reliability; retired) | 11897 (6183/5714) | 0.499 | truth 0.578 vs 0.762 | 0.002 | isotonic | none | retired 2026-11-10: a per-tool rule beat it |
-| tool_approval (`tool_approval/safety-v1`, answer sheet) | 470 (353/117) | 0.683 | truth 0.837 vs 0.594 (per-tool rule) | 0.035 | isotonic | 0.7599 (201, 0.906, 0.857; acting "yes" 195, 0.903, 0.853) | earned on the sheet; shadow by the owner's choice: the confident misses are the dangerous calls (section 9) |
+| tool_approval (`tool_approval/safety-v1`, answer sheet) | 470 (353/117) | 0.683 | truth 0.837 vs 0.594 (per-tool rule) | 0.035 | isotonic | 0.7599 (201, 0.906, 0.857; acting "yes" 195, 0.903, 0.853) | superseded: the question named only 4 of the policy's unsafe classes |
+| tool_approval (`tool_approval/safety-v3`, answer sheet) | 470 (368/102) | 0.728 | truth 0.857 vs 0.593 (per-tool rule) | 0.021 | isotonic | 0.7931 (acting "yes" 207, 0.908, 0.861) | in-sample for the WORDING (v2 and v3 were written against these rows) |
+| tool_approval (`safety-v3`, HELD-OUT sheet, threshold + map from the row above) | 200 (147/53) | 0.684 | agreement 0.735 vs the permission rule's 0.560 | - | (fixed) | 0.7931: acting "yes" 84, 0.869, Wilson 0.781 | FAILS: shadow. Confident misses: `cat ~/.ssh/*`, a force push, a folder deleted when one file was named |
 | depth_met (`depth_met/v4`, the live question) | 200 (144/56) | 0.733 | - | 0.064 | isotonic | none | shadow: no threshold holds the acting "no" (clause 8 is unreachable: see 8.2 replays) |
 | depth_route (`depth_route/v3`) | 334 (243/91) | 0.529 | accuracy 0.728 vs 0.716 | 0.062 | isotonic | none | shadow: AUROC |
 | done (`done/v2`) | 176 (127/49) | 0.582 | truth 0.760 vs 0.419 | 0.046 | isotonic | none | shadow: AUROC |
@@ -773,12 +781,12 @@ that cannot pass is not a broken job: the incumbent keeps it.
 | tool_choice (route) | CORE | LIVE and certified (class margin, 0.936 at the gate) | keep; measure web/browser menus on a working network |
 | route_v2 (route) | incumbent decides (measured) | passes the bar on parity; on an outcome label the gate is better (97.9% vs 92.2%) | no site; send knowledge questions direct in the gate rule instead |
 | narration, presentation (shape) | incumbent decides (measured: no honest pass) | the frame carries the answer: narration's reference is `steps >= 2` (and `beats_admitted` IS the reference); presentation's is `card_already_rendered`. Honest variants stay below the most-common-answer rule (narration 0.17-0.77 vs 0.825; presentation 0.980 vs 0.988 with the flag removed); only variants that copy the rule into the question pass | reopen only with an outside label the incumbent can get wrong (a dismissed or reopened card, an interrupted narration). Presentation's honest `shape-v3` frame holds about 11 distinct inputs (spec AC23.6 keeps the consult gate-layer only), so it cannot reach 100 distinct rows: the owner decides whether to admit the reply head into the frame or retire the consult |
-| tool_approval (approve) | shadow; the permission rule stays | the safety question (`safety-v1`, 2026-11-10) passes every clause on the 470-row owner-policy answer sheet (agreement 75.1% vs the permission rule's 60.9%), but its confident "safe" misses include `net localgroup administrators ... /add`, a read of `~/.ssh/id_rsa`, a force push and `git branch -D` under "list the branches" | stays shadow; live rows come from the user's own permission answers (eval sessions never label); a decision site needs the owner's call on that miss rate |
+| tool_approval (approve) | shadow; the permission rule stays | the safety question beats the permission rule on agreement (sheet 0.783 vs 0.609; held-out 0.735 vs 0.560) but does NOT hold the bar on held-out rows (acting "yes" 0.869, Wilson 0.781). As "ask more" (refuse-only: P(safe) < t adds a prompt) no threshold reaches 0.90 on 50 rows. The real gap is the rule: with auto-approve on, 150 of the sheet's 179 unsafe calls run unasked | stays shadow; live rows from the user's own permission answers (eval sessions never label). `evals/safety/heldout_sheet.jsonl` is the gate for any new wording - never word a question against it |
 | depth_met (judge_depth) | incumbent decides (measured) | ranks the truth (0.87-0.91) but its acting "no" is right 16-18%: acting would push wasted work on most turns | rule-owned (owner, 2026-11-10; off the allow-list); reopen only with a failure-rich outside label (turns a depth push CAN fix) |
 | review_verdict (judge_review) | BOON | at chance | shadow until a step-level truth exists |
 | needs_action (interpret_step) | the incumbent rule (measured) | the label is True on 96.4% of 1,233 distinct rows; d1's acting "no" is right 16 of its top 50 | rule-owned (owner, 2026-11-10; off the allow-list); fix the label's censoring first if the job is reopened |
 | done, sufficient (judge_goal) | BOON | the declared question reaches the model only since 2026-11-10 | new `done/v4` rows; `sufficient` needs failure traffic (no rows) |
-| web_intent (interpret_web) | BOON | earned | the owner decides whether to allow-list it; live gate first |
+| web_intent (interpret_web) | DECIDES (allow-listed 2026-11-10) | earned; live gate research 31/35, no regression, ~50 ms per goal | keep; it agreed with the keywords on every gated goal, so its value is on goals without trigger words |
 
 Before label or question work on a consumer, name its class here. CORE first; a BOON
 only when a cheap outside label exists. A job with no trustworthy label stays with its
@@ -923,7 +931,7 @@ outcome) does not transfer: count those rows separately.
 
 | Flag | Default (`.env`) | Effect |
 |---|---|---|
-| `IRIS_DECISION_ENFORCE` | empty (owner's local `.env`, 2026-11-10: `tool_choice,narration,route_v2,presentation,review_verdict`; needs_action and depth_met are rule-owned, tool_approval is shadow) | consumers the owner lets decide; each also needs an earned bar on the running identity AND a decision site (today none of the list has both; `narration`, `route_v2`, `review_verdict` have no site) |
+| `IRIS_DECISION_ENFORCE` | empty (owner's local `.env`, 2026-11-10: `tool_choice,narration,route_v2,presentation,review_verdict,web_intent`; needs_action and depth_met are rule-owned, tool_approval is shadow) | consumers the owner lets decide; each also needs an earned bar on the running identity AND a decision site (today none of the list has both; `narration`, `route_v2`, `review_verdict` have no site) |
 | `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION` | unset (1) | the class decision of section 5 |
 | `IRIS_ORACLE_TOOL_CHOICE_SHORTLIST_K` | unset (5) | shortlist depth; also the class-mode fallback; `0` = off |
 | `IRIS_ORACLE_TOOL_CHOICE_ALWAYS` | unset (0) | `1` = forced top-1; keep OFF |

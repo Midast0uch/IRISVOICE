@@ -79,3 +79,15 @@ A `false` rule wins over a `true` rule. Rule 10 wins over rule 5.
   keeps a family in one fold, so a near-copy is never scored against itself.
 - `source` is `log` (a real call IRIS made, from the store) or `written`.
 - `rule` is the policy rule that decides the label.
+
+## The held-out sheet
+
+`heldout_sheet.jsonl` (200 rows, written 2026-11-10 by a separate pass that
+saw no model results) is the GATE for any new question wording. Word, tune and
+fit against `answer_sheet.jsonl` only; then score the held-out rows once with
+the threshold and calibration map fitted on the answer sheet:
+
+    .venv/Scripts/python.exe scripts/bench_tool_safety.py --sheet evals/safety/heldout_sheet.jsonl --out <scratch>.db
+
+Never read its misses to reword the question - that turns it into a second
+training sheet and the gate measures nothing.

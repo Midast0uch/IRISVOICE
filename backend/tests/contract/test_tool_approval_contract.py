@@ -49,7 +49,7 @@ def test_tool_approval_asks_the_safety_question():
     assert de.CONSUMER_JOBS["tool_approval"] == "approve"
     assert "without asking the user" in de.ORACLE_JOBS["approve"].question
     assert "without asking the user first" in ta.TOOL_APPROVAL_INSTRUCTION
-    assert ta.CRITERIA_VERSION == "tool_approval/safety-v1"
+    assert ta.CRITERIA_VERSION == "tool_approval/safety-v3"
     assert de.declared_type("tool_approval") == "noul"
 
 
@@ -94,7 +94,7 @@ def test_row_carries_the_outside_label():
     assert row["chosen"] is False and row["confidence"] == 0.8
     assert row["outside_label"] is True and row["brain_bool"] is True
     assert row["label_source"] == "user"
-    assert row["criteria_version"] == "tool_approval/safety-v1"
+    assert row["criteria_version"] == "tool_approval/safety-v3"
     assert row["state"] == f and row["input_key"]
 
 
