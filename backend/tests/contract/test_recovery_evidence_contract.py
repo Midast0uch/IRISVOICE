@@ -4,7 +4,9 @@ CT-DEI-5 — Recovery Evidence Shape: the graft failure evidence
 (``failed_tool``, ``error_snippet``) reaches the engine frame as ``ruled_out``,
 and the decision meta carries the recovery join keys.
 
-T14 REMAINDER (session 357): the box-side seam above was landed, but nothing in
+T14 (the cross-call graft veto) was RETIRED 2026-11-09; the per-call
+``failure`` -> ``ruled_out`` evidence above stays. Historical note - T14
+REMAINDER (session 357): the box-side seam above was landed, but nothing in
 the DER ever CALLED it — `grep -rn "resolve(" backend/agent/*.py | grep -i
 failure` returned zero hits. The tests at the bottom of this file pin the
 CALLER side, which lives in ``_der_handle_step_failure`` (the one failure-triage
@@ -106,38 +108,6 @@ class TestRuledOutInFrame:
 
         assert engine.frames[0]["ruled_out"] == []
 
-    def test_veto_survives_reset_failure_counters(self):
-        """AC11.2: the DER calls reset_failure_counters() on every _split_step —
-        a veto that a split erases is how recovery re-picks the failed tool."""
-        engine = _RecordingEngine()
-        box = _box(engine)
-
-        box.resolve(
-            {"description": "recover the lookup", "objective_anchor": "OBJ-1"},
-            session_id="s1", conversation_id="c1",
-            failure={"failed_tool": "crawler_query"},
-        )
-        box.reset_failure_counters()
-        engine.frames.clear()
-
-        # The graft step resolves WITHOUT re-reporting the failure. Its goal
-        # differs (a graft has its own description), so the engine cache misses
-        # and the frame is rebuilt from the surviving seed veto.
-        d = box.resolve(
-            {"description": "recover the lookup by another route",
-             "objective_anchor": "OBJ-1"},
-            session_id="s1", conversation_id="c1",
-        )
-
-        assert engine.frames, "the graft step never reached the scorer"
-        assert engine.frames[0]["ruled_out"] == ["crawler_query"], (
-            "the veto was lost by reset_failure_counters — recovery can "
-            "re-pick the tool that just failed"
-        )
-        # and it did not win
-        assert d.tool == "search"
-
-
 class TestMetaCarriesRecoveryFields:
     def test_meta_carries_recovery_fields(self):
         """AC11.5: `failed_tool` and `recovery_strategy` are recorded on the
@@ -180,62 +150,27 @@ def _attr_calls_in(tree: ast.AST, func_name: str) -> set:
 
 
 class TestFailureTriageSeamWired:
-    def test_note_failure_seeds_the_veto_for_a_graft_child(self):
-        """AC11.1/AC11.2: the DER's failure handler seeds the veto through
-        `note_failure` — a path that never calls `resolve(failure=...)` — and
-        the veto survives the split that follows a failure."""
-        engine = _RecordingEngine()
-        box = _box(engine)
-
-        box.note_failure(objective="OBJ-GRAFT", failed_tool="crawler_query")
-        box.reset_failure_counters()   # the DER calls this on every split
-
-        d = box.resolve(
-            {"description": "recover the lookup by another route",
-             "objective_anchor": "OBJ-GRAFT"},
-            session_id="s1", conversation_id="c1",
-        )
-
-        assert engine.frames, "the graft step never reached the scorer"
-        assert engine.frames[0]["ruled_out"] == ["crawler_query"], (
-            "a veto seeded by note_failure did not reach the frame — the "
-            "graft can re-pick the tool that just failed"
-        )
-        assert d.tool == "search"
-
-    def test_note_failure_is_a_noop_without_a_tool_or_objective(self):
-        """A half-specified failure must not create an unreachable veto key."""
-        engine = _RecordingEngine()
-        box = _box(engine)
-
-        box.note_failure(objective="OBJ-NOOP", failed_tool="")
-        box.note_failure(objective="", failed_tool="crawler_query")
-
-        box.resolve({"description": "a normal step",
-                     "objective_anchor": "OBJ-NOOP"},
-                    session_id="s1", conversation_id="c1")
-
-        assert engine.frames[0]["ruled_out"] == []
-
     def test_the_der_failure_seam_calls_the_box(self):
         """The seam must be WIRED, not merely implemented.
 
         `_der_handle_step_failure` is the ONE failure-triage point (called from
-        both loop sites), so this is the only place that needs the consult. The
-        resolve() call site must also carry the veto key, or a veto seeded by
-        the parent's failure is unreachable for the graft child.
+        both loop sites), so this is the only place that needs the consult.
+
+        RETIRED 2026-11-09 (owner decision, measured): the T14 graft veto
+        (`note_failure` seeding a cross-call `_ruled_out_seed` that only the
+        production-dead resolve() read). Over 1177 backend logs the next step
+        repeated the failed tool LESS often than after a success (38.0% vs
+        43.1%) and a veto would have blocked more working calls than failed
+        ones. Its seeding must not come back half-wired.
         """
         calls = _attr_calls_in(ast.parse(_kernel_source()),
                                "_der_handle_step_failure")
 
-        assert "note_failure" in calls, (
-            "the DER failure handler never seeds the veto — T14 is inert"
-        )
         assert "recovery_strategy" in calls, (
-            "the DER failure handler never consults the triage consumer — "
+            "the DER failure handler never consults the triage consumer - "
             "REQ-17 AC17.1's 'each failure triage point' is unmet"
         )
-        assert '"objective_anchor": getattr(' in _kernel_source(), (
-            "the resolve() call site does not pass the veto key, so a veto "
-            "seeded by the parent's failure is unreachable for the graft child"
+        assert "note_failure" not in calls, (
+            "the retired T14 veto seeding is back without a reader"
         )
+        assert not hasattr(ToolDecisionBox, "note_failure")

@@ -14912,14 +14912,10 @@ Respond with a JSON object:
         # â”€â”€ REQ-17 AC17.1 + REQ-11 AC11.1/AC11.2 (T21/T14 wiring) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # This is the ONE failure-triage seam: a step that failed after its
         # retry lands here from both loop sites (the main step loop and the
-        # extra-step loop). Two things must happen BEFORE the recovery
-        # sub-graph is planned below:
-        #   (a) seed the failure veto, so the graft child cannot re-pick the
-        #       tool that just failed (AC11.2). The veto is keyed on
-        #       `objective_anchor` â€” the overall task goal, which graft
-        #       children inherit (der_loop.py:230) â€” and the resolve() call
-        #       site passes it, so the veto is actually reachable.
-        #   (b) consult the `recovery_strategy` triage consumer (AC17.1). It is
+        # extra-step loop). BEFORE the recovery sub-graph is planned below it
+        # consults the `recovery_strategy` triage consumer (AC17.1). The T14
+        # graft failure veto that was also seeded here is RETIRED (2026-11-09,
+        # tool_decision.resolve docstring has the measurement). The consult is
         #       SHADOW: the row is recorded and the counters / the existing
         #       graft path still decide (AC17.2), so a confident `retry_same`
         #       can never route a repeat the counters would have escalated.
@@ -14932,8 +14928,6 @@ Respond with a JSON object:
                 or getattr(item, "description", "")
                 or ""
             )
-            _triage_box.note_failure(
-                objective=_triage_obj, failed_tool=_triage_tool)
             _triage_box.recovery_strategy(
                 failed_tool=_triage_tool,
                 error_snippet=str(step_result or "")[:200],
@@ -15181,7 +15175,6 @@ Respond with a JSON object:
                     or getattr(item, "description", "")
                     or ""
                 )
-                _tt_box.note_failure(objective=_tt_obj, failed_tool=_tt_tool)
                 _tt_box.recovery_strategy(
                     failed_tool=_tt_tool,
                     error_snippet=str(_res_text or "")[:200],

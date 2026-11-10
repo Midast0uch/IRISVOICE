@@ -741,13 +741,6 @@ class ToolDecisionBox:
         # permanently-failing call kept escaping its failure budget. Cleared
         # for a given call as soon as that call succeeds.
         self._permanent_failed_args: Dict[tuple, int] = {}
-        # REQ-11 AC11.2 (T14): objective -> the tools that have already FAILED
-        # for it. This is the SEED veto list the engine must respect when it
-        # resolves a graft step. Like _permanent_failed_args above it is
-        # deliberately NOT cleared by reset_failure_counters(): the DER calls
-        # that on every _split_step, and a veto that a split erases is exactly
-        # how recovery re-picks the tool that just failed.
-        self._ruled_out_seed: Dict[str, set] = {}
         # REQ-11 AC11.3/AC11.5 (T15): the last `recovery_strategy` consumer
         # verdict for this box ("" until the gate runs). Recorded in meta so
         # calibration can join the strategy against the outcome.
@@ -1567,23 +1560,24 @@ class ToolDecisionBox:
 
         ``failure`` (REQ-11 AC11.1, T14): optional graft failure evidence —
         ``{"failed_tool": str, "error_snippet": str}``. The failed tool is
-        recorded against the objective and ruled out of this resolution, so
-        recovery cannot re-pick the tool that just failed. Absent = behaviour
-        byte-identical to today (the veto list is empty).
+        ruled out of THIS resolution only. Absent = the veto list is empty.
+
+        RETIRED 2026-11-09: the cross-call veto memory (``_ruled_out_seed``,
+        fed by ``note_failure`` from the DER failure handler). It was written
+        on every failed step and read only here, and nothing in production
+        calls resolve() since node steps replaced it. Measured over 1177
+        backend logs: after a failed step the next step repeats the failed
+        tool LESS often than after a success (38.0% vs 43.1%); outside the
+        browser-missing period a veto would have saved 42 failed calls and
+        blocked 74 that worked. The per-tool consecutive failure budget in
+        the tool layer still stops runaway repeats.
         """
         _start = time.perf_counter()
         goal = step.get("description", "") or ""
-        # AC11.1/AC11.2: seed the veto from the reported failure AND from any
-        # earlier failure for this objective (survives reset_failure_counters).
-        _objective = (
-            step.get("objective_anchor") or step.get("objective") or goal
-        ) or ""
         _failed_tool = ""
         if failure:
             _failed_tool = str(failure.get("failed_tool") or "").strip()
-            if _failed_tool:
-                self._ruled_out_seed.setdefault(_objective, set()).add(_failed_tool)
-        _ruled_out = set(self._ruled_out_seed.get(_objective) or ())
+        _ruled_out = {_failed_tool} if _failed_tool else set()
         self._engine_meta = None
         eng = self._engine()
         if eng is not None:
@@ -2881,10 +2875,7 @@ class ToolDecisionBox:
 
         Called by the DER loop when a ``_split_step`` Sub-Loop is created,
         so the graft is not penalized as a continuation of the parent step.
-
-        NOTE: this deliberately does NOT clear ``_ruled_out_seed`` (REQ-11
-        AC11.2) — the failure veto must outlive the split, exactly as
-        ``_permanent_failed_args`` does.
+        ``_permanent_failed_args`` deliberately survives the split.
         """
         self._tool_fails.clear()
         self._last_call.clear()
@@ -2967,34 +2958,6 @@ class ToolDecisionBox:
             recorder(row, kind="shadow", session_id=session_id)
         except Exception as _e:  # noqa: BLE001 — the row is an observer
             logger.debug("[TOOL_DECISION] triage shadow row write failed: %r", _e)
-
-    def note_failure(self, *, objective: str = "", failed_tool: str = "") -> None:
-        """REQ-11 AC11.1/AC11.2 (T14 remainder): seed the graft failure veto.
-
-        ``resolve(failure=...)`` already seeds this, but the DER detects a step
-        failure in ``_der_handle_step_failure`` — a path that never calls
-        ``resolve()``. This is the seeding-ONLY half: no engine call, no
-        decision, no side effect beyond the veto set. Idempotent, never raises.
-
-        KEY CHOICE: the caller must pass the same ``objective`` string the next
-        ``resolve()`` will compute. ``resolve()`` derives it as
-        ``step["objective_anchor"] or step["objective"] or description``, so the
-        kernel passes ``item.objective_anchor`` (the overall task goal, which
-        graft children inherit — ``der_loop.py:230``) AND includes it in the
-        step dict at the resolve call site. Keying on the per-step description
-        would make the veto unreachable for the graft it exists to protect.
-
-        Like ``_permanent_failed_args``, the set is deliberately NOT cleared by
-        ``reset_failure_counters``: a veto a split erases is exactly how
-        recovery re-picks the tool that just failed.
-        """
-        try:
-            _tool = str(failed_tool or "").strip()
-            _key = str(objective or "")
-            if _tool and _key:
-                self._ruled_out_seed.setdefault(_key, set()).add(_tool)
-        except Exception as _e:  # noqa: BLE001 — a veto seed never raises
-            logger.debug("[TOOL_DECISION] note_failure failed: %r", _e)
 
     def recovery_strategy(
         self,

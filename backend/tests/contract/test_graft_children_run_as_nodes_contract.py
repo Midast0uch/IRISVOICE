@@ -161,9 +161,6 @@ def test_node_error_names_the_blocker():
 class _NoopToolBox:
     """Tool-box stand-in for the failure triage consult: every call is a no-op."""
 
-    def note_failure(self, **kwargs):
-        return None
-
     def recovery_strategy(self, **kwargs):
         return None
 
