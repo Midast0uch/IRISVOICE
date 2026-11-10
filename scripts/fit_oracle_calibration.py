@@ -317,21 +317,68 @@ def rule_baseline(
             "_rule_ok": rule_ok}
 
 
+# The "no map" map: raw confidence used as it is (apply_knots is piecewise
+# linear, so these two knots are the identity on [0, 1]).
+IDENTITY_KNOTS = [[0.0, 0.0], [1.0, 1.0]]
+
+
+def choose_map(
+    xs: Sequence[float], correct: Sequence[bool],
+    groups: Optional[Sequence[Optional[str]]] = None,
+    min_block: int = MIN_BLOCK, seed: int = 0,
+) -> Tuple[List[List[float]], str]:
+    """The isotonic map, or NO map, whichever is better calibrated on groups
+    these rows' own inner folds hold out; ``(knots, method)``.
+
+    Measured 2026-11-09 (route_v2/binary-v1, 1240 rows): under grouped folds
+    the isotonic map was overconfident on unseen eval tasks (top bin 0.963
+    against 0.931 observed; ECE 0.049-0.064 over 20 seeds) while the RAW
+    confidence held ECE 0.042. A map fitted on some tasks learns their
+    quirks; it must beat using no map at all, measured on held-out groups.
+    Used inside each outer fold (nested), so the choice is scored on rows it
+    never saw. Below two inner blocks per fold the isotonic map is kept."""
+    ys = [1.0 if v else 0.0 for v in correct]
+    knots = fit_isotonic(xs, ys, min_block)
+    if len(xs) < FOLDS * MIN_FIT_ROWS or not knots:
+        return knots, "isotonic"
+    inner, _ = assign_folds(correct, groups, FOLDS, seed)
+    cal = [0.0] * len(xs)
+    for f in range(FOLDS):
+        tr = [i for i in range(len(xs)) if inner[i] != f]
+        k = fit_isotonic([xs[i] for i in tr], [ys[i] for i in tr], min_block)
+        for i in range(len(xs)):
+            if inner[i] == f:
+                cal[i] = apply_knots(k, xs[i]) if k else 0.0
+    ece_iso = _ece_brier([{"confidence": c, "correct": v} for c, v in zip(cal, correct)])[0]
+    ece_raw = _ece_brier([{"confidence": x, "correct": v} for x, v in zip(xs, correct)])[0]
+    if ece_iso is not None and ece_raw is not None and ece_raw < ece_iso:
+        return [list(k) for k in IDENTITY_KNOTS], "identity"
+    return knots, "isotonic"
+
+
 def oof_calibrated(
     xs: Sequence[float], correct: Sequence[bool],
     folds: int = FOLDS, min_block: int = MIN_BLOCK, seed: int = 0,
     fold_of: Optional[Sequence[int]] = None,
+    groups: Optional[Sequence[Optional[str]]] = None, choose: bool = False,
 ) -> List[float]:
     """Each row's calibrated confidence from a map that never saw that row.
 
-    ``fold_of`` from ``assign_folds``; omitted, the ungrouped stratified split."""
+    ``fold_of`` from ``assign_folds``; omitted, the ungrouped stratified split.
+    ``choose``: each outer fold picks isotonic-or-identity with ``choose_map``
+    on its training rows alone (nested), so the score includes the choice."""
     if fold_of is None:
         fold_of, _ = assign_folds(correct, None, folds, seed)
     out = [0.0] * len(xs)
     for f in range(folds):
         train = [i for i in range(len(xs)) if fold_of[i] != f]
-        knots = fit_isotonic([xs[i] for i in train],
-                             [1.0 if correct[i] else 0.0 for i in train], min_block)
+        if choose:
+            knots, _m = choose_map([xs[i] for i in train], [correct[i] for i in train],
+                                   [groups[i] for i in train] if groups else None,
+                                   min_block, seed)
+        else:
+            knots = fit_isotonic([xs[i] for i in train],
+                                 [1.0 if correct[i] else 0.0 for i in train], min_block)
         for i in range(len(xs)):
             if fold_of[i] == f:
                 out[i] = round(apply_knots(knots, xs[i]), 4) if knots else 0.0
@@ -410,9 +457,9 @@ def fit_consumer(
     }
     if len(data) < MIN_FIT_ROWS or a == 0 or b == 0:
         return entry  # nothing honest to fit; the bar's own clauses name why
-    entry["knots"] = fit_isotonic(xs, [1.0 if v else 0.0 for v in ok])
+    entry["knots"], entry["method"] = choose_map(xs, ok, grp)
     fold_of, entry["folds"] = assign_folds(ok, grp)
-    cal = oof_calibrated(xs, ok, fold_of=fold_of)
+    cal = oof_calibrated(xs, ok, fold_of=fold_of, groups=grp, choose=True)
     scored = [{"confidence": c, "correct": v} for c, v in zip(cal, ok)]
     ece, brier = _ece_brier(scored)
     entry["oof"].update(ece=ece, brier=brier, auroc=_auroc(scored))

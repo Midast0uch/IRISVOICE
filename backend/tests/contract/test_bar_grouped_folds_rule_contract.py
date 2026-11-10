@@ -114,6 +114,61 @@ def test_a_choice_model_is_measured_against_the_most_common_answer():
     assert bl == {"metric": "accuracy", "model": 0.8, "rule": 0.8, "keys": 1}
 
 
+def _calibration_rows(shape, n=1500, seed=11):
+    """Raw confidence x; the label is true with probability shape(x)."""
+    rng = random.Random(seed)
+    xs = [rng.uniform(0.5, 1.0) for _ in range(n)]
+    ok = [rng.random() < shape(x) for x in xs]
+    groups = [f"task{i % 60}" for i in range(n)]
+    return xs, ok, groups
+
+
+def test_no_map_wins_when_it_is_better_calibrated_on_held_out_groups(monkeypatch):
+    xs, ok, groups = _calibration_rows(lambda x: x)
+    calls = []
+
+    def ece(rows):  # 1st call: the inner-OOF isotonic map; 2nd: raw confidence
+        calls.append(len(rows))
+        return (0.08, None) if len(calls) == 1 else (0.04, None)
+
+    monkeypatch.setattr(fit, "_ece_brier", ece)
+    knots, method = fit.choose_map(xs, ok, groups)
+    assert calls == [len(xs), len(xs)]
+    assert method == "identity" and knots == fit.IDENTITY_KNOTS
+    from backend.agent.oracle_calibration import apply_knots
+    assert apply_knots(knots, 0.731) == 0.731, "the runtime reads no map as raw confidence"
+
+
+def test_a_map_wins_when_raw_confidence_is_far_too_high():
+    xs, ok, groups = _calibration_rows(lambda x: x ** 6)
+    assert fit.choose_map(xs, ok, groups)[1] == "isotonic"
+
+
+def test_each_folds_map_choice_sees_only_that_folds_training_rows(monkeypatch):
+    xs, ok, groups = _calibration_rows(lambda x: x)
+    fold_of, _ = fit.assign_folds(ok, groups)
+    seen = []
+    real = fit.choose_map
+
+    def spy(xs_tr, ok_tr, groups_tr=None, *a, **k):
+        seen.append(set(xs_tr))
+        return real(xs_tr, ok_tr, groups_tr, *a, **k)
+
+    monkeypatch.setattr(fit, "choose_map", spy)
+    fit.oof_calibrated(xs, ok, fold_of=fold_of, groups=groups, choose=True)
+    assert len(seen) == fit.FOLDS
+    for f, got in enumerate(seen):
+        held_out = {xs[i] for i in range(len(xs)) if fold_of[i] == f}
+        assert not (got & held_out), f"fold {f}'s map choice saw its own test rows"
+
+
+def test_the_fit_records_which_map_it_chose():
+    xs, ok, groups = _calibration_rows(lambda x: x ** 6)
+    rows = [{"confidence": x, "correct": v, "chosen": "a", "reference": "a" if v else "b",
+             "group": g} for x, v, g in zip(xs, ok, groups)]
+    assert fit.fit_consumer(rows)["method"] == "isotonic"
+
+
 def _honest(model, rule):
     return {"rows_distinct": 600, "classes": {"correct": 500, "wrong": 100},
             "threshold": 0.9, "rows_above": 300,

@@ -44,9 +44,9 @@ Flags (`.env`): `IRIS_ORACLE_TOOL_CHOICE_CLASS_DECISION=1`,
 `IRIS_ORACLE_TOOL_CHOICE_ALWAYS=0`,
 `IRIS_ORACLE_SAMPLE_FRACTION_TOOL_CHOICE=1`.
 
-**Who decides on d1-2B (2026-11-09, after the bar fix of 12.9).** Nothing on
-the allow-list decides: narration and presentation lose to a trivial rule,
-route_v2 misses ECE under grouped folds. Before the fix: `deciding=['narration',
+**Who decides on d1-2B (2026-11-09, after 12.9 and 12.10).** `route_v2` alone
+(`deciding=['route_v2@0.6148']`, raw confidence, no map; live gate memory 3/3).
+narration and presentation lose to a trivial rule; the rest miss their bars. Before the fix: `deciding=['narration',
 'presentation', 'route_v2']`. Every other allow-listed consumer
 (`needs_action`, `tool_approval`, `review_verdict`, `depth_met`,
 `tool_choice` on the bar path) logs "not earned (no
@@ -661,6 +661,14 @@ session stand alone. Without groups the split is the old one, row for row. Why: 
 eval cohorts repeat the same ~90 tasks, and a row split trained and scored on
 near-identical runs of one task (oracle.md 12.8). The fit records `folds` and
 `baseline` (with `acting_region`: model vs rule on the rows above the threshold).
+**The map must beat no map (2026-11-09).** `choose_map` keeps the isotonic map only when,
+on held-out groups of the rows it is fitted on (inner grouped folds), it is better
+calibrated (ECE) than the RAW confidence; otherwise the entry stores `method: identity`
+and the knots `[[0,0],[1,1]]` (the runtime reads them as raw confidence, no code change).
+The out-of-fold score makes the same choice inside every outer fold (nested), so the
+choice itself is scored on rows it never saw. Why: on route_v2 the isotonic map,
+fitted on some eval tasks, was overconfident on unseen ones (12.10).
+
 Guard: `contract/test_bar_grouped_folds_rule_contract.py`. The report and the fit
 measure DECLARED consumers only (`declared_only`): a retired consumer's old rows
 never write a record again.
@@ -1716,7 +1724,7 @@ classes:
 | Job (consumer) | Class | State on d1-2B | What it needs next |
 |---|---|---|---|
 | tool_choice (route) | CORE | live: class decision + shortlist (§10) | keep; the bar record is stale for this role |
-| route_v2 (route) | CORE | shadow since 12.9: beats the trivial rule, ECE 0.0601 > 0.05 under grouped folds | the nearest to re-earning: more rows or a calibration fix |
+| route_v2 (route) | CORE | DECIDING again (12.10): no map, ECE 0.049, beats the rule | ECE passes on 16 of 20 splits: re-measure as rows grow |
 | narration, presentation (shape) | incumbent decides (12.9) | a "most common answer" rule beats d1 against their deterministic incumbents | reopen only with an outside label the incumbent can get wrong |
 | tool_approval (approve) | BOON; the incumbent stays | live criteria at chance (0.49); a per-tool failure-rate RULE beats d1 (12.8) | a plain rule, not the Oracle, if the job is wanted; never enforce on eval-only rows |
 | depth_met (judge_depth) | BOON | AUROC <= 0.65 | ask at TURN level to match its turn-verdict label |
@@ -1805,3 +1813,31 @@ Reading:
   allow-list changed. Restored-from copies of both files: scratchpad
   `consumer_bar_record.before-grouped.json`, `oracle_calibration.before-grouped.json`
   (session afc32cf8).
+
+### 12.10 route_v2 re-earns: the isotonic map was the problem (2026-11-09)
+
+Under grouped folds route_v2/binary-v1 (1240 rows, 1091 right) missed ECE at
+0.0601. Diagnosis (scratchpad `rv2_ece.py`, session afc32cf8):
+- ungrouped ECE over 20 fold seeds 0.019-0.034; grouped 0.049-0.064 (median
+  0.056). The gap is real, not one unlucky split.
+- the reliability table: the top bin (934 rows) said 0.963 and was right 0.931.
+  The isotonic map, fitted on some eval tasks, was overconfident on unseen ones.
+- the RAW confidence, with no map, had ECE 0.042.
+
+Fix, for every consumer (section 5, "the map must beat no map"): `choose_map`
+keeps the isotonic map only when it is better calibrated than raw confidence on
+held-out inner groups, and the out-of-fold score repeats that choice inside each
+outer fold. Re-measured, only two consumers moved: route_v2 (identity map; ECE
+0.049, AUROC 0.785, threshold 0.6148 with precision 0.9004 / Wilson 0.882 on
+1195 rows; enforced) and depth_route (ECE 0.042 -> 0.062; still shadow on
+AUROC). Stability: the full bar passes on 16 of 20 fold seeds (the 4 misses are
+ECE 0.052-0.063); precision at the threshold is 0.900 on every seed by
+construction (the lowest threshold that holds it). A fair pass, not a wide one.
+
+Live gate (route_v2 deciding, on the allow-list): `evals/run_evals.py --group
+memory` 3/3, recall answer time `reply_s_ask` 4.6 / 5.0 / 4.9 s against the
+same-day baseline 5.3 / 4.6 / 4.7 s; route_v2 chose `direct` on all 6 turns in
+0.26-1.7 s. (`reply_s` rose for m02/m03 because it includes the seed turn and
+the harness's wait for the spoken answer - not the route.) Off switch: remove
+`route_v2` from `IRIS_DECISION_ENFORCE`.
+

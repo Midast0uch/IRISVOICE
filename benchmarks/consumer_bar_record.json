@@ -47,7 +47,7 @@
     },
     "consumer_id": "depth_route",
     "ece": null,
-    "gap": "oof AUROC 0.5439 < 0.65 (confidence does not rank errors)",
+    "gap": "oof AUROC 0.5292 < 0.65 (confidence does not rank errors)",
     "precision": 0.0,
     "rows": 334,
     "status": "shadow"
@@ -220,7 +220,7 @@
     "consumer_id": "narration",
     "ece": 0.1153,
     "gap": "does not beat a trivial rule (accuracy: model 0.6028, rule 0.8114 from the input key alone)",
-    "precision": 0.8881,
+    "precision": 0.8982,
     "rows": 1002,
     "status": "shadow"
   },
@@ -256,7 +256,7 @@
     "consumer_id": "presentation",
     "ece": 0.3365,
     "gap": "does not beat a trivial rule (accuracy: model 0.4822, rule 0.9876 from the input key alone)",
-    "precision": 1.0,
+    "precision": 0.9204,
     "rows": 647,
     "status": "shadow"
   },
@@ -308,10 +308,10 @@
     },
     "consumer_id": "route_v2",
     "ece": 0.0423,
-    "gap": "oof calibrated ECE 0.0601 > 0.05",
+    "gap": "",
     "precision": 0.9679,
     "rows": 1240,
-    "status": "shadow"
+    "status": "enforced"
   },
   "sufficient": {
     "config": {
@@ -362,7 +362,7 @@
     "consumer_id": "tool_choice",
     "ece": 0.1942,
     "gap": "enforcement bar unmet (oof AUROC 0.5298 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.9023,
+    "precision": 0.9101,
     "rows": 698,
     "status": "sampled"
   },
@@ -379,7 +379,7 @@
     "consumer_id": "user_feedback",
     "ece": 0.3069,
     "gap": "no-error-mass waiver: 3 wrong in 742 rows excludes a 5% error rate (p <= 0.01); minority+AUROC untestable, not failed",
-    "precision": 0.9973,
+    "precision": 0.9979,
     "rows": 742,
     "status": "enforced"
   },
