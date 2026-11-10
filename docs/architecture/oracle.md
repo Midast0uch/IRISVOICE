@@ -1654,6 +1654,23 @@ roles can be earned by wording. The blockers are design: missing frame
 information, a rare acting class, and labels that measure a different question
 than the one asked. Those are owner decisions (pin_ of 2026-11-09).
 
+FOLLOW-UP, escalate_incomplete as a step judge (offline, 2026-11-09): joined
+494 stateful rows to their step's `der_commits.verified_label` (coverage
+494/499) and to a RECURRENCE label (the loop redid the step: a steer-N re-plan
+after it, a split, a continuation step; 82/494). 2 labels x 3 frames (the
+200-char result; goal + expected + result at the live budget; the same at a
+1024-id budget) x 2 questions: EVERY cell at chance (OOF AUROC 0.46-0.58), and
+the acting "yes" never beats its base rate. Causes: `verified_label` is a
+heuristic (a non-zero exit or a weak match to `expected` makes UNVERIFIED; a
+deliberate red test run settles UNVERIFIED; FAILED is 20 of 19,485 commits);
+the recurrence signal marks whichever step the stuck gate fired on, not the
+step that needed redoing; 232 of 494 steps have no `expected`; step results
+are stored only as the 200-char escalate state. STEP COMPLETION HAS NO
+TRUSTWORTHY RECORDED TRUTH TODAY, so no step-completion consumer
+(escalate_incomplete, depth_met, a post-execution review_verdict) can be
+certified until one exists. Scripts: scratchpad escalate/ and escalate2/
+(session afc32cf8).
+
 Also fixed: every sampled (outcome-labelled) writer now stores `state`
 (escalate_incomplete, needs_action, click_safety;
 `contract/test_sampled_rows_store_state_contract.py`).
