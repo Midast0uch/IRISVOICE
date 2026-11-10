@@ -30,7 +30,9 @@ async def test_t23_capability_denial_escalates_to_permission(
     permission request; approval executes the tool; denial does not."""
     _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "personal"}))
     assert _caps.CapabilitySet.get_mode() == "personal"
-    assert _caps.CapabilitySet.is_tool_allowed("write_file") is False  # capability-blocked
+    # delete_file, not write_file: personal mode may write files since f437f01f
+    # (owner); destructive file operations keep the gate this test is about.
+    assert _caps.CapabilitySet.is_tool_allowed("delete_file") is False  # capability-blocked
 
     from backend.agent.event_bus import get_event_bus, IRISStreamEvent
     from backend.agent.tool_bridge import AgentToolBridge
@@ -45,11 +47,12 @@ async def test_t23_capability_denial_escalates_to_permission(
     bridge._initialized = True
 
     target = tmp_path / "out.txt"
+    target.write_text("keep", encoding="utf-8")
 
     # --- DENY path: escalation denied -> tool does NOT execute ---
     task = asyncio.create_task(
         bridge.execute_tool(
-            "write_file", {"path": str(target), "content": "hi"},
+            "delete_file", {"path": str(target)},
             session_id="t23-deny", _skip_resilience=True,
         )
     )
@@ -64,14 +67,15 @@ async def test_t23_capability_denial_escalates_to_permission(
     result = await task
     assert result.get("success") is False
     assert result.get("permission_response") == "denied"
-    assert not target.exists()  # AC3: not executed
+    assert target.exists()  # AC3: not executed
 
     # --- APPROVE path: escalation approved -> tool executes ---
     seen.clear()
     target2 = tmp_path / "out2.txt"
+    target2.write_text("go", encoding="utf-8")
     task2 = asyncio.create_task(
         bridge.execute_tool(
-            "write_file", {"path": str(target2), "content": "hi"},
+            "delete_file", {"path": str(target2)},
             session_id="t23-approve", _skip_resilience=True,
         )
     )
@@ -84,7 +88,7 @@ async def test_t23_capability_denial_escalates_to_permission(
     get_permission_system().respond_to_permission(rid2, approved=True)
     result2 = await task2
     assert result2.get("success") is True  # AC2: executed
-    assert target2.exists()
+    assert not target2.exists()
 
 
 @pytest.mark.asyncio

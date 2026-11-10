@@ -2309,6 +2309,11 @@ class AgentToolBridge:
         # REQ-18: a capability-blocked tool ESCALATES to a permission request (the user
         # can override) instead of being silently denied with an error.
         from backend.capabilities import CapabilitySet
+        # The user approving the capability prompt approves THIS call: the
+        # consent gate below must not ask a second time (measured 2026-11-09:
+        # a personal-mode delete_file asked twice and the second prompt, which
+        # nobody expected, timed out and failed the approved call).
+        _capability_approved = False
         if not CapabilitySet.is_tool_allowed(tool_name):
             logger.warning(
                 "[13.3] Tool '%s' blocked in '%s' mode — escalating to permission request",
@@ -2360,6 +2365,7 @@ class AgentToolBridge:
                             "permission_response": "timed_out",
                         }
                     # approved — fall through and execute the tool below
+                    _capability_approved = True
             except Exception:
                 logger.warning(
                     "[13.3] Capability escalation failed — blocking tool (fail closed)", exc_info=True
@@ -2456,7 +2462,8 @@ class AgentToolBridge:
             # click-safety gate decides, escalating to the user only when unsure),
             # so the generic prompt never fires for it.
             _self_gated = bool(getattr(resolve_tool(tool_name), "self_gated", False))
-            if action.value in ("require_approval", "require_confirmation") and not _self_gated:
+            if (action.value in ("require_approval", "require_confirmation")
+                    and not _self_gated and not _capability_approved):
                 # T15 fail-fast (REQ-9 AC9.1/AC9.5): no approval UI attached
                 # → settle NOW with APPROVAL_UNAVAILABLE, never wait the
                 # 120 s timeout. Approval UI attached → fall through to the
