@@ -60,7 +60,7 @@ its live stamp, engine `d1-2b-q4_k_m+systemone`, app store; traffic on commit
 |---|---|---|---|
 | tool_choice (`tc-decide-v9`) | 2772 | above threshold 0.968 / Wilson 0.959, AUROC 0.736; the MINORITY clause now reads 4.7% < 5% (110 wrong of 2353) | DECIDES (persisted bar record). OWNER: the 5% minority clause fails a job for being too accurate while 110 errors are plenty to rank; a `--write` would switch it off |
 | web_intent (`web_intent/v3`) | 938 | earned (waiver) | DECIDES (allow-listed after its live gate) |
-| route_v2 (`route_v2/binary-v1`) | 1346 | earned on a parity label | no decision site; off the allow-list |
+| route_v2 (`route_v2/binary-v1`) | 1346 parity + sampled | earned on a parity label | SITE (commit e06a1b8f): `agent_kernel._route_v2_route` at the turn-route fork - acts on the sampled rung (5% of turns, labelled by the turn verdict) and when the bar lets it decide. Live check with every turn sampled (8 tasks): 7/8 pass (r21 fails in every run), 3 overrides of the gate (c13, cal_a02, cal_a03 -> direct), all 3 passed and faster (c13 reply 9.6 s vs 21.6-30 s) |
 | user_feedback | 955 | earned (waiver) | not switchable |
 | tool_approval (`safety-v3`) | 470 bench | in-sample only; held-out fails (section 9) | shadow; live rows from the user's permission answers |
 | narration (`shape-v3`) | 172 | loses to the trivial rule 0.820 vs 0.872 (AUROC 0.878) | rule-owned; off the allow-list; shadow rows continue |
@@ -590,6 +590,14 @@ which the kernel comment notes is not truth (the rule calls every memory ask
 `direct`). To give it a job it needs (1) an outcome label, for example whether the
 turn ran a tool, (2) a decision site that reads `decides("route_v2")`, and then
 (3) a live gate.
+
+CORRECTION (2026-11-10, later): the comparison below labelled each turn from the
+gate's OWN route (a passed direct turn = "direct was right", a passed DER turn
+that used a tool = "der was right"), so the gate was right by construction and
+the figure cannot show where the Oracle is better. route_v2 now has a site
+(`agent_kernel._route_v2_route`): the sampled rung lets its route act on a
+bounded share of turns and labels them by the turn verdict - the honest outcome
+label. The original text follows for the record.
 
 Measured on an outcome label (2026-11-10, 1207 labelled eval turns: "der needed" =
 the DER turn made a project action and passed; "direct was enough" = it passed on
