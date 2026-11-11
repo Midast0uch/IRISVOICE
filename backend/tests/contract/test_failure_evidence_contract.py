@@ -24,7 +24,8 @@ class TestFailureWarningsRemoved:
         _get_failure_warnings path never worked (always AttributeError) and its
         one-line fix would label every task and step as a past failure, with a
         LIKE scan per step. It was removed; it must not come back unrebuilt."""
-        src = Path("backend/agent/agent_kernel.py").read_text(encoding="utf-8")
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="strict")
         assert "_get_failure_warnings" not in src
         assert "PAST FAILURE WARNING" not in src
 

@@ -457,7 +457,8 @@ def test_depth_met_and_done_sites_go_through_the_chokepoint(attr, consumer):
 def test_done_adopts_the_deciding_value():
     """A `done` that decides must change what the loop reads (a computed signal
     must change behaviour). Fails on the old code: the value was dropped."""
-    src = _kernel_src()
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding="utf-8", errors="replace")
     assert 'data["done"] = bool(_done_value)' in src
 
 

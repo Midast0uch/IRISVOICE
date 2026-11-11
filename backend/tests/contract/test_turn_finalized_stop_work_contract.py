@@ -93,7 +93,8 @@ class TestTheGuardIsWired:
     """Source pins — the writer, the refusal cause, and the production caller."""
 
     def test_settle_emitter_writes_the_marker_the_guard_reads(self):
-        src = Path(ak.__file__).read_text(encoding="utf-8", errors="replace")
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="replace")
         assert "self._der_card_terminal_emitted = _emitted" in src, (
             "the settle emitter must record which turn became public"
         )

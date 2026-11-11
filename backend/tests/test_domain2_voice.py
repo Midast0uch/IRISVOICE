@@ -265,20 +265,23 @@ class TestVoiceFirstDERMode:
 
     def test_from_voice_flag_sets_voice_first_mode(self):
         """process_text_message with from_voice=True sets _mode_name to voice_first."""
-        src = open("backend/agent/agent_kernel.py", encoding="utf-8").read()
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="strict")
         assert "voice_first" in src and "from_voice" in src, \
             "from_voice=True must lead to voice_first mode selection"
 
     def test_voice_first_single_step_enforced(self):
         """DER loop limits voice_first tasks to single queue item."""
-        src = open("backend/agent/agent_kernel.py", encoding="utf-8").read()
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="strict")
         # The code checks task_class == "voice_first" and len(items) > 1
         assert 'task_class == "voice_first"' in src or "voice_first" in src, \
             "voice_first single-step guard must be present in DER loop"
 
     def test_voice_first_overrides_mode_detector(self):
         """Voice requests bypass mode detection and lock to voice_first."""
-        src = open("backend/agent/agent_kernel.py", encoding="utf-8").read()
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="strict")
         # Mode detector is only run when NOT a voice request
         voice_first_line_idx = src.find('_mode_name = "voice_first"')
         mode_detector_line_idx = src.find("_mode_result")

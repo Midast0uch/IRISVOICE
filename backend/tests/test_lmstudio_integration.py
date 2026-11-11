@@ -125,7 +125,8 @@ class TestModelAliases:
 class TestProviderRouting:
     @pytest.fixture(scope="class")
     def src(self):
-        return read_source(_KERNEL_PATH)
+        from backend.tests._kernel_source import kernel_source
+        return kernel_source(encoding="utf-8", errors="strict")
 
     def test_is_ollama_uses_only_colon_check(self, src):
         """_is_ollama must be determined ONLY by ':' in model ID — not by provider name."""

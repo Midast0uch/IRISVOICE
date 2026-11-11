@@ -12,7 +12,8 @@ from pathlib import Path
 from backend.agent import agent_kernel as ak
 from backend.agent.der_loop import QueueItem
 
-_SRC = Path("backend/agent/agent_kernel.py").read_text(encoding="utf-8", errors="replace")
+from backend.tests._kernel_source import kernel_source
+_SRC = kernel_source(encoding="utf-8", errors="replace")
 
 
 def _node(calls):

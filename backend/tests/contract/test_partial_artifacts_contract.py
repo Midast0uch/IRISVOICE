@@ -48,7 +48,8 @@ def test_the_der_loop_grafts_the_remainder_after_a_file_step():
     """
     from backend.agent import agent_kernel as ak
 
-    src = inspect.getsource(ak)
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(errors="strict")
     finalize_at = src.find("_tokens_used = self._der_finalize_step(")
     graft_at = src.find("self._der_graft_missing_artifacts(")
     assert finalize_at != -1, "the DER step finalize call moved or was renamed"

@@ -175,7 +175,8 @@ def test_ct_gc7_block_keeps_denominator():
 def test_ct_gc8_seams_have_production_callers():
     import re
 
-    kernel = _src(os.path.join(_REPO, "backend", "agent", "agent_kernel.py"))
+    from backend.tests._kernel_source import kernel_source
+    kernel = kernel_source(encoding="utf-8", errors="strict")
     for sym in (
         "mark_coverage", "_goal_contract_apply_steering",
         "_goal_contract_block_facts", "_goal_contract_open_facts",
@@ -332,7 +333,8 @@ def test_ct_gc13_label_registered_and_consumers_present():
 
 
 def test_ct_gc13_failure_path_feeds_learning_hooks():
-    src = _src(os.path.join(_REPO, "backend", "agent", "agent_kernel.py"))
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding="utf-8", errors="strict")
     # failure-handler twin (finalize is skipped on that path)
     assert "_goal_contract_block_facts(" in src
     assert "REQ-11 AC11.3" in src

@@ -194,7 +194,8 @@ def test_outcome_coarsening(monkeypatch):
 def test_failure_zone_canonical(monkeypatch):
     import pathlib
     _root = pathlib.Path(__file__).resolve().parents[2]
-    src = (_root / "backend/agent/agent_kernel.py").read_text()
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding=None, errors="strict")
     assert 'zone="failure"' not in src, "off-vocab failure zone must be removed"
 
 

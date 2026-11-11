@@ -53,7 +53,8 @@ def _run(monkeypatch, brain: bool):
 
 
 def test_the_gate_reads_what_the_step_did_not_item_tool():
-    src = _KERNEL.read_text(encoding="utf-8", errors="replace")
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding="utf-8", errors="replace")
     assert 'if (getattr(item, "tool", None) or "").lower() in self._DER_GATHER_TOOLS:' not in src
     assert "for c in _step_calls(item)):" in src
 

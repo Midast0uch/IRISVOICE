@@ -39,7 +39,8 @@ class TestCTS3ContextUsageShapeParity:
     def test_direct_path_and_der_path_both_call_the_single_shared_emitter(self):
         """Structural pin: neither call site may grow its own emit logic —
         both must route through `self._emit_context_usage(...)`."""
-        src = AGENT_KERNEL_PATH.read_text(encoding="utf-8")
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="strict")
 
         # The non-DER direct-reply path (process_text_message).
         direct_call = re.search(

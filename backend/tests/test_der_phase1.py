@@ -78,7 +78,8 @@ def test_single_authority(monkeypatch):
     spec_path = os.path.join(
         os.path.dirname(__file__), "..", "agent", "agent_kernel.py"
     )
-    src = open(spec_path, encoding="utf-8").read()
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding="utf-8", errors="strict")
     # The deleted web-intent regex forced crawler_query via re.search on the
     # conversational query. Confirm that override is gone.
     assert 'crawler_query' not in src.split("# Phase 1 (D1.4)")[0][-4000:], \

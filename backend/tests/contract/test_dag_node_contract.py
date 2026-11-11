@@ -140,7 +140,8 @@ def test_der_failure_reason_lands_in_existing_error_type_field():
     """REQ-1 AC5 / design ripple-map CONTRACT LOCK: agent_kernel's failure
     routing stamps the typed reason onto item.error_type — the SAME field the
     ledger's record_failure already reads. No parallel structure."""
-    src = _src("backend/agent/agent_kernel.py")
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding="utf-8", errors="replace")
     # The DER seam assigns the typed reason into the existing field.
     assert "item.error_type = outcome.reason.value" in src, (
         "the typed reason must be written into the existing item.error_type "

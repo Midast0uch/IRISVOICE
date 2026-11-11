@@ -161,7 +161,8 @@ def test_a_step_added_after_planning_still_marks_coverage():
 def test_compress_does_not_skip_an_open_fact():
     import inspect
 
-    src = inspect.getsource(AgentKernel)
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(errors="strict")
     gate = src[src.index("continuation consult skipped during COMPRESS"):]
     gate = gate[: gate.index("_der_plan_next_step(")]
     assert "_goal_contract_cover_step(self)" in gate

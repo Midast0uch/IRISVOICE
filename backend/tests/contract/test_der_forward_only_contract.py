@@ -135,7 +135,9 @@ class TestNoTerminalToPendingReset:
         from backend.agent import der_loop as _dl
 
         for mod in (AgentKernel, _dl.DirectorQueue, _dl.QueueItem):
-            src = inspect.getsource(mod)
+            from backend.tests._kernel_source import kernel_source
+            src = (kernel_source(errors="strict") if mod is AgentKernel
+                   else inspect.getsource(mod))
             # A terminal->pending rewind would have to either empty the
             # outcome or re-queue the completed id. Neither exists.
             assert 'outcome = ""' not in src, (

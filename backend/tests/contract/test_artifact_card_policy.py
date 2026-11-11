@@ -182,7 +182,8 @@ def test_der_entry_consults_the_gate_before_it_emits_a_card():
 
     from backend.agent import agent_kernel as _mod
 
-    src = inspect.getsource(_mod)
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(errors="strict")
     assert "card_warranted(items" in src, (
         "the DER entry must call artifact_policy.card_warranted on the plan's "
         "items before emitting task:start"

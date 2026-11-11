@@ -391,7 +391,8 @@ def test_full_mode_progress_check_is_gone():
     ignored the answer (16 calls in one coding run)."""
     from pathlib import Path
 
-    src = Path("backend/agent/agent_kernel.py").read_text(encoding="utf-8")
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(encoding="utf-8", errors="strict")
     assert "def _der_check_full_progress" not in src
     assert "self._der_check_full_progress(" not in src
 

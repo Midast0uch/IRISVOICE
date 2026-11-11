@@ -44,7 +44,8 @@ def test_der_loop_does_not_import_the_browser_module():
     """Removing backend/proxy or backend/api/browser_surface must not break DER."""
     from backend.agent import agent_kernel
 
-    src = inspect.getsource(agent_kernel)
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(errors="strict")
     for forbidden in ("backend.proxy.fetch_client", "backend.api.browser_surface",
                       "backend.crawler.capture_store"):
         assert forbidden not in src, (

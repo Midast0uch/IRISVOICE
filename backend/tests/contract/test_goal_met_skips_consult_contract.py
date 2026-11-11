@@ -37,7 +37,8 @@ def test_an_open_or_blocked_fact_or_no_contract_is_not_met():
 def test_the_continuation_gate_reads_it():
     import inspect
 
-    src = inspect.getsource(AgentKernel)
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(errors="strict")
     gate = src[src.index("[DER] continuation gate: mode="):]
     assert "_goal_contract_met(self)" in gate[: gate.index("_der_plan_next_step(")]
 

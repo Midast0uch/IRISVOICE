@@ -171,7 +171,8 @@ class TestTheVetoIsWiredIntoTheGatherHint:
     """Source pin: the veto cannot be dropped from the gate silently."""
 
     def test_kernel_consults_the_bounded_ask_rule(self):
-        src = Path(ak.__file__).read_text(encoding="utf-8", errors="replace")
+        from backend.tests._kernel_source import kernel_source
+        src = kernel_source(encoding="utf-8", errors="replace")
         assert "if self._turn_is_bounded_content_ask():" in src
         assert '"rationale": "bounded_content_ask",' in src
         assert '"veto": sorted(self._WEB_CONTENT_TOOLS),' in src

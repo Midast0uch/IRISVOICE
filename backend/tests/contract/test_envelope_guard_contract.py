@@ -129,9 +129,8 @@ def test_ct6_gather_gate_url_filter_still_present_and_untouched():
     import io
     from pathlib import Path
 
-    src = io.read = Path(
-        Path(__file__).resolve().parents[2] / "agent" / "agent_kernel.py"
-    ).read_text(encoding="utf-8")
+    from backend.tests._kernel_source import kernel_source
+    src = io.read = kernel_source(encoding="utf-8", errors="strict")
     assert "gather gate filtered %d/%d registry URLs already crawled" in src
     # Session-322: raw compare strengthened to normalized compare (same guard,
     # stronger match) — accept either form, forbid neither.

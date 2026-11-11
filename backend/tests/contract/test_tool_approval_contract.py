@@ -167,5 +167,7 @@ def test_the_reliability_consult_is_gone():
     assert not hasattr(ta, "record_tool_approval")
     assert not hasattr(ta, "pre_call_guard")
     for rel in ("backend/agent/agent_kernel.py", "backend/agent/node_executor.py"):
-        src = (_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+        from backend.tests._kernel_source import kernel_source
+        src = (kernel_source(encoding="utf-8", errors="replace") if rel == "backend/agent/agent_kernel.py"
+               else (_ROOT / rel).read_text(encoding="utf-8", errors="replace"))
         assert "record_tool_approval" not in src and "pre_call_guard" not in src, rel

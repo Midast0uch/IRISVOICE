@@ -64,6 +64,7 @@ def test_every_call_of_a_closing_answer_reaches_the_reply_evidence():
 def test_the_der_synthesis_marks_its_evidence_bounded():
     import inspect
 
-    src = inspect.getsource(AgentKernel)
+    from backend.tests._kernel_source import kernel_source
+    src = kernel_source(errors="strict")
     i = src.index('"result": self._der_node_record_evidence(ci)')
     assert '"bounded": True' in src[i:i + 200]
