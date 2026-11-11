@@ -155,7 +155,11 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     # - 1 escalate_incomplete (owner retirement, 2026-11-09)
     # - 6 presentation, narration, review_verdict, depth_route, needs_action,
     #   depth_met (owner retirement, 2026-11-10)
-    assert len(de.CONSUMER_JOBS) == 12
+    # + 2 page_relevance / page_blocked (2026-11-10, research-path shadow
+    #   questions with production callers; page_shadow.py)
+    assert len(de.CONSUMER_JOBS) == 14
+    assert de.CONSUMER_JOBS["page_relevance"] == "judge_page"
+    assert de.CONSUMER_JOBS["page_blocked"] == "inspect_page"
     assert "escalate_incomplete" not in de.CONSUMER_JOBS
     for cid in ("presentation", "narration", "review_verdict", "depth_route",
                 "needs_action", "depth_met"):
@@ -202,7 +206,9 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # 9, not 13 (2026-11-10): `shape`, `judge_review`, `judge_depth` and
     # `interpret_step` removed with their only consumers (owner retirement of
     # presentation, narration, review_verdict, depth_met, needs_action).
-    assert len(de.ORACLE_JOBS) == 9
+    # 11, not 9 (2026-11-10): + `judge_page` (page_relevance: question + page
+    # head) and `inspect_page` (page_blocked: the Tier-1 page, no question).
+    assert len(de.ORACLE_JOBS) == 11
     assert "judge_step" not in de.ORACLE_JOBS
     for job in ("shape", "judge_review", "judge_depth", "interpret_step"):
         assert job not in de.ORACLE_JOBS, job
@@ -241,8 +247,11 @@ def test_consumers_grew_by_exactly_two():
     0.0398, precision@t 0.9034) and its live decision exists (the pre-call
     guard in node_executor). TIER_REFUSE_ONLY: it may only reject a call, and
     its correction budget bounds it."""
+    # + page_relevance / page_blocked (2026-11-10): shadow questions in the
+    # research path, both in NO_DECISION_SITE (page_shadow.py)
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {
-        "call_closing", "tool_approval", "route_v2"}
+        "call_closing", "tool_approval", "route_v2",
+        "page_relevance", "page_blocked"}
     # owner-directed removals: `mode` (2026-10-10), `use_thinking` (2026-10-13),
     # `escalate_incomplete` (2026-11-09), and presentation, narration,
     # review_verdict, needs_action, depth_met (2026-11-10; depth_route, also

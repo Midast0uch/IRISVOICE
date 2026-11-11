@@ -1990,6 +1990,11 @@ class AgentKernel:
             from backend.agent import browser_next_shadow as _bn_rows
 
             _bn_rows.set_row_sink(_shadow_sink)
+            # page_relevance / page_blocked (2026-11-10): the research-path
+            # page questions (crawler shadow consults). Same sink.
+            from backend.agent import page_shadow as _ps_rows
+
+            _ps_rows.set_row_sink(_shadow_sink)
             # REQ-14 (Wave 5): resolved OUTCOME-labelled rows (the deferred
             # registry) land on the SAME single-writer sink.
             from backend.agent import decision_engine as _de_rows

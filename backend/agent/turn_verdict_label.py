@@ -43,13 +43,18 @@ _DROPPED = 0
 _LOCK = threading.Lock()
 
 
-def defer(row: Optional[Dict[str, Any]], write: Callable[[dict], None]) -> bool:
+def defer(row: Optional[Dict[str, Any]], write: Callable[[dict], None],
+          label: Optional[Callable[[dict, bool], Any]] = None) -> bool:
     """HOLD one shadow row until its turn's verdict is reported. Returns True
     when the caller must NOT write it (the verdict path writes it later).
 
     Returns False (caller writes exactly as before) when the row carries no
     turn_id - no join key means parity is the only reference available, and
     holding it would strand it. Never raises.
+
+    ``label(row, passed)`` (2026-11-10, page_relevance): a row whose label is
+    NOT the bare verdict supplies its own rule; it returns the outside label,
+    or None to write the row unlabelled. Without it the verdict is the label.
     """
     global _DROPPED
     try:
@@ -59,7 +64,8 @@ def defer(row: Optional[Dict[str, Any]], write: Callable[[dict], None]) -> bool:
         if not tid:
             return False
         with _LOCK:
-            _PENDING.setdefault(tid, []).append({"row": row, "write": write})
+            _PENDING.setdefault(tid, []).append(
+                {"row": row, "write": write, "label": label})
             _PENDING.move_to_end(tid)
             while len(_PENDING) > _CAP:
                 _, dropped = _PENDING.popitem(last=False)
@@ -89,12 +95,18 @@ def report_verdict(turn_id: str, passed: bool) -> int:
             # by name: its own name when the turn passed, a value no name can
             # equal when it failed - as decision_engine.resolve_turn_pending.
             _ch = row.get("chosen")
-            if _ch is not None and not isinstance(_ch, bool):
-                row["outside_label"] = str(_ch) if passed else "turn_fail"
+            _rule = ent.get("label")
+            if _rule is not None:
+                # the row's own rule; None = write it unlabelled
+                _lab = _rule(row, bool(passed))
+            elif _ch is not None and not isinstance(_ch, bool):
+                _lab = str(_ch) if passed else "turn_fail"
             else:
-                row["outside_label"] = bool(passed)
-            row["label_source"] = "outcome"
-            labelled += 1
+                _lab = bool(passed)
+            if _lab is not None:
+                row["outside_label"] = _lab
+                row["label_source"] = "outcome"
+                labelled += 1
         except Exception:  # noqa: BLE001 — a bad row never blocks the rest
             continue
         try:

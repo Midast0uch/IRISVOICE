@@ -83,10 +83,10 @@ Allow-list (owner's local `.env`): `tool_choice,web_intent`.
 | Model | d1-2B (`d1-2B-Q4_K_M.gguf`), native Decision Index API, identity `d1-2b-q4_k_m+systemone` |
 | `tool_choice` | LIVE in its own role: the Oracle decides the tool CLASS, the tool model picks the tool (section 5); the bar CERTIFIES this role at its live gate |
 | Deciding through the bar | `tool_choice` (row above; `tc-decide-v9`: 1575 distinct rows, OOF AUROC 0.770, precision 0.950 / Wilson 0.936 - measured 2026-11-10; 132 class decisions in 8 coding tasks, none fell back) and `web_intent` (allow-listed 2026-11-10 after its live gate: research 31/35 = the 2026-11-05 run, no standard regressed; on those goals it agreed with the keywords 10/10, median 50 ms per goal). Measure `tool_choice` ONLY on its live stamp: the unscoped report mixes every stamp since v1 (13664 rows, AUROC 0.646) and reads as a failure it is not |
-| Earned, no decision site | `route_v2` (bar earned on a parity label; the kernel only shadows it), `call_closing` (refused by design), `tool_approval` (safety question: the v3 question earns the bar on the answer sheet it was worded against, and FAILS on the held-out sheet - section 9) |
+| Earned, no decision site | `call_closing` (refused by design), `tool_approval` (safety question: the v3 question earns the bar on the answer sheet it was worded against, and FAILS on the held-out sheet - section 9) |
 | Earned, has a site, not switched on | `user_feedback` (waiver; not switchable) |
 | Shadow (the incumbent decides) | `done`, `sufficient`, `recovery_strategy`, `browser_next`, `click_safety`, event consumers |
-| No decision site at all (`NO_DECISION_SITE`) | `tool_approval`: its rows are measurement only |
+| No decision site at all (`NO_DECISION_SITE`) | `tool_approval`, `page_relevance`, `page_blocked` (section 6.3): their rows are measurement only |
 | Retired | `narration`, `presentation`, `review_verdict`, `depth_route`, `needs_action`, `depth_met` (2026-11-10, with the jobs `shape`, `judge_review`, `judge_depth`, `interpret_step`; guard `test_six_consumers_retired_contract.py`), `escalate_incomplete` (and its job `judge_step`), `mode`, `on_track`, `has_gaps`, `retry_same`, `use_thinking` |
 
 Which jobs the Oracle should own and which it leaves to the incumbent: section 9.
@@ -283,7 +283,7 @@ an `enforced` bar pick or `IRIS_ORACLE_TOOL_CHOICE_ALWAYS=1`. Both are off.
 A consumer is one decision point: one question asked at one place in the app. Each
 has an id, a declared decision type and criteria, and one job.
 
-`CONSUMER_DECLARATIONS` declares every consumer below. `CONSUMERS` is the set of 8
+`CONSUMER_DECLARATIONS` declares every consumer below. `CONSUMERS` is the set of 10
 ids the owner can switch on with `IRIS_DECISION_ENFORCE`; `browser_next`,
 `click_safety`, `user_feedback` and the event consumers are declared but cannot be
 switched on.
@@ -301,6 +301,8 @@ switched on.
 | `web_intent` | interpret_web | noul | the web-trigger keyword lists | `explorer` (decision site) | earned, not on the allow-list |
 | `user_feedback` | interpret | choice | none (a Brain sample is the reference) | `event_oracle` | earned (waiver), no decision site |
 | `event_family`, `event_type:<family>` | classify_event | choice | the rule label | `event_oracle` | shadow (rows < 100) |
+| `page_relevance` | judge_page | noul | none (every usable page is extracted) | `CrawlOrchestrator._research_inner`, before the passage split (`page_shadow`) | shadow; no decision site (section 6.3) |
+| `page_blocked` | inspect_page | noul | none (every Tier-1 failure is escalated) | `FetchCrawlCapability.fetch_one`, at the Tier-1 -> browser fork (`page_shadow`) | shadow; no decision site (section 6.3) |
 
 Retired 2026-11-10 (owner), each with its consult removed and its incumbent
 deciding exactly as before: `narration` (the planner's duration gate),
@@ -345,6 +347,8 @@ an input that carries the answer measures nothing.
 | `judge_goal` | is the objective met, deep and sufficient? | goal, open_facts, evidence | 128 |
 | `classify_event` | which event family/type is this? | goal | 64 |
 | `judge_call` | was this call the closing call of the step? | goal, call, result | 96 |
+| `judge_page` | does this fetched page answer the question? | goal, title, url, page_head | 384 |
+| `inspect_page` | is this page blocked from being read? | url, title, status, page_head | 256 |
 | `general` | a consumer not yet assigned to a job | goal | 128 |
 
 Mapping: `CONSUMER_JOBS`. The budget is a cap, not a floor: the backend cuts the
@@ -614,6 +618,43 @@ precision 0.90 on the v7 cohort (the label was True on 96% of rows, so "always u
 tool" beat it). Its frame (job `interpret_step`), its question, its outcome label
 and its row writer are deleted; the lexical NONE guard in
 `tool_decision._goal_needs_action` decides without a consult as well.
+
+### 6.3 page_relevance and page_blocked: the research path (shadow, 2026-11-10)
+
+Two noul questions about ONE fetched page, both in `NO_DECISION_SITE`: nothing
+reads the answer, every page is still extracted and every escalation still runs.
+Code: `backend/agent/page_shadow.py`; both consults run on `lane("oracle_shadow")`;
+rows reach the ledger through the kernel's shadow sink. Guard:
+`test_page_shadow_contract.py` (fails on the committed crawler files).
+
+| | `page_relevance` (`page_relevance/v1`) | `page_blocked` (`page_blocked/text-v1`) |
+|---|---|---|
+| Asked | once per usable page, after the final fetch, BEFORE split / rerank / extraction (`orchestrator._research_inner`) | when Tier 1 (httpx) came back unusable and the crawler escalates to the pooled browser (`capabilities.FetchCrawlCapability.fetch_one`) |
+| Frame | the search query, page title, url, page text head (800 chars) | the Tier-1 page: url, title, HTTP status, text head (600 chars). Text only: no screenshot exists at this fork |
+| True label | the turn PASSED and the extraction cited the page (`[n](url)` in the summary or a key finding; `note_extraction` at `_notify_dashboard`), joined at `turn_verdict_label.report_verdict` | the browser fetch made a request (a HAR entry) and `page_is_usable` judged it NOT usable |
+| False label | the turn PASSED, the extraction cited >= 1 page, not this one | the browser fetch produced usable content |
+| No label | failed turn; a ONE-page job (the citation binding cites the only page by construction: 47 of 53 such recorded inputs cited); no verdict (live turns); extraction not landed before the verdict or cited nothing | the browser raised before a request (lease, launch, navigation timeout) or was cancelled (a lost crawl/vision race) |
+| Not asked | pages from the rerank re-query and the same-site hop | Tier-1 usable, Tier-1 bare 401/403 (parked), browser latched off, Tier 1 raised (no text) |
+
+What the page_relevance label cannot see: whether the reply used the cited claim (on
+`crawler_query` the agent reads raw page content, not the extraction); the binding is
+token overlap, so a near-duplicate page can take another page's sentence.
+
+**Replay, 2026-11-10** (`.venv` python `scripts/replay_page_relevance.py --results
+"C:/dev/IRISVOICE/evals/results/2026*.json"`; cohort: `page_relevance/v1` question,
+engine `d1-2b-q4_k_m+systemone`, data = the app store's recorded crawler tool
+results joined to their research records and eval verdicts, frame without a title;
+the question was not worded against this data, so it is held-out for the wording):
+96 distinct labelled inputs (61 cited, 35 not). Accuracy at 0.5 is 55/96 = 0.573
+against 61/96 = 0.635 for "always yes"; P(yes) ranks the label at AUROC 0.560; the
+fit's OOF AUROC is 0.492, ECE 0.078, no threshold. **At chance; fails the bar**
+(rows < 100, AUROC < 0.65). Before the one-page rule the same run read 150 inputs,
+AUROC 0.473.
+
+**page_blocked has no replay.** No recorded store keeps the Tier-1 body of an
+unusable page: `data/captures` saves usable pages only, `data/har` holds status,
+headers and a body hash, the tool results hold usable pages only. Its cohort starts
+with live traffic (~125 escalations in the 2026-11-10 log).
 
 ---
 
@@ -1028,6 +1069,7 @@ python scripts/calibrate_decision_threshold.py [--since ...] [--json]
 python scripts/replay_consumer.py --consumer C --stamps STAMP [--variants current,bare,custom --options <json>] [--engine ID]
 python scripts/replay_tool_choice.py [--stamps ...] [--engine ID]
 python scripts/bench_tool_safety.py [--limit N]   # evals/safety/answer_sheet.jsonl -> data/oracle_bench/tool_safety.db
+python scripts/replay_page_relevance.py [--dry-run] [--max 300] [--results <glob>]   # section 6.3
 
 # the tool_choice action-class label on the stored rows (read-only)
 python scripts/action_class_label.py
@@ -1074,6 +1116,7 @@ Under `backend/tests/` (`contract/` unless a path is given).
 - `test_escalate_incomplete_retired_contract.py` - the retired consumer and its job stay removed.
 - `test_six_consumers_retired_contract.py` - narration, presentation, review_verdict, depth_route, needs_action and depth_met (and their four jobs) stay out of every registry and record; no former site consults the Oracle; each incumbent still decides.
 - `test_no_decision_site_contract.py` - `NO_DECISION_SITE` matches the source; the log never calls a shadow-only consumer "deciding".
+- `test_page_shadow_contract.py` - page_relevance / page_blocked: production callers, lane-only consults, frames without the label, the outside labels and their unlabelled cases.
 - `test_readonly_engine.py` - the engine writes nothing to the memory graph.
 - `test_oracle_phase_contract.py`, `test_phase_domain_exit_admission.py` - phase admission.
 - `test_raw_threshold_contract.py` - `threshold_for` resolves the active curve on the raw scale.

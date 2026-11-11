@@ -908,6 +908,19 @@ class CrawlOrchestrator:
             await self._drain_log_tasks()
             return self._finalize(fetched, query, t_start, error="all pages failed to fetch")
 
+        # Oracle page_relevance (2026-11-10), SHADOW ONLY: one consult per
+        # usable page, queued on the oracle_shadow lane BEFORE the split /
+        # rerank / extraction it might one day let the crawler skip. It reads
+        # the query and the page only; every page is still extracted.
+        try:
+            from backend.agent import page_shadow as _page_shadow
+
+            _page_shadow.submit_page_relevance(query, ok_pages, job_id)
+        except Exception as exc:  # noqa: BLE001 - a shadow never fails a crawl
+            logger.warning(
+                "[CrawlOrchestrator] page_relevance shadow skipped job_id=%s: %s", job_id, exc,
+            )
+
         # REQ-4 AC1/AC3: emit phase transition — moving into extraction.
         _emit("CRAWLER_PHASE", {"phase": "extracting", "phase_sequence": PHASE_EXTRACTING})
 
@@ -1064,6 +1077,16 @@ class CrawlOrchestrator:
     @staticmethod
     def _notify_dashboard(on_dashboard, dashboard_data, cited_markdown, passages, job_id) -> None:
         """Hand the landed extraction to the caller's hook. Never raises."""
+        # page_relevance's label evidence: which pages this extraction cited
+        # (joined to the held rows at the turn verdict). Both landing paths
+        # (sync and the web_extract lane) pass through here.
+        try:
+            from backend.agent import page_shadow as _page_shadow
+
+            _page_shadow.note_extraction(job_id, dashboard_data, cited_markdown or "")
+        except Exception as exc:  # noqa: BLE001 - a label never fails a crawl
+            logger.warning("[CrawlOrchestrator] page_relevance note failed job_id=%s: %s",
+                           job_id, exc)
         if on_dashboard is None:
             return
         try:
