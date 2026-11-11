@@ -50,6 +50,139 @@ reproduces (re-measured: 16/50). Both sent work in the wrong direction. Rules:
 
 ---
 
+## HANDOFF 2026-11-11 - pick up here (read with section 0)
+
+Written for the next agent. Everything below was measured on engine
+`d1-2b-q4_k_m+systemone` (d1-2B, text + vision, NO audio: the projector
+declares only `clip.has_vision_encoder`). Commits of this work:
+da86e04a .. f9ff5f0e on `oracle-der-goal-contract-2026-11-09`, merged to `main`.
+
+### H.1 What is true now
+
+| Job | State | Where it acts / is asked | Label | Stamp to scope |
+|---|---|---|---|---|
+| tool_choice | DECIDES (class role) | `tool_decision` / node `choose_tool` | call outcome | `tc-decide-v9` |
+| web_intent | DECIDES (allow-listed 2026-11-10) | `explorer._is_web_intent` | parity (waiver) | `web_intent/v3` |
+| route_v2 | SAMPLED 5% + enforced path | `agent_kernel._route_v2_route` at the `_needs_planning` fork | turn verdict | `route_v2/outcome-v1` (parity rows stay `route_v2/binary-v1`) |
+| browser_next | SAMPLED 5% | `browser_next_shadow.sampled_pick`, PRE-call via the kernel's `_on_call` hook (`run_node` executes the same params dict) | turn verdict | `browser_next/outcome-v1` |
+| recovery_strategy | SAMPLED 5% | `tool_decision.recovery_strategy` | DER run grade (`resolve_turn_pending`) | `recovery/outcome-v1` |
+| click_safety | SAMPLED 5%, refuse-only | `browser_tools._gate_action` | DER run grade | `click_safety/outcome-v1` |
+| done | shadow | `_der_plan_next_step` (fires only when the goal is unmet after the first steps: ~1 row / 9 tasks) | turn verdict | `done/v4` |
+| sufficient | shadow (revived 68bc2f80; its gate was dead since 2026-09-29) | `_der_handle_step_failure` on a FAILED critical gather step | turn verdict, only when the Brain said "enough" | `sufficient/verdict-v1` |
+| tool_approval | shadow | `permissions.respond_to_permission` (user answers); bench sheet `evals/safety/` | user answer / answer sheet | `tool_approval/safety-v3` |
+| page_relevance | shadow (375d5271) | `orchestrator._research_inner`, per usable page | turn passed AND the extraction cited the page | `page_relevance/v1` |
+| page_blocked | shadow (375d5271), text only | `capabilities.FetchCrawlCapability.fetch_one` Tier-1 -> browser fork | was the browser fetch usable | `page_blocked/text-v1` |
+| call_closing / user_feedback / event consumers | unchanged | | | |
+| RETIRED 2026-11-10 | narration, presentation, review_verdict, depth_route, needs_action, depth_met (b4bc4625; guard `test_six_consumers_retired_contract.py`) | rules decide | | |
+
+Allow-list (owner's LOCAL `.env`, gitignored): `IRIS_DECISION_ENFORCE=tool_choice,web_intent`.
+Sampling: `decision_engine.SAMPLE_FRACTION = 0.05`; per job
+`IRIS_ORACLE_SAMPLE_FRACTION_<ID>` (e.g. `_ROUTE_V2=1`) set ONLY in the backend's
+start environment for traffic runs; kill switch `IRIS_ORACLE_SAMPLE=0`.
+Every outcome row is `label_source="outcome"` from birth: without a verdict it is
+UNSCORED (never "right" by default).
+
+Also landed: the permission rule asks first for pushes / installs / system
+changes / secrets / downloaded code (58a47ff5, PROGRESS S167: unsafe calls run
+unasked 150/179 -> 27/179, held-out 76/86 -> 24/86); the search registry no
+longer serves one question's pages to another (a2754ef7); the direct path's
+tool_choice shadow row no longer raises NameError (e068e066).
+
+### H.2 Latest numbers (scoped report on the outcome stamps, 2026-11-11 ~10:30 UTC)
+
+route_v2/outcome-v1 50 distinct (37 right / 13 wrong); browser_next/outcome-v1 29
+(28/1); click_safety/outcome-v1 23 (18/5); recovery/outcome-v1 2 (2/0); done/v4
+14 (5/9); sufficient/verdict-v1 0. NONE has the 100 distinct rows the bar needs.
+Merged gate on e068e066: coding 8/8, research 8/8, browser 10/10, 0 tracebacks.
+
+CONTAMINATED WINDOW: route_v2 rows from 2026-11-11 09:11 to 10:02 UTC (D1 batch,
+cal_f21 .. cal_t17) - the TTS worker hung (/health 503 `tts: loading`, log
+"play_stream skipped: the audio device was busy for 60s"); 8 of 17 turns timed
+out, 5 of them where the Oracle and the gate chose the SAME route. Exclude that
+window when judging route_v2 (the clean window was 14/14), or re-collect.
+
+### H.3 How to run traffic without mixing data (do exactly this)
+
+1. One backend, started with the overrides for the jobs being fed:
+   `$env:IRIS_STACK_DUMP_S='4'; $env:IRIS_ORACLE_SAMPLE_FRACTION_ROUTE_V2='1';`
+   `$env:IRIS_ORACLE_SAMPLE_FRACTION_BROWSER_NEXT='1'; $env:IRIS_ORACLE_SAMPLE_FRACTION_CLICK_SAFETY='1';`
+   `$env:IRIS_ORACLE_SAMPLE_FRACTION_RECOVERY_STRATEGY='1'; npm run iris:start:backend`
+   (backend on 127.0.0.1:8090; never preview_start it). Record HEAD, the
+   `.env` allow-list line and the override list in a manifest per batch.
+2. Use NEW tasks only: the bar dedupes on the input, so a repeated task adds no
+   distinct row (route_v2: 32 raw -> 24 distinct). Never-run calibration ids:
+   take `evals/tasks.json` group `calibration` minus every id already used
+   (session scratchpad lists `traffic_batch1-3.txt`, `t_browser/t_done/t_recovery.txt`,
+   `t_diverse.txt` lines 1-24 ran; lines 25-60 did NOT). Browser rows come only
+   from `b01..b10`, `g01..g04` (repeats there DO add rows: the page state varies).
+3. Run the runner DETACHED (`Start-Process .venv\Scripts\python.exe -ArgumentList
+   'evals\run_evals.py','--task',...` with `-RedirectStandardOutput/Error logs\X.*`);
+   a Monitor command that contains the runner kills it at its 30-min expiry.
+   `run_evals.py` selects NOTHING when `--task` and `--group` are mixed.
+4. Keep the machine quiet; no repo edits during a run (the harness reports a
+   LEAK). Code changes go in a worktree and merge after the run.
+5. Measure ONLY with the scoped report on the outcome stamps:
+   `.venv/Scripts/python.exe scripts/consumer_enforcement_report.py --scope route_v2=route_v2/outcome-v1 --scope browser_next=browser_next/outcome-v1 --scope click_safety=click_safety/outcome-v1 --scope recovery_strategy=recovery/outcome-v1 --scope done=done/v4 --scope sufficient=sufficient/verdict-v1 --scope page_relevance=page_relevance/v1 --scope page_blocked=page_blocked/text-v1`
+   NEVER `--write` until H.4 item 1 is decided.
+6. A job that passes: add it to the owner's `.env` allow-list, restart, run a
+   live gate (the task groups it touches, detached), then crystallize a landmark
+   (CLAUDE.md "A FLAG IS NOT DONE"). The browser cost: with the Oracle choosing
+   every click, browser tasks passed 7/10 and 9/10 vs 14/14 - normal operation
+   stays at 5%.
+
+### H.4 Not settled - and how to fix each
+
+1. **The bar's 5% minority clause fails tool_choice for being accurate** (4.7%
+   wrong of 2353 labelled, precision 0.968 / Wilson 0.959 above its threshold).
+   It still decides on the PERSISTED bar record; a `--write` would switch it
+   off. OWNER DECISION. Fix option: require a minimum COUNT of wrong rows
+   (enough to rank errors, e.g. >= 50) instead of a 5% share, in
+   `consumer_bar._derive_hardened`, with a guard; every other clause unchanged.
+2. **TTS hang under long web traffic** (H.2). Reproduce with the `cal_*_web`
+   calibration tasks in one run; read `logs/stackdump_tts.log` and
+   `backend/agent/speech_lanes.py` (`_play_with_watchdog`) /
+   `backend/agent/tts.py` (`_reaper_loop`). Fix before trusting web-task labels.
+3. **Rows scored on the lane AFTER their verdict are lost** (found by the
+   page_relevance work): `turn_verdict_label.defer` after `report_verdict`
+   holds the row until the 256-turn cap drops it. Affects done, sufficient,
+   page_relevance (lane-scored rows); not route_v2 / browser_next (written
+   before the turn ends). Fix: keep a bounded map of recent verdicts in
+   `turn_verdict_label` and label a late `defer` at once; guard it.
+4. **done and sufficient fire too rarely** for 100 rows in useful time. done:
+   only in `_der_plan_next_step`; best tasks m03 (~5 rows/run), r17 (~3.4),
+   m02 / r16 / r19 (~2). sufficient: only on a failed critical gather step
+   (fetch failures in research). Measure what traffic yields before promising.
+5. **page_relevance's label may be unlearnable** (offline replay on 96 inputs:
+   AUROC 0.560, OOF 0.492; always-yes beats it). Alternatives: label from the
+   passed reply's overlap with the page, or ask only on mixed-relevance page
+   sets (`scripts/replay_page_relevance.py`, section 6.3).
+6. **page_blocked has no screenshot at its fork**; a vision version needs a
+   screenshot at Tier 2 (costs fetch time) - owner decision.
+7. **tool_approval** stays shadow: the v3 question fails the held-out sheet
+   (acting "yes" 0.869 / Wilson 0.781). Live rows now come from the user's own
+   permission answers (the widened rule prompts more) - re-measure on those.
+8. **Coding reply_s misses the 2026-09-30 standards** on every commit (provider
+   speed: MiniMax median 98 s, DeepSeek V4.1 Flash 52 s on 8 tasks, 2026-11-10).
+   Re-recording the standards is an owner decision; never compare runs from
+   different hours as evidence about code (section 0 rule 4).
+9. **Pre-existing test failures** (same on the committed code): test_permission_flow_behavior
+   (5), test_standing_list (2), test_e2e_pipeline side-effect-requires-approval,
+   behavioral/test_tool_registry idempotent beside tests/test_tool_registry.py,
+   test_dispatch_contract race / loser-cancelled (2), and the list in the
+   retirement commit b4bc4625.
+10. `agent_config.yaml` still lists "surface_choice", "narration_gate" under the
+   Oracle capabilities (read by nothing): one-line cleanup.
+
+### H.5 Finalize the new model (d1-2B) - the order
+
+(1) owner decision H.4.1; (2) fix H.4.2 and H.4.3; (3) traffic on NEW tasks per
+H.3 until each outcome stamp has >= 100 distinct rows with >= 5% wrong (or the
+waiver); (4) scoped report; (5) `--write` the bar record and `fit_oracle_calibration.py`
+for the passing jobs only; (6) allow-list + live gate + landmark per job;
+(7) PROGRESS Standards row + guard for each switched-on job.
+
+---
+
 ## 1. Current state at a glance
 
 **2026-11-11: outcome-labelled traffic and the merged gate.** Targeted traffic
