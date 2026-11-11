@@ -55,7 +55,11 @@ reproduces (re-measured: 16/50). Both sent work in the wrong direction. Rules:
 Written for the next agent. Everything below was measured on engine
 `d1-2b-q4_k_m+systemone` (d1-2B, text + vision, NO audio: the projector
 declares only `clip.has_vision_encoder`). Commits of this work:
-da86e04a .. f9ff5f0e on `oracle-der-goal-contract-2026-11-09`, merged to `main`.
+bc8a358c .. 5441b4d2 on `oracle-der-goal-contract-2026-11-09`, merged to `main`.
+The history of these commits was REWRITTEN on 2026-11-11 (a Stripe-shaped
+example key in `evals/safety/answer_sheet.jsonl` blocked the push; it is now
+`sk_live_FAKE00000000`). Hashes in this file are the new ones; MCM pins written
+before then cite the old ones - map in `evals/traffic/hash_map_2026-11-11.txt`.
 
 ### H.1 What is true now
 
@@ -68,12 +72,12 @@ da86e04a .. f9ff5f0e on `oracle-der-goal-contract-2026-11-09`, merged to `main`.
 | recovery_strategy | SAMPLED 5% | `tool_decision.recovery_strategy` | DER run grade (`resolve_turn_pending`) | `recovery/outcome-v1` |
 | click_safety | SAMPLED 5%, refuse-only | `browser_tools._gate_action` | DER run grade | `click_safety/outcome-v1` |
 | done | shadow | `_der_plan_next_step` (fires only when the goal is unmet after the first steps: ~1 row / 9 tasks) | turn verdict | `done/v4` |
-| sufficient | shadow (revived 68bc2f80; its gate was dead since 2026-09-29) | `_der_handle_step_failure` on a FAILED critical gather step | turn verdict, only when the Brain said "enough" | `sufficient/verdict-v1` |
+| sufficient | shadow (revived e7c260a7; its gate was dead since 2026-09-29) | `_der_handle_step_failure` on a FAILED critical gather step | turn verdict, only when the Brain said "enough" | `sufficient/verdict-v1` |
 | tool_approval | shadow | `permissions.respond_to_permission` (user answers); bench sheet `evals/safety/` | user answer / answer sheet | `tool_approval/safety-v3` |
-| page_relevance | shadow (375d5271) | `orchestrator._research_inner`, per usable page | turn passed AND the extraction cited the page | `page_relevance/v1` |
-| page_blocked | shadow (375d5271), text only | `capabilities.FetchCrawlCapability.fetch_one` Tier-1 -> browser fork | was the browser fetch usable | `page_blocked/text-v1` |
+| page_relevance | shadow (76bd0ffc) | `orchestrator._research_inner`, per usable page | turn passed AND the extraction cited the page | `page_relevance/v1` |
+| page_blocked | shadow (76bd0ffc), text only | `capabilities.FetchCrawlCapability.fetch_one` Tier-1 -> browser fork | was the browser fetch usable | `page_blocked/text-v1` |
 | call_closing / user_feedback / event consumers | unchanged | | | |
-| RETIRED 2026-11-10 | narration, presentation, review_verdict, depth_route, needs_action, depth_met (b4bc4625; guard `test_six_consumers_retired_contract.py`) | rules decide | | |
+| RETIRED 2026-11-10 | narration, presentation, review_verdict, depth_route, needs_action, depth_met (4d947e1a; guard `test_six_consumers_retired_contract.py`) | rules decide | | |
 
 Allow-list (owner's LOCAL `.env`, gitignored): `IRIS_DECISION_ENFORCE=tool_choice,web_intent`.
 Sampling: `decision_engine.SAMPLE_FRACTION = 0.05`; per job
@@ -83,17 +87,17 @@ Every outcome row is `label_source="outcome"` from birth: without a verdict it i
 UNSCORED (never "right" by default).
 
 Also landed: the permission rule asks first for pushes / installs / system
-changes / secrets / downloaded code (58a47ff5, PROGRESS S167: unsafe calls run
+changes / secrets / downloaded code (af7db59f, PROGRESS S167: unsafe calls run
 unasked 150/179 -> 27/179, held-out 76/86 -> 24/86); the search registry no
-longer serves one question's pages to another (a2754ef7); the direct path's
-tool_choice shadow row no longer raises NameError (e068e066).
+longer serves one question's pages to another (cd5f29be); the direct path's
+tool_choice shadow row no longer raises NameError (285662f9).
 
 ### H.2 Latest numbers (scoped report on the outcome stamps, 2026-11-11 ~10:30 UTC)
 
 route_v2/outcome-v1 50 distinct (37 right / 13 wrong); browser_next/outcome-v1 29
 (28/1); click_safety/outcome-v1 23 (18/5); recovery/outcome-v1 2 (2/0); done/v4
 14 (5/9); sufficient/verdict-v1 0. NONE has the 100 distinct rows the bar needs.
-Merged gate on e068e066: coding 8/8, research 8/8, browser 10/10, 0 tracebacks.
+Merged gate on 285662f9: coding 8/8, research 8/8, browser 10/10, 0 tracebacks.
 
 CONTAMINATED WINDOW: route_v2 rows from 2026-11-11 09:11 to 10:02 UTC (D1 batch,
 cal_f21 .. cal_t17) - the TTS worker hung (/health 503 `tts: loading`, log
@@ -171,7 +175,7 @@ window when judging route_v2 (the clean window was 14/14), or re-collect.
    (5), test_standing_list (2), test_e2e_pipeline side-effect-requires-approval,
    behavioral/test_tool_registry idempotent beside tests/test_tool_registry.py,
    test_dispatch_contract race / loser-cancelled (2), and the list in the
-   retirement commit b4bc4625.
+   retirement commit 4d947e1a.
 10. `agent_config.yaml` still lists "surface_choice", "narration_gate" under the
    Oracle capabilities (read by nothing): one-line cleanup.
 
@@ -188,7 +192,7 @@ for the passing jobs only; (6) allow-list + live gate + landmark per job;
 ## 1. Current state at a glance
 
 **2026-11-11: outcome-labelled traffic and the merged gate.** Targeted traffic
-(scratchpad manifest `ttraffic_manifest.jsonl`; commit 917e94d1; backend started
+(scratchpad manifest `ttraffic_manifest.jsonl`; commit 3fa491d9; backend started
 with `IRIS_ORACLE_SAMPLE_FRACTION_{ROUTE_V2,BROWSER_NEXT,CLICK_SAFETY,RECOVERY_STRATEGY}=1`)
 ran browser x2, done x2, recovery x1 and 24 new calibration tasks. Scoped report
 on the OUTCOME stamps (verdict-labelled, never pooled with parity rows):
@@ -203,7 +207,7 @@ on the OUTCOME stamps (verdict-labelled, never pooled with parity rows):
 | `sufficient/verdict-v1` | 0 | - | fires only on a failed critical gather step |
 
 None has 100 distinct rows. REPEATED tasks add no distinct rows (route_v2: 32 raw
--> 24 distinct after the repeats); only new tasks do. Merged gate on e068e066
+-> 24 distinct after the repeats); only new tasks do. Merged gate on 285662f9
 (retirement + page consumers + the direct-path shadow fix): coding 8/8, research
 8/8, browser 10/10, 0 tracebacks; the coding reply_s standards (2026-09-30) are
 missed as on every commit of 2026-11-10 (provider speed; no same-hour A/B, so no
@@ -212,13 +216,13 @@ speed claim either way).
 
 **Measured 2026-11-10 after 104 traffic tasks** (scoped report, every consumer on
 its live stamp, engine `d1-2b-q4_k_m+systemone`, app store; traffic on commit
-58a47ff5, manifest per section 0 rule 3). One row per job, with the solution:
+af7db59f, manifest per section 0 rule 3). One row per job, with the solution:
 
 | Job (live stamp) | Rows | Verdict | Solution |
 |---|---|---|---|
 | tool_choice (`tc-decide-v9`) | 2772 | above threshold 0.968 / Wilson 0.959, AUROC 0.736; the MINORITY clause now reads 4.7% < 5% (110 wrong of 2353) | DECIDES (persisted bar record). OWNER: the 5% minority clause fails a job for being too accurate while 110 errors are plenty to rank; a `--write` would switch it off |
 | web_intent (`web_intent/v3`) | 938 | earned (waiver) | DECIDES (allow-listed after its live gate) |
-| route_v2 (`route_v2/binary-v1`) | 1346 parity + sampled | earned on a parity label | SITE (commit e06a1b8f): `agent_kernel._route_v2_route` at the turn-route fork - acts on the sampled rung (5% of turns, labelled by the turn verdict) and when the bar lets it decide. Live check with every turn sampled (8 tasks): 7/8 pass (r21 fails in every run), 3 overrides of the gate (c13, cal_a02, cal_a03 -> direct), all 3 passed and faster (c13 reply 9.6 s vs 21.6-30 s) |
+| route_v2 (`route_v2/binary-v1`) | 1346 parity + sampled | earned on a parity label | SITE (commit 6efa5cfe): `agent_kernel._route_v2_route` at the turn-route fork - acts on the sampled rung (5% of turns, labelled by the turn verdict) and when the bar lets it decide. Live check with every turn sampled (8 tasks): 7/8 pass (r21 fails in every run), 3 overrides of the gate (c13, cal_a02, cal_a03 -> direct), all 3 passed and faster (c13 reply 9.6 s vs 21.6-30 s) |
 | user_feedback | 955 | earned (waiver) | not switchable |
 | tool_approval (`safety-v3`) | 470 bench | in-sample only; held-out fails (section 9) | shadow; live rows from the user's permission answers |
 | narration (`shape-v3`) | 172 | loses to the trivial rule 0.820 vs 0.872 (AUROC 0.878) | RETIRED 2026-11-10 (owner): the planner's duration gate decides |
@@ -228,8 +232,8 @@ its live stamp, engine `d1-2b-q4_k_m+systemone`, app store; traffic on commit
 | needs_action (`v7`) | 4367 | no threshold holds 0.90 (the label is True on 96% of rows) | RETIRED 2026-11-10 (owner): the node mode rule and the lexical NONE guard decide |
 | call_closing | 2909 | earned | refused by design |
 | done (`done/v4`) | 8 | fires ~1 per 9 tasks, every row right | shadow; not fillable by traffic in useful time |
-| sufficient (`sufficient/verdict-v1`) | 0 | its gate was dead since 2026-09-29 (`item.tool` on node steps) | FIXED (commit 68bc2f80): runs on failed gather steps, labelled by the turn verdict when the Brain said "enough" |
-| recovery_strategy, click_safety (sampled rows) | 57 / 33 sampled | never scored: choice rows got no outside label | FIXED (68bc2f80): a sampled row's label is its turn outcome |
+| sufficient (`sufficient/verdict-v1`) | 0 | its gate was dead since 2026-09-29 (`item.tool` on node steps) | FIXED (commit e7c260a7): runs on failed gather steps, labelled by the turn verdict when the Brain said "enough" |
+| recovery_strategy, click_safety (sampled rows) | 57 / 33 sampled | never scored: choice rows got no outside label | FIXED (e7c260a7): a sampled row's label is its turn outcome |
 | recovery_strategy (parity rows) | 581 | reference is the constant "delegate": no label | no honest parity label; sampled rows only |
 | browser_next (`v1`) | 14 on this engine | the tool model has not clicked since 2026-10-23 | shadow; no honest label |
 

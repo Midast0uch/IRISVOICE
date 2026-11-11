@@ -1,0 +1,19 @@
+# old -> new commit hashes. History rewritten 2026-11-11 (git filter-branch) to replace
+# a Stripe-shaped example key in evals/safety/answer_sheet.jsonl that GitHub push
+# protection blocked. MCM pins and PiNs written before the rewrite cite the OLD hashes.
+da86e04a bc8a358c oracle: tool_approval asks the safety question; the job setups lose their leaks
+f12bacab 8cd3ee1e oracle: safety-v3 question states the whole policy; held-out gate; measured status
+58a47ff5 af7db59f permissions: ask first for every unsafe class, not only deletions; results rule
+68bc2f80 e7c260a7 oracle: sufficient runs again with a verdict label; sampled choice rows get their outcome
+3e7fa7f0 c3b26bf8 docs(oracle): measured verdict and solution per job; owner decisions open
+a2754ef7 cd5f29be crawler: a learned source answers only its own question; a cache hit learns nothing
+e06a1b8f 6efa5cfe oracle: route_v2 gets a decision site at the turn-route fork
+bb895bf1 55d5ab20 docs(oracle): route_v2 site and live check; the biased route comparison corrected; search leak
+917e94d1 3fa491d9 oracle: browser_next gets an honest label (sampled clicks); outcome rows get their own stamps
+375d5271 76bd0ffc oracle: page_relevance and page_blocked - two shadow questions in the research path
+b4bc4625 4d947e1a oracle: retire six consumers completely - narration, presentation, review_verdict, depth_route, needs_action, depth_met
+cfdbe891 7dfbe18b Merge branch 'oracle-page-consumers-2026-11-10' into merge-oracle-2026-11-11
+e068e066 285662f9 kernel: the direct path's tool_choice shadow row is written again
+f9ff5f0e 5441b4d2 docs(oracle): outcome-labelled traffic results, the contaminated window, the merged gate
+2268e7b2 d7fd8081 docs(oracle): handoff 2026-11-11 - state, numbers, traffic protocol, open items and fixes
+bef853df 4fd2f8cd evals: traffic task lists and batch manifests for the next agent
