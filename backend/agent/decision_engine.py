@@ -159,6 +159,15 @@ CONSUMERS: Tuple[str, ...] = (
     # (100 rows, precision >= 0.90, ECE <= 0.05). Declaring it is required by
     # AC1.6: the backend refuses to score an undeclared consumer.
     "route_v2",
+    # page_relevance / page_blocked (2026-11-10): two SHADOW questions in the
+    # web research path (backend/agent/page_shadow.py). page_relevance asks
+    # per usable fetched page, before the extraction, whether it answers the
+    # question (label: the extraction cited it in a PASSED turn);
+    # page_blocked asks at the Tier-1 -> browser escalation whether the page
+    # is blocked (label: the browser fetch's own usability outcome). Both are
+    # in NO_DECISION_SITE: nothing reads their answer until they earn the bar.
+    "page_relevance",
+    "page_blocked",
 )
 
 
@@ -402,6 +411,20 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # addition (the spec text and AC10.7 disagree) and the wave notes record it.
     OracleJob("judge_call", "was this call the closing call of the step?",
               ("goal", "call", "result"), 96),
+    # page_relevance's job (2026-11-10): the research question plus what the
+    # fetch saw - title, url and a bounded text head. The extraction is the
+    # LABEL, so nothing derived from it (or from the answer) is a field. The
+    # head renders LAST: a budget cut trims page text, never the question.
+    # 384 ids = 1536 chars: question 300 + title 150 + url 200 + head 800 +
+    # the field labels.
+    OracleJob("judge_page", "does this fetched page answer the question?",
+              ("goal", "title", "url", "page_head"), 384),
+    # page_blocked's job (2026-11-10): the Tier-1 page as fetched. No goal
+    # (being blocked does not depend on the question) and no image field: no
+    # screenshot exists at the Tier-1 -> browser fork it is asked at.
+    # 256 ids = 1024 chars: url 200 + title 150 + status + head 600.
+    OracleJob("inspect_page", "is this page blocked from being read?",
+              ("url", "title", "status", "page_head"), 256),
     OracleJob("general", "a consumer not yet assigned to a job",
               ("goal",), 128),
 )}
@@ -431,6 +454,8 @@ CONSUMER_JOBS: Dict[str, str] = {
     "done": "judge_goal", "depth_met": "judge_depth", "sufficient": "judge_goal",
     "presentation": "shape", "narration": "shape",
     "event_family": "classify_event",
+    # 2026-11-10: the research-path page questions (page_shadow.py)
+    "page_relevance": "judge_page", "page_blocked": "inspect_page",
 }
 
 
@@ -573,6 +598,16 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     "web_intent": ConsumerDeclaration("noul", {
         "true": "This request requires fetching information from the web",
         "false": "This request does not require the web",
+    }),
+    # 2026-11-10 (page_shadow.py): the two research-path page questions.
+    "page_relevance": ConsumerDeclaration("noul", {
+        "true": "The page holds facts that answer the question",
+        "false": "The page does not answer the question",
+    }),
+    "page_blocked": ConsumerDeclaration("noul", {
+        "true": ("Blocked: a cookie or consent wall, a login wall, a captcha, "
+                 "a paywall or an error page hides the content"),
+        "false": "The page content can be read",
     }),
     # tool_approval (2026-10-10, pin_1fb3ce63bb3b): the binary
     # outcome-referenced approval consumer. The reference is the call's OUTCOME
@@ -1292,7 +1327,10 @@ _ENFORCEMENT_IDENTITY: Optional[str] = None
 NO_DECISION_SITE = frozenset({"narration", "review_verdict", "depth_route",
                               # 2026-11-10: the safety question is shadow only
                               # (its old reliability guard was removed)
-                              "tool_approval"})
+                              "tool_approval",
+                              # 2026-11-10: shadow questions, no site yet
+                              # (page_shadow.py; they must earn the bar first)
+                              "page_relevance", "page_blocked"})
 
 
 def _log_enforcement_once() -> None:

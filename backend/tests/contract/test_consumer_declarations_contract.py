@@ -169,7 +169,11 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     # - 1 use_thinking (owner removal, 2026-10-13)
     # + 1 route_v2 (2026-10-30, shadow-only memory route)
     # - 1 escalate_incomplete (owner retirement, 2026-11-09)
-    assert len(de.CONSUMER_JOBS) == 18
+    # + 2 page_relevance / page_blocked (2026-11-10, research-path shadow
+    #   questions with production callers; page_shadow.py)
+    assert len(de.CONSUMER_JOBS) == 20
+    assert de.CONSUMER_JOBS["page_relevance"] == "judge_page"
+    assert de.CONSUMER_JOBS["page_blocked"] == "inspect_page"
     assert "escalate_incomplete" not in de.CONSUMER_JOBS
     assert "mode" not in de.CONSUMER_JOBS
 
@@ -210,7 +214,10 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # answer at p=0.11) and the step's EXPECTED OUTPUT resolves it.
     # 13, not 14 (2026-11-09): `judge_step` removed with its only consumer,
     # escalate_incomplete (owner retirement).
-    assert len(de.ORACLE_JOBS) == 13
+    # 15, not 13 (2026-11-10): `judge_page` (page_relevance: question + page
+    # head) and `inspect_page` (page_blocked: the Tier-1 page, no question) -
+    # two new questions with their own inputs (page_shadow.py).
+    assert len(de.ORACLE_JOBS) == 15
     assert "judge_step" not in de.ORACLE_JOBS
     assert de.ORACLE_JOBS["interpret_web"].fields == ("goal",)
     assert de.ORACLE_JOBS["interpret_web"].budget_ids == 128
@@ -267,8 +274,11 @@ def test_consumers_grew_by_exactly_two():
     0.0398, precision@t 0.9034) and its live decision exists (the pre-call
     guard in node_executor). TIER_REFUSE_ONLY: it may only reject a call, and
     its correction budget bounds it."""
+    # + page_relevance / page_blocked (2026-11-10): shadow questions in the
+    # research path, both in NO_DECISION_SITE (page_shadow.py)
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {
-        "depth_route", "call_closing", "tool_approval", "route_v2"}
+        "depth_route", "call_closing", "tool_approval", "route_v2",
+        "page_relevance", "page_blocked"}
     # owner-directed removals: `mode` (2026-10-10), `use_thinking` (2026-10-13)
     # and `escalate_incomplete` (2026-11-09)
     assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {

@@ -70,6 +70,8 @@ class TestConsumerSetIsPinned:
             "depth_route", "call_closing",
             "tool_approval",
             "route_v2",
+            # 2026-11-10: research-path shadow questions (page_shadow.py)
+            "page_relevance", "page_blocked",
         }, (
             "the consumer set changed — cross-spec lock with "
             "specs/tool-decision-engine REQ-11/13/14/15/17/29"

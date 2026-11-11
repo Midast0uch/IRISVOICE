@@ -120,6 +120,10 @@ class FetchOutcome:
     # dispatch_urls can score actual transport facts instead of a synthesized light
     # entry. Empty when a capability produced none (e.g. vision).
     har_entries: list = field(default_factory=list)
+    # The page AS FETCHED even when it is not usable (``page`` is None then).
+    # Tier 1 sets it; the page_blocked shadow consult reads it at the Tier-1
+    # -> browser fork (backend/agent/page_shadow.py). Nothing else reads it.
+    observed_page: Optional["PageData"] = None  # noqa: F821
 
 
 # Identity Tier-1 presents when fetching (REQ-5 AC3: the robots gate below
@@ -261,7 +265,39 @@ class FetchCrawlCapability:
         # delegating to CrawlOrchestrator().fetch_url (no page_offset); kept
         # upstream Tier1/Tier2 hybrid — line 143's _browser_pool_fetch_one
         # needs page_offset, so the stashed body would NameError here.
-        return await _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress)
+        # Oracle page_blocked (2026-11-10), SHADOW ONLY: asked on the Tier-1
+        # page BEFORE the browser fetch, labelled by that fetch's outcome
+        # (page_shadow.py). The escalation below always runs.
+        _consult = None
+        _seen = outcome.observed_page
+        if _seen is not None:
+            try:
+                from backend.agent import page_shadow as _page_shadow
+
+                _status = next((h.get("status") for h in outcome.har_entries
+                                if isinstance(h, dict)), None)
+                _consult = _page_shadow.submit_page_blocked(
+                    url, _seen.title or "", _status, _seen.markdown or "", job_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - a shadow never fails a fetch
+                logger.warning("[capabilities][job_id=%s] page_blocked shadow skipped: %s",
+                               job_id, exc)
+        browser_outcome = None
+        try:
+            browser_outcome = await _browser_pool_fetch_one(
+                url, goal, job_id, page_offset, on_progress)
+            return browser_outcome
+        finally:
+            # finally: a raced fetch is CANCELLED when vision wins; the held
+            # consult is then written unlabelled instead of leaking.
+            if _consult is not None:
+                try:
+                    from backend.agent import page_shadow as _page_shadow
+
+                    _page_shadow.resolve_page_blocked(_consult, browser_outcome)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[capabilities][job_id=%s] page_blocked label skipped: %s",
+                                   job_id, exc)
 
 
 # ── Hybrid fetch helpers (REQ-3 / REQ-4) ───────────────────────────────────
@@ -539,6 +575,7 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
             verdict=verdict,
             duration_ms=duration_ms,
             har_entries=[har],
+            observed_page=page,
         )
     except Exception as exc:  # noqa: BLE001 — Tier-1 failure escalates to Tier 2
         logger.info(
