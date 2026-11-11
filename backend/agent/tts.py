@@ -233,6 +233,11 @@ class TTSManager:
     # respawn at most once per this window.
     _RESPAWN_COOLDOWN_S: float = 120.0
 
+    # Ceiling on reaping a KILLED worker in _restart_worker. TerminateProcess
+    # ends the process in milliseconds; this only bounds the pathological case
+    # (a process stuck in a driver call) so a restart can never hang on it.
+    _KILL_WAIT_S: float = 5.0
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -857,24 +862,55 @@ class TTSManager:
                 logger.debug("[TTSManager] Idle sweep skipped: %s", exc)
 
     def _restart_worker(self) -> None:
-        """Kill and respawn the worker after a crash."""
+        """Kill and respawn the worker after a crash or a wedge.
+
+        KILL FIRST, CLOSE THE PIPES AFTER. The tts-stdout / tts-stderr threads
+        sit in a blocking read on the old worker's pipes, and a buffered pipe's
+        close() takes the same lock that read holds: closing a pipe of a LIVE
+        worker blocks until the worker writes a line or exits. A wedged worker
+        does neither. Measured 2026-11-11 09:57:15 UTC (pid 18764): the old
+        close-then-kill order blocked in close() for good, under
+        _synthesis_lock and with _proc None - no respawn ever, /health 503
+        "tts loading" until the backend was closed, the abandoned speech-lane
+        play thread kept the audio device, and every later utterance was
+        skipped as "device busy". The 03:55 UTC restart the same night only
+        escaped because that worker was slow, not wedged (it wrote a line 15 s
+        later). Killing first gives the readers EOF, so close() returns at once.
+        """
         logger.warning("[TTSManager] Restarting TTS worker after crash")
         with self._proc_lock:
             old = self._proc
             self._proc = None
             self._ready = False
-        # Close the dead worker's pipes before killing it. Skipping this leaks
-        # a pipe handle per restart and keeps the old reader thread alive.
         if old is not None:
-            for stream in (old.stdin, old.stdout, old.stderr):
-                try:
-                    stream.close()
-                except Exception:  # noqa: BLE001
-                    pass
+            _pid = getattr(old, "pid", None)
             try:
                 old.kill()
-            except Exception:  # noqa: BLE001 — already exited
-                pass
+            except Exception as exc:  # noqa: BLE001 — already exited
+                logger.debug("[TTSManager] kill of old worker pid=%s: %r", _pid, exc)
+            try:
+                rc = old.wait(timeout=self._KILL_WAIT_S)
+            except Exception as exc:  # noqa: BLE001 — still alive after kill
+                # Closing its pipes now would block exactly as above. Leave them
+                # to the reader threads (they end at the pipe's EOF when the
+                # process finally goes) and respawn anyway: one leaked handle
+                # set is bounded, a hung restart is not.
+                logger.error(
+                    "[TTSManager] old worker pid=%s still alive %.0fs after kill "
+                    "(%r) - pipes left to its reader threads, respawning",
+                    _pid, self._KILL_WAIT_S, exc,
+                )
+            else:
+                # Close the dead worker's pipes: skipping this leaks a pipe
+                # handle per restart.
+                for stream in (old.stdin, old.stdout, old.stderr):
+                    try:
+                        stream.close()
+                    except Exception:  # noqa: BLE001 — pipe already torn down
+                        pass
+                logger.info(
+                    "[TTSManager] old worker pid=%s killed (exit code %s)", _pid, rc
+                )
         self._spawn_worker()
 
     # ------------------------------------------------------------------
