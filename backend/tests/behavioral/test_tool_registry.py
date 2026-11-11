@@ -39,6 +39,22 @@ def _reset_providers(monkeypatch):
     # monkeypatch auto-restores
 
 
+@pytest.fixture(autouse=True)
+def _restore_registry():
+    """register_tool() writes the process-global _REGISTRY/_ALIAS_INDEX. This
+    module and its same-named twin (backend/tests/test_tool_registry.py and
+    backend/tests/behavioral/test_tool_registry.py) both register the
+    "_idempotent_probe" tool; without a restore the first one leaves the probe
+    behind and the second one's `before` count already contains it. Snapshot
+    and restore so each test starts from the registry it found."""
+    reg, alias = dict(r._REGISTRY), dict(r._ALIAS_INDEX)
+    yield
+    r._REGISTRY.clear()
+    r._REGISTRY.update(reg)
+    r._ALIAS_INDEX.clear()
+    r._ALIAS_INDEX.update(alias)
+
+
 @pytest.fixture
 def _allow_all_caps(monkeypatch):
     """Make CapabilitySet.is_tool_allowed return True so only the internet/
