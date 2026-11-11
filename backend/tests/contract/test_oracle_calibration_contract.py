@@ -520,3 +520,28 @@ class TestRuntimeLoader:
         assert calibrated("backend-x", "missing", 0.75, path=f) is None
         assert calibrated("backend-x", "no_fit", 0.75, path=f) is None
         assert threshold("backend-x", "no_fit", path=f) is None
+
+
+class TestMinorityByCount:
+    """2026-11-11: under a 5% share, >= MIN_MINORITY_ROWS minority rows meet
+    the minority clause by COUNT; AUROC and every other clause still apply in
+    full (no waiver). Fails on the old bar, which named the minority gap for
+    tool_choice's real cohort (110 wrong of 2353, AUROC 0.736)."""
+
+    def test_an_accurate_cohort_with_enough_errors_is_judged_on_the_rest(self):
+        h = _honest(rows_distinct=2353, classes={"correct": 2243, "wrong": 110},
+                    rows_above=1964, oof={"auroc": 0.7362, "precision_at_t": 0.9679,
+                                          "wilson_lb": 0.9592, "ece": 0.0039})
+        assert derive_status(0, 0.0, None, honest=h) == ("enforced", "")
+
+    def test_too_few_errors_still_fail_the_minority_clause(self):
+        h = _honest(rows_distinct=1000, classes={"correct": 960, "wrong": 40},
+                    rows_above=900)
+        status, gap = derive_status(0, 0.0, None, honest=h)
+        assert status == "shadow" and "minority" in gap
+
+    def test_the_count_grants_no_waiver_from_auroc(self):
+        h = _honest(rows_distinct=2353, classes={"correct": 2243, "wrong": 110},
+                    rows_above=1964, oof={"auroc": 0.60})
+        status, gap = derive_status(0, 0.0, None, honest=h)
+        assert status == "shadow" and "AUROC" in gap

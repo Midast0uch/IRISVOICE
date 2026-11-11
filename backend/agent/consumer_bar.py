@@ -110,6 +110,16 @@ MIN_WILSON_LB = 0.85
 # accumulate to >= 5%, the full clauses snap back and can demote.
 WAIVER_ALPHA = 0.01
 
+# THE MINORITY COUNT (2026-11-11, owner: "fix the unsettled issues"): the
+# minority clause exists to prove there are enough errors to RANK. A share
+# measures that badly at scale: tool_choice/tc-decide-v9 had 110 wrong rows
+# of 2353 (4.7%) - plenty to rank (OOF AUROC 0.736) - yet failed for being
+# accurate, while not excluding 5% either. With at least MIN_MINORITY_ROWS
+# minority rows the share clause is met by COUNT and the AUROC clause (and
+# every other clause) must then pass in full; no waiver is granted. Thin data
+# is unchanged: 150 rows with 6 wrong still fails the minority clause.
+MIN_MINORITY_ROWS = MIN_ROWS_ABOVE
+
 # REQ-6 AC6.1 (oracle-native-decision-surface): the SAMPLED rung's stated
 # floor. `sampled` is reported between `shadow` and `enforced` ONLY when the
 # consumer is sampling-eligible by the AC6.6 tier table (the caller passes it)
@@ -247,6 +257,8 @@ def _derive_hardened(
                 f"{MIN_MINORITY:.0%} error rate (p <= {WAIVER_ALPHA}); "
                 "minority+AUROC untestable, not failed"
             )
+        elif min(a, b) >= MIN_MINORITY_ROWS:
+            pass  # enough errors to rank: the AUROC clause must prove it
         else:
             return "shadow", f"minority class {minority:.1%} < {MIN_MINORITY:.0%}"
     oof = h.get("oof") or {}
