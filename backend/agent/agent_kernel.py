@@ -4850,17 +4850,21 @@ class AgentKernel:
                     # not argue for a tool (the same lesson as the
                     # review_verdict v9 criteria and the tool_choice control
                     # labels, oracle.md 7.6).
-                    _hints = {n: n for n in _offered}
+                    # the menu the Brain was OFFERED this turn. `_offered` was
+                    # read here but only defined in the DER node path, so this
+                    # row raised NameError and was lost on every direct-path
+                    # tool call since tc-frame-v10 (found 2026-11-11).
+                    _offered = [
+                        (t.get("function") or {}).get("name")
+                        for t in (_tools or [])
+                    ]
+                    _hints = {n: n for n in _offered if n}
                     _hints.update({n: n for n in ("DELEGATE", "NONE")})
                     self._get_tool_box().record_shadow_tool_choice(
                         goal=text,
                         observed_tool=_name,
                         observed_params=_params,
-                        # the menu the Brain was OFFERED this turn
-                        candidates=[
-                            (t.get("function") or {}).get("name")
-                            for t in (_tools or [])
-                        ] or None,
+                        candidates=_offered or None,
                         last_result=_lr or None,
                         option_criteria=_hints or None,
                         calls_this_step=_hist or None,
