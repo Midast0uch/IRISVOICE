@@ -52,6 +52,29 @@ reproduces (re-measured: 16/50). Both sent work in the wrong direction. Rules:
 
 ## 1. Current state at a glance
 
+**2026-11-11: outcome-labelled traffic and the merged gate.** Targeted traffic
+(scratchpad manifest `ttraffic_manifest.jsonl`; commit 917e94d1; backend started
+with `IRIS_ORACLE_SAMPLE_FRACTION_{ROUTE_V2,BROWSER_NEXT,CLICK_SAFETY,RECOVERY_STRATEGY}=1`)
+ran browser x2, done x2, recovery x1 and 24 new calibration tasks. Scoped report
+on the OUTCOME stamps (verdict-labelled, never pooled with parity rows):
+
+| Stamp | Distinct rows | Right / wrong | Note |
+|---|---|---|---|
+| `route_v2/outcome-v1` | 50 | 37 / 13 | clean window (before 09:11 UTC 11-11): 14/14, incl. 3 gate overrides that passed. From 09:11 the backend degraded (TTS hung; /health 503 at 10:02) and 8 of 17 turns failed by timeout, 5 of them where the Oracle and the gate chose the SAME route - those labels measure the hang, not the route (all-rows AUROC 0.33 is therefore not a verdict) |
+| `browser_next/outcome-v1` | 29 | 28 / 1 | the Oracle's clicks at 100% cost browser tasks: 7/10 and 9/10 vs 14/14 with the tool model |
+| `click_safety/outcome-v1` | 23 | 18 / 5 | |
+| `recovery/outcome-v1` | 2 | 2 / 0 | fires only on a step that fails after its retry |
+| `done/v4` | 14 | 5 / 9 | fires ~1 per 9 tasks (only when the goal is unmet after the first steps) |
+| `sufficient/verdict-v1` | 0 | - | fires only on a failed critical gather step |
+
+None has 100 distinct rows. REPEATED tasks add no distinct rows (route_v2: 32 raw
+-> 24 distinct after the repeats); only new tasks do. Merged gate on e068e066
+(retirement + page consumers + the direct-path shadow fix): coding 8/8, research
+8/8, browser 10/10, 0 tracebacks; the coding reply_s standards (2026-09-30) are
+missed as on every commit of 2026-11-10 (provider speed; no same-hour A/B, so no
+speed claim either way).
+
+
 **Measured 2026-11-10 after 104 traffic tasks** (scoped report, every consumer on
 its live stamp, engine `d1-2b-q4_k_m+systemone`, app store; traffic on commit
 58a47ff5, manifest per section 0 rule 3). One row per job, with the solution:
