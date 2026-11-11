@@ -111,9 +111,11 @@ window when judging route_v2 (the clean window was 14/14), or re-collect.
    `.env` allow-list line and the override list in a manifest per batch.
 2. Use NEW tasks only: the bar dedupes on the input, so a repeated task adds no
    distinct row (route_v2: 32 raw -> 24 distinct). Never-run calibration ids:
-   take `evals/tasks.json` group `calibration` minus every id already used
-   (session scratchpad lists `traffic_batch1-3.txt`, `t_browser/t_done/t_recovery.txt`,
-   `t_diverse.txt` lines 1-24 ran; lines 25-60 did NOT). Browser rows come only
+   take `evals/tasks.json` group `calibration` minus every id in
+   `evals/traffic/used_ids_2026-11-11.txt`; `evals/traffic/next_new_ids.txt`
+   holds 36 picked but never run. The batch manifests (cohort per batch) are
+   `evals/traffic/manifest_2026-11-10.jsonl` and `manifest_2026-11-11.jsonl`.
+   Browser rows come only
    from `b01..b10`, `g01..g04` (repeats there DO add rows: the page state varies).
 3. Run the runner DETACHED (`Start-Process .venv\Scripts\python.exe -ArgumentList
    'evals\run_evals.py','--task',...` with `-RedirectStandardOutput/Error logs\X.*`);
