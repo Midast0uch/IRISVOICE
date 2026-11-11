@@ -172,3 +172,24 @@ def test_monitor_shadow_holds_done_for_the_verdict_too():
     src = inspect.getsource(ms._submit_shadow)
     assert 'consumer_id == "done"' in src
     assert "_tvl.defer(row, emit_row)" in src
+
+
+# ── a row deferred AFTER its verdict (2026-11-11) ───────────────────────────
+
+
+def test_a_row_deferred_after_its_verdict_is_labelled_at_once():
+    """A lane-scored row can arrive after report_verdict; it used to wait for a
+    verdict that had already come until the cap dropped it. Fails on the old
+    module: defer() held it and nothing ever wrote it."""
+    written: list = []
+    assert tvl.report_verdict("t-late", passed=True) == 0  # nothing held yet
+    assert tvl.defer(_row(turn="t-late", chosen=True), written.append) is True
+    assert len(written) == 1, "written at once, not held"
+    assert written[0]["outside_label"] is True and written[0]["label_source"] == "outcome"
+    assert tvl.stats()["labelled_late"] == 1
+
+
+def test_the_verdict_memory_is_bounded():
+    for i in range(tvl._CAP + 50):
+        tvl.report_verdict(f"t{i}", passed=True)
+    assert len(tvl._VERDICTS) == tvl._CAP

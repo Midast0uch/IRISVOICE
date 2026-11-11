@@ -41,6 +41,12 @@ _PENDING: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
 _CAP = 256          # turns; drop-oldest, counted
 _DROPPED = 0
 _LOCK = threading.Lock()
+# Verdicts already reported, bounded like _PENDING (2026-11-11). A row scored
+# on the shadow lane can be deferred AFTER its turn's verdict arrived; it used
+# to wait for a verdict that had already come until the cap dropped it (done,
+# sufficient, page_relevance rows lost). Such a row is labelled at once.
+_VERDICTS: "OrderedDict[str, bool]" = OrderedDict()
+_LATE = 0
 
 
 def defer(row: Optional[Dict[str, Any]], write: Callable[[dict], None],
@@ -56,16 +62,23 @@ def defer(row: Optional[Dict[str, Any]], write: Callable[[dict], None],
     NOT the bare verdict supplies its own rule; it returns the outside label,
     or None to write the row unlabelled. Without it the verdict is the label.
     """
-    global _DROPPED
+    global _DROPPED, _LATE
     try:
         if not row or not isinstance(row, dict):
             return False
         tid = str(row.get("turn_id") or "")
         if not tid:
             return False
+        ent = {"row": row, "write": write, "label": label}
         with _LOCK:
-            _PENDING.setdefault(tid, []).append(
-                {"row": row, "write": write, "label": label})
+            passed = _VERDICTS.get(tid)
+            if passed is not None:
+                _LATE += 1
+        if passed is not None:
+            _stamp_and_write(ent, passed)
+            return True
+        with _LOCK:
+            _PENDING.setdefault(tid, []).append(ent)
             _PENDING.move_to_end(tid)
             while len(_PENDING) > _CAP:
                 _, dropped = _PENDING.popitem(last=False)
@@ -85,34 +98,43 @@ def report_verdict(turn_id: str, passed: bool) -> int:
     try:
         with _LOCK:
             entries = _PENDING.pop(tid, None) or []
+            _VERDICTS[tid] = bool(passed)
+            _VERDICTS.move_to_end(tid)
+            while len(_VERDICTS) > _CAP:
+                _VERDICTS.popitem(last=False)
     except Exception:  # noqa: BLE001
         entries = []
-    labelled = 0
-    for ent in entries:
-        row = ent.get("row") or {}
-        try:
-            # A NAMED answer (route_v2's "direct"/"der", 2026-11-10) is scored
-            # by name: its own name when the turn passed, a value no name can
-            # equal when it failed - as decision_engine.resolve_turn_pending.
-            _ch = row.get("chosen")
-            _rule = ent.get("label")
-            if _rule is not None:
-                # the row's own rule; None = write it unlabelled
-                _lab = _rule(row, bool(passed))
-            elif _ch is not None and not isinstance(_ch, bool):
-                _lab = str(_ch) if passed else "turn_fail"
-            else:
-                _lab = bool(passed)
-            if _lab is not None:
-                row["outside_label"] = _lab
-                row["label_source"] = "outcome"
-                labelled += 1
-        except Exception:  # noqa: BLE001 — a bad row never blocks the rest
-            continue
-        try:
-            ent["write"](row)
-        except Exception:  # noqa: BLE001 — a writer failure never propagates
-            pass
+    return sum(1 for ent in entries if _stamp_and_write(ent, bool(passed)))
+
+
+def _stamp_and_write(ent: Dict[str, Any], passed: bool) -> bool:
+    """Label one held row with its turn's verdict and write it. True when it
+    was labelled. Never raises."""
+    row = ent.get("row") or {}
+    labelled = False
+    try:
+        # A NAMED answer (route_v2's "direct"/"der", 2026-11-10) is scored
+        # by name: its own name when the turn passed, a value no name can
+        # equal when it failed - as decision_engine.resolve_turn_pending.
+        _ch = row.get("chosen")
+        _rule = ent.get("label")
+        if _rule is not None:
+            # the row's own rule; None = write it unlabelled
+            _lab = _rule(row, bool(passed))
+        elif _ch is not None and not isinstance(_ch, bool):
+            _lab = str(_ch) if passed else "turn_fail"
+        else:
+            _lab = bool(passed)
+        if _lab is not None:
+            row["outside_label"] = _lab
+            row["label_source"] = "outcome"
+            labelled = True
+    except Exception:  # noqa: BLE001 — a bad row never blocks the rest
+        return False
+    try:
+        ent["write"](row)
+    except Exception:  # noqa: BLE001 — a writer failure never propagates
+        pass
     return labelled
 
 
@@ -141,14 +163,18 @@ def stats() -> Dict[str, int]:
                 "turns_pending": len(_PENDING),
                 "rows_pending": sum(len(v) for v in _PENDING.values()),
                 "dropped_overflow": _DROPPED,
+                "labelled_late": _LATE,
             }
     except Exception:  # noqa: BLE001
-        return {"turns_pending": 0, "rows_pending": 0, "dropped_overflow": 0}
+        return {"turns_pending": 0, "rows_pending": 0, "dropped_overflow": 0,
+                "labelled_late": 0}
 
 
 def reset() -> None:
     """Test seam."""
-    global _DROPPED
+    global _DROPPED, _LATE
     with _LOCK:
         _PENDING.clear()
+        _VERDICTS.clear()
         _DROPPED = 0
+        _LATE = 0
