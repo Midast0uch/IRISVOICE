@@ -58,11 +58,9 @@ MAX_ECE = 0.05
 # ACTS on one answer must also clear precision and Wilson LB on THAT answer.
 #
 # Which answer acts, per consumer (the site's change, not the engine's guess):
+# (needs_action, review_verdict and depth_met left 2026-11-10: retired.)
 ACTING_ANSWER: Dict[str, str] = {
-    "needs_action": "no",          # a confident "no tool" moves the step to DIRECT
     "tool_approval": "yes",        # a confident "safe" would skip the user's prompt
-    "review_verdict": "veto",      # a confident "veto" refuses the step
-    "depth_met": "no",             # a confident "not deep enough" pushes more work
 }
 
 # MEASURED ADOPTION. A consumer joins this set only after its cohort has been
@@ -79,7 +77,7 @@ ACTING_ANSWER: Dict[str, str] = {
 # 59%, since retired). The pooled precision is carried by the side that
 # changes nothing.
 ACTING_ENFORCED = {
-    "needs_action", "depth_met", "tool_approval", "review_verdict",
+    "tool_approval",
 }
 MIN_ACTING_ROWS_ABOVE = 50
 

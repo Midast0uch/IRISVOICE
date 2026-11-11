@@ -1,10 +1,11 @@
 """Contract pin: the shadow-consumer row sink (REQ-14 AC14.1, REQ-29; T18, T46-T49).
 
 Why this contract exists. The monitor consumers (`sufficient`, `done`,
-`on_track`) and the surface consumers (`needs_action`; `has_gaps` and
-`escalate_incomplete` since retired) are SHADOW: each must WRITE a
-calibration row and change no decision. Their modules emit that row to a
-module-level sink (`monitor_shadow.set_row_sink` / `surface_shadow.set_row_sink`).
+`on_track`) and the other module-sink consumers (the surface consumers
+`needs_action`, `has_gaps`, `escalate_incomplete` and `depth_met` are all
+retired since) are SHADOW: each must WRITE a calibration row and change no
+decision. Their modules emit that row to a module-level sink
+(`monitor_shadow.set_row_sink`, `click_safety_shadow.set_row_sink`, ...).
 
 MEASURED 2026-09-26: no production code installed a sink — the only callers of
 `set_row_sink` were tests. In a live session every row fell through to a
@@ -92,8 +93,8 @@ class TestSinkRoutesRowsToTheLedger:
     def test_installing_the_sink_routes_both_modules(self):
         """The install path, exercised through the modules' own emit_row —
         the seam that had no production caller."""
+        import backend.agent.click_safety_shadow as ss  # was surface_shadow (retired 2026-11-10)
         import backend.agent.monitor_shadow as ms
-        import backend.agent.surface_shadow as ss
 
         rec = _Recorder()
         sink = AgentKernel._shadow_row_sink.__get__(_kernel(rec))
@@ -102,14 +103,14 @@ class TestSinkRoutesRowsToTheLedger:
         try:
             ms.emit_row({"consumer_id": "sufficient", "chosen": True,
                          "confidence": 0.9, "brain_bool": True, "shadow": True})
-            ss.emit_row({"consumer_id": "has_gaps", "chosen": False,
+            ss.emit_row({"consumer_id": "click_safety", "chosen": False,
                          "confidence": 0.8, "brain_bool": False, "shadow": True})
         finally:
             ms.set_row_sink(None)
             ss.set_row_sink(None)
 
         assert [m["consumer_id"] for m, _k, _s in rec.calls] == [
-            "sufficient", "has_gaps",
+            "sufficient", "click_safety",
         ]
         assert all(k == "shadow" for _m, k, _s in rec.calls)
 
@@ -119,7 +120,7 @@ class TestSinkRoutesRowsToTheLedger:
         from the active backend — a reader can then separate a GLiNER row from
         a historical LFM row."""
         rec = _Recorder()
-        row = {"consumer_id": "needs_action", "chosen": True, "confidence": 0.7}
+        row = {"consumer_id": "sufficient", "chosen": True, "confidence": 0.7}
         AgentKernel._shadow_row_sink(_kernel(rec), row)
         meta, _kind, _s = rec.calls[0]
         assert "engine" in meta, "the row cannot be attributed to a backend"
@@ -135,75 +136,9 @@ class TestSinkRoutesRowsToTheLedger:
         assert meta["route"] == "engine"
 
 
-class TestExposedRowsAreForwarded:
-    """`review_verdict` EXPOSES a row instead of emitting one.
-
-    Measured live 2026-09-26: it scored (`Oracle decide consumer=review_verdict`)
-    and produced NO ledger row, because the only thing that read
-    `last_shadow_verdict` was a test. These pins keep the forwarding honest:
-    write once, and never twice. (`mode` was the other exposed row until the
-    consumer was REMOVED 2026-10-10, owner — the fixtures below were updated
-    to the surviving attribute in the SAME change. STALE-BY-SPEC.)
-    """
-
-    def _kernel(self, rec):
-        # The methods must be BOUND to the stub: an unbound `_shadow_row_sink`
-        # would receive the row as its `self`.
-        k = SimpleNamespace(
-            _tool_bridge=rec, session_id="s-fwd",
-            _EXPOSED_ROW_ATTRS=AgentKernel._EXPOSED_ROW_ATTRS,
-        )
-        k._shadow_row_sink = AgentKernel._shadow_row_sink.__get__(k)
-        k._forward_consumer_rows = AgentKernel._forward_consumer_rows.__get__(k)
-        return k
-
-    def test_an_exposed_row_is_written_once_and_then_cleared(self):
-        rec = _Recorder()
-        k = self._kernel(rec)
-        holder = SimpleNamespace(last_shadow_verdict={
-            "consumer_id": "review_verdict", "chosen": "pass",
-        })
-
-        k._forward_consumer_rows(holder)
-        assert [m["consumer_id"] for m, _k, _s in rec.calls] == ["review_verdict"], (
-            "an exposed row was not written — this is the defect that left "
-            "`review_verdict` with zero calibration rows"
-        )
-        assert holder.last_shadow_verdict is None, (
-            "the row was not cleared, so the next turn would write it again "
-            "and inflate every rate derived from the ledger"
-        )
-
-        # Idempotent: nothing new on the second pass.
-        k._forward_consumer_rows(holder)
-        assert len(rec.calls) == 1
-
-    def test_both_holders_are_forwarded_in_one_pass(self):
-        rec = _Recorder()
-        k = self._kernel(rec)
-        k._forward_consumer_rows(
-            SimpleNamespace(last_shadow_verdict={"consumer_id": "review_verdict"}),
-            SimpleNamespace(last_shadow_verdict={"consumer_id": "review_verdict"}),
-        )
-        assert sorted(m["consumer_id"] for m, _k, _s in rec.calls) == [
-            "review_verdict", "review_verdict",
-        ]
-
-    def test_a_none_holder_and_empty_rows_are_ignored(self):
-        rec = _Recorder()
-        k = self._kernel(rec)
-        k._forward_consumer_rows(None, SimpleNamespace(), SimpleNamespace(
-            last_shadow_verdict=None))
-        assert rec.calls == []
-
-    def test_a_broken_holder_never_raises(self):
-        class _Boom:
-            @property
-            def last_shadow_verdict(self):
-                raise RuntimeError("boom")
-
-        rec = _Recorder()
-        self._kernel(rec)._forward_consumer_rows(_Boom())  # must not raise
+class TestTheSinkNeverRaises:
+    """(The exposed-row forwarding tests went with `review_verdict`, the
+    only consumer that exposed a row; retired 2026-11-10.)"""
 
     def test_no_bridge_is_ignored(self):
         AgentKernel._shadow_row_sink(_kernel(None), {"consumer_id": "mode"})

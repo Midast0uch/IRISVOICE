@@ -170,37 +170,8 @@ def test_async_shadow_carries_the_steps_own_calls_and_done_when():
         assert needle in text, f"declared route field not rendered: {needle}"
 
 
-# ── 2. the shape job must render its consumers' evidence ─────────────────
-
-
-def test_presentation_frame_renders_summary_evidence():
-    """The kernel's presentation frame has NO goal - before the fix this
-    rendered to an EMPTY state and d1 answered with zero evidence (0/5)."""
-    state = job_input("presentation", {
-        "content_chars": "medium",
-        "has_structure": True,
-        "zone": "chat",
-        "mode": "personal",
-    })
-    assert "content_chars: medium" in state.text
-    assert "has_structure: True" in state.text
-    assert state.text, "presentation rendered an empty state"
-
-
-def test_narration_frame_renders_beat_counts():
-    """The model sees the plan's own numbers - but never `beats_admitted`:
-    the reference is speak_all exactly when it is > 0, so reading it measured
-    copying (2026-11-10, owner: fix the job setups). Even a stale frame that
-    still carries it must not render it."""
-    state = job_input("narration", {
-        "goal": "NARRATE: fix the login bug",
-        "steps": 3,
-        "beats_authored": 2,
-        "beats_admitted": 2,
-        "multi_segment": True,
-    })
-    assert "beats_authored: 2" in state.text
-    assert "beats_admitted" not in state.text
+# ── 2. (the shape job's tests REMOVED 2026-11-10: the job and its only
+# consumers, presentation and narration, are retired) ──────────────────────
 
 
 # ── 3. the route job must render its consumers' evidence ──────────────────

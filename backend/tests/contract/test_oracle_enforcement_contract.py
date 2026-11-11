@@ -281,7 +281,7 @@ class TestChokepoint:
             assert dead not in de.CONSUMERS
             assert dead not in de.CONSUMER_JOBS
             assert dead not in ms.MONITOR_CONSUMERS
-            assert dead not in ss.SURFACE_CONSUMERS
+            assert dead not in getattr(ss, "SURFACE_CONSUMERS", {})
             assert dead not in oc.binary_consumers()
 
 
@@ -294,10 +294,6 @@ class TestChokepoint:
 def _drive_web_intent(eng):
     return explorer._is_web_intent(
         "please grab that article for me", engine=eng, turn_key=object())
-
-
-def _drive_needs_action(eng):
-    return tool_decision._goal_needs_action("ponder the meaning of it all")
 
 
 def _drive_sufficient(eng):
@@ -334,7 +330,9 @@ def _drive_tool_choice(eng):
 # the Oracle acts, does the Oracle still SCORE (off path) when it does not decide
 SITES = {
     "web_intent": ("web_intent", _drive_web_intent, {}, False, True, True),
-    "needs_action": ("needs_action", _drive_needs_action, {}, False, True, True),
+    # `needs_action` REMOVED from SITES (2026-11-10, owner): the consumer was
+    # retired; the lexical rule decides alone (pinned below and in
+    # test_six_consumers_retired_contract).
     "sufficient": ("sufficient", _drive_sufficient, {}, False, True, True),
     "recovery_strategy": ("recovery_strategy", _drive_recovery_strategy,
                           {"chosen": "decompose"}, "delegate", "decompose", True),
@@ -442,8 +440,8 @@ def _call_kwargs(src, attr, first_arg):
     return out
 
 
-@pytest.mark.parametrize("attr,consumer", [("surface_bool", "depth_met"),
-                                           ("monitor_bool", "done")])
+# depth_met REMOVED from this parametrize (2026-11-10, owner): retired.
+@pytest.mark.parametrize("attr,consumer", [("monitor_bool", "done")])
 def test_depth_met_and_done_sites_go_through_the_chokepoint(attr, consumer):
     """Fails on the old code: depth_met read `"depth_met" in enforced_consumers()`
     and a private IRIS_DEPTH_MET_THRESHOLD tau; `done` passed no `enforced=`."""
@@ -500,32 +498,6 @@ def test_monitor_bool_not_deciding_defers_and_deciding_acts(
     assert value is False
 
 
-def test_surface_bool_not_deciding_defers_and_deciding_acts(chokepoint):
-    consumer = "depth_met"
-    eng = _Eng(p=0.85)
-    rows = []
-    ss.set_row_sink(rows.append)
-    try:
-        value, row = ss.surface_bool(
-            consumer, "deep enough?", brain_bool_fn=lambda: False, engine=eng,
-            defer=True, enforced=False, criteria_version="depth_met/v2")
-        assert (value, row) == (False, None) and eng.on_calling_thread() == []
-        _flush()
-        assert eng.off_calling_thread() == [consumer]
-        assert rows and rows[0]["criteria_version"] == "depth_met/v2"
-    finally:
-        ss.set_row_sink(None)
-    chokepoint.enable([consumer], threshold=0.70)
-    value, _row = ss.surface_bool(
-        consumer, "deep enough?", brain_bool_fn=lambda: False, engine=_Eng(p=0.75),
-        defer=True, enforced=True, acts=lambda c: de.oracle_acts(consumer, c))
-    assert value is True
-    chokepoint.enable([consumer], threshold=0.95)
-    value, _row = ss.surface_bool(
-        consumer, "deep enough?", brain_bool_fn=lambda: False, engine=_Eng(p=0.85),
-        defer=True, enforced=True, acts=lambda c: de.oracle_acts(consumer, c))
-    assert value is False
-
 
 def test_needs_action_with_a_lexical_true_is_never_scored(install):
     """The lexical rule can only be widened, so a True needs no Oracle call.
@@ -560,43 +532,6 @@ def _score_kernel(rows):
     return k
 
 
-def test_narration_is_scored_once_per_turn_on_the_lane(
-        install, narration_spec_restored):
-    """Fails on the old code: _score_narration ran on every _plan_task (~3.6x a
-    turn) and inline (1042 ms of the reply per turn)."""
-    eng = install(_Eng(p=0.8))
-    rows: list = []
-    k = _score_kernel(rows)
-    for _ in range(4):
-        k._score_narration(task="build it", beats=["a"], authored=["a"], n_steps=3)
-    _flush()
-    assert eng.calls and [c for c, _t in eng.calls] == ["narration"], eng.calls
-    assert eng.on_calling_thread() == []
-    assert len(rows) == 1 and rows[0]["consumer_id"] == "narration"
-    assert rows[0]["brain_choice"] == "speak_all"
-    # a NEW turn is a new question
-    k._current_turn_id = "turn-2"
-    k._score_narration(task="build it", beats=["a"], authored=["a"], n_steps=3)
-    _flush()
-    assert len(eng.calls) == 2
-
-
-def test_narration_is_never_scored_on_the_event_loop_thread(
-        install, narration_spec_restored):
-    eng = install(_Eng(p=0.8))
-    rows: list = []
-    k = _score_kernel(rows)
-    loop_thread = {}
-
-    async def _on_loop():
-        loop_thread["t"] = threading.current_thread()
-        k._score_narration(task="x", beats=["a"], authored=["a"], n_steps=2)
-
-    asyncio.run(_on_loop())
-    _flush()
-    assert eng.calls
-    assert all(t is not loop_thread["t"] for _c, t in eng.calls)
-
 
 def test_the_narration_gate_never_decides_and_never_scores(
         install, narration_spec_restored, chokepoint):
@@ -630,20 +565,34 @@ def test_the_narration_gate_never_decides_and_never_scores(
     assert not hasattr(IRISGateway, "_engine_permits_speech")
 
 
+@pytest.fixture
+def recovery_spec_restored():
+    had = CONSUMER_TASKS.get("recovery_strategy")
+    yield
+    if had is None:
+        CONSUMER_TASKS.pop("recovery_strategy", None)
+    else:
+        CONSUMER_TASKS["recovery_strategy"] = had
+
+
 def test_gate_acts_only_on_the_registered_question(
-        install, narration_spec_restored, chokepoint):
-    """A matching menu may act, and only above the calibrated threshold."""
+        install, recovery_spec_restored, chokepoint):
+    """A matching menu may act, and only above the calibrated threshold.
+
+    (2026-11-10: the example consumer was `narration`, retired; a switchable
+    consumer with a fixed label set stands in - same gate, same assertions.)"""
     from backend.agent.decision_engine import ConsumerSpec, register_consumer_spec
 
-    labels = ("speak_all", "speak_first_only", "stay_silent")
+    labels = ("retry_same", "decompose", "escalate")
     register_consumer_spec(ConsumerSpec(
-        consumer_id="narration", task_name="narration", instruction="q", labels=labels))
-    chokepoint.enable(["narration"], threshold=0.70)
-    install(_Eng(p=0.80, chosen="stay_silent"))
-    ds, enforced = de.gate("narration", list(labels), {})
+        consumer_id="recovery_strategy", task_name="recovery_strategy",
+        instruction="q", labels=labels))
+    chokepoint.enable(["recovery_strategy"], threshold=0.70)
+    install(_Eng(p=0.80, chosen="escalate"))
+    ds, enforced = de.gate("recovery_strategy", list(labels), {})
     assert ds is not None and enforced is True
-    install(_Eng(p=0.60, chosen="stay_silent"))
-    ds, enforced = de.gate("narration", list(labels), {})
+    install(_Eng(p=0.60, chosen="escalate"))
+    ds, enforced = de.gate("recovery_strategy", list(labels), {})
     assert ds is not None and enforced is False
 
 

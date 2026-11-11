@@ -23,8 +23,11 @@ SAFETY: nothing here can block a consult or a turn - every entry point is
 try/except-clean and the hold lives off the answer path (the shadow lane).
 A verdict for an unknown turn is a no-op (counted by stats, never an error).
 
-DELETION CONTRACT (keep this true): this module, the depth_met interception
-in surface_shadow._submit_shadow, the router in backend/api/eval_verdict.py,
+depth_met itself was RETIRED 2026-11-10 (decision_engine.CONSUMERS); the hold
+now serves the consumers that still defer to the turn verdict (done,
+route_v2, browser_next).
+
+DELETION CONTRACT (keep this true): this module, the router in backend/api/eval_verdict.py,
 its include_router line in backend/main.py, the verdict POST in
 evals/run_evals.py, and the contract test file. Nothing else.
 """

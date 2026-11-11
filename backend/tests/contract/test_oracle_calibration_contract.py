@@ -36,7 +36,6 @@ from backend.agent.oracle_calibration import (
     calibrated,
     threshold,
 )
-from backend.agent.surface_shadow import shadow_row as surface_row
 from backend.agent.tool_bridge import _DECISION_META_KEYS
 from scripts.calibrate_decision_threshold import _ece_brier
 from scripts.consumer_enforcement_report import (
@@ -98,9 +97,8 @@ def _web_intent_row(p, keyword):
 @pytest.mark.parametrize("make_row", [
     pytest.param(lambda p: monitor_row("sufficient", _Noul(p), brain_bool=False),
                  id="monitor_shadow"),
-    # needs_action replaces the removed use_thinking (2026-10-13): same row shape.
-    pytest.param(lambda p: surface_row("needs_action", _Noul(p), brain_bool=False),
-                 id="surface_shadow"),
+    # The surface_shadow row family is gone (needs_action/depth_met retired
+    # 2026-11-10; surface_shadow.shadow_row was deleted with them).
     pytest.param(lambda p: _web_intent_row(p, keyword=False), id="explorer_web_intent"),
 ])
 class TestBinaryRowEmit:
@@ -173,11 +171,12 @@ class TestLoadRows:
     def test_the_binary_set_is_read_from_the_engine_specs(self):
         b = binary_consumers()
         # `on_track` and `has_gaps` were removed 2026-10-05 (Stage B, owner-approved);
-        # `escalate_incomplete` 2026-11-09 (owner).
+        # `escalate_incomplete` 2026-11-09 (owner); `needs_action` and
+        # `depth_met` 2026-11-10 (owner).
         assert {"sufficient", "done",
-                "needs_action", "depth_met",
                 WEB_INTENT_CONSUMER} <= b
-        assert not ({"on_track", "has_gaps", "escalate_incomplete"} & b)
+        assert not ({"on_track", "has_gaps", "escalate_incomplete",
+                     "needs_action", "depth_met"} & b)
         assert not ({"mode", "tool_choice", "presentation", "narration",
                      "review_verdict", "recovery_strategy"} & b)
 

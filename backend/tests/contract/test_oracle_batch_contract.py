@@ -99,22 +99,24 @@ def test_criteria_never_bleed_across_batch_members(monkeypatch):
     """AC7.5: consumer A's criteria words NEVER appear in consumer B's
     question within one pass."""
     b, client = _backend(monkeypatch, {
-        "q0": _choice("speak_all", {"speak_all": 0.9, "stay_silent": 0.1}),
-        "q1": _choice("plain_text", {"plain_text": 0.9, "prism_card": 0.1}),
+        "q0": _choice("der", {"direct": 0.1, "der": 0.9}),
+        "q1": _choice("decompose", {"decompose": 0.9, "escalate": 0.1}),
     })
-    # (the second member needs DECLARED criteria of its own: `presentation`
-    # replaces the removed `mode` here - user_feedback declares none)
+    # (each member needs DECLARED criteria of its own. 2026-11-10: the pair was
+    # narration + presentation, both retired; route_v2 + recovery_strategy are
+    # declared choice consumers too - user_feedback declares none)
     out = b.decide_batch("shared", [
-        ("narration", ["speak_all", "stay_silent"], None),
-        ("presentation", ["plain_text", "prism_card"], None),
+        ("route_v2", ["direct", "der"], None),
+        ("recovery_strategy", ["decompose", "escalate"], None),
     ])
     assert all(x is not None for x in out)
     q0 = str(client.payloads[0]["questions"]["q0"])
     q1 = str(client.payloads[0]["questions"]["q1"])
     # each member's declared criteria name its OWN options and never appear in
     # the other member's question.
-    assert "Speak every beat" in q0 and "Speak every beat" not in q1
-    assert "Answer in prose only" in q1 and "Answer in prose only" not in q0
+    assert "Plan and execute a multi-step task" in q0
+    assert "Plan and execute a multi-step task" not in q1
+    assert "Split the failed step" in q1 and "Split the failed step" not in q0
 
 
 def test_a_malformed_member_fails_only_itself(monkeypatch):

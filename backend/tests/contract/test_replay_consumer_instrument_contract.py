@@ -31,25 +31,27 @@ def test_the_label_is_the_outside_label_first():
 
 
 def test_a_variant_really_changes_the_yes_no_criteria():
+    # 2026-11-10: the examples were needs_action/depth_met (retired);
+    # tool_approval/done are declared yes/no consumers of the same kind.
     import backend.agent.decision_backend_d1 as d1mod
 
-    live = rc.declaration_text("needs_action")
-    assert live, "needs_action declares its criteria"
+    live = rc.declaration_text("tool_approval")
+    assert live, "tool_approval declares its criteria"
     orig = d1mod.declared_criteria
-    with rc.bool_criteria("needs_action", "bare", live, {}):
-        assert d1mod.declared_criteria("needs_action") is None
-    with rc.bool_criteria("needs_action", "custom", live, {"false": "No: X"}):
-        assert d1mod.declared_criteria("needs_action")["false"] == "No: X"
-        assert d1mod.declared_criteria("needs_action")["true"] == live["true"]
-        assert d1mod.declared_criteria("depth_met") == orig("depth_met")
+    with rc.bool_criteria("tool_approval", "bare", live, {}):
+        assert d1mod.declared_criteria("tool_approval") is None
+    with rc.bool_criteria("tool_approval", "custom", live, {"false": "No: X"}):
+        assert d1mod.declared_criteria("tool_approval")["false"] == "No: X"
+        assert d1mod.declared_criteria("tool_approval")["true"] == live["true"]
+        assert d1mod.declared_criteria("done") == orig("done")
     assert d1mod.declared_criteria is orig, "restored after the run"
 
 
 def test_live_asks_the_live_question():
-    from backend.agent.surface_shadow import SURFACE_CONSUMERS
+    # (2026-11-10: the needs_action line went with the retired consumer and
+    # surface_shadow.SURFACE_CONSUMERS.)
     from backend.agent.tool_approval_shadow import TOOL_APPROVAL_INSTRUCTION
 
-    assert rc.live_instruction("needs_action") == SURFACE_CONSUMERS["needs_action"]
     assert rc.live_instruction("tool_approval") == TOOL_APPROVAL_INSTRUCTION
 
 

@@ -64,9 +64,10 @@ class _Ctx:
 
 
 def _reviewer(engine):
-    r = Reviewer(_Adapter(), None)
-    r.set_review_engine(engine)
-    return r
+    # 2026-11-10: the review_verdict consumer is retired, so the Reviewer takes
+    # no engine at all; the disagreeing stub stays to show it cannot matter.
+    del engine
+    return Reviewer(_Adapter(), None)
 
 
 def _item():
@@ -103,22 +104,17 @@ class TestBrainWritesRefinedText:
         assert out == BRAIN_REFINED, (
             "the engine's own choice leaked into the step text"
         )
-        # the shadow row carries only a bool/label — never text
-        row = reviewer.last_shadow_verdict
-        assert row is not None
-        assert set(row) >= {"consumer_id", "chosen", "confidence", "shadow"}
-        assert "refined" not in row and "text" not in row
+        # (the shadow-row assertions went with review_verdict, 2026-11-10)
 
     def test_no_engine_means_no_row_and_the_brain_still_writes(self):
         """The engine-unavailable path is byte-identical to today."""
         r = Reviewer(_Adapter(), None)
-        r.set_review_engine(None)
 
         verdict, out = r.review(_item(), [], _Ctx(), is_mature=True)
 
         assert verdict == ReviewVerdict.REFINE
         assert out == BRAIN_REFINED
-        assert r.last_shadow_verdict is None
+        assert not hasattr(r, "last_shadow_verdict")
 
     def test_a_pass_verdict_carries_no_refined_text(self):
         """A PASS must not smuggle the Brain's refine text through."""
@@ -126,7 +122,6 @@ class TestBrainWritesRefinedText:
             _Adapter('{"verdict": "pass", "refined": "' + BRAIN_REFINED + '"}'),
             None,
         )
-        r.set_review_engine(_Engine())
 
         verdict, out = r.review(_item(), [], _Ctx(), is_mature=True)
 

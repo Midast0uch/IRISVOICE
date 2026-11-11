@@ -927,22 +927,6 @@ BRAIN_VIS_MAX_CONCURRENCY = 4  # AC24.2: DER-owned Brain-Vis cap (Crawl reuses t
 _brain_vis_sem: Optional["asyncio.Semaphore"] = None
 
 
-def _review_input_key(goal: Optional[str]) -> Optional[str]:
-    """The INPUT identity for a review_verdict row (2026-10-22, v5).
-
-    One hash implementation with surface_shadow.input_key (sha1 of consumer +
-    statement + frame); the review frame IS the goal text, so statement and
-    frame are the same string. None on any failure - a row without the key
-    keeps the legacy dedupe."""
-    try:
-        from backend.agent.surface_shadow import input_key
-
-        text = goal or ""
-        return input_key("review_verdict", text, {"goal": text})
-    except Exception:  # noqa: BLE001 - an identity key never blocks a row
-        return None
-
-
 def brain_vis_semaphore() -> "asyncio.Semaphore":
     """Process-wide DER-owned Brain-Vis semaphore (AC24.2). Lazy: no loop binding at import."""
     global _brain_vis_sem
@@ -1095,30 +1079,11 @@ class Reviewer:
     def __init__(self, adapter, memory_interface):
         self.adapter = adapter
         self.memory = memory_interface
-        # REQ-13 AC13.1 (T17): the shadow verdict row for the last review (None
-        # when the engine is unavailable / has no criteria). The kernel's
-        # existing single writer is the row sink — never a second writer here.
-        self.last_shadow_verdict: Optional[dict] = None
         # Model-agnostic parse health (owner 2026-10-08): how often the
         # bound EXECUTION model failed the JSON verdict shape. A silent
         # fallback used to hide this; now it is the reviewer's health
         # signal, whatever model is bound.
         self.parse_failures: int = 0
-        self._last_parse_failed: bool = False
-        self._review_engine_override = None
-        self._review_engine_set = False
-        # Installed by the kernel (its single row writer). With a sink the
-        # engine score runs on lane("oracle_shadow") and the row goes to the
-        # sink from there; without one (tests) the score stays inline.
-        self._shadow_sink = None
-
-    def set_shadow_sink(self, sink) -> None:
-        """Score review_verdict OFF the answer path, writing through *sink*.
-
-        Measured 2026-10-01 (coding eval): 98 inline scores, p50 586 ms, 59 s
-        per run held on the reply path for rows nothing on it reads.
-        """
-        self._shadow_sink = sink
 
     def review(
         self,
@@ -1147,8 +1112,6 @@ class Reviewer:
                 )
             ):
                 verdict, out = self._heuristic_review(item, completed_steps)
-                self._shadow_review_verdict(item, completed_steps, verdict,
-                                            context_package)
                 return verdict, out
 
             prompt = self._build_review_prompt(
@@ -1166,380 +1129,13 @@ class Reviewer:
             )
 
             verdict, out = self._parse_verdict(response.raw_text)
-            # REQ-13 AC13.1 (T17): shadow-score the SAME question. The Brain
-            # verdict above still decides — this only produces the row.
-            # MODEL-AGNOSTIC HONESTY: on a parse failure the verdict is the
-            # fail-open PASS (the step runs), but the shadow row must carry
-            # NO reference — a fallback PASS is not a real review, and a fake
-            # brain_choice=pass would poison the calibration with phantom
-            # agreement. None -> the row lands unlabelled -> the fit counts
-            # it as no_label, never as a pass.
-            _ref_for_row = None if self._last_parse_failed else verdict
-            self._shadow_review_verdict(item, completed_steps, _ref_for_row,
-                                        context_package)
             return verdict, out
 
         except Exception:
             return ReviewVerdict.PASS, None
 
-    # ── REQ-13 AC13.1 (T17): the review_verdict consumer, SHADOW mode ──────
-    REVIEW_CONSUMER = "review_verdict"
-    REVIEW_LABELS = ("pass", "refine", "veto")
-    # v4 (2026-10-17, owner: "fix whatever is wrong so it passes enforcement").
-    # The measured chain of defects, each found by replaying REAL live frames
-    # (logged by the frame diagnostic below) through the live d1:
-    #   v1: bare question + raw result[:120] evidence (a dict repr - the
-    #       pytest outcome lives at the TAIL and a head cut throws it away)
-    #       -> d1 read no signal, hedged 'refine' 78%, oof AUROC 0.5113.
-    #   v3: the Brain's plan-quality rubric + envelope evidence -> the rubric
-    #       directed attention at the step PROSE ("Answer refine when the
-    #       step is vague"), live step descriptions are terse, so d1
-    #       correctly called them vague: refine 83%, all wrong under
-    #       GROUND_TRUTH, oof AUROC 0.343 (confidence ranked BACKWARDS).
-    #   v4: EVIDENCE-ONLY frame + this instruction. The step prose and the
-    #       problem-shaped OBJECTIVE ("the test fails, find the bug") were
-    #       the noise; the envelope evidence is the signal. Replay on 37
-    #       REAL frames from a 10/10 run (nearly all VERIFIED steps):
-    #       full frame AUROC 0.60, evidence-only 0.9636 (pass rows conf mean
-    #       0.758 vs refine rows 0.553; failing evidence -> refine 0.673;
-    #       empty evidence -> refine 0.502). The consumer is
-    #       TIER_REFUSE_ONLY (measurement-only, never acts); what it
-    #       measures is whether d1 can rank the step's settled outcome from
-    #       the trajectory evidence - and that is exactly what the frame
-    #       now carries and nothing else.
-    # This is the consumer's CRITERIA: the row stamp below moved to v4 and
-    # the report measures the new cohort on its own rows, never blended.
-    REVIEW_INSTRUCTION = (
-        "STEP is the work about to run; ACTION is what it will do; SUCCESS "
-        "CRITERION is how the run is judged; RECENT RESULTS show how the work "
-        "is going. Answer pass when this step will VERIFY - its result will "
-        "meet the success criterion. Answer refine when the action or the "
-        "results show it will fall short and needs another pass first. Answer "
-        "veto when it would repeat a failure the results already show."
-    )
-
-    def _shadow_review_verdict(
-        self,
-        item: QueueItem,
-        completed_steps: List[QueueItem],
-        brain_verdict: "ReviewVerdict",
-        context_package=None,
-    ) -> Optional[dict]:
-        """Score the verdict with the engine and expose the row (AC13.1).
-
-        SHADOW ONLY: the Brain verdict is what the loop uses; this produces the
-        calibration row and nothing else. The row is stored on
-        ``self.last_shadow_verdict`` for the kernel's EXISTING single writer —
-        the shadow path must not open a second writer (one row, one writer).
-
-        Returns None (and writes no row) when the engine is unavailable, has no
-        criteria for this consumer, or fails — a shadow must never change
-        behaviour, and a missing engine must never fabricate a row.
-        """
-        self.last_shadow_verdict = None
-        try:
-            engine = self._review_engine()
-            if engine is None:
-                return None
-            # Register the consumer's criteria on first use (REQ-19: a consumer
-            # with no criteria is refused, never scored under another head).
-            # REQ-4: the DECLARED type + criteria come from the declaration
-            # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
-            try:
-                from backend.agent.decision_engine import (
-                    get_consumer_spec,
-                    needs_upgrade,
-                    register_declared,
-                )
-                if needs_upgrade(get_consumer_spec(self.REVIEW_CONSUMER)):
-                    register_declared(
-                        self.REVIEW_CONSUMER,
-                        self.REVIEW_INSTRUCTION,
-                        self.REVIEW_LABELS,
-                    )
-            except Exception:  # noqa: BLE001 — criteria are best-effort here
-                pass
-
-            # v4 frame: EVIDENCE ONLY (2026-10-17). The v3 replay on REAL
-            # frames isolated the noise: with the step description and the
-            # problem-shaped OBJECTIVE in frame ("the test fails, find the
-            # bug"), d1 hedged 'refine' on good steps under EVERY instruction
-            # (AUROC 0.30-0.60) - the prose reads as vague work to a 3B model
-            # and the objective's problem statement reads as failure. The
-            # envelope evidence alone carries the outcome-predictive signal
-            # (on-track results -> the step verifies; failing results -> it
-            # does not): evidence-only replay AUROC 0.9636 on the same 37
-            # real frames. The consumer is measurement-only (TIER_REFUSE_ONLY)
-            # and the outcome label grades exactly this prediction, so the
-            # frame carries the signal and nothing else. The 1152 cap =
-            # judge_review's 288-id budget x 4 (the d1 backend caps at the
-            # same number; the frame renders ~620 max).
-            # THE FRAME IS THE GATE'S EVIDENCE (v6, 2026-10-22, measured):
-            # the review is a PRE-EXECUTION gate - the step under review has
-            # not run, so the completed steps' envelope lines are the only
-            # real evidence. v5 still scored frames when that list was EMPTY:
-            # 124 of 314 frames were the literal "RECENT RESULTS: " and d1
-            # answered them from the prior (refine conf 0.522 = the binary
-            # prior), polluting the cohort. v6 falls back to the last result
-            # the model saw and writes NO row when even that is empty - an
-            # empty frame is not evidence.
-            _params = getattr(item, "params", None)
-            if isinstance(_params, dict):
-                # The frame is persisted on the row (state) and logged, so a
-                # secret-named param value is redacted before it can ride it.
-                # Internal keys (`_dependency_results` and friends) are dropped:
-                # they are prior tool output, not this step's arguments, and
-                # they would crowd out the real args and the evidence.
-                _params = {
-                    _k: ("<redacted>" if any(
-                        _s in str(_k).lower() for _s in
-                        ("key", "token", "secret", "password", "auth", "credential"))
-                        else _v)
-                    for _k, _v in _params.items()
-                    if not str(_k).startswith("_")
-                }
-            _action = " ".join(
-                _x for _x in (
-                    str(getattr(item, "tool", "") or ""),
-                    str(_params or ""),
-                ) if _x.strip()
-            )
-            _ev = _review_frame_evidence(
-                completed_steps, context_package,
-                str(getattr(item, "description", "") or ""),
-                _action, str(getattr(item, "expected_output", "") or ""))
-            if _ev is None:
-                logger.debug(
-                    "[ORACLE] review_verdict row skipped: the step left no "
-                    "evidence to judge step_id=%s", getattr(item, "step_id", "?"))
-                return
-            # v8 (2026-11-05): `_ev` already renders its own "STEP:" and
-            # "RECENT RESULTS:" sections, so the old f-string prefix produced
-            # "RECENT RESULTS: STEP: ..." - a malformed frame whose first
-            # section was mislabelled. The frame is `_ev` verbatim.
-            goal = _ev[:1536]
-            # DIAGNOSTIC (2026-10-17): decision rows do not store the rendered
-            # frame, so a live cohort cannot be replayed. This line is the
-            # cheap permanent mitigation: one DEBUG record per review shows
-            # what the engine actually read, keyed by step_id so a frame joins
-            # exactly to its settled outcome. Off the answer path (lane).
-            logger.debug(
-                "[Reviewer] shadow frame step=%s: %r",
-                getattr(item, "step_id", "?"), goal[:400],
-            )
-            sink = self._shadow_sink
-            if callable(sink):
-                # AC6.3a: the scope must be read AT SUBMIT TIME as VALUES. A
-                # shadow lane scores later on a worker thread whose context
-                # says nothing, so calling scope_now() inside `_review_row`
-                # (which runs on the lane) reads an EMPTY scope - measured live:
-                # every review_verdict row carried an empty step_id, so the
-                # outcome label had no join key and could never be stamped.
-                try:
-                    from backend.agent.decision_engine import scope_now
-
-                    _scope_at_submit = scope_now()
-                except Exception:  # noqa: BLE001 — attribution is best-effort
-                    _scope_at_submit = {}
-
-                def _job(_goal=goal, _verdict=brain_verdict,
-                         _scope=dict(_scope_at_submit or {})):
-                    _row = self._review_row(engine, _goal, _verdict, scope=_scope)
-                    if _row is not None:
-                        sink(_row)
-
-                from backend.utils.durability_queue import lane
-
-                if not lane("oracle_shadow").submit("review_verdict", _job):
-                    logger.warning("[Reviewer] shadow verdict dropped (lane full)")
-                return None
-            row = self._review_row(engine, goal, brain_verdict)
-            self.last_shadow_verdict = row
-            return row
-        except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
-            logger.debug("[Reviewer] shadow verdict failed: %r", _e)
-            return None
-
-    def _review_row(self, engine, goal: str, brain_verdict,
-                    scope: Optional[dict] = None) -> Optional[dict]:
-        """One engine score of a review, as a shadow PAIR row (or None).
-
-        ``scope`` is the measurement scope captured AT SUBMIT TIME (see the
-        lane submission above). It defaults to the live context for the
-        synchronous path.
-        """
-        try:
-            from backend.agent.decision_engine import scope_now
-
-            ds = engine.decide(
-                self.REVIEW_CONSUMER, list(self.REVIEW_LABELS), {"goal": goal}
-            )
-            if ds is None:
-                return None
-            row = {
-                "consumer_id": self.REVIEW_CONSUMER,
-                "chosen": ds.chosen,
-                "confidence": round(float(ds.confidence), 4),
-                "candidates": [
-                    {"name": c.name, "prob": round(float(c.prob), 4)}
-                    for c in (ds.distribution or ())
-                ],
-                "engine_latency_ms": ds.engine_latency_ms,
-                # The Brain's actual verdict, so the row is a shadow PAIR
-                # (engine said X, reality ran Y) and the parity metric exists.
-                # None = a parse failure (model-agnostic honesty): the row
-                # lands UNLABELLED and the fit counts it as no_label — a
-                # fallback PASS must never masquerade as a real reference.
-                "brain_verdict": (
-                    None if brain_verdict is None
-                    else getattr(brain_verdict, "value", str(brain_verdict))
-                ),
-                # ...and the SAME fact under the name the ledger passes through
-                # and the report reads (2026-09-27). `brain_verdict` is kept for
-                # the caller and the log; it is not in the meta whitelist, so on
-                # its own the row reached the ledger with no reference and was
-                # counted as no_label instead of being scored.
-                "brain_choice": (
-                    None if brain_verdict is None
-                    else getattr(brain_verdict, "value", str(brain_verdict))
-                ),
-                "shadow": True,
-                # v5 (2026-10-22): the replay key and the input identity ride
-                # the row. The frame IS the goal text (step prose + envelope
-                # evidence), so state = that text and input_key hashes it with
-                # the consumer - one row per INPUT, however the confidence
-                # collides (the v4 cohort read 5866 raw rows as 2323 distinct
-                # under the confidence tuple; the collapse starved it).
-                "state": (goal or "")[:2000],
-                "input_key": _review_input_key(goal),
-                # criteria_version (session 364's mechanism; whitelisted in
-                # tool_bridge._DECISION_META_KEYS): the hand-maintained tag that
-                # scopes a cohort, so the enforcement report can measure THIS
-                # frame rule on its own rows (--scope review_verdict=...) and
-                # never blend them with the old judge_step rows. Without it
-                # every review row landed unstamped and the consumer
-                # could not be measured at all after a frame change.
-                # review_verdict/v1 = the dedicated `judge_review` job
-                # (budget 200), frame STEP[:300] + OBJECTIVE[:200] + RECENT
-                # RESULTS rendered LAST - measured live at 99 outcome rows:
-                # oof AUROC 0.5113, d1 hedged 'refine' on 78% of rows because
-                # the labels were undefined in its one-line question and the
-                # evidence rendered last.
-                # review_verdict/v2 = written and withdrawn 2026-10-16 ("frame
-                # + outcome label") on a belief that was REFUTED the same day
-                # (the label does not decide c08/c09 outcomes). 62 obsolete
-                # rows carry it; v2 is never reused.
-                # review_verdict/v3 = the Brain's plan-quality rubric + the
-                # full frame (STEP/TOOL/OBJECTIVE + envelope evidence).
-                # Measured live at 175 rows: the rubric directed d1's
-                # attention at the step PROSE, live descriptions are terse,
-                # d1 answered refine 83% (all wrong under GROUND_TRUTH) and
-                # the confidence ranked BACKWARDS - oof AUROC 0.343.
-                # review_verdict/v4 (2026-10-17, owner: "fix whatever is wrong
-                # so it passes enforcement") = EVIDENCE-ONLY frame (envelope
-                # lines, nothing else) + the evidence-direct instruction.
-                # Replay on 37 REAL live frames: AUROC 0.9636 (pass rows conf
-                # 0.758 vs refine rows 0.553; failing evidence -> refine
-                # 0.673; empty evidence -> refine 0.502). The outcome label
-                # (IRIS_ORACLE_REVIEW_OUTCOME=1) is ON for this cohort;
-                # label_source splits the curves inside it.
-                # review_verdict/v7 (2026-10-23) = v6's frame plus the STEP
-                # line (the plan, never the objective - v3's poison) and the
-                # instruction that names it. Measured on v6: 75 outcome rows,
-                # 48% correct, AUROC 0.6417, no 0.90 threshold - the gate
-                # judged whether to RUN a step while never being told what the
-                # step is. The plan line also makes an otherwise-empty frame
-                # informative, so those rows are scored instead of skipped.
-                # review_verdict/v8 (2026-10-23, OWNER DECISION reading B) =
-                # the SAME v7 frame; the LABEL SEMANTICS changed. v7 measured
-                # AUROC 0.6741 / 62% correct, but ALL 52 refine verdicts were
-                # scored wrong: the map rewarded only pass (VERIFIED) and veto
-                # (FAILED), so the consumer's most common non-pass answer could
-                # never win and accuracy was capped at 63%. Reading B: the
-                # gate's job is to DETECT a deficient step - on FAILED, refine
-                # and veto are both correct; on VERIFIED, only pass. Bumped so
-                # the new semantics own a clean cohort.
-                # review_verdict/v9 (2026-11-04) = the SAME v8 frame and the
-                # SAME label semantics (reading B), with the Oracle's OPTION
-                # TEXT changed to the bare names. MEASURED on the active
-                # engine by replaying 600 recorded states with the bar's own
-                # outcome label: the v8 descriptions measured AUROC 0.4016
-                # (inverted - the wrong rows scored higher, and 412 of 416
-                # disagreements were refine-vs-pass), the bare names measured
-                # 0.7967 with monotonic bands. A question change gets its own
-                # stamp, so the new cohort is clean (oracle.md 6.1 rule 3).
-                # review_verdict/v10 (2026-11-05, owner: "label fix first") =
-                # the SAME v9 frame and option text; the LABEL changed.
-                # review_outcome_label.GROUND_TRUTH now reads UNVERIFIED
-                # ({pass: False, refine: True, veto: False}) where it used to
-                # emit no label at all. MEASURED cause: der_commits holds
-                # 12,980 VERIFIED / 4,779 UNVERIFIED / 20 FAILED, so with
-                # UNVERIFIED unlabelled the outcome cohort was single-class -
-                # chosen=='pass' <=> outside_label True, chosen=='refine' <=>
-                # False - and oof AUROC sat at 0.4581 on 1,283 rows. 27% of all
-                # steps were discarded. A label change is a new calibrated
-                # identity exactly like a frame change, so the stamp moves and
-                # the old cohort is never blended in.
-                # review_verdict/v11 (2026-11-05) = the v10 label PLUS a frame
-                # fix. v10 measured 180 distinct rows with a balanced label
-                # (88 correct / 92 wrong) and the bands MONOTONICALLY INVERTED
-                # (accuracy 0.593 / 0.538 / 0.826 / 0.474 / 0.362 / 0.250 as
-                # confidence rises), oof AUROC 0.4117. The cause is the frame:
-                # v7 let "the plan makes an otherwise-empty frame informative"
-                # stand, so a first step with no completed steps and no last
-                # result still wrote a row whose entire frame was
-                # "RECENT RESULTS: STEP: <one line>". d1 answered those from
-                # the binary prior, confidently. _review_frame_evidence now
-                # returns None when there is no EVIDENCE (the v6 rule, finally
-                # enforced) and the caller writes no row; the plan line still
-                # rides along when evidence exists. The malformed
-                # "RECENT RESULTS: STEP:" double prefix is gone too.
-                # review_verdict/v13 (2026-11-06) = the v11 frame PLUS the two
-                # signals the outcome depends on. MEASURED on the v11 cohort
-                # (597 rows): the same model ranks agreement with the Brain's
-                # plan verdict at AUROC 0.8201 but ranks the execution OUTCOME
-                # at 0.5139 - prior evidence and a plan line cannot predict
-                # verification. The frame now carries ACTION (the tool and its
-                # real params; internal `_` keys dropped, secret-named values
-                # redacted) and SUCCESS CRITERION (expected_output), and the
-                # instruction asks the verification question the outcome label
-                # grades, not "is this the right move". The evidence is
-                # RESERVED first (it is the proven signal; the backend trims
-                # from the end) and the judge_review budget rose 288->384 to
-                # the owner ceiling for the header headroom. A frame + question
-                # change is a new calibrated identity (oracle.md 6.1 rule 3),
-                # so the stamp moves. (v12 wrote 4 rows before the `_`-key
-                # filter and the evidence reservation landed; they are not
-                # blended.)
-                "criteria_version": "review_verdict/v13",
-            }
-            # REQ-6 AC6.3a (T5.0): the scope ids ride the row (read as
-            # values here, on the review's own task).
-            row.update(scope if scope is not None else scope_now())
-            return row
-        except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
-            logger.debug("[Reviewer] shadow verdict failed: %r", _e)
-            return None
-
-    def _review_engine(self):
-        """The decision engine for the shadow consumer, or None."""
-        if self._review_engine_set:
-            return self._review_engine_override
-        try:
-            from backend.agent.decision_engine import get_decision_engine
-            return get_decision_engine()
-        except Exception:  # noqa: BLE001
-            return None
-
-    def set_review_engine(self, engine) -> None:
-        """Inject the shadow-scoring engine (tests / explicit wiring).
-
-        Passing None DISABLES shadow scoring explicitly — the module singleton
-        is adopted only when nothing has been injected at all, so a test can
-        never accidentally load the 651MB model.
-        """
-        self._review_engine_override = engine
-        self._review_engine_set = True
+    # review_verdict (the Oracle's shadow of this verdict) was RETIRED
+    # 2026-11-10 (decision_engine.CONSUMERS): the verdict below decides alone.
 
     def _heuristic_review(
         self,
@@ -1742,15 +1338,12 @@ class Reviewer:
         MODEL-AGNOSTIC HONESTY (owner 2026-10-08: "this should work
         regardless of what the brain model is"): a model that answers prose
         instead of JSON used to fall back to a SILENT (PASS, None) — a dead
-        reviewer that looked alive, and a FAKE pass reference on every
-        shadow row. The fallback DECISION stays fail-open (the step still
-        runs; the review is advisory), but the failure is now COUNTED,
-        LOGGED, and the shadow row carries NO reference (brain_choice=None
-        -> the fit counts it as no_label, never as a fake pass). The
-        counter is the health signal: a model that cannot produce the
-        shape shows up here, whatever model is bound to EXECUTION.
+        reviewer that looked alive. The fallback DECISION stays fail-open
+        (the step still runs; the review is advisory), but the failure is
+        now COUNTED and LOGGED. The counter is the health signal: a model
+        that cannot produce the shape shows up here, whatever model is bound
+        to EXECUTION.
         """
-        self._last_parse_failed = False
         try:
             m = re.search(r"\{[\s\S]+?\}", raw)
             if not m:
@@ -1772,14 +1365,12 @@ class Reviewer:
             return self._verdict_parse_failed(), None
 
     def _verdict_parse_failed(self) -> "ReviewVerdict":
-        """The counted, visible fallback: PASS for the STEP (fail-open),
-        never a silent fake reference for the MEASUREMENT."""
-        self._last_parse_failed = True
+        """The counted, visible fallback: PASS for the STEP (fail-open)."""
         self.parse_failures += 1
         logger.warning(
             "[Reviewer] verdict parse failed (%d total) — the bound model "
-            "did not answer the JSON shape; the step proceeds unreviewed "
-            "and the shadow row carries NO reference", self.parse_failures,
+            "did not answer the JSON shape; the step proceeds unreviewed",
+            self.parse_failures,
         )
         return ReviewVerdict.PASS
 
@@ -1788,116 +1379,6 @@ class Reviewer:
 # T14 (REQ-8 + REQ-11): StepFindingsAccumulator — per-run strict projection
 # with semantic cross-source verification.
 # ─────────────────────────────────────────────────────────────────────────────
-def _review_evidence_line(s) -> str:
-    """One completed step's evidence line for the review_verdict frame (v4+).
-
-    The envelope LINE (status/match at the head, suggestion + tool-result
-    summary at the tail) when the step carries one, else the raw result head.
-    A long line is capped head+tail - the outcome of a tool run (pytest's
-    "2 failed, 1 passed") lives at the END of its output. The review is a
-    PRE-EXECUTION gate: the reviewed step has not run, so the completed
-    steps' envelopes are the only real evidence there is. Never raises.
-    """
-    try:
-        ev = getattr(s, "envelope", None)
-        if ev is not None:
-            ln = str(ev.line())
-            if ln:
-                return ln if len(ln) <= 200 else f"{ln[:150]} [...] {ln[-45:]}"
-    except Exception:  # noqa: BLE001 - evidence degrades to the raw result
-        pass
-    try:
-        return str(getattr(s, "result", "") or "")[:120]
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _review_frame_evidence(completed_steps, context_package=None,
-                           plan: str = "", action: str = "",
-                           expected: str = "",
-                           budget: int = 1536) -> Optional[str]:
-    """The review gate's frame: the step's PLAN + the evidence (v7, 2026-10-23).
-
-    v6 carried only the prior steps' envelope lines. Measured on v6: 75
-    outcome rows, 48% correct, AUROC 0.6417, no 0.90-precision threshold -
-    the gate cannot say whether running THIS step is right without being told
-    what THIS step is. v3 had taught the opposite lesson (step description +
-    the problem-shaped OBJECTIVE made d1 hedge "refine" on everything); v7 is
-    the untested middle: the PLAN line, never the objective, next to the
-    evidence.
-
-    EVIDENCE IS REQUIRED (v8, 2026-11-05, owner: "label fix first"). v7 also
-    let "the plan makes an otherwise-empty frame informative, so a step with
-    nothing else still writes a row" stand. MEASURED on the v10 cohort (180
-    distinct rows, label fixed so the cohort finally has both classes): the
-    confidence bands are MONOTONICALLY INVERTED - accuracy 0.593 / 0.538 /
-    0.826 / 0.474 / 0.362 / 0.250 as confidence rises from 0.4 to 1.0, oof
-    AUROC 0.4117. The rows with no evidence are the cause: their frame is the
-    literal "RECENT RESULTS: STEP: <one line>" and nothing else, so d1 answers
-    from the binary prior and is most confident exactly where it is most
-    wrong. A plan line is not evidence about how the work is going.
-
-    So the v6 rule is restored and made real: with no completed-step envelope
-    line AND no last_result_text there is NO frame and the caller writes no
-    row. The plan line still rides along when evidence exists (the v7 gain).
-
-    v13 (2026-11-06): the gate now sees WHAT the step will do (ACTION: the
-    tool and its real params) and HOW success is judged (SUCCESS CRITERION:
-    the item's expected_output), between the plan and the evidence. Measured
-    on the v11 cohort: the same model ranks agreement with the Brain's plan
-    verdict at AUROC 0.8201 but ranks the execution OUTCOME at 0.5139 - the
-    pre-execution gate cannot predict verification from prior evidence and a
-    plan line alone. The action and the criterion are the two signals the
-    outcome depends on that the frame was missing.
-
-    The ORDER is a budget, not a set of magic caps: the evidence is RESERVED
-    first (it is the proven signal and the backend trims the frame from the
-    END), and the header fills only the remainder. The judge_review budget
-    rose 288->384 (the owner ceiling) so the header has headroom. A long plan
-    can never cut the evidence. Never raises.
-    """
-    try:
-        lines = [
-            ln for ln in (
-                _review_evidence_line(s) for s in (completed_steps or [])[-3:]
-            ) if str(ln or "").strip()
-        ]
-        evidence = None
-        if lines:
-            evidence = "RECENT RESULTS: " + " | ".join(lines)
-        else:
-            out = str(getattr(context_package, "last_result_text", "") or "").strip()
-            if out:
-                evidence = "RECENT RESULTS: output: " + out[:300]
-        if evidence is None:
-            # No evidence: an empty frame is not evidence (the v6 rule, now
-            # actually enforced - v7 returned the plan line alone here).
-            return None
-        # The evidence is the proven signal (replay AUROC 1.0 on envelope
-        # evidence vs 0.51 on raw result heads) and the backend trims the
-        # frame from the END, so the evidence is RESERVED first and the header
-        # gets only the remainder. A long plan can then never cut the evidence,
-        # and no field needs a hand-picked cap to make the arithmetic fit.
-        room = max(0, budget - len(evidence) - 1)
-        head = []
-        for label, text, cap in (
-            ("STEP: ", plan, 300),
-            ("ACTION: ", action, 300),
-            ("SUCCESS CRITERION: ", expected, 200),
-        ):
-            t = str(text or "").strip()
-            if not t:
-                continue
-            line = label + t[:cap]
-            if len(line) > room:
-                break
-            head.append(line)
-            room -= len(line) + 1
-        return "\n".join(head + [evidence])
-    except Exception:  # noqa: BLE001 - a frame never blocks a row
-        return None
-
-
 def _values_equivalent(a, b) -> bool:
     """REQ-11 AC3 semantic reconciliation for the discrepancy gate.
 

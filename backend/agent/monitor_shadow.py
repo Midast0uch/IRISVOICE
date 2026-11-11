@@ -110,8 +110,8 @@ def register_monitor_consumers() -> int:
     # d1 backend's ensure_consumer_spec saw needs_upgrade() and re-registered
     # it under AUTO_INSTRUCTION: the done / sufficient questions never reached
     # the model (the done/v3 wording change never took effect live). The
-    # declared type and criteria come from the declaration table, exactly as
-    # surface_shadow.register_surface_consumers does.
+    # declared type and criteria come from the declaration table
+    # (register_declared).
     try:
         from backend.agent.decision_engine import (
             get_consumer_spec,

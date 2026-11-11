@@ -29,7 +29,8 @@ def test_no_registry_still_names_it():
     assert "judge_step" not in de.ORACLE_JOBS, "its only job goes with it"
     assert _CID not in de.TIER_SAMPLABLE
     assert _CID not in cb.ACTING_ANSWER and _CID not in cb.ACTING_ENFORCED
-    assert _CID not in ss.SURFACE_CONSUMERS
+    # (the surface registry itself was removed 2026-11-10; absent = not named)
+    assert _CID not in getattr(ss, "SURFACE_CONSUMERS", {})
 
 
 def test_the_escalation_site_never_consults_the_oracle():

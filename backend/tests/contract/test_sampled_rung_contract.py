@@ -39,7 +39,7 @@ def test_untiered_and_refused_consumers_can_never_be_sampled(monkeypatch):
     # narrows anything without the eval switch.
     assert de.sampled_consult_ok("tool_choice", "scope") is True
     assert de.sampled_consult_ok("done", "scope") is False
-    assert de.sampled_consult_ok("needs_action", "scope") is True
+    assert de.sampled_consult_ok("recovery_strategy", "scope") is True  # was needs_action (retired 2026-11-10)
 
 
 def _tool_box(chosen):
@@ -85,10 +85,10 @@ def test_a_sampled_side_effect_pick_never_acts(monkeypatch):
 
 def test_the_fraction_is_bounded_and_the_kill_switch_kills(monkeypatch):
     monkeypatch.setenv("IRIS_ORACLE_SAMPLE_FRACTION", "0")
-    assert de.sampled_consult_ok("needs_action", "scope") is False
+    assert de.sampled_consult_ok("recovery_strategy", "scope") is False
     monkeypatch.setenv("IRIS_ORACLE_SAMPLE", "0")
     monkeypatch.setenv("IRIS_ORACLE_SAMPLE_FRACTION", "1.0")
-    assert de.sampled_consult_ok("needs_action", "scope") is False, (
+    assert de.sampled_consult_ok("recovery_strategy", "scope") is False, (
         "the kill switch wins over any fraction")
 
 
@@ -96,11 +96,11 @@ def test_sampling_is_deterministic_and_bounded(monkeypatch):
     """A re-asked consult answers the same way; over many scopes the hit rate
     tracks the stated fraction."""
     monkeypatch.setenv("IRIS_ORACLE_SAMPLE_FRACTION", "0.5")
-    a = de.sampled_consult_ok("needs_action", "t1|s1|x")
-    assert de.sampled_consult_ok("needs_action", "t1|s1|x") == a
+    a = de.sampled_consult_ok("recovery_strategy", "t1|s1|x")
+    assert de.sampled_consult_ok("recovery_strategy", "t1|s1|x") == a
     monkeypatch.setenv("IRIS_ORACLE_SAMPLE_FRACTION", "0.25")
     hits = sum(
-        de.sampled_consult_ok("needs_action", f"turn-{i}")
+        de.sampled_consult_ok("recovery_strategy", f"turn-{i}")
         for i in range(400))
     assert 40 < hits < 160, (  # 25% of 400 = 100; very wide band, no flake
         f"hit rate {hits}/400 is not near the stated fraction")
@@ -111,7 +111,7 @@ def test_default_fraction_is_the_named_constant(monkeypatch):
     monkeypatch.delenv("IRIS_ORACLE_SAMPLE", raising=False)
     assert de.SAMPLE_FRACTION == 0.05
     hits = sum(
-        de.sampled_consult_ok("needs_action", f"turn-{i}")
+        de.sampled_consult_ok("recovery_strategy", f"turn-{i}")
         for i in range(400))
     assert hits <= 60, f"{hits}/400 far above the 5% default"
 
@@ -124,7 +124,7 @@ def test_a_sampled_row_joins_on_turn_id_from_the_turn_outcome(monkeypatch):
     monkeypatch.setattr(de, "_TURN_PENDING", de.OrderedDict())
     monkeypatch.setattr(de, "_OUTCOME_SINK", rows.append)
     scope = {"turn_id": "tA", "step_id": "s3"}
-    de.register_turn_pending(scope, de.sampled_row("needs_action", True, 0.91))
+    de.register_turn_pending(scope, de.sampled_row("recovery_strategy", True, 0.91))
     assert rows == [], "the row waits for the turn outcome - never parity"
     assert de.resolve_turn_pending("tA", True) == 1
     (row,) = rows
@@ -139,7 +139,7 @@ def test_a_failed_turn_labels_the_sampled_row_against_it(monkeypatch):
     monkeypatch.setattr(de, "_TURN_PENDING", de.OrderedDict())
     monkeypatch.setattr(de, "_OUTCOME_SINK", rows.append)
     de.register_turn_pending({"turn_id": "tB"}, de.sampled_row(
-        "needs_action", False, 0.7))
+        "recovery_strategy", False, 0.7))
     assert de.resolve_turn_pending("tB", False) == 1
     assert rows[0]["outside_label"] is False
     assert rows[0]["outcome_label"] == "turn_fail"
@@ -195,8 +195,8 @@ def test_the_full_bar_still_wins_over_sampled():
 def test_superseded_flips_still_skips_sampled_consumers():
     """AC13.8, kept visible: a `sampled` consumer is not inspected (it is
     live-ish, but enforcing nothing) - stated, not silently absent."""
-    record = {"needs_action": cb.ConsumerBar(
-        consumer_id="needs_action", rows=50, precision=0.9, ece=0.1,
+    record = {"recovery_strategy": cb.ConsumerBar(
+        consumer_id="recovery_strategy", rows=50, precision=0.9, ece=0.1,
         status="sampled", config={"candidate_cap": 8})}
     assert cb.superseded_flips(record, {"candidate_cap": 6}) == []
 

@@ -180,38 +180,6 @@ def _monitor_statement(objective: str, completed_items, n: int = 4) -> str:
     return "\n".join(lines)[:_MONITOR_STATEMENT_CHARS]
 
 
-def _surface_input_key(consumer_id: str, statement: str, frame: dict) -> str:
-    """The dedupe key for a surface row: one row per distinct INPUT."""
-    try:
-        from backend.agent.surface_shadow import input_key
-
-        return input_key(consumer_id, statement, frame)
-    except Exception:  # noqa: BLE001 - the key is best-effort
-        return ""
-
-
-def _presentation_input_key(frame: dict, response: str = "") -> str:
-    """The dedupe key for a `presentation` row: one row per distinct INPUT.
-
-    The report's honest dedupe key (docs/architecture/oracle.md 6.1 rule 1).
-    Without it the ledger key (consumer, engine, confidence, chosen,
-    reference, correct) collapses DIFFERENT replies that the quantized engine
-    answered with the same confidence: measured 2026-11-03, 853 raw
-    presentation rows counted as 11 distinct, so the consumer could never
-    reach the 100-row bar.
-
-    The INPUT is the REPLY the shape decision was scored on. The frame holds
-    only the reply's length bucket and its structure flags, so the frame
-    alone gives a handful of keys; the reply text gives one per reply.
-    """
-    try:
-        from backend.agent.surface_shadow import input_key
-
-        return input_key("presentation", response or "", frame)
-    except Exception:  # noqa: BLE001 - the key is best-effort
-        return ""
-
-
 def _der_physics_settle(owner, session_id: str) -> None:
     """Fold-back point of the physics side lane.
 
@@ -581,7 +549,7 @@ def _turn_end_settle(owner) -> None:
 def _gc_coverage_label(verified: str, item, step_result) -> str:
     """The label a settled node gives the goal contract's coverage (goal_contract.mark_coverage).
 
-    A DIRECT node (no tool: the planner's rule or the needs_action Oracle decided so) has
+    A DIRECT node (no tool: the node mode rule decided so) has
     nothing outside that could verify it, so a real answer commits UNVERIFIED for ever -
     and a fact it answered could never be covered: the turn pushed "cover the open fact"
     with more tool-less steps, BLOCKED the fact after 2 pushes and told the user it "could
@@ -888,14 +856,6 @@ except Exception:
 # See the DER main loop â€” last-resort bound only; the sufficiency gate and
 # zero-yield cutoff are the rational stops, this catches everything else.
 _DER_TURN_BUDGET_S = float(os.environ.get("IRIS_DER_TURN_BUDGET_S", "600"))
-
-# Session 364: how many times ONE turn may be sent back for more depth. The
-# depth_met consumer exists so the loop cannot settle for half work, but an
-# unbounded push is exactly the failure that killed the TrailingDirector
-# ("looped unbounded on gap-on-gap"). This is the cap that makes enforcement
-# safe to switch on: a wrong NO costs at most this many extra passes, which is
-# what satisfies oracle.md 17.2's "being wrong is cheap or gated".
-_DEPTH_PUSH_MAX = int(os.environ.get("IRIS_DEPTH_PUSH_MAX", "3"))
 
 # REQ-1 AC8 (T2b, Decision 13 â€” revised 2026-08-19): the user-facing copy for
 # the child steps of a sub-loop split. `branchLabel` is free text on the
@@ -1971,24 +1931,6 @@ class AgentKernel:
 
             # memory_interface wired later via set_memory_interface()
             self._reviewer = _Reviewer(adapter=self, memory_interface=None)
-            # REQ-13 AC13.1 (T17): hand the Reviewer the decision engine so its
-            # `review_verdict` shadow rows actually FLOW. Without this the
-            # consumer is INERT â€” the machinery and its tests exist, but the
-            # call site never arrived, so no calibration data accumulates and
-            # TG-6's parity clause can never be met. Resolving the singleton
-            # here is the same thing the ToolDecisionBox does (`_de`), and it
-            # is cheap: the model loads lazily on the first score, not here.
-            try:
-                from backend.agent.decision_engine import get_decision_engine
-
-                self._reviewer.set_review_engine(get_decision_engine())
-            except Exception as _rv_eng_err:  # noqa: BLE001 â€” advisory
-                logger.debug(
-                    f"[AgentKernel] Reviewer engine unavailable: {_rv_eng_err}"
-                )
-            # The same single writer, reached from lane("oracle_shadow"): the
-            # review_verdict score leaves the step's answer path (2026-10-01).
-            self._reviewer.set_shadow_sink(self._shadow_row_sink)
             logger.info("[AgentKernel] Reviewer initialized (DER)")
         except Exception as _rv_err:
             logger.warning(f"[AgentKernel] Reviewer unavailable: {_rv_err}")
@@ -2024,11 +1966,9 @@ class AgentKernel:
         try:
             from backend.agent import explorer as _ex_rows
             from backend.agent import monitor_shadow as _ms_rows
-            from backend.agent import surface_shadow as _ss_rows
 
             _shadow_sink = self._shadow_row_sink
             _ms_rows.set_row_sink(_shadow_sink)
-            _ss_rows.set_row_sink(_shadow_sink)
             # web_intent (2026-09-27): this consumer had criteria and a live call
             # site but no row path at all, so it could never be scored however
             # often it ran. Same single-writer sink as the other two.
@@ -2057,7 +1997,7 @@ class AgentKernel:
             _de_rows.set_outcome_sink(_shadow_sink)
             logger.info(
                 "[AgentKernel] shadow row sink installed "
-                "(monitor + surface + web_intent)"
+                "(monitor + web_intent + the other consumers)"
             )
         except Exception as _sink_err:  # noqa: BLE001 â€” advisory
             logger.warning(
@@ -2070,9 +2010,10 @@ class AgentKernel:
         """Persist ONE shadow-consumer row to the single-writer ledger.
 
         REQ-14 AC14.1 / REQ-29 (T18, T46-T49). The monitor consumers
-        (`sufficient`, `done`, `on_track`) and the surface consumers
-        (`needs_action`; `has_gaps` and `escalate_incomplete` retired) are
+        (`sufficient`, `done`) and the other module-sink consumers are
         SHADOW: they must write a calibration row and change no decision.
+        (The surface consumers - `needs_action`, `depth_met`, `has_gaps`,
+        `escalate_incomplete` - are all retired.)
 
         Why this method exists: the consumer modules emitted their rows to a
         sink that no production code installed, so a live session produced log
@@ -2088,27 +2029,6 @@ class AgentKernel:
         if not row or not isinstance(row, dict):
             return
         try:
-            # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper): a
-            # review_verdict row is written at REVIEW time, but the step's real
-            # verified_label only exists at SETTLE time. The writer below does
-            # `meta = dict(row)` - a COPY - so a stamp applied afterwards would
-            # never reach the ledger. The review row must therefore be DEFERRED:
-            # hold it here and write it from `stamp()` once the step settles
-            # (`flush`). Measured live: with the write left in place, 0 of the
-            # rows carried an outcome label no matter what the stamp did.
-            #
-            # Flag OFF -> `_rol.defer` returns False immediately and the write
-            # below runs exactly as before (byte-identical to 0bdd1ad1).
-            #
-            # Deletion contract: this block, the `_rol.stamp(...)` call in
-            # _der_finalize_step, and backend/agent/review_outcome_label.py.
-            try:
-                from backend.agent import review_outcome_label as _rol
-
-                if _rol.defer(row, self._shadow_row_sink):
-                    return  # held; the settle path writes it
-            except Exception:  # noqa: BLE001 â€” a label never blocks a row
-                logger.debug("[AgentKernel] review outcome defer failed")
             bridge = getattr(self, "_tool_bridge", None)
             if bridge is None or not hasattr(bridge, "record_decision"):
                 return
@@ -2129,40 +2049,6 @@ class AgentKernel:
             )
         except Exception as exc:  # noqa: BLE001 â€” a row never blocks a step
             logger.debug("[AgentKernel] shadow row sink failed: %r", exc)
-
-    # The consumer that EXPOSES a row instead of emitting it through a module
-    # sink: `Reviewer.last_shadow_verdict`. It was populating on every turn and
-    # NOTHING wrote it â€” the Reviewer's own docstring says the row exists "for
-    # the kernel's EXISTING single writer", and no caller did the writing. So
-    # `review_verdict` could score forever and never produce a calibration row.
-    # Measured live 2026-09-26: the log showed `Oracle decide
-    # consumer=review_verdict` while the ledger held no row for it. The same
-    # defect class as the missing monitor/surface sink, one layer further out.
-    # (`ModeDetector.last_mode_shadow` was the other exposed row until the
-    # `mode` consumer was REMOVED 2026-10-10, owner â€” see mode_detector.py.)
-    _EXPOSED_ROW_ATTRS = ("last_shadow_verdict",)
-
-    def _forward_consumer_rows(self, *holders: Any) -> None:
-        """Write any row the given holders EXPOSE, once, then clear it.
-
-        Clearing is what makes it idempotent: a forwarded row must not be
-        written again on the next turn, or the ledger gains duplicates and every
-        rate derived from it is inflated. Never raises.
-        """
-        for holder in holders:
-            if holder is None:
-                continue
-            for attr in self._EXPOSED_ROW_ATTRS:
-                try:
-                    row = getattr(holder, attr, None)
-                    if not row:
-                        continue
-                    setattr(holder, attr, None)
-                    self._shadow_row_sink(row)
-                except Exception as exc:  # noqa: BLE001 â€” an observer never blocks
-                    logger.debug(
-                        "[AgentKernel] forwarding %s failed: %r", attr, exc
-                    )
 
     def set_main_loop(self, loop: Any) -> None:
         """Capture the running event loop so background threads can dispatch broadcasts."""
@@ -6210,10 +6096,6 @@ class AgentKernel:
             # change: a card now appears only when the model CALLS
             # create_artifact (or sends the older `show` payload, which
             # converts to the same call). The text goes to the thread unchanged.
-            # REQ-15: the `presentation` decision-engine consumer runs as an
-            # ASYNC OBSERVER off the reply path â€” its verdict is recorded for
-            # calibration, never consulted for the live surface ("plain").
-            self._observe_surface_async(response, turn_id, live_surface="plain")
             self._log_surface(
                 turn_id=turn_id,
                 lane="plain",
@@ -7021,11 +6903,9 @@ class AgentKernel:
         """Bookkeeping after create_artifact put a card on the wire.
 
         Marks that a card rendered this turn (it decides the bubble in
-        :meth:`_process_structured_response` and the observer frame), stamps
-        time-to-card on the turn's [LAYERS] line, and feeds the Oracle's
-        `presentation` shadow observer with the live surface ``"card"`` - so
-        its "should this have been an artifact?" score is compared on BOTH exits
-        (plain and card), never consulted for the live surface. Never raises.
+        :meth:`_process_structured_response`) and stamps time-to-card on the
+        turn's [LAYERS] line. (The Oracle's `presentation` observer that ran
+        here was retired 2026-11-10.) Never raises.
         """
         self._last_render_emitted = True
         # REQ-13 AC4: time-to-card on this turn's [LAYERS] line.
@@ -7036,10 +6916,6 @@ class AgentKernel:
                 _mark()
             except Exception:  # noqa: BLE001 - telemetry never blocks
                 pass
-        try:
-            self._observe_surface_async(body, turn_id, live_surface="card")
-        except Exception:  # noqa: BLE001 - instrumentation never blocks
-            pass
 
     def update_document(self, document_id, content, fmt=None, trust=None, turn_id=None, conversation_id=None, alternatives=None, title=None, kind=None, summary=None, language=None):
         """Phase 4 (chat-card-redesign): revise an already-rendered document.
@@ -8042,37 +7918,6 @@ class AgentKernel:
 
                 _de_oc.resolve_turn_pending(_turn_id or "", _grade == "pass")
                 _de_oc.sweep_turn_pending(_turn_id or "")
-                # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper):
-                # flush any review row whose step never settled (early turn
-                # end, exception) so the measurement is emitted unstamped rather
-                # than lost. try/except: a label never blocks a turn.
-                try:
-                    from backend.agent import review_outcome_label as _rol
-
-                    _swept_now = _rol.sweep()
-                    # MEASUREMENT (2026-10-16): the outcome label has TWO loss
-                    # paths and both must be VISIBLE, or a loss is inferred
-                    # rather than seen. `swept_parity_now` = rows flushed on
-                    # parity this turn because their step never settled;
-                    # `recovered_after_settle` = rows whose step settled BEFORE
-                    # the oracle_shadow lane built the row, saved by the reverse
-                    # path in `defer` (measured live: this was the actual loss -
-                    # "flushed unsettled review rows = 5" in one coding run).
-                    # Logged per turn while the flag is on, so the denominator
-                    # (turns) is countable too.
-                    if _rol.enabled():
-                        _rol_st = _rol.stats()
-                        logger.info(
-                            "[Oracle] review outcome label: swept_parity_now=%d "
-                            "swept_parity_total=%d recovered_after_settle=%d "
-                            "pending=%d",
-                            _swept_now,
-                            _rol_st.get("flushed_parity", 0),
-                            _rol_st.get("recovered_after_settle", 0),
-                            _rol_st.get("pending", 0),
-                        )
-                except Exception:  # noqa: BLE001
-                    pass
                 # tc-decide-v7 (2026-11-07): flush any DECIDED tool_choice row
                 # whose step never settled (early turn end, exception). The row
                 # is written WITHOUT an outside_label, so a flushed row is
@@ -8183,259 +8028,6 @@ class AgentKernel:
                 ("; reasons: " + "; ".join(_reasons)) if _reasons else "",
                 _where,
             )
-            # Session 364 (owner request): the DEPTH question, run as a CASCADE.
-            # `sufficient`/`done` ask whether the objective is COVERED; this asks
-            # whether it is done to the DEPTH the success criteria require - the
-            # "the Brain settles for half work / does not over-deliver" complaint.
-            #
-            # THE SHAPE IS JEV'S (arXiv 2609.26550, "Accept When Confident,
-            # Escalate When Unsure"): the cheap decision-only scorer answers when
-            # its confidence clears a validated threshold, and anything less
-            # confident is ESCALATED to the stronger judge. `surface_bool` already
-            # implements exactly that, so this calls it rather than hand-rolling a
-            # `noul.true(0.5)` cut - a bare hard cut throws away the escalation
-            # band, and that band is precisely what removes the need for a fully
-            # calibrated engine before the consumer can be trusted to act.
-            #
-            # COST SAFETY: in shadow the fallback is the loop's own verdict, so NO
-            # extra model call is made. The Brain judge is constructed only when
-            # depth_met is ENFORCED, and even then it is paid only for the cases
-            # the engine was not confident about (the paper measured 53.7% of
-            # cases accepted at tau=0.9).
-            try:
-                from backend.agent import surface_shadow as _ss_depth
-                from backend.agent.decision_engine import decides, oracle_acts
-
-                # THE CHOKEPOINT decides whether depth_met may act. The private
-                # tau (IRIS_DEPTH_MET_THRESHOLD=0.80 on P(true)) is REMOVED
-                # 2026-10-05: it was a second, hand-set threshold that nothing
-                # calibrated; the fitted per-consumer threshold on the
-                # confidence in the chosen answer replaces it.
-                _depth_tau = decides("depth_met")
-                _depth_enforced = _depth_tau is not None
-
-                _depth_req: List[str] = []
-                try:
-                    _depth_req = [
-                        str(_f) for _f in getattr(
-                            (_gc_state or {}).get("contract"), "required", []
-                        )
-                    ]
-                except Exception:
-                    _depth_req = []
-                _depth_criteria = "; ".join(_depth_req[:6]) or "none declared"
-                _depth_open = "; ".join(_gc_open[:6]) or "none"
-                _depth_blocked = "; ".join(_gc_blocked[:4]) or "none"
-                # ANCHOR THE JUDGMENT TO THE WORK PRODUCT (oracle-addendum 25.2).
-                # "Reference-free prose is near chance for every judge tested" -
-                # so the EVIDENCE goes in the frame, not just the criteria and
-                # the verdict. Without it the Oracle is asked "was that good?"
-                # with nothing to judge against, which is precisely the question
-                # the paper says a cheap judge cannot answer.
-                _depth_evidence: List[str] = []
-                try:
-                    for _ei, _eit in enumerate((completed_items or [])[-4:]):
-                        _er = getattr(_eit, "result", "") or ""
-                        if not _er:
-                            continue
-                        _depth_evidence.append(
-                            f"[{_ei + 1}] "
-                            f"{(getattr(_eit, 'description', '') or '')[:70]}: "
-                            f"{self._smart_excerpt(str(_er), 600)}"
-                        )
-                except Exception:
-                    _depth_evidence = []
-                _depth_ev_txt = (
-                    "\n".join(_depth_evidence)[:2400] or "(no step output captured)"
-                )
-                _depth_stmt = (
-                    f"SUCCESS CRITERIA: {_depth_criteria}\n"
-                    f"STILL OPEN: {_depth_open}\n"
-                    f"BLOCKED: {_depth_blocked}\n"
-                    f"COVERAGE: {_gc_c:.3f}\n"
-                    f"LOOP VERDICT: {_grade} (at {_where})\n"
-                    f"EVIDENCE (what was actually produced):\n{_depth_ev_txt}"
-                )
-                _depth_frame = {
-                    "goal": _depth_criteria,
-                    "grade": _grade,
-                    "coverage": _gc_c,
-                    "open_facts": list(_gc_open[:6]),
-                    # v3 (2026-10-17, oracle.md 7.5): 1000, not 1200 - the
-                    # dedicated judge_depth job (384 ids = 1536 chars) renders
-                    # evidence FIRST, then coverage, open_facts and the
-                    # criteria; 1000 + coverage + open facts + criteria fits
-                    # the budget so a max-length frame cannot clip the bar.
-                    "evidence": _depth_ev_txt[:1000],
-                    # oracle-addendum 25.6.3: one change at a time, and the
-                    # criteria version rides on EVERY row so a report can scope
-                    # to (Oracle, Brain, criteria version). Bump it whenever the
-                    # instruction or the frame SHAPE changes - a shape change is
-                    # a new calibrated identity (oracle.md 8).
-                    # v3 (2026-10-17): the judge_depth job (evidence first,
-                    # coverage in, grade out) + the EXTERNAL verdict label -
-                    # the row is HELD for the eval harness's hidden-test
-                    # verdict (backend/agent/turn_verdict_label.py, reported
-                    # via POST /api/eval/verdict) instead of graded against
-                    # the loop's own rule, which the model cannot see the
-                    # inputs of (measured: oof AUROC 0.40, inverted).
-                    "criteria_version": "depth_met/v3",
-                }
-
-                def _depth_strong_judge() -> bool:
-                    """The ESCALATION target: the same strict depth question, asked
-                    of the reasoning model. Paid only when the engine is unsure."""
-                    _r = self.infer(
-                        "You are a strict editor. Judge ONLY whether the work is "
-                        "done to the DEPTH the success criteria require - not "
-                        "whether the criteria are merely present.\n\n"
-                        f"SUCCESS CRITERIA:\n{_depth_criteria}\n\n"
-                        "STILL OPEN (required facts neither covered nor blocked):\n"
-                        f"{_depth_open}\n\n"
-                        f"BLOCKED:\n{_depth_blocked}\n\n"
-                        f"COVERAGE: {_gc_c:.3f}\n\n"
-                        "Half-done work, placeholder content, or a criterion met "
-                        "only superficially is NOT deep enough. Being demanding is "
-                        "correct here: the cost of one more pass is small.\n"
-                        'Reply with JSON only: {"deep_enough": true or false}',
-                        role="reasoning", max_tokens=120, temperature=0.0,
-                    )
-                    import json as _json_depth
-                    import re as _re_depth
-
-                    _m = _re_depth.search(r"\{[\s\S]+\}", _r.raw_text or "")
-                    if not _m:
-                        return _grade == "pass"  # unparseable -> incumbent verdict
-                    try:
-                        return bool(_json_depth.loads(_m.group()).get("deep_enough"))
-                    except Exception:
-                        return _grade == "pass"
-
-                # Shadow -> cheap reference, no model call. Enforced -> unsure
-                # cases escalate to the Brain (JEV's fallback).
-                if _depth_enforced:
-                    _depth_fallback = _depth_strong_judge
-                else:
-                    _depth_fallback = lambda: _grade == "pass"  # noqa: E731
-
-                # Not deciding -> the score is a calibration row only: it runs on
-                # the lane (measured 561 ms/turn inline), the loop's grade stands.
-                _depth_value, _depth_row = _ss_depth.surface_bool(
-                    "depth_met", _depth_stmt,
-                    brain_bool_fn=_depth_fallback,
-                    engine=_ss_depth.AUTO_ENGINE,
-                    enforced=_depth_enforced,
-                    defer=True,  # ignored once enforced: a deciding consumer is waited for
-                    # v4 (2026-11-06): the QUESTION changed (surface_shadow
-                    # _STATEMENTS) - replay 0.4784 -> 0.6152, monotonic bands.
-                    # Still below the 0.65 bar (the label is the external turn
-                    # verdict), so it stays shadow. A question change is a new
-                    # calibrated identity.
-                    criteria_version="depth_met/v4",
-                    acts=lambda c: oracle_acts("depth_met", c),
-                    frame=_depth_frame,
-                )
-                # 25.6.3: the criteria version rides on every row (the key is on
-                # tool_bridge._DECISION_META_KEYS, or the ledger would drop it).
-                if _depth_row is not None:
-                    # the SAME stamp as the shadow path above (2026-11-10:
-                    # an enforced inline row was stamped v3 while it was
-                    # asked the v4 question - two questions, one cohort)
-                    _depth_row["criteria_version"] = "depth_met/v4"
-                    # v3 (2026-10-18): an ENFORCED row is held for the EXTERNAL
-                    # verdict too - the same hold the deferred shadow path uses
-                    # (surface_shadow._submit_shadow). Enforced mode returns the
-                    # row INLINE, which bypassed the hold: measured live on the
-                    # first enforced run, every verdict POST was a MISS
-                    # (held_rows=0) and the deciding consumer's rows would have
-                    # stopped carrying the outcome label - the calibration
-                    # would stop measuring it honestly. brain_bool on an
-                    # enforced row is the engine's OWN verdict, so the outside
-                    # label (the eval verdict) is the only honest reference it
-                    # has. try/except: a label never blocks the grade.
-                    try:
-                        from backend.agent import turn_verdict_label as _tvl_d
-
-                        if not _tvl_d.defer(_depth_row, _ss_depth.emit_row):
-                            _ss_depth.emit_row(_depth_row)
-                    except Exception:  # noqa: BLE001
-                        _ss_depth.emit_row(_depth_row)
-
-                # Share the verdict with the CONTINUATION decision, which is the
-                # only place that can make the loop actually do more work. The
-                # grade returned by this function is DISPLAY-ONLY: all three call
-                # sites discard it and _der_emit_card_settle uses it for the card
-                # ("the card is only a display"). So the downgrade below fixes the
-                # LABEL; the behavioural push lives in _der_plan_next_step.
-                # Session 365 FIX: this read `_depth_noul.probability`, but
-                # `surface_bool` returns `(value, row)` and keeps the Noul
-                # private â€” `_depth_noul` was never bound anywhere, so this
-                # raised NameError on EVERY grade site, the `except` below
-                # swallowed it, and the consequences were invisible:
-                # `_der_last_depth` was never set (so the enforcement push in
-                # `_der_plan_next_step` could never fire) and the pass->capped
-                # downgrade below never ran. The row is the honest source for
-                # the same number the ledger records, so the push log and the
-                # row can never disagree. A None row means no engine was
-                # available (`shadow_row` refuses to fabricate), so the
-                # confidence is genuinely unknown and stays None.
-                _depth_conf = None
-                if isinstance(_depth_row, dict):
-                    try:
-                        # P(true): the push log prints it as `p=`. The row's
-                        # `confidence` is now the confidence in the chosen answer.
-                        _depth_conf = float(
-                            _depth_row.get("probability", _depth_row.get("confidence"))
-                        )
-                    except (TypeError, ValueError):
-                        _depth_conf = None
-                self._der_last_depth = {
-                    "met": bool(_depth_value),
-                    "confidence": _depth_conf,
-                    "enforced": bool(_depth_enforced),
-                    "open_facts": list(_gc_open[:3]),
-                }
-
-                # THE REMEDY, and only when enforced: a depth failure does not
-                # accept the loop's "pass". Downgrading it to "capped" keeps the
-                # loop alive so it tries another route instead of settling.
-                #
-                # THE CAP (oracle-addendum's item F). Two independent brakes,
-                # because an unbounded push is exactly what killed the
-                # TrailingDirector ("looped unbounded on gap-on-gap"):
-                #   (a) DIRECTION - only push when there is a CONCRETE gap to
-                #       close (`_gc_open` non-empty). "Not deep enough" with
-                #       every required fact covered gives the loop nothing to do,
-                #       so it must not spend a pass on it.
-                #   (b) BUDGET - at most _DEPTH_PUSH_MAX pushes per turn.
-                if _depth_enforced and not _depth_value and _grade == "pass":
-                    _depth_pushes = int(
-                        getattr(self, "_depth_push_count", 0) or 0
-                    )
-                    if _gc_open and _depth_pushes < _DEPTH_PUSH_MAX:
-                        self._depth_push_count = _depth_pushes + 1
-                        _grade = "capped"
-                        _reasons = list(_reasons or []) + [
-                            "depth_met: NOT done to the depth the success "
-                            "criteria require - pushing for another route "
-                            f"({self._depth_push_count}/{_DEPTH_PUSH_MAX})"
-                        ]
-                        logger.info(
-                            "[DER] depth_met ENFORCED: pass -> capped, pushing "
-                            "for another route (calibrated tau=%.2f, push %d/%d, "
-                            "open_facts=%d) - %s",
-                            _depth_tau, self._depth_push_count, _DEPTH_PUSH_MAX,
-                            len(_gc_open), _reasons[-1],
-                        )
-                    else:
-                        logger.info(
-                            "[DER] depth_met said NOT deep enough but the push "
-                            "is CLOSED (pushes=%d/%d, open_facts=%d) - accepting "
-                            "the grade so the loop cannot spin",
-                            _depth_pushes, _DEPTH_PUSH_MAX, len(_gc_open),
-                        )
-            except Exception as _depth_exc:  # noqa: BLE001 - a shadow never blocks
-                logger.debug("[DER] depth_met shadow failed: %r", _depth_exc)
             # Session-326 (goal-contract terminal-signal diag): at every grade
             # chokepoint, settle the card. The grade helper was reachable from
             # three call sites â€” _execute_plan_der (failure-settled),
@@ -8660,98 +8252,6 @@ class AgentKernel:
             )
             return []
         return beats
-
-    def _score_narration(
-        self,
-        *,
-        task: str,
-        beats: list,
-        authored: list,
-        n_steps: int,
-    ) -> None:
-        """Shadow-score the NARRATION decision, then record one row (2026-09-27).
-
-        WHY: narration timing and depth were decided by a stopwatch and a
-        keyword list (REQ-10 AC10.10: "narration earns airtime only when the task
-        outlives the reply"), which is why it feels robotic and deterministic.
-        The engine can judge the same question from CONTENT - how many steps the
-        task has, how many beats were authored, how long the reply will run -
-        and this records its answer so the Wave 7 bar can decide whether that
-        judgment beats the timer.
-
-        The engine stays a CHOOSER: it picks among three options that map onto
-        behaviour this kernel already has, and it never writes the words - the
-        Brain authors the beats. The candidate set is deliberately small so the
-        reference below is comparable like for like:
-
-            speak_all         speak every authored beat (today's behaviour when
-                              the gate admits them)
-            speak_first_only  speak only the headline beat
-            stay_silent       voice nothing; the reply and card carry it
-
-        The reference is what the gate ACTUALLY did, in the same vocabulary, so
-        the row is a real parity pair rather than a self-fulfilling one.
-
-        Shadow only: the gate's beats are what get spoken. Never raises, and
-        writes NO row when the planner authored no beats - that is not a
-        narration decision, so recording one would be junk evidence.
-        """
-        if not authored:
-            return
-        # ONCE PER TURN (2026-10-05): _plan_task runs ~3.6x per turn (every
-        # re-plan) and this scored the Oracle on the asyncio loop thread each
-        # time - measured 1042 ms of the reply per turn (106 of 146 decisions
-        # carried a taskName). The first plan is the question the rows measure.
-        _nkey = getattr(self, "_current_turn_id", None) or task
-        if getattr(self, "_narration_scored_key", None) == _nkey:
-            return
-        self._narration_scored_key = _nkey
-        try:
-            from backend.agent.decision_engine import (
-                get_consumer_spec,
-                needs_upgrade,
-                register_declared,
-            )
-            from backend.agent.decision_engine import get_decision_engine
-
-            options = ("speak_all", "speak_first_only", "stay_silent")
-            # REQ-4: the DECLARED type + criteria come from the declaration
-            # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
-            if needs_upgrade(get_consumer_spec("narration")):
-                from backend.agent.decision_engine import NARRATION_INSTRUCTION
-
-                register_declared("narration", NARRATION_INSTRUCTION, options)
-            eng = get_decision_engine()
-            if eng is None:
-                return
-            # v3 (2026-11-10): `beats_admitted` is gone - it IS the reference
-            # (speak_all exactly when it is > 0), so a question that read it
-            # passed every clause by copying. Replay without it on 547 v2
-            # rows: accuracy 0.66 vs 0.83 for the majority rule, oof AUROC 0.53.
-            frame = {
-                "goal": f"NARRATE: {(task or '')[:300]}",
-                "steps": int(n_steps),
-                "beats_authored": len(authored),
-                "multi_segment": n_steps >= 2,
-            }
-            # engine.shadow(): scored on the oracle_shadow lane, the row goes to
-            # the sink from there. The reference is what the gate ACTUALLY did,
-            # in the same vocabulary: it admits every authored beat or drops
-            # them all. "speak_first_only" is a capability the engine could
-            # unlock later - the gate cannot do it today, so it never appears
-            # as the reference.
-            eng.shadow(
-                "narration", list(options), frame,
-                sink=self._shadow_row_sink,
-                reference={
-                    "brain_choice": "speak_all" if beats else "stay_silent",
-                    # FRAME SHAPE CHANGE (2026-10-10): the shape job renders
-                    # steps/beats_authored. v3: beats_admitted removed (above).
-                    "criteria_version": "narration/shape-v3",
-                },
-            )
-        except Exception as _e:  # noqa: BLE001 â€” a shadow never blocks a turn
-            logger.debug("[AgentKernel] narration shadow failed: %r", _e)
 
     @staticmethod
     def _classify_provider_error(err_text: str) -> Optional[Tuple[object, str]]:
@@ -9285,20 +8785,7 @@ class AgentKernel:
                         "[AgentKernel._plan_task] plan edges steps=%d declared=%s",
                         len(steps), [(s.step_id, s.depends_on) for s in steps],
                     )
-                    # NARRATION consumer (2026-09-27): the duration gate above
-                    # decides what gets spoken; this scores the same question in
-                    # shadow so content-aware narration can be judged later.
                     _beats = self._planned_beats(data, len(steps))
-                    self._score_narration(
-                        task=text or "",
-                        beats=_beats,
-                        authored=[
-                            str(b).strip()
-                            for b in (data.get("beats", None) or [])
-                            if str(b or "").strip()
-                        ],
-                        n_steps=len(steps),
-                    )
                     return ExecutionPlan(
                         plan_id=str(_uuid.uuid4()),
                         original_task=text,
@@ -11440,11 +10927,6 @@ Respond with a JSON object:
         # recovery in a conversation, silently killing DER's existing recovery
         # path. One plan run is one task, so the counter resets here.
         self._der_amendment_count = 0
-        # Session 364: the depth_met push budget is PER TURN, like the amendment
-        # bound above. It lives on the kernel, which is cached per CONVERSATION,
-        # so letting it accumulate would permanently stop depth-pushes after the
-        # third one in a conversation. One turn = one budget.
-        self._depth_push_count = 0
         # T6.4: mark the call class as USER_TURN at the real turn entry so the
         # phase gate admits it immediately (high-priority lane).
         set_call_class(CallClass.USER_TURN)
@@ -12296,14 +11778,14 @@ Respond with a JSON object:
 
             # â”€â”€ REVIEWER PHASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if reviewer is not None:
-                # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper):
-                # bind the step id into the measurement scope for THIS review.
-                # Measured live: 2877 of 2877 review_verdict rows carried an
+                # Bind the step id into the measurement scope from here on
+                # (first added for review_verdict, retired 2026-11-10; the bind
+                # stays because every later row of this step reads its step_id
+                # from the scope). Measured live: 2877 of 2877 rows carried an
                 # EMPTY step_id - the loop binds turn_id at turn entry but never
-                # the step - so the outcome label had no join key and could
-                # never be stamped. scope_now() reads these as VALUES at
-                # row-build time, so a lane thread still gets them. try/except:
-                # measurement must never block a review.
+                # the step. scope_now() reads these as VALUES at row-build time,
+                # so a lane thread still gets them. try/except: measurement must
+                # never block a review.
                 try:
                     from backend.agent import decision_engine as _de
 
@@ -12321,9 +11803,6 @@ Respond with a JSON object:
                     )
                 except Exception:
                     verdict, feedback = ReviewVerdict.PASS, None
-                # `review_verdict` scored inside review(); the row it exposed
-                # was never written (see _forward_consumer_rows).
-                self._forward_consumer_rows(self._reviewer)
 
                 if verdict == ReviewVerdict.VETO:
                     item.veto_count += 1
@@ -17334,177 +16813,6 @@ Respond with a JSON object:
             pass
         return AgentKernel._format_tool_result(raw)
 
-    def _engine_gate_surface(
-        self, response: str, turn_id: str = "", live_surface: Optional[str] = None
-    ) -> Optional[str]:
-        """Presentation gate (specs/tool-decision-engine REQ-11, REQ-23).
-
-        Returns "card" / "plain" â€” the engine verdict â€” whenever the engine
-        answers, INCLUDING in shadow mode: the verdict SURFACES for the async
-        calibration observer (REQ-23 AC23.1) while steering remains
-        structurally impossible â€” nothing reads `_last_surface_choice` (the
-        writes are removed). Returns None only when the engine is unavailable
-        or an ENFORCED verdict is below threshold (the legacy heuristic
-        decides). Gate-layer only â€” surface choice, never content (content
-        belongs to chat-communication-lanes). Never raises.
-
-        ``live_surface`` is the surface that ACTUALLY ran, supplied by the
-        observer. It is recorded as the row's parity reference (2026-09-27):
-        without it the row carried `chosen` and nothing to judge it against, so
-        every presentation row landed unscorable and was counted as no_label.
-        """
-        try:
-            from backend.agent.decision_engine import (
-                enforced_consumers,
-                get_decision_engine,
-            )
-        except Exception:
-            return None
-        try:
-            eng = get_decision_engine()
-        except Exception:
-            return None
-        n = len(response or "")
-        # REQ-23 AC23.2: AC11.4 (one card per turn) moved to the render sites,
-        # so a turn WITH a card already emitted must STILL yield an observer
-        # verdict â€” otherwise "engine wanted plain, live produced card" is
-        # never measured. The frame admits the card exists (truthful).
-        # v3 (2026-11-10): `card_already_rendered` is gone - on the card path
-        # it is set before this observer runs, so it IS the reference (the
-        # copy the bar's trivial rule caught). What remains is gate-layer only
-        # (AC23.6: the reply text never enters the frame) and takes about 11
-        # distinct values in total, so this consumer cannot reach the 100
-        # distinct-row bar as specified.
-        frame = {
-            "content_chars": (
-                "small" if n < 300 else "medium" if n < 1500 else "large"
-            ),
-            "has_structure": any(
-                m in response for m in ("```", "\n|", "\n- ", "\n# ", "\n1. ")
-            ),
-            "zone": self._pacman_zone_for_turn(),
-            "mode": getattr(self, "_launcher_mode", "personal"),
-        }
-        options = ["plain_text", "prism_card", "card_plus_summary"]
-        ds = eng.decide("presentation", options, frame)
-        if ds is None:
-            return None
-        enforced = "presentation" in enforced_consumers()
-        _thr = eng._cfg.threshold_for("presentation")
-        confident = _thr is not None and ds.confidence >= _thr
-        meta = {
-            "engine": eng.model_id or "decision-engine",
-            "consumer_id": "presentation",
-            "chosen": ds.chosen,
-            "confidence": round(ds.confidence, 4),
-            "candidates": len(options),
-            "threshold": _thr,
-            "args_valid": None,
-            "retried": False,
-            "engine_latency_ms": ds.engine_latency_ms,
-            "route": "engine" if (enforced and confident) else "shadow",
-            "escalated": False,
-            # The frame the engine read (2026-11-04). Without it the 7,000
-            # presentation rows could only be re-measured with live traffic.
-            "state": frame,
-            # The parity reference (2026-09-27). `chosen` speaks the engine's
-            # vocabulary (plain_text / prism_card / card_plus_summary) while the
-            # live surface is "plain"/"card", so the live value is TRANSLATED
-            # into that vocabulary before it is recorded. Recording the raw live
-            # string would compare "plain" with "plain_text", never match, and
-            # report precision 0 as though it were a measurement. None when the
-            # caller supplied no live surface: the row then carries no reference
-            # and the report counts it as skipped rather than scoring it.
-            "brain_choice": (
-                None
-                if live_surface is None
-                else "plain_text"
-                if live_surface == "plain"
-                else "prism_card"
-                if live_surface == "card"
-                else None
-            ),
-            # FRAME SHAPE CHANGE (2026-10-10): the shape job now renders the
-            # frame's summary fields (content_chars, has_structure, ...) -
-            # before this, presentation rendered an EMPTY state (the job
-            # declared only `goal`, which this frame never carried). Rows
-            # before/after the change are different frames; never blend them.
-            # v3 (2026-11-10): card_already_rendered out (it is the reference).
-            "criteria_version": "presentation/shape-v3",
-            # The report's honest dedupe key (docs/architecture/oracle.md 6.1
-            # rule 1): a row counts once per distinct INPUT. Without it the
-            # ledger key (consumer, engine, confidence, chosen, reference,
-            # correct) collapses DIFFERENT replies that the quantized engine
-            # answered with the same confidence: measured 2026-11-03, 853 raw
-            # presentation rows counted as 11 distinct, so the consumer could
-            # never reach the 100-row bar.
-            "input_key": _presentation_input_key(frame, response),
-        }
-        bridge = getattr(self, "_tool_bridge", None)
-        recorder = getattr(bridge, "record_decision", None)
-        if callable(recorder):
-            try:
-                recorder(meta, kind="surface",
-                         session_id=getattr(self, "session_id", "") or "")
-            except Exception:
-                pass
-        if not (enforced and confident):
-            # Shadow / unconfident: the verdict RETURNS for the observer's
-            # calibration log while steering remains structurally impossible â€”
-            # nothing reads `_last_surface_choice` (the writes are removed,
-            # REQ-23). Only an enforced+confident verdict may steer.
-            return "plain" if ds.chosen == "plain_text" else "card"
-        return "plain" if ds.chosen == "plain_text" else "card"
-
-    def _observe_surface_async(
-        self,
-        response: str,
-        turn_id: Optional[str] = None,
-        live_surface: str = "plain",
-    ) -> None:
-        """Async presentation observer (specs/reply-surface-contract REQ-15).
-
-        The `presentation` decision-engine consumer is PRESERVED but DEMOTED
-        (owner decision OQ-3, option C): it no longer gates the live surface â€”
-        REQ-14 AC2 keeps `show`-presence as the sole live trigger. This spawns
-        a daemon thread that runs :meth:`_engine_gate_surface` as a pure
-        observer (its own `record_decision` ledger row still lands, so the
-        consumer's calibration data keeps flowing) and logs a
-        `surface_observer_disagreement` line whenever the engine's verdict
-        differs from the live surface â€” the evidence needed to promote the
-        consumer again later. Never raises; never blocks the reply.
-        """
-
-        def _observe() -> None:
-            try:
-                # live_surface is the Brain's ACTUAL answer for this turn, so it
-                # rides the row as the parity reference (2026-09-27).
-                verdict = self._engine_gate_surface(
-                    response, turn_id or "", live_surface=live_surface
-                )
-            except Exception:  # noqa: BLE001 â€” observer must never surface
-                return
-            try:
-                if verdict is not None and verdict != live_surface:
-                    logger.info(
-                        "[AgentKernel] surface_observer_disagreement turn=%s "
-                        "live=%s observer=%s",
-                        turn_id or "unknown",
-                        live_surface,
-                        verdict,
-                    )
-            except Exception:  # noqa: BLE001 â€” observer must never surface
-                pass
-
-        try:
-            threading.Thread(
-                target=_observe,
-                name="iris-surface-observer",
-                daemon=True,
-            ).start()
-        except Exception:  # noqa: BLE001 â€” instrumentation never blocks
-            pass
-
     def _turn_is_bounded_content_ask(self) -> bool:
         """REQ-24: is the CURRENT turn a bounded content ask?
 
@@ -18767,29 +18075,6 @@ Respond with a JSON object:
         from backend.agent import external_reference as _xr_mode
 
         item.mode = _xr_mode.mode_for_goal(goal, self._turn_sources())
-        # `needs_action` may move a REACT step to DIRECT (no tool loop) once the
-        # owner switched it on AND it earned the bar; below its calibrated
-        # threshold, or with no engine, the rule's mode stands.
-        if item.mode != _xr_mode.DIRECT:
-            try:
-                from backend.agent import decision_engine as _de_na
-                from backend.agent import surface_shadow as _ss_na
-
-                if _de_na.decides("needs_action") is not None:
-                    # The SAME frame the calibrated v7 rows carry (the outcome
-                    # row below): goal + expected. A goal-only consult asked a
-                    # question the bar never measured (2026-11-09).
-                    _na = _ss_na.score_surface_bool(
-                        "needs_action", goal, engine=_ss_na.AUTO_ENGINE,
-                        frame={"goal": goal,
-                               "expected": str(getattr(item, "expected_output", "") or "")})
-                    if _na is not None and not _na.true(0.5) and _de_na.oracle_acts(
-                            "needs_action", max(float(_na.probability), 1.0 - float(_na.probability))):
-                        logger.info("[DER] needs_action: step %s needs no tool (P(yes)=%.2f) - direct",
-                                    getattr(item, "step_id", "?"), float(_na.probability))
-                        item.mode = _xr_mode.DIRECT
-            except Exception as _na_exc:  # noqa: BLE001 - the rule's mode stands
-                logger.debug("[DER] needs_action consult skipped: %r", _na_exc)
         if item.mode == _xr_mode.DIRECT:
             return self._der_run_direct_node(item, goal, task)
         _menu = set(NODE_TOOLS) | (set(NODE_SCREEN_TOOLS) if _vision_relevant(goal) else set())
@@ -19106,53 +18391,6 @@ Respond with a JSON object:
         item.node_digest = params_digest("run_node", {"calls": [
             [str(c.get("tool") or ""), str(c.get("target") or "")] for c in (result.calls or [])
         ]})
-        # `needs_action` asks the question the DIRECT/REACT mode rule answers
-        # (mode_for_goal): does this goal need a tool call? This node ran the
-        # tool loop, so its OUTCOME labels it: a call that worked = a tool was
-        # needed; done with zero calls = it was not (live g04: such steps paid
-        # a full tool-loop call for nothing). Ambiguous outcomes get no row.
-        # Scored on the shadow lane after the step - never on the answer path.
-        # v2 (2026-10-18): the label reads the CALL-level outcome (`ok_call`),
-        # not the loop's `ok`. `ok` counts a non-zero returncode as failure, so
-        # a node whose only call was an informative pytest run mid-iteration
-        # emitted NO row at all (all-"failed" -> None) and mixed nodes
-        # under-counted - the same conflation that held tool_approval below
-        # chance before v6. A call that RAN is a tool that was needed.
-        try:
-            from backend.agent import surface_shadow as _ss_na
-
-            # v4 (2026-10-19): the label, the frame and the stamp all changed
-            # together, and each was measured first (294 real pairs):
-            #  - the label no longer calls a SLIP "no tool needed"
-            #    (surface_shadow.needs_action_label);
-            #  - the frame now carries the step's expected output, which is
-            #    what makes a write/edit goal read as an action;
-            #  - the question no longer has "writing" on both sides.
-            _label = _ss_na.needs_action_label(goal, result.calls, result.success)
-            _na_expected = str(getattr(item, "expected_output", "") or "")
-            _calls = result.calls or []
-            if _label is not None:
-                # DIAGNOSTIC (2026-10-18): the row does not store the goal
-                # (the whole frame for this consumer), so a live cohort cannot
-                # be replayed without it. One DEBUG record per row, keyed by
-                # step_id (the row carries the same id in its scope), with the
-                # label beside it - frame and outcome in one line.
-                logger.debug(
-                    "[needs_action] step=%s label=%s goal=%r expected=%r",
-                    getattr(item, "step_id", "?"), _label, goal, _na_expected,
-                )
-                # v8 was tried and REVERTED the same day (2026-11-05): the
-                # offline replay that "proved" it had its label comparison
-                # inverted, and the live cohort showed the acting 'no' answer
-                # falling to 12.5% correct against v7's 39.9%. The stamp is back
-                # to v7. See surface_shadow.SURFACE_CONSUMERS for the full note.
-                _ss_na._submit_shadow("needs_action", goal, _ss_na.AUTO_ENGINE,
-                                      True,
-                                      {"goal": goal, "expected": _na_expected},
-                                      "needs_action/v7",
-                                      outside_label=_label)
-        except Exception as _na_exc:  # noqa: BLE001 - a measurement never fails a step
-            logger.debug("[DER] needs_action row skipped: %r", _na_exc)
         return result.as_step_result(), result.success
 
     def _der_run_step_execution(
@@ -20954,18 +20192,6 @@ Respond with a JSON object:
         # tool_choice edges, the AVOID header and the recovery graft read the
         # miss episode), so a lane would hand them a stale view. Node steps
         # score here since S54; a slow run is logged so a cost shows up.
-        # IRIS_ORACLE_REVIEW_OUTCOME (default OFF, deletable wrapper): the step
-        # has just settled, so its real outcome now exists. Stamp it onto the
-        # review_verdict row held at review time, BEFORE the single ledger
-        # writer emits it. try/except twice over: this must never delay, block
-        # or fail a step settle.
-        try:
-            from backend.agent import review_outcome_label as _rol
-
-            _rol.stamp(getattr(item, "step_id", None), _verified)
-        except Exception:  # noqa: BLE001 â€” a label never blocks a settle
-            logger.debug("[DER] review outcome stamp failed")
-
         # tc-decide-v7: the decided tool_choice rows are stamped in
         # _der_post_step, after the post-finalize artifact graft decides whether
         # this step was retried. A stamp here would run before the graft and
@@ -21925,7 +21151,6 @@ Respond with a JSON object:
                 "work instead of finalizing: %r",
                 len(_open), str(_open[0])[:160],
             )
-            self._der_note_depth_route("cover_open_fact")
             from backend.agent import goal_contract as _gc_cover
 
             return {"description": _gc_cover.cover_goal(
@@ -22246,52 +21471,6 @@ Respond with a JSON object:
         except Exception:
             return None
 
-    def _der_note_depth_route(self, route: str) -> None:
-        """SHADOW (session 365): record the continuation route the loop is about
-        to take, so `depth_route` can be scored against what actually happened.
-
-        CALLED FROM EACH BRANCH, passing that branch's own literal name â€” never
-        by predicting the route from state. Predicting would mean duplicating
-        `_goal_contract_bonus_pass`'s conditions (whose only mutation is
-        `bonus_passes = 1`), and a duplicated predicate that drifts would record
-        a WRONG reference â€” worse than no row, because a wrong `brain_choice`
-        silently corrupts the parity metric this consumer exists to produce.
-
-        The route is therefore declared where it is decided. Purely an observer:
-        it returns nothing and never raises, so the branch's own return value is
-        untouched.
-        """
-        try:
-            _st = getattr(self, "_goal_contract_state", None) or {}
-            _dv = getattr(self, "_der_last_depth", None) or {}
-            _box = self._get_tool_box()
-            if _box is None:
-                return
-            try:
-                _open = list(self._goal_contract_open_facts() or [])
-            except Exception:
-                _open = []
-            _contract = _st.get("contract")
-            _box.depth_route(
-                incumbent_route=route,
-                coverage=float(_st.get("C", 0.0) or 0.0),
-                open_facts=_open,
-                criteria="; ".join(
-                    str(_f) for _f in (getattr(_contract, "required", None) or ())
-                )[:300],
-                grade=str(
-                    (getattr(self, "_der_last_run_grade", None) or {}).get(
-                        "grade", ""
-                    )
-                ),
-                depth_met=_dv.get("met"),
-                pushes_used=int(getattr(self, "_depth_push_count", 0) or 0),
-                session_id=str(getattr(self, "session_id", "") or ""),
-                async_=True,  # shadow score off the continuation path
-            )
-        except Exception:  # noqa: BLE001 â€” an observer never blocks a reply
-            pass
-
     def _der_plan_next_step(
         self,
         task_objective: str,
@@ -22517,52 +21696,7 @@ Respond with a JSON object:
                 except Exception:
                     _gc_bonus = None
                 if _gc_bonus is not None:
-                    self._der_note_depth_route("bonus_ceiling")
                     return _gc_bonus
-                # â”€â”€ THE REAL DEPTH PUSH (session 364) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                # We only reach here when `_gc_open_now` was EMPTY: every
-                # required fact is nominally covered, so the loop is about to
-                # finalize. But "covered" is not "done to depth" - a fact can be
-                # satisfied superficially, and THAT is the "settles for half
-                # work" failure this consumer exists to catch. When the depth_met
-                # verdict says the depth bar is NOT met, request one more pass
-                # instead of finalizing.
-                #
-                # Placed BEFORE the grade report on purpose: reporting
-                # "continuation-done" settles the card as done, so a push must
-                # pre-empt it. Bounded by the same per-turn cap, and only when
-                # the owner has ENFORCED depth_met - default behaviour is
-                # unchanged.
-                try:
-                    _dv = getattr(self, "_der_last_depth", None) or {}
-                    _dpushes = int(getattr(self, "_depth_push_count", 0) or 0)
-                    if (
-                        _dv.get("enforced")
-                        and _dv.get("met") is False
-                        and _dpushes < _DEPTH_PUSH_MAX
-                    ):
-                        self._depth_push_count = _dpushes + 1
-                        _dv_open = _dv.get("open_facts") or []
-                        logger.info(
-                            "[DER] depth_met PUSH at continuation: required facts "
-                            "are covered but the depth bar is NOT met (p=%s) - "
-                            "requesting depth instead of finalizing (%d/%d)",
-                            _dv.get("confidence"), self._depth_push_count,
-                            _DEPTH_PUSH_MAX,
-                        )
-                        self._der_note_depth_route("deepen")
-                        return {"description": (
-                            "Deepen the existing work so it is done to the DEPTH "
-                            "the success criteria require rather than merely "
-                            "present - the required facts are nominally covered "
-                            "but the depth check failed"
-                            + (
-                                f" (focus on: {str(_dv_open[0])[:200]})"
-                                if _dv_open else ""
-                            )
-                        )}
-                except Exception:  # noqa: BLE001 - advisory, never blocks
-                    pass
                 # AC5.6: done+GRADE via the shared helper (deduped by turn â€”
                 # the finalize-complete site may have reported first, T19).
                 try:
@@ -22571,19 +21705,14 @@ Respond with a JSON object:
                     )
                 except Exception:
                     pass
-                self._der_note_depth_route("finalize")
                 return None
 
             _desc = data.get("description")
             if not _desc or not str(_desc).strip():
                 # Not done, but the Brain named no next step, so the loop STOPS.
-                # That is the same "finalize" route as the done branch, declared
-                # here where it is decided - never predicted from state.
-                self._der_note_depth_route("finalize")
                 return None
 
             # GOAL ONLY â€” no tool/params. The resolver picks the tool on exec.
-            self._der_note_depth_route("next_step")
             return {"description": str(_desc).strip()}
 
         except Exception as exc:

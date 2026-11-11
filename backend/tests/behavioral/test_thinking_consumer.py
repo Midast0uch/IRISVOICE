@@ -8,9 +8,6 @@ heuristics — they are asserted here so a future edit cannot quietly change the
 
 from __future__ import annotations
 
-import pytest
-
-from backend.agent import surface_shadow as ss
 from backend.agent.agent_kernel import AgentKernel
 from backend.agent.decision_engine import Noul
 
@@ -33,12 +30,8 @@ def _kernel(style="balanced"):
     return k
 
 
-@pytest.fixture
-def rows():
-    captured: list = []
-    ss.set_row_sink(captured.append)
-    yield captured
-    ss.set_row_sink(None)
+# (2026-11-10: a `rows` fixture installed a surface_shadow row sink here and no
+# test read it; the sink was deleted with the retired surface consumers.)
 
 
 def _install(monkeypatch, engine):
@@ -47,7 +40,7 @@ def _install(monkeypatch, engine):
 
 
 class TestUseThinking:
-    def test_a_plain_question_still_skips_thinking(self, monkeypatch, rows):
+    def test_a_plain_question_still_skips_thinking(self, monkeypatch):
         """A plain question must not turn into a thinking request."""
         _install(monkeypatch, _Eng(p=0.97))
         k = _kernel()
@@ -63,7 +56,7 @@ class TestUseThinking:
         assert _kernel()._needs_thinking("how are you") is False
 
     def test_a_dead_engine_matches_the_phrase_list_exactly(
-        self, monkeypatch, rows,
+        self, monkeypatch,
     ):
         """AC29.7: with the engine dead, every verdict equals the raw list."""
         def _dead():

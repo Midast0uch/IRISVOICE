@@ -13,14 +13,13 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from backend.agent import surface_shadow as ss
 from backend.agent.decision_engine import CONSUMERS
 
 _REPO = Path(__file__).resolve().parents[3]
 
-# `has_gaps` removed 2026-10-05 (Oracle Stage B, owner-approved): no live site.
-# `escalate_incomplete` removed 2026-11-09 (owner retirement).
-_SURFACE = ("needs_action",)
+# The surface consumers are all retired: `has_gaps` 2026-10-05,
+# `escalate_incomplete` 2026-11-09, `needs_action` and `depth_met` 2026-11-10
+# (owner). Their registry tests went with them; the non-fit guard stays.
 _NON_FIT = "tier0_classify"
 
 
@@ -44,38 +43,3 @@ class TestConsumerRegistry:
             assert _NON_FIT not in scored, (
                 f"{mod} names {_NON_FIT} as a scored consumer string"
             )
-
-    def test_the_four_surface_consumers_are_registered(self):
-        """All are enumerated AND have their own criteria (REQ-19). (Four before
-        `has_gaps` was removed; `depth_met` registers here as well.)"""
-        for cid in _SURFACE:
-            assert cid in CONSUMERS, f"{cid} is not a registered consumer"
-
-        # The first call registers whatever is missing; a SECOND must be a
-        # no-op, or every scoring call would re-register (and the registry is
-        # process-wide).
-        ss.register_surface_consumers()
-        assert ss.register_surface_consumers() == 0, (
-            "registration was not idempotent — a second call re-registered"
-        )
-
-        from backend.agent.decision_engine import get_consumer_spec
-
-        for cid in _SURFACE:
-            spec = get_consumer_spec(cid)
-            assert spec is not None, (
-                f"{cid} has no criteria — the engine would REFUSE to score it "
-                "(REQ-19)"
-            )
-            assert spec.instruction == ss.SURFACE_CONSUMERS[cid], (
-                f"{cid} was registered under another consumer's head"
-            )
-            assert set(spec.labels) == {"yes", "no"}
-
-    def test_each_surface_consumer_has_its_own_instruction(self):
-        """No two consumers share a head — the REQ-19 binding rule."""
-        instructions = list(ss.SURFACE_CONSUMERS.values())
-        assert len(set(instructions)) == len(instructions), (
-            "two surface consumers share an instruction — they would be scored "
-            "under the same head"
-        )

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -158,19 +157,18 @@ class TestCtDe7Registry:
         # decision; earned on the v6 cohort). Both changes are pinned by
         # test_consumer_declarations_contract.
         assert CONSUMERS == (
-            "tool_choice", "presentation", "narration", "recovery_strategy",
-            "review_verdict", "sufficient", "done",
+            "tool_choice", "recovery_strategy",
+            "sufficient", "done",
             "web_intent",
             # `escalate_incomplete` REMOVED 2026-11-09 (owner retirement;
             # test_escalate_incomplete_retired_contract pins the removal).
-            "needs_action",
-            # Session 364 (owner request): the DEPTH consumer.
-            "depth_met",
+            # presentation, narration, review_verdict, needs_action,
+            # depth_met, depth_route REMOVED 2026-11-10 (owner retirement;
+            # test_six_consumers_retired_contract pins the removal).
             # STALE-BY-SPEC (2026-10-08, specs/oracle-native-decision-surface
-            # AC9.1 sanctioned exceptions 2 and 3, the ONLY permitted additions):
-            # `depth_route` (five live call sites, never counted) and
-            # `call_closing` (REQ-10, permanently measurement-only).
-            "depth_route", "call_closing",
+            # AC9.1 sanctioned exception 3): `call_closing` (REQ-10,
+            # permanently measurement-only).
+            "call_closing",
             # 2026-10-18 (owner): the pre-call guard consumer.
             "tool_approval",
             # 2026-10-30: the shadow-only memory route comparator.
@@ -247,87 +245,8 @@ class TestCtDe8NarrationComposition:
 # ---------------------------------------------------------------------------
 
 
-class TestSurfaceGateBehavior:
-    def _kernel_self(self, recorder=None):
-        return SimpleNamespace(
-            _last_render_emitted=False,
-            _pacman_zone_for_turn=lambda: "reference",
-            _launcher_mode="personal",
-            _tool_bridge=SimpleNamespace(record_decision=recorder)
-            if recorder
-            else None,
-            session_id="s1",
-        )
-
-    def _call(self, kernel_self, response="A" * 400):
-        from backend.agent.agent_kernel import AgentKernel
-
-        return AgentKernel._engine_gate_surface(  # unbound, by design
-            kernel_self, response, turn_id="t1")
-
-    def test_enforced_confident_card(self, install_engine):
-        install_engine(_GateEngine(chosen="prism_card", confidence=0.97),
-                       enforced=("presentation",))
-        assert self._call(self._kernel_self()) == "card"
-
-    def test_enforced_confident_plain(self, install_engine):
-        install_engine(_GateEngine(chosen="plain_text", confidence=0.99),
-                       enforced=("presentation",))
-        assert self._call(self._kernel_self()) == "plain"
-
-    def test_shadow_verdict_returned_for_calibration_never_steers(self, install_engine):
-        """SUCCESSOR (2026-09-22 audit, reply-surface-contract REQ-15). This
-        used to be `test_shadow_records_but_heuristics_decide`, asserting a
-        shadow verdict was DISCARDED (`out is None`, "heuristic decides") —
-        but the calling heuristic was deleted 2026-09-21 and the only consumer
-        of this method is the async calibration observer. A discarding shadow
-        gate made calibration invisible: nothing logged a disagreement the
-        ledger could compare. The verdict now RETURNS for the observer's
-        calibration log while steering remains structurally impossible —
-        nothing reads `_last_surface_choice` (the writes were removed)."""
-        rows = []
-
-        def rec(meta, kind, session_id="unknown"):
-            rows.append((meta, kind))
-
-        install_engine(_GateEngine(chosen="prism_card", confidence=0.99),
-                       enforced=())
-        ks = self._kernel_self(recorder=rec)
-        out = self._call(ks)
-        assert out == "card"                     # verdict SURFACES for calibration
-        assert rows and rows[0][0]["route"] == "shadow"
-        # ...but it must never become a steering side-channel.
-        assert not hasattr(ks, "_last_surface_choice"), (
-            "the dead steering field came back — the observer must not write it"
-        )
-
-    def test_card_turn_still_observed_with_truthful_frame(self, install_engine):
-        """SUCCESSOR (2026-09-22 audit) of `test_already_rendered_never_consults`.
-        AC11.4 (one card per turn) moved from this gate's early-return to the
-        render sites (`_record_turn_render` + the tool path's in-place
-        revision), so a turn WITH a card already emitted must STILL yield an
-        observer verdict — otherwise "engine wanted plain, live produced card"
-        is never measured (reply-surface-contract REQ-15 AC4 was blind for
-        card turns). 2026-11-10 (owner: fix the job setups): the frame no
-        longer carries `card_already_rendered` - on the card path it IS the
-        reference, so a question that read it measured copying."""
-        frames = []
-
-        def decide(consumer_id, options, frame):
-            frames.append(frame)
-            return DecisionScore(
-                consumer_id=consumer_id, chosen="prism_card", confidence=0.97,
-                distribution=(CandidateScore("prism_card", -0.1, 0.97),),
-                engine_latency_ms=2,
-            )
-
-        eng = install_engine(_GateEngine(chosen="prism_card", confidence=0.97),
-                             enforced=("presentation",))
-        eng.decide = decide
-        ks = self._kernel_self()
-        ks._last_render_emitted = True
-        assert self._call(ks) == "card"
-        assert frames and "card_already_rendered" not in frames[0]
+# TestSurfaceGateBehavior REMOVED 2026-11-10 (owner): it drove
+# AgentKernel._engine_gate_surface, the retired presentation observer.
 
 
 class TestNarrationBackstopBehavior:

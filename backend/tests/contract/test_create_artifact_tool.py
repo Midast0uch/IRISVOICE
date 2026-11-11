@@ -61,7 +61,6 @@ def rig():
     kernel._memory_interface = mi
     kernel._pacman_zone_for_turn = lambda: "chat"
     kernel._current_turn_id = "turn-live"
-    kernel._observe_surface_async = lambda *a, **kw: None
     bridge = AgentToolBridge.__new__(AgentToolBridge)
     bridge._active_conversation_id = {}
     bridge._logger = logging.getLogger("test_create_artifact_tool")

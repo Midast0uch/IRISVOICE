@@ -1,11 +1,9 @@
-"""Contract tests: the review_verdict consumer's envelope (REQ-13 AC13.1, T17).
+"""Contract tests: the bool and triage consumers' envelopes (CT-DEI-6).
 
-CT-DEI-6 — Verdict/Bool Consumer Shapes: `review_verdict` decisions carry the
+CT-DEI-6 — Verdict/Bool Consumer Shapes: consumer decisions carry the
 standard consumer envelope (chosen, confidence, candidates, latency) so
-calibration joins work uniformly.
-
-AC13.1 is FOUNDATION (shadow): rows are recorded, the Brain verdict still
-decides. AC13.2: the engine never writes step text.
+calibration joins work uniformly. (The `review_verdict` half was retired
+with the consumer, 2026-11-10.)
 """
 
 from __future__ import annotations
@@ -15,32 +13,15 @@ from backend.agent.decision_engine import (
     DecisionScore,
     EngineCounters,
 )
-from backend.agent.der_loop import Reviewer, ReviewVerdict
 
 
-class _VerdictEngine:
-    def __init__(self, chosen="pass", confidence=0.93):
-        self._chosen = chosen
-        self._conf = confidence
-        self.model_id = "verdict-stub"
-        self.counters = EngineCounters()
-        self.calls: list = []
-
-    def decide(self, consumer_id, options, frame):
-        self.calls.append((consumer_id, list(options)))
-        return DecisionScore(
-            consumer_id=consumer_id, chosen=self._chosen,
-            confidence=self._conf,
-            distribution=tuple(
-                CandidateScore(o, -0.1, 0.9 if o == self._chosen else 0.05)
-                for o in options
-            ),
-            engine_latency_ms=2,
-        )
+# The review_verdict shadow-row section was REMOVED 2026-11-10 (owner): the
+# consumer is retired (OOF AUROC 0.483, no step-level truth); the Reviewer's
+# own verdict decides alone (test_six_consumers_retired_contract).
 
 
 class _Adapter:
-    """Brain stand-in returning a fixed verdict JSON."""
+    """Brain stand-in returning a fixed verdict JSON (the triage router)."""
 
     def __init__(self, raw='{"verdict": "refine", "refined": "tighten step 2"}'):
         self._raw = raw
@@ -50,104 +31,6 @@ class _Adapter:
         self.calls += 1
         from types import SimpleNamespace
         return SimpleNamespace(raw_text=self._raw)
-
-
-class _Ctx:
-    # 2026-10-19 (owner decision): the Brain review runs only when the memory
-    # gives it something to judge against. These tests check the Brain path's
-    # own invariants, so their context carries one warning (input change only;
-    # no assertion changed). The empty case is pinned in test_reviewer_gate.py.
-    gradient_warnings = "step 2 failed like this before"
-    active_contracts = ""
-    # 2026-11-06 (input change, no assertion changed): review_verdict/v13
-    # requires EVIDENCE for a row - an empty frame is not evidence (see
-    # _review_frame_evidence). These tests check the row SHAPE, so the context
-    # carries the last result the gate judges against. The no-evidence rule is
-    # pinned in test_review_frame_contract.py.
-    last_result_text = "output: 3 passed"
-
-
-def _reviewer(engine, raw=None):
-    r = Reviewer(_Adapter(raw) if raw else _Adapter(), None)
-    r.set_review_engine(engine)
-    return r
-
-
-def _item(desc="read the readme", objective="OBJ-1"):
-    from backend.agent.der_loop import QueueItem
-    return QueueItem(step_id="s1", step_number=1, description=desc,
-                     objective_anchor=objective)
-
-
-def _completed(desc="ran the tests", result="success | 3 passed"):
-    """A completed step that carries evidence (a v13 row needs one)."""
-    q = _item(desc)
-    q.result = result
-    return q
-
-
-class TestReviewVerdictShadowRow:
-    def test_review_verdict_shadow_row(self):
-        """AC13.1 / CT-DEI-6: a well-formed shadow row is produced, and the
-        BRAIN verdict still decides (shadow never steers)."""
-        engine = _VerdictEngine(chosen="pass", confidence=0.93)
-        reviewer = _reviewer(engine)
-
-        verdict, out = reviewer.review(_item(), [], _Ctx(), is_mature=True)
-
-        # ── the Brain still decides (shadow) ──
-        assert verdict == ReviewVerdict.REFINE, (
-            "the engine verdict steered the loop — AC13.1 is shadow-only"
-        )
-        assert out == "tighten step 2"
-
-        # ── the row exists with the standard consumer envelope ──
-        row = reviewer.last_shadow_verdict
-        assert row is not None, "no shadow row was produced"
-        assert row["consumer_id"] == "review_verdict"
-        assert row["chosen"] == "pass"
-        assert 0.0 <= row["confidence"] <= 1.0
-        assert {c["name"] for c in row["candidates"]} == {"pass", "refine", "veto"}
-        assert all(0.0 <= c["prob"] <= 1.0 for c in row["candidates"])
-        assert row["engine_latency_ms"] >= 0
-        assert row["shadow"] is True
-        # the shadow PAIR: what the engine said vs what actually ran
-        assert row["brain_verdict"] == "refine"
-
-    def test_shadow_row_records_the_consumer_and_its_own_labels(self):
-        """AC13.1/AC19.3: the consumer is scored under its OWN labels."""
-        engine = _VerdictEngine()
-        reviewer = _reviewer(engine)
-        reviewer.review(_item(), [], _Ctx(), is_mature=True)
-
-        assert engine.calls, "the engine was never consulted"
-        consumer_id, labels = engine.calls[0]
-        assert consumer_id == "review_verdict"
-        assert labels == ["pass", "refine", "veto"]
-
-    def test_no_engine_means_no_row_and_no_behaviour_change(self):
-        """A missing engine adds no row and changes nothing (shadow must never
-        fabricate a row)."""
-        reviewer = _reviewer(None)  # set_review_engine(None) = explicitly off
-
-        verdict, out = reviewer.review(_item(), [], _Ctx(), is_mature=True)
-
-        assert verdict == ReviewVerdict.REFINE
-        assert reviewer.last_shadow_verdict is None
-
-    def test_immature_step_is_also_shadow_scored(self):
-        """The heuristic branch (immature / no context package) is shadow-scored
-        too, so the parity metric covers every verdict the loop takes."""
-        engine = _VerdictEngine(chosen="veto")
-        reviewer = _reviewer(engine)
-
-        verdict, _ = reviewer.review(_item(), [_completed()], object(),
-                                     is_mature=False)
-
-        assert verdict in (ReviewVerdict.PASS, ReviewVerdict.VETO,
-                           ReviewVerdict.REFINE)
-        assert reviewer.last_shadow_verdict is not None
-        assert reviewer.last_shadow_verdict["chosen"] == "veto"
 
 
 # ── REQ-14 AC14.1 (T18): the three loop-monitor bool consumers ─────────────

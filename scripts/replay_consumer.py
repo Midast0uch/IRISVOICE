@@ -21,8 +21,8 @@ The variants change the OPTION TEXT (the consumer declaration's wording):
   custom   a JSON map given with --options '{"pass": "...", ...}'
 
 Usage:
-    python scripts/replay_consumer.py --consumer review_verdict \
-        --engine d1-2b-q4_k_m+systemone --stamps review_verdict/v8 \
+    python scripts/replay_consumer.py --consumer tool_choice \
+        --engine d1-2b-q4_k_m+systemone --stamps tc-decide-v9 \
         --variants current,bare --limit 300
 """
 
@@ -169,24 +169,15 @@ def live_instruction(consumer: str) -> str:
     """The consumer's LIVE criteria text (the instruction the live path
     registers). MEASURED 2026-11-04: the replay without it asks a DIFFERENT
     question - the D1Backend registers the default spec when the instruction
-    is missing."""
-    if consumer == "review_verdict":
-        from backend.agent.der_loop import Reviewer
-
-        return Reviewer.REVIEW_INSTRUCTION
+    is missing. (review_verdict, narration and the surface consumers were
+    retired 2026-11-10; their instructions went with them.)"""
     # 2026-11-09: the yes/no consumers ask a question too. Without it every
     # replay of them asked the backend's DEFAULT question, not the live one.
     if consumer == "tool_approval":
         from backend.agent.tool_approval_shadow import TOOL_APPROVAL_INSTRUCTION
 
         return TOOL_APPROVAL_INSTRUCTION
-    if consumer == "narration":
-        from backend.agent.decision_engine import NARRATION_INSTRUCTION
-
-        return NARRATION_INSTRUCTION
-    from backend.agent.surface_shadow import SURFACE_CONSUMERS
-
-    return SURFACE_CONSUMERS.get(consumer, "")
+    return ""
 
 
 @contextlib.contextmanager
@@ -269,9 +260,7 @@ def _run(variant: str, consumer: str, rows, backend: D1Backend, live: dict, cust
             # statement. Score the SAME frame here so the replay reproduces
             # the live prompt.
             from backend.agent.decision_engine import job_input
-            from backend.agent.surface_shadow import register_surface_consumers
 
-            register_surface_consumers()
             st = r["state"]
             # THE ENGINE'S INPUT, not the raw frame (2026-11-09): the live
             # DecisionEngine.decide renders the job's declared fields

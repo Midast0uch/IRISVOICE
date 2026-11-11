@@ -168,7 +168,7 @@ def test_a_long_option_description_is_capped_but_the_name_is_not(wire):
 
 
 def test_noul_sends_only_the_declared_yes_no_text(wire):
-    """The call site owns the v7 question (surface_shadow passes it); the
+    """The call site owns the question (the example was needs_action, retired 2026-11-10); the
     declaration owns the Yes:/No: descriptions. The server's template adds
     the prefixes, so ours must be stripped."""
     b, client = wire({"q": {"type": "noul", "noul": 0.7}})
@@ -177,7 +177,7 @@ def test_noul_sends_only_the_declared_yes_no_text(wire):
         "create, implement, fix, run, search or browse - or does it only give "
         "an ANSWER from what is already known?"
     )
-    b.decide("needs_action", ["yes", "no"], {"goal": "Read main.py"},
+    b.decide("done", ["yes", "no"], {"goal": "Read main.py"},
              instruction=instruction)
     q = client.posts[-1][1]["questions"]["q"]
     assert q["type"] == "noul"
@@ -222,7 +222,7 @@ def test_noul_answer_keeps_p_true_as_the_yes_probability(wire):
     stores the chosen answer's confidence, and the raw P(true) stays on the
     'yes' candidate."""
     b, _ = wire({"q": {"type": "noul", "noul": 0.2}})
-    got = b.decide("needs_action", ["yes", "no"], {"goal": "g"})
+    got = b.decide("done", ["yes", "no"], {"goal": "g"})
     assert got.chosen == "no"
     assert got.confidence == pytest.approx(0.8)
     by_name = {c.name: c.prob for c in got.distribution}
@@ -256,7 +256,7 @@ def test_undeclared_consumer_is_refused_before_any_request(wire):
 
 def test_a_noul_consumer_offered_a_non_binary_pair_is_refused(wire):
     b, client = wire({"q": {"type": "noul", "noul": 0.9}})
-    assert b.decide("needs_action", ["yes", "maybe"], {"goal": "g"}) is None
+    assert b.decide("done", ["yes", "maybe"], {"goal": "g"}) is None
     assert client.posts == []
 
 
@@ -296,7 +296,7 @@ def test_batch_answers_each_question_at_its_own_key(wire):
                "probabilities": {"A": 0.1, "B": 0.9}, "confidence": 0.9},
     })
     out = b.decide_batch("shared state", [
-        ("needs_action", ["yes", "no"], "Does it act?"),
+        ("done", ["yes", "no"], "Does it act?"),
         ("tool_choice", ["A", "B"], "Which?"),
     ])
     assert len(out) == 2

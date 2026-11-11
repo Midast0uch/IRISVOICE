@@ -75,17 +75,13 @@ def world():
     k._pacman_zone_for_turn = lambda: "chat"
     k._last_render_emitted = False
     k._last_spoken_text = ""
-    observed = []
-    k._observe_surface_async = lambda response, turn_id=None, live_surface="plain": (
-        observed.append(live_surface)
-    )
     bus = _Bus()
     with patch("backend.agent.event_bus.get_event_bus", return_value=bus), \
          patch("backend.agent.caducean_trajectory.get_trajectory_recorder") as gtr, \
          patch("backend.utils.durability_queue.submit"):
         gtr.return_value.get_latest_coordinate.return_value = None
         yield SimpleNamespace(
-            k=k, bus=bus, store=DocumentDataStore.get_for(mi), observed=observed
+            k=k, bus=bus, store=DocumentDataStore.get_for(mi)
         )
 
 
@@ -271,20 +267,6 @@ def test_f_code_that_contains_a_fence_cannot_close_the_block_early(world):
 def test_f_each_kind_maps_to_its_render_format(world, kind, language, fmt):
     _make(world, kind=kind, language=language, content="a,b\n1,2")
     assert world.bus.renders()[-1]["format"] == fmt
-
-
-# ── (g) the Oracle's presentation observer sees BOTH exits ───────────────────
-
-def test_g_presentation_observer_runs_on_the_artifact_path(world):
-    _make(world)
-    assert world.observed == ["card"], (
-        "the artifact path must feed the presentation shadow observer with the "
-        "live surface 'card'"
-    )
-    world.k._process_structured_response(
-        "A plain answer.", turn_id="t-g", conversation_id="c1"
-    )
-    assert world.observed == ["card", "plain"]
 
 
 # ── (h) a new version of an artifact keeps its card ──────────────────────────

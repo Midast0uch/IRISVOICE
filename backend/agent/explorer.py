@@ -162,7 +162,7 @@ WEB_INTENT_CONSUMER = "web_intent"
 # had its criteria registered and a live call site but NO row path at all: the
 # engine scored every web goal and nothing was ever written, so the consumer
 # could never accumulate the evidence a Wave 7 flip requires. Same convention as
-# surface_shadow.set_row_sink. None = log only, never silently dropped.
+# monitor_shadow.set_row_sink. None = log only, never silently dropped.
 _ROW_SINK: Optional[Callable[[dict], None]] = None
 
 
@@ -321,7 +321,7 @@ def register_web_intent_consumer() -> bool:
 # Sentinel: adopt the module-level engine singleton. `engine=None` means NO
 # ENGINE (fail-safe) and never "resolve the singleton" — a shadow scorer must
 # not silently load the model. A CALLER that wants the engine passes this
-# explicitly. Same convention as surface_shadow.AUTO_ENGINE (2026-09-27): the
+# explicitly. Same convention as monitor_shadow.AUTO_ENGINE (2026-09-27): the
 # kernel's web-intent check passed no engine at all, so `_engine_web_intent`
 # returned None on every call, the consumer wrote no row, and it could never
 # reach the Wave 7 bar however much traffic ran.

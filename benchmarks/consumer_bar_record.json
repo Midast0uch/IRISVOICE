@@ -16,42 +16,6 @@
     "rows": 2570,
     "status": "enforced"
   },
-  "depth_met": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|8e96c5b6695e",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "8e96c5b6695e",
-      "criteria_version": "depth_met/v4",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "depth_met",
-    "ece": null,
-    "gap": "no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows",
-    "precision": 0.0,
-    "rows": 200,
-    "status": "shadow"
-  },
-  "depth_route": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|58d8f70e83ed",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "58d8f70e83ed",
-      "criteria_version": "depth_route/v3",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "depth_route",
-    "ece": null,
-    "gap": "oof AUROC 0.5292 < 0.65 (confidence does not rank errors)",
-    "precision": 0.0,
-    "rows": 334,
-    "status": "shadow"
-  },
   "done": {
     "config": {
       "backend_id": "d1-2b-q4_k_m+systemone|systemone|476a1e03c9bc",
@@ -206,60 +170,6 @@
     "rows": 1,
     "status": "shadow"
   },
-  "narration": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|e656d2ba2574",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "e656d2ba2574",
-      "criteria_version": "narration/shape-v2",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "narration",
-    "ece": 0.1153,
-    "gap": "does not beat a trivial rule (accuracy: model 0.6028, rule 0.8114 from the input key alone)",
-    "precision": 0.8982,
-    "rows": 1002,
-    "status": "shadow"
-  },
-  "needs_action": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|b6d225dbcc4b",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "b6d225dbcc4b",
-      "criteria_version": "needs_action/v7",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "needs_action",
-    "ece": null,
-    "gap": "enforcement bar unmet (no calibrated threshold gives precision >= 0.90 (Wilson LB >= 0.85) on >= 50 distinct rows); rung live",
-    "precision": 0.0,
-    "rows": 3570,
-    "status": "sampled"
-  },
-  "presentation": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|e8d3dd1eaf58",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "e8d3dd1eaf58",
-      "criteria_version": "presentation/shape-v2",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "presentation",
-    "ece": 0.3342,
-    "gap": "does not beat a trivial rule (accuracy: model 0.4862, rule 0.9877 from the input key alone)",
-    "precision": 0.9215,
-    "rows": 652,
-    "status": "shadow"
-  },
   "recovery_strategy": {
     "config": {
       "backend_id": "d1-2b-q4_k_m+systemone|systemone|542a7577a71f",
@@ -276,24 +186,6 @@
     "precision": 0.0,
     "rows": 0,
     "status": "shadow"
-  },
-  "review_verdict": {
-    "config": {
-      "backend_id": "d1-2b-q4_k_m+systemone|systemone|3368a26b3a9f",
-      "backend_identity_source": "declared d1 variant",
-      "calibrated_cap": 32,
-      "candidate_cap": 32,
-      "criteria_hash": "3368a26b3a9f",
-      "criteria_version": "review_verdict/v11",
-      "engine_id": "d1-2b-q4_k_m+systemone",
-      "readout_mode": "systemone"
-    },
-    "consumer_id": "review_verdict",
-    "ece": null,
-    "gap": "enforcement bar unmet (oof AUROC 0.492 < 0.65 (confidence does not rank errors)); rung live",
-    "precision": 0.0,
-    "rows": 598,
-    "status": "sampled"
   },
   "route_v2": {
     "config": {

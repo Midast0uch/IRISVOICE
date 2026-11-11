@@ -19,8 +19,9 @@ from backend.agent import decision_engine as de
 def test_every_declared_consumer_has_a_job():
     unassigned = [c for c in de.CONSUMERS if de.oracle_job(c).name == "general"]
     assert not unassigned, f"consumers with no job (no input recipe): {unassigned}"
+    # (depth_route left this list 2026-11-10: retired)
     for c in ("click_safety", "user_feedback", "event_family", "event_type:memory",
-              "depth_route", "call_closing"):
+              "call_closing"):
         assert de.oracle_job(c).name != "general", c
 
 
@@ -38,15 +39,18 @@ def test_budgets_respect_the_owner_maximum():
 
 
 def test_reference_fields_never_reach_the_model():
+    # 2026-11-10: the subject was depth_route (retired) with its coverage /
+    # open_facts fields, which left the route job with it; route_v2 is a
+    # route consumer too, and done_when / last_result are route fields.
     frame = {"goal": "fix the parser", "incumbent_route": "finalize",
-             "brain_choice": "finalize", "brain_bool": True, "coverage": 0.5,
-             "open_facts": ["tests pass"]}
-    state = de.job_input("depth_route", frame)
+             "brain_choice": "finalize", "brain_bool": True,
+             "done_when": "tests pass", "last_result": "2 failed"}
+    state = de.job_input("route_v2", frame)
     text = state.text
     for leaked in ("finalize", "brain_", "incumbent", "True"):
         assert leaked not in text, f"the reference leaked into the input: {leaked}"
-    # ...while the route's own state now DOES reach it (it was dropped before).
-    assert "coverage: 0.50" in text and "tests pass" in text and "fix the parser" in text
+    # ...while the route's own state DOES reach it (it was dropped before).
+    assert "done_when: tests pass" in text and "2 failed" in text and "fix the parser" in text
 
 
 def test_goal_only_frame_renders_unchanged():
@@ -72,9 +76,10 @@ def test_job_input_returns_a_structured_state_with_the_job_attached():
     # `calls_this_step` sit between goal and last_result (the cap trims the
     # long result snippet, never the step's own history).
     # + `step_facts` (2026-10-11, tc-frame-v7): the read/edit/write/run facts.
-    assert state.fields[:9] == (
-        "coverage", "open_facts", "depth_met", "grade", "goal",
-        "done_when", "calls_this_step", "step_facts", "last_result")
+    # - `coverage`, `open_facts`, `depth_met`, `grade` (2026-11-10): they led
+    # the tuple for depth_route only, and left with it (retired).
+    assert state.fields[:5] == (
+        "goal", "done_when", "calls_this_step", "step_facts", "last_result")
     assert state.budget_ids == de.ORACLE_JOBS["route"].budget_ids
     assert state.images == ()
 
@@ -148,13 +153,15 @@ def test_shadow_scores_off_the_caller_and_keeps_the_reference(monkeypatch):
     # SUBJECT SWITCH (2026-10-10, stale-by-spec): the subject was `mode` until
     # the owner removed that consumer; `narration` is a surviving declared
     # choice consumer. The mechanics under test are unchanged.
-    ok = eng.shadow("narration", ["speak_all", "stay_silent"],
+    # SUBJECT SWITCH (2026-11-10): `narration` was retired; `route_v2` (a
+    # surviving declared choice consumer, also shadowed) takes its place.
+    ok = eng.shadow("route_v2", ["direct", "der"],
                     {"goal": "build a parser"},
                     sink=lambda r: (rows.append(r), landed.set()),
-                    reference={"brain_choice": "stay_silent"})
+                    reference={"brain_choice": "der"})
     assert ok and not rows, "the caller must not wait for the score"
     release.set()
     assert landed.wait(5)
     row = rows[0]
-    assert row["job"] == "shape" and row["brain_choice"] == "stay_silent"
-    assert row["shadow"] is True and row["chosen"] == "speak_all"
+    assert row["job"] == "route" and row["brain_choice"] == "der"
+    assert row["shadow"] is True and row["chosen"] == "direct"

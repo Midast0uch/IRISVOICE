@@ -10,7 +10,7 @@ tool_choice conclusion (0.632 -> 0.7986) needs re-checking.
 This asks the SAME recorded state twice and compares.
 
 Usage:
-    python scripts/replay_determinism.py --consumer review_verdict --n 20
+    python scripts/replay_determinism.py --consumer tool_choice --n 20
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from replay_consumer import load_rows  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--consumer", default="review_verdict")
+    ap.add_argument("--consumer", default="tool_choice")
     ap.add_argument("--engine", default="")
     ap.add_argument("--stamps", default="")
     ap.add_argument("--n", type=int, default=20)

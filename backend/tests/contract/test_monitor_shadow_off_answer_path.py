@@ -95,53 +95,8 @@ def test_kernel_turn_end_monitors_defer():
 # at 512 ids (done p50 2.3 s, max 4.3 s) instead of a ~200-token statement.
 
 
-class _SlowDecider:
-    def __init__(self):
-        self.release = threading.Event()
-
-    def decide(self, consumer_id, options, frame):
-        assert self.release.wait(5), "test engine never released"
-        from backend.agent.decision_engine import CandidateScore, DecisionScore
-
-        return DecisionScore(
-            consumer_id=consumer_id, chosen=options[0], confidence=0.9,
-            distribution=tuple(CandidateScore(o, -0.1, 0.5) for o in options),
-            engine_latency_ms=1,
-        )
-
-
-def test_review_verdict_scores_off_the_step_path():
-    """INPUT CHANGED 2026-11-05 (called out per the test rule). The setup used
-    to pass an EMPTY completed_steps list, which was fine while a plan line
-    alone still produced a frame. Since the v11 frame fix
-    (_review_frame_evidence now returns None when there is no EVIDENCE), that
-    setup produces no row at all - correctly, because an evidence-free frame
-    is what made the v10 cohort's confidence bands invert.
-
-    The test's claim is unchanged and still what it says: the score runs OFF
-    the step path. Only the input moved: one completed step now supplies the
-    evidence the frame requires. The load it drives (a slow decider that
-    blocks until released, proving the caller does not wait) is identical."""
-    from types import SimpleNamespace
-
-    from backend.agent.der_loop import Reviewer, ReviewVerdict
-
-    eng = _SlowDecider()
-    rows, landed = [], threading.Event()
-    rv = Reviewer(adapter=None, memory_interface=None)
-    rv.set_review_engine(eng)
-    rv.set_shadow_sink(lambda r: (rows.append(r), landed.set()))
-    item = SimpleNamespace(description="edit utils.py", objective_anchor="fix bug")
-    done = SimpleNamespace(
-        envelope=SimpleNamespace(line=lambda: "success, matched - proceed"),
-        result="patched utils.py",
-    )
-    assert rv._shadow_review_verdict(item, [done], ReviewVerdict.PASS) is None
-    assert not rows, "the step must not wait for the score"
-    eng.release.set()
-    assert landed.wait(5)
-    assert rows[0]["consumer_id"] == "review_verdict"
-    assert rows[0]["brain_choice"] == ReviewVerdict.PASS.value
+# test_review_verdict_scores_off_the_step_path REMOVED 2026-11-10 (owner):
+# review_verdict is retired; the Reviewer scores nothing.
 
 
 def test_kernel_wires_off_path_shadows():
@@ -151,11 +106,10 @@ def test_kernel_wires_off_path_shadows():
         n.func.attr: n for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
     }
-    assert "set_shadow_sink" in attrs, "review_verdict is back on the step path"
-    dr = attrs.get("depth_route")
-    assert dr is not None and any(
-        k.arg == "async_" and isinstance(k.value, ast.Constant) and k.value.value is True
-        for k in dr.keywords), "depth_route is back on the continuation path"
+    # (2026-11-10: the review_verdict and depth_route halves went with the
+    # retired consumers - neither is consulted at all now; see
+    # test_six_consumers_retired_contract.)
+    assert "set_shadow_sink" not in attrs and "depth_route" not in attrs
     for c in ast.walk(tree):
         if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
                 and c.func.attr == "monitor_bool"):

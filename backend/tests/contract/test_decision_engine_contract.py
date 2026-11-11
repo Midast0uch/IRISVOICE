@@ -157,14 +157,15 @@ class TestCtDe1Shapes:
         # REQ-29's four surface consumers (T46–T49). `tier0_classify` stays
         # OUT: a recorded non-fit (AC29.5).
         assert CONSUMERS == (
-            "tool_choice", "presentation", "narration", "recovery_strategy",
-            "review_verdict", "sufficient", "done",
+            "tool_choice", "recovery_strategy",
+            "sufficient", "done",
             "web_intent",
             # `escalate_incomplete` REMOVED 2026-11-09 (owner retirement;
             # test_escalate_incomplete_retired_contract pins the removal).
-            "needs_action",
-            "depth_met",
-            "depth_route", "call_closing",
+            # presentation, narration, review_verdict, needs_action,
+            # depth_met, depth_route REMOVED 2026-11-10 (owner retirement;
+            # test_six_consumers_retired_contract pins the removal).
+            "call_closing",
             "tool_approval",
             "route_v2",
         )

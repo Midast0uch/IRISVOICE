@@ -7,13 +7,16 @@ behave exactly as today.
 This is the regression guard for the whole wave: the four sites are shadow
 observers, so a dead engine must leave every decision byte-identical. The
 comparison is made against the SAME call with no engine argument at all.
+
+2026-11-10 (owner): the surface consumers are all retired, and with them the
+`surface_bool` helper sites 3 and 4 ran through (and its row sink). The two
+helper tests went with it; the incumbent sites below are unchanged.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from backend.agent import surface_shadow as ss
 from backend.agent.agent_kernel import AgentKernel
 from backend.agent.tool_decision import _goal_needs_action
 
@@ -27,14 +30,6 @@ def dead_engine(monkeypatch):
     monkeypatch.setattr(
         "backend.agent.decision_engine.get_decision_engine", _dead)
     return _dead
-
-
-@pytest.fixture
-def rows():
-    captured: list = []
-    ss.set_row_sink(captured.append)
-    yield captured
-    ss.set_row_sink(None)
 
 
 def _kernel(style="balanced"):
@@ -62,7 +57,7 @@ _THINKING = [
 
 
 class TestAllFourSitesUnchangedWhenDead:
-    def test_all_four_sites_unchanged_when_dead(self, dead_engine, rows):
+    def test_all_four_sites_unchanged_when_dead(self, dead_engine):
         """AC29.7: all four sites return the legacy verdict with no engine."""
         # ── site 1: needs_action (the NONE gate) ───────────────────────────
         # The documented lexical answers, unchanged by a dead engine.
@@ -78,43 +73,3 @@ class TestAllFourSitesUnchangedWhenDead:
         assert k._needs_thinking(
             "why does the sky look blue during the day") is True
         assert k._needs_thinking("what time is it") is False
-
-        # ── sites 3 & 4: the surface_bool consumers ────────────────────────
-        # With no engine the legacy decider's value passes through untouched.
-        # (`has_gaps` and `escalate_incomplete` are retired; the helper still
-        # passes ANY consumer id through, so the retired ids remain valid inputs.)
-        for cid in ("needs_action", "has_gaps"):
-            for legacy in (True, False):
-                value, row = ss.surface_bool(
-                    cid, "some step result",
-                    brain_bool_fn=lambda v=legacy: v,
-                    engine=ss.AUTO_ENGINE,
-                )
-                assert value is legacy, (cid, legacy)
-                assert row is None, (
-                    f"{cid} fabricated a row with no engine — a shadow must "
-                    "never invent data"
-                )
-
-        assert rows == [], (
-            "a dead engine emitted shadow rows — the sites are not inert "
-            "(AC29.7)"
-        )
-
-    def test_every_site_is_opt_in_on_the_engine(self, dead_engine):
-        """`engine=None` means NO ENGINE: the shadow must not adopt the
-        singleton implicitly, or a unit test would load a 642MB model."""
-        for cid in ("has_gaps", "needs_action"):
-            assert ss.score_surface_bool(cid, "x", engine=None) is None, cid
-
-    def test_the_surface_bool_helper_is_fail_safe(self, dead_engine):
-        """A raising legacy decider returns the conservative False, not an
-        exception — these run on the reply and step paths."""
-        def _boom():
-            raise ValueError("decider exploded")
-
-        for cid in ("has_gaps", "needs_action"):
-            value, row = ss.surface_bool(
-                cid, "x", brain_bool_fn=_boom, engine=ss.AUTO_ENGINE)
-            assert value is False
-            assert row is None

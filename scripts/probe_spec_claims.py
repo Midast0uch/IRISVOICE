@@ -115,7 +115,7 @@ def p1_stability(repeats: int = 5) -> int:
     print("=" * 72)
     from backend.agent.decision_engine import get_consumer_spec
     probes: List[Tuple[str, str, Dict[str, str]]] = []
-    for cid in ("tool_choice", "review_verdict", "done", "click_safety"):
+    for cid in ("tool_choice", "done", "click_safety"):
         spec = None
         try:
             spec = get_consumer_spec(cid)
@@ -128,10 +128,6 @@ def p1_stability(repeats: int = 5) -> int:
         elif cid == "click_safety":
             crit = {"yes": "Safe to take without asking",
                     "no": "Needs the user to approve first"}
-        elif cid == "review_verdict":
-            crit = {"pass": "The step did its part",
-                    "refine": "The step is vague or incomplete",
-                    "veto": "The step must not run"}
         else:
             crit = {"yes": "Proceed with this tool",
                     "no": "Prefer a different action"}
@@ -224,7 +220,7 @@ def p2_label_join() -> int:
     print("  A consumer is JOINABLE if some of its rows are DISPATCHED (a real")
     print("  action ran and its result exists). Only dispatched rows carry truth;")
     print("  shadow rows carry the incumbent's answer.")
-    for cid in ("tool_choice", "review_verdict", "depth_route", "narration"):
+    for cid in ("tool_choice", "route_v2", "recovery_strategy"):
         n = consumers.get(cid, 0)
         print(f"    {cid:<16} rows={n:<5} joinable: "
               f"{'YES' if n else 'NO ROWS AT ALL'}")

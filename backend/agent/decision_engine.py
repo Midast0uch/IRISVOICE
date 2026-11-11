@@ -24,7 +24,7 @@ never spawns a process. Its only job: score a caller-provided option set
 against a caller-provided feature frame and return a probability distribution,
 one question per run, answered by the model's native Decision Index API with
 zero generated tokens (oracle.md §3.4).
-Consumers: `tool_choice` (Wave 2), `presentation` and `narration` (Wave 4).
+Consumers: `tool_choice` (Wave 2) and the others in CONSUMERS below.
 
 Two primitives, both return DecisionScore/ArgsResult or None (None = degrade
 to legacy path):
@@ -70,16 +70,29 @@ ENGINE_NAME = "Oracle"
 
 CONSUMERS: Tuple[str, ...] = (
     "tool_choice",
-    "presentation",
-    "narration",
+    # SIX CONSUMERS RETIRED 2026-11-10 (owner: "you can retire the jobs you
+    # recommended ... remove the technical debt"). Measured on each live stamp,
+    # engine d1-2b-q4_k_m+systemone; in every case the INCUMBENT already
+    # decided and keeps deciding, unchanged:
+    #   narration (shape-v3)   loses to its rule: accuracy 0.820 vs 0.872;
+    #                          the planner's duration gate decides.
+    #   presentation (shape-v3) loses 0.378 vs 0.937, and spec AC23.6 bars the
+    #                          only extra input (the reply text); the reply
+    #                          surface rules decide.
+    #   review_verdict (v13)   OOF AUROC 0.483, no step-level truth; the
+    #                          Reviewer (heuristic / Brain) decides.
+    #   depth_route (v3)       AUROC 0.543; the continuation branches decide.
+    #   needs_action (v7)      no threshold reaches precision 0.90 (label True
+    #                          on 96% of rows); the node mode rule and the
+    #                          lexical NONE guard decide.
+    #   depth_met (v4)         AUROC 0.591; the loop's run grade decides.
+    # Their jobs `shape`, `judge_review`, `judge_depth` and `interpret_step`
+    # went with them (no other consumer used them). The ledger's historical
+    # rows stay (declared_only drops them from every report).
+    # Guard: contract/test_six_consumers_retired_contract.py.
     # REQ-11 AC11.3 (T15): the graft-recovery triage consumer. Consulted BEFORE
     # Brain planning spend — the Brain plans only on DELEGATE / below threshold.
-    # REQ-13 AC13.1 (T17): the per-step Reviewer verdict consumer, SHADOW only
-    # (the Brain verdict still decides until AC13.3's measured bar is met).
-    # NOTE: this grows the pinned consumer set; the two CT-DE-7 enumerations
-    # were updated as a STALE-BY-SPEC change (the spec mandates the consumers).
     "recovery_strategy",
-    "review_verdict",
     # REQ-14 AC14.1 (T18): the three loop-monitor bool consumers, answered with
     # a `Noul` (P(statement true)) rather than a two-option Choice (AC14.6).
     "sufficient",
@@ -120,26 +133,6 @@ CONSUMERS: Tuple[str, ...] = (
     # incomplete-result keyword list in der_loop is UNTOUCHED; only the Oracle
     # consult is gone. The pinned enumerations are updated in the SAME change;
     # the ledger's historical rows stay (retired, never blended back).
-    "needs_action",
-    # Session 364 (owner request): the DEPTH question, asked against the task's
-    # SUCCESS CRITERIA rather than against coverage alone. The complaint it
-    # exists to measure and then fix: the Brain "settles for half work" - the
-    # loop declares a task complete while required facts are still open, or the
-    # result is only superficially complete. `sufficient` and `done` ask whether
-    # the objective is COVERED; this asks whether it is done to the DEPTH the
-    # criteria demand. Shape: a Noul (a calibrated probability), like the other
-    # monitors (AC14.6). Reference: the loop's OWN run grade, so the parity row
-    # measures exactly how often a "complete" verdict failed the depth bar.
-    # NOTE: this grows the pinned consumer set; the CT-DE-7 enumerations and the
-    # surface-observer tests are updated in the SAME change.
-    "depth_met",
-    # REQ-4/T1.9 (specs/oracle-native-decision-surface): `depth_route` HAS live
-    # call sites (`_der_note_depth_route` at five kernel sites plus the writer in
-    # tool_decision.depth_route) but was NOT in CONSUMERS, so its rows were never
-    # reported and it could never be calibrated. It is producing data nobody
-    # counts. Registered here as a declared consumer (AC9.1 sanctioned exception
-    # 2); the CT-DE-7 enumerations are updated in the same change.
-    "depth_route",
     # REQ-10/T1.10: `call_closing` - "is this the closing call of this step?".
     # It does NOT reuse `done` (which asks whether the TASK is finished at the
     # turn layer). The name is a SAFETY REQUIREMENT: never a loop-control verb,
@@ -229,17 +222,8 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # pairs: capped 0.8864 vs uncapped 0.9318.
     OracleJob("interpret_web", "what does the user's message mean?",
               ("goal",), 128),
-    # `interpret_step` (2026-10-19) is needs_action's OWN job. It used to
-    # share click_safety's `guard` job (goal only, 128 ids, plus an image
-    # field it never sends). MEASURED on 294 real goal+outcome pairs: the
-    # goal ALONE leaves a write/edit step ambiguous - "Write the slugify
-    # function to textutils.py" read as an ANSWER at p=0.11 - and the
-    # step's EXPECTED OUTPUT resolves it (the same four hard goals moved to
-    # "yes" at 0.77-0.86). 160 ids (640 chars) holds the longest measured
-    # goal (347) plus a typical expected-output line.
-    OracleJob("interpret_step",
-              "will this step act on the project or answer from what is known?",
-              ("goal", "expected"), 160),
+    # `interpret_step` (needs_action's own job) REMOVED 2026-11-10 with its
+    # only consumer (retired; see CONSUMERS).
     OracleJob("route", "which of these next actions? (the menu carries the content)",
               # `last_result` (2026-10-10): the previous step's result snippet.
               # MEASURED ROOT CAUSE of tool_choice's 45% parity accuracy: the
@@ -285,12 +269,15 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               # read/changed it, plus the last command's result: the facts
               # that decide read vs edit vs write vs run (node_executor.
               # step_facts). Before last_result, so the cap never cuts them.
-              ("coverage", "open_facts", "depth_met", "grade", "goal",
+              # 2026-11-10: `coverage`, `open_facts`, `depth_met`, `grade` and
+              # `pushes_used` REMOVED with depth_route (retired), the only
+              # route consumer whose frame carried them. An absent key renders
+              # as nothing, so the other route consumers' input is unchanged.
+              ("goal",
                "done_when", "calls_this_step", "step_facts",
                "last_result", "task_class", "previous_chosen",
                "previous_outcome", "step_index", "needs_vision",
-               "vision_candidates", "ruled_out", "error_snippet",
-               "pushes_used"), 384),
+               "vision_candidates", "ruled_out", "error_snippet"), 384),
     # tool_approval (2026-10-10, pin_1fb3ce63bb3b): the binary
     # outcome-referenced approval question. A NEW job, not an extension of
     # `route` — route's cohorts must not re-stamp. The state carries the
@@ -327,72 +314,15 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
               # Budget 64 -> 128 (2026-10-11): click_safety's statement is
               # "action | task: goal[:300]" (~400 chars); at 64 ids (256 chars)
               # the cap cut the task and, before v2's action-first order, the
-              # action itself. The cap is a ceiling for the other guard
-              # consumer (needs_action), not a floor.
+              # action itself.
               ("goal",), 128, image_fields=("screenshot",)),
     # `judge_step` (96 ids, goal only) REMOVED 2026-11-09 with its only
     # consumer, escalate_incomplete (retired; see CONSUMERS).
-    # review_verdict gets its OWN job (2026-10-16). It shared `judge_step` with
-    # the then-enforced `escalate_incomplete`, and `judge_step`'s 96-id budget is 384
-    # chars — but review_verdict's frame (der_loop._shadow_review_verdict) is
-    # STEP[:300] + OBJECTIVE[:200] + "RECENT RESULTS: <3 x result[:120]>", which
-    # its call site caps at 800. The backend cap trims from the END, so RECENT
-    # RESULTS — the completed steps' own results, the evidence the question
-    # ("did this step do its part?") is about — were cut on every row.
-    # A SEPARATE job rather than a raise of `judge_step`: the budget is not part
-    # of the identity hash, but escalate_incomplete then ACTED on its threshold and
-    # must keep its own input untouched. The job IS part of the identity, so the
-    # new cohort separates from the old judge_step rows.
-    # Budget 288 = 1152 chars (2026-10-17, v3 frame): the v3 evidence is 3
-    # envelope lines (each head+tail capped at 200 — the outcome of a tool run
-    # lives at the TAIL of its output, so a head-only cut throws the signal
-    # away; measured: raw result[:120] evidence -> constant verdict, oof AUROC
-    # 0.5113; envelope evidence -> replay AUROC 1.0000). 3 x 200 + STEP[:300] +
-    # TOOL + OBJECTIVE[:200] is ~1150 chars; at the old 200-id/800-char budget
-    # the cap cut the OBJECTIVE — the bar the review rubric judges against.
-    # RAISED to 384 = 1536 chars (2026-11-06, review_verdict/v13): the frame
-    # now carries ACTION + SUCCESS CRITERION before the evidence, so 288 would
-    # cut the evidence - the proven signal - from the end. The frame RESERVES
-    # the evidence and gives the header only the remainder, so this is headroom
-    # for the header, never a cut of the evidence. 384 stays the owner ceiling
-    # (test_oracle_jobs_contract).
-    OracleJob("judge_review", "did this step do its part?",
-              ("goal",), 384),
+    # `judge_review` (review_verdict), `judge_depth` (depth_met) and `shape`
+    # (presentation + narration) REMOVED 2026-11-10 with their only consumers
+    # (retired; see CONSUMERS).
     OracleJob("judge_goal", "is the objective met, deep and sufficient?",
               ("goal", "open_facts", "evidence"), 128),
-    # depth_met gets its OWN job (2026-10-17, oracle.md 7.5: "Give the
-    # judge_goal frame the evidence first and the coverage number, and keep
-    # grade out"). It shared `judge_goal` with `done`/`sufficient`, whose
-    # frames differ; judge_goal's 128-id budget (512 chars) cut depth_met's
-    # EVIDENCE - the work product the depth question is about - to almost
-    # nothing, and its field order rendered the criteria first. The v3 frame
-    # (agent_kernel's grade block) is evidence[:1000] + coverage + open_facts
-    # + goal(criteria) ~= 1500 chars = 384 ids, the owner ceiling; the field
-    # order IS the render order (job_input), so evidence renders first and
-    # only a max-length frame can clip the criteria. `grade` is deliberately
-    # NOT a field: it is the incumbent reference and must stay out of the
-    # input. A separate job rather than a judge_goal change: done/sufficient
-    # keep their own input, and the job IS part of the identity, so the
-    # depth_met/v3 cohort separates from the v2 rows.
-    OracleJob("judge_depth", "is the objective met, deep and sufficient?",
-              ("evidence", "coverage", "open_facts", "goal"), 384),
-    # FRAME/JOB MISMATCH FIX (2026-10-10): the shape job declared ONLY `goal`,
-    # but its consumers' frames carry OTHER keys — the renderer drops every
-    # undeclared key, so `presentation` (whose frame has NO goal at all)
-    # rendered an EMPTY state: d1 answered with zero evidence (measured 0/5
-    # parity). `narration`'s frame carried beats_authored/beats_admitted — the
-    # numbers that literally determine its reference (speak_all iff beats) —
-    # and d1 never saw them. The job's fields are now the UNION of what its
-    # consumers' frames carry; the renderer skips absent keys, so each consumer
-    # renders what it has (a frame holding only goal renders as before).
-    # Budget 96 -> 128: narration renders goal[:300] plus four short fields.
-    # 2026-11-10: `card_already_rendered` (presentation) and `beats_admitted`
-    # (narration) REMOVED - each IS its consumer's reference, so reading it
-    # measured copying (oracle.md 8.2).
-    OracleJob("shape", "how should this answer be delivered?",
-              ("goal", "content_chars", "has_structure", "zone", "mode",
-               "steps", "beats_authored", "multi_segment"),
-              128),
     OracleJob("classify_event", "which event family/type is this?",
               ("goal",), 64),
     # REQ-10 (AC10.3/AC10.7): `call_closing`'s own job. The state carries the
@@ -416,20 +346,15 @@ CONSUMER_JOBS: Dict[str, str] = {
     # T1.8 (AC9.1 sanctioned exception 1): `browser_next` and `web_depth` had job
     # assignments and NO call site anywhere in the backend - the same class as
     # `on_track` and `retry_same`, both deleted for exactly that reason. 19 -> 17.
-    "depth_route": "route",
     # browser_next RETURNS (2026-10-11) with a real call site: the node loop's
     # browser_act hook (browser_next_shadow). Same route fields: goal,
     # done_when, calls_this_step and the page head as last_result; the element
     # labels ride the option lines.
     "browser_next": "route",
     "click_safety": "guard",
-    # Its own job since v4: the step's EXPECTED OUTPUT is part of the frame.
-    "needs_action": "interpret_step",
-    "review_verdict": "judge_review",
     # REQ-10: the per-call closing question has its own job (AC10.7).
     "call_closing": "judge_call",
-    "done": "judge_goal", "depth_met": "judge_depth", "sufficient": "judge_goal",
-    "presentation": "shape", "narration": "shape",
+    "done": "judge_goal", "sufficient": "judge_goal",
     "event_family": "classify_event",
 }
 
@@ -509,46 +434,13 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
         "escalate": "Give up on this approach and make a new plan",
         "DELEGATE": "Not sure - let the planner decide",
     }),
-    "presentation": ConsumerDeclaration("choice", {
-        "plain_text": "Answer in prose only, with no rendered card",
-        "prism_card": "Render a prism card carrying the structured result",
-        "card_plus_summary": "Render a card and a short prose summary beside it",
-    }),
-    "narration": ConsumerDeclaration("choice", {
-        "speak_all": "Speak every beat of the plan aloud",
-        "speak_first_only": "Speak only the first beat, then stay quiet",
-        "stay_silent": "Speak nothing for this plan",
-    }),
-    # REQ-13/T4.3 (B3): the QUALITY bar belongs in the REVIEWER's PROMPT
-    # (der_loop.Reviewer.REVIEW_INSTRUCTION - the incumbent passed 96% of
-    # the time without it), not in the Oracle's option text.
-    #
-    # MEASURED 2026-11-04 (replay of 600 recorded review_verdict states on
-    # the active engine, the bar's own OUTCOME label):
-    #   the descriptions below -> AUROC 0.4016 (INVERTED: the wrong rows
-    #     score higher; 412 of 416 disagreements were refine-vs-pass, so the
-    #     wording "vague, incomplete or uses the wrong tool" fires on every
-    #     plain read or add step);
-    #   the BARE NAMES -> AUROC 0.7967, with perfectly monotonic bands
-    #     (0.547 / 0.874 / 1.000 / 1.000 / 1.000).
-    # The same lesson as the tool_choice control labels (oracle.md 7.2b):
-    # option text that invites an answer makes the confidence rank the
-    # errors backwards. The instruction carries the semantics; the option
-    # text must not argue for a verdict.
-    "review_verdict": ConsumerDeclaration("choice", {}),
-    # `mode` REMOVED 2026-10-10 (owner): see the CONSUMERS tuple. A consumer
-    # absent from this table registers UNDECLARED and the engine REFUSES to
-    # score it (AC1.6) - the removal is fail-closed by construction.
-    "depth_route": ConsumerDeclaration("choice", {
-        "cover_open_fact": "Cover a required fact that is still open",
-        "bonus_ceiling": "Run the bounded bonus pass over the ceiling facts",
-        "deepen": "Push for more depth - the work is only superficially complete",
-        "next_step": "Pursue the next step the Brain named",
-        "finalize": "Finalize and answer",
-        "DELEGATE": "Below the Oracle's pay grade - hand back to the incumbent",
-    }),
+    # `mode` REMOVED 2026-10-10 (owner) and presentation, narration,
+    # review_verdict, depth_route, depth_met, needs_action REMOVED 2026-11-10
+    # (owner): see the CONSUMERS tuple. A consumer absent from this table
+    # registers UNDECLARED and the engine REFUSES to score it (AC1.6) - the
+    # removal is fail-closed by construction.
     # ── noul: a statement answered with P(true) ─────────────────────────────
-    # `sufficient`/`done`/`depth_met` are documented noul (oracle.md AC14.6),
+    # `sufficient`/`done` are documented noul (oracle.md AC14.6),
     # and d1 was TRAINED on yes/no questions in this shape (V1 probe:
     # 98.8%/96.5% polarity-correct).
     "done": ConsumerDeclaration("noul", {
@@ -558,17 +450,6 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
     "sufficient": ConsumerDeclaration("noul", {
         "true": "The objective is covered by the work done so far",
         "false": "The objective is not yet covered",
-    }),
-    "depth_met": ConsumerDeclaration("noul", {
-        "true": "Done to the depth the success criteria require",
-        "false": "Only superficially complete",
-    }),
-    # 2026-10-13 replay on real d1, 16 hand-labelled step goals: "requires
-    # calling a tool" 11/16 (it said NO to opening a URL, editing a file,
-    # listing a folder, saving a file); naming the tools 16/16.
-    "needs_action": ConsumerDeclaration("noul", {
-        "true": "Yes: it needs the browser, a file, a search or a command",
-        "false": "No: it only writes or reasons about information that is already available",
     }),
     "web_intent": ConsumerDeclaration("noul", {
         "true": "This request requires fetching information from the web",
@@ -729,14 +610,6 @@ CONSUMER_TASKS: Dict[str, ConsumerSpec] = {
 # way; the bar then decides whether it deserves a better question. Deliberately
 # generic: an honest vague question beats no measurement, and an uncalibrated
 # consumer can never enforce.
-# The narration consumer's question, registered by the kernel at its site and
-# read by the offline replay (scripts/replay_consumer.live_instruction), so the
-# replay asks the live question (2026-11-10: without it 27/40 picks reproduced).
-NARRATION_INSTRUCTION = (
-    "How much of this plan's narration should be spoken "
-    "aloud: every beat, only the first, or nothing?"
-)
-
 AUTO_INSTRUCTION = (
     "Choose the single best option for the goal below. The options are the "
     "candidate answers to one question about the current step."
@@ -1289,10 +1162,11 @@ _ENFORCEMENT_IDENTITY: Optional[str] = None
 # this set against the source (it fails when a site is added or removed).
 # route_v2 left 2026-11-10: agent_kernel._route_v2_route acts on it (sampled
 # rung + oracle_acts) at the turn-route fork.
-NO_DECISION_SITE = frozenset({"narration", "review_verdict", "depth_route",
-                              # 2026-11-10: the safety question is shadow only
-                              # (its old reliability guard was removed)
-                              "tool_approval"})
+# narration, review_verdict and depth_route left 2026-11-10: retired.
+NO_DECISION_SITE = frozenset({
+    # 2026-11-10: the safety question is shadow only
+    # (its old reliability guard was removed)
+    "tool_approval"})
 
 
 def _log_enforcement_once() -> None:
@@ -1690,9 +1564,9 @@ def call_closing_counters() -> Dict[str, int]:
 #   Gate 1 REVERSIBILITY: a wrong answer must be cheap and reversible.
 #   Gate 2 GROUND TRUTH: an outcome signal must exist to label the row.
 # The tier table is the structural admission; `call_closing` is tier C
-# (REFUSED, never sampleable); done/sufficient/depth_met/tool_choice are
+# (REFUSED, never sampleable); done/sufficient are
 # JOIN-only (labelled by outcome, never sampled); consumers with no ground
-# truth are observation-only (mode/narration/presentation/event_*).
+# truth are observation-only (event_*).
 # tool_choice JOINS the samplable tier (owner, 2026-10-11: "the Oracle decides
 # all tools if capable - find out how"). Gate 1: a sampled pick only NARROWS the
 # tool model's menu to one tool - the model still writes the arguments, may
@@ -1702,7 +1576,7 @@ def call_closing_counters() -> Dict[str, int]:
 # list_directory / glob_files) score two of them "wrong" (replay 2026-10-11:
 # 57.8% agreement with the decision lines).
 TIER_SAMPLABLE: frozenset = frozenset({
-    "needs_action", "recovery_strategy", "tool_choice",
+    "recovery_strategy", "tool_choice",
     # 2026-11-10: the turn route; labelled by the turn verdict
     # (turn_verdict_label), since a direct turn has no DER run grade.
     "route_v2",
@@ -1714,10 +1588,10 @@ TIER_SAMPLABLE: frozenset = frozenset({
 # (refuse/veto where the incumbent allowed), never loosen. Wired at the
 # incumbent's own refuse junction.
 TIER_REFUSE_ONLY: frozenset = frozenset({
-    "click_safety", "review_verdict",
+    "click_safety",
 })
 TIER_JOIN_ONLY: frozenset = frozenset({
-    "done", "sufficient", "depth_met",
+    "done", "sufficient",
 })
 
 # AC6.4: the fraction is a NAMED CONSTANT with a stated default and a kill

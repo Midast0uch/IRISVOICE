@@ -133,7 +133,8 @@ class TestStaleRefusesEnforcement:
         needs ALL FOUR keys, so the owner switch, the earned bar and a fitted
         threshold are provided through tmp files, and the ONLY thing that varies
         between (a) and (b) is the configuration's staleness (the real check, not
-        a patched one). `has_gaps` (a removed consumer) became `depth_met`."""
+        a patched one). `has_gaps` (a removed consumer) became `depth_met`, and `depth_met`
+        (retired 2026-11-10) became `done`."""
         import json
 
         import backend.agent.decision_engine as de_mod
@@ -144,7 +145,7 @@ class TestStaleRefusesEnforcement:
         )
 
         engine_id = "gliner25-decide-onnx-int8"
-        _cons = ("tool_choice", "depth_met")
+        _cons = ("tool_choice", "done")
         (tmp_path / "bar.json").write_text(json.dumps({
             c: {"consumer_id": c, "rows": 120, "precision": 0.95, "ece": 0.01,
                 "status": "enforced", "gap": "", "config": {"backend_id": engine_id}}
@@ -158,7 +159,7 @@ class TestStaleRefusesEnforcement:
         # REQ-2 Wave 3: the identity function takes (consumer_id,
         # candidate_cap); the fake answers for ANY consumer.
         monkeypatch.setattr(de_mod, "_current_backend_identity", lambda *a, **k: engine_id)
-        monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,depth_met")
+        monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,done")
 
         # (a) calibrated configuration → enforcement proceeds.
         fresh = EngineConfig()
@@ -167,7 +168,7 @@ class TestStaleRefusesEnforcement:
             de_mod, "get_decision_engine",
             lambda: SimpleNamespace(_cfg=fresh),
         )
-        assert enforced_consumers() == frozenset({"tool_choice", "depth_met"})
+        assert enforced_consumers() == frozenset({"tool_choice", "done"})
 
         # (b) the cap MOVED → no consumer may be enforced on the old curve.
         stale = EngineConfig(candidate_cap=10)     # calibrated width is 6

@@ -79,8 +79,7 @@ def _assert_meta_shape(dec: dict) -> list[str]:
     for k in ("engine", "consumer_id", "chosen", "confidence", "route"):
         if k not in dec:
             errs.append(f"missing meta key {k}")
-    if dec.get("consumer_id") not in ("tool_choice", "presentation",
-                                      "narration"):
+    if dec.get("consumer_id") != "tool_choice":
         errs.append(f"bad consumer {dec.get('consumer_id')}")
     return errs
 

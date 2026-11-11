@@ -252,10 +252,9 @@ def may_narrate() -> bool:
     asked the Oracle "speak"/"silent" on a constant frame on the event-loop
     thread, but the narration calibration rows measure a different question
     (speak_all / speak_first_only / stay_silent, framed from the plan, scored
-    once per turn in AgentKernel._score_narration) and a calibration only
-    transfers to the SAME question. Narration also passes the bar against a
-    free deterministic reference (this timer), so the Oracle would swap a 0 ms
-    rule for a ~300 ms model. The timer gate below is the decision.
+    once per turn at plan time) and a calibration only transfers to the SAME
+    question. The `narration` consumer itself was RETIRED 2026-11-10 (it lost
+    to its rule, 0.820 vs 0.872). The timer gate below is the decision.
     """
     global _narration_gate_last
     now = time.time()

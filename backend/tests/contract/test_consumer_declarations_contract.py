@@ -42,9 +42,9 @@ def test_criteria_match_the_declared_type():
 
 
 def test_the_documented_noul_consumers_are_noul():
-    """AC4.4: `sufficient`, `done` and `depth_met` are documented noul
-    (oracle.md AC14.6)."""
-    for cid in ("sufficient", "done", "depth_met"):
+    """AC4.4: `sufficient` and `done` are documented noul (oracle.md AC14.6).
+    (`depth_met` was the third; retired 2026-11-10.)"""
+    for cid in ("sufficient", "done"):
         assert de.declared_type(cid) == "noul", cid
 
 
@@ -58,23 +58,8 @@ def test_click_safety_is_declared_from_the_code_not_the_prose():
     assert set(de.CONSUMER_DECLARATIONS["click_safety"].criteria) == set(LABELS)
 
 
-def test_review_verdict_carries_the_quality_bar():
-    """T4.3/B3: the incumbent said pass 96% of the time because the question was
-    under-specified. `refine` and `veto` must be reachable, not only `pass`.
-
-    SUPERSEDED 2026-11-04 (measured, see decision_engine.CONSUMER_DECLARATIONS):
-    the quality bar in the OPTION TEXT inverted AUROC (0.4016 on 600 replayed
-    states; 412 of 416 disagreements were refine-vs-pass), while the BARE names
-    scored 0.7967. The bar therefore lives in the INSTRUCTION
-    (der_loop.Reviewer.REVIEW_INSTRUCTION), which is where the reviewer reads
-    it. The declaration's criteria is empty by design: option text must not
-    argue for a verdict."""
-    from backend.agent.der_loop import Reviewer
-
-    inst = Reviewer.REVIEW_INSTRUCTION.lower()
-    assert "pass" in inst and "refine" in inst and "veto" in inst
-    assert "another pass" in inst or "fall short" in inst
-    assert de.CONSUMER_DECLARATIONS["review_verdict"].criteria == {}
+# test_review_verdict_carries_the_quality_bar REMOVED 2026-11-10 (owner):
+# review_verdict is retired, with its declaration and its instruction.
 
 
 # ── AC4.3/AC4.5: the heuristic is gone, the score type exists ───────────────
@@ -161,7 +146,6 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     # `web_depth` still has none and stays removed.
     assert de.CONSUMER_JOBS["browser_next"] == "route"
     assert "web_depth" not in de.CONSUMER_JOBS
-    assert de.CONSUMER_JOBS["depth_route"] == "route"
     assert de.CONSUMER_JOBS["call_closing"] == "judge_call"
     assert de.CONSUMER_JOBS["tool_approval"] == "approve"
     # 19 - 2 dead + 1 new + 1 tool_approval - 1 mode (owner removal, 2026-10-10)
@@ -169,8 +153,13 @@ def test_dead_job_assignments_are_removed_and_the_new_ones_added():
     # - 1 use_thinking (owner removal, 2026-10-13)
     # + 1 route_v2 (2026-10-30, shadow-only memory route)
     # - 1 escalate_incomplete (owner retirement, 2026-11-09)
-    assert len(de.CONSUMER_JOBS) == 18
+    # - 6 presentation, narration, review_verdict, depth_route, needs_action,
+    #   depth_met (owner retirement, 2026-11-10)
+    assert len(de.CONSUMER_JOBS) == 12
     assert "escalate_incomplete" not in de.CONSUMER_JOBS
+    for cid in ("presentation", "narration", "review_verdict", "depth_route",
+                "needs_action", "depth_met"):
+        assert cid not in de.CONSUMER_JOBS, cid
     assert "mode" not in de.CONSUMER_JOBS
 
 
@@ -210,34 +199,19 @@ def test_oracle_jobs_gained_only_the_call_closing_job():
     # answer at p=0.11) and the step's EXPECTED OUTPUT resolves it.
     # 13, not 14 (2026-11-09): `judge_step` removed with its only consumer,
     # escalate_incomplete (owner retirement).
-    assert len(de.ORACLE_JOBS) == 13
+    # 9, not 13 (2026-11-10): `shape`, `judge_review`, `judge_depth` and
+    # `interpret_step` removed with their only consumers (owner retirement of
+    # presentation, narration, review_verdict, depth_met, needs_action).
+    assert len(de.ORACLE_JOBS) == 9
     assert "judge_step" not in de.ORACLE_JOBS
+    for job in ("shape", "judge_review", "judge_depth", "interpret_step"):
+        assert job not in de.ORACLE_JOBS, job
     assert de.ORACLE_JOBS["interpret_web"].fields == ("goal",)
     assert de.ORACLE_JOBS["interpret_web"].budget_ids == 128
     assert de.CONSUMER_JOBS["web_intent"] == "interpret_web"
-    assert de.ORACLE_JOBS["interpret_step"].fields == ("goal", "expected")
-    assert de.ORACLE_JOBS["interpret_step"].budget_ids == 160
-    assert de.CONSUMER_JOBS["needs_action"] == "interpret_step"
     assert de.CONSUMER_JOBS["user_feedback"] == "interpret"
-    assert de.ORACLE_JOBS["judge_depth"].fields == (
-        "evidence", "coverage", "open_facts", "goal")
-    assert de.ORACLE_JOBS["judge_depth"].budget_ids == 384
-    assert de.CONSUMER_JOBS["depth_met"] == "judge_depth"
     assert de.CONSUMER_JOBS["done"] == "judge_goal"
     assert de.CONSUMER_JOBS["sufficient"] == "judge_goal"
-    assert de.ORACLE_JOBS["judge_review"].fields == ("goal",)
-    # 384, not 288 (2026-11-06, review_verdict/v13). 288 was sized for the v3
-    # frame: 3 ENVELOPE lines (each head+tail capped at 200 — the outcome of a
-    # tool run lives at the TAIL of its output; measured: constant verdict,
-    # oof AUROC 0.5113 live, vs replay AUROC 1.0000 with envelope evidence)
-    # + STEP[:300] + TOOL + OBJECTIVE[:200] is ~1150 chars = 288 ids x 4.
-    # The v13 frame adds ACTION + SUCCESS CRITERION before the evidence, so at
-    # 288 the backend cap (which trims from the END) would cut the evidence.
-    # The frame now RESERVES the evidence and gives the header only the
-    # remainder, and 384 (the owner ceiling) is the header headroom. The test's
-    # purpose is unchanged: the budget fits the frame.
-    assert de.ORACLE_JOBS["judge_review"].budget_ids == 384
-    assert de.CONSUMER_JOBS["review_verdict"] == "judge_review"
     assert de.ORACLE_JOBS["judge_call"].fields == ("goal", "call", "result")
     # STALE-BY-SPEC update (2026-10-11, tool_approval/v3): `calls_this_step`
     # joins the approve job - the step's own calls were invisible (the frame
@@ -268,11 +242,14 @@ def test_consumers_grew_by_exactly_two():
     guard in node_executor). TIER_REFUSE_ONLY: it may only reject a call, and
     its correction budget bounds it."""
     assert set(de.CONSUMERS) - _PRIOR_CONSUMERS == {
-        "depth_route", "call_closing", "tool_approval", "route_v2"}
-    # owner-directed removals: `mode` (2026-10-10), `use_thinking` (2026-10-13)
-    # and `escalate_incomplete` (2026-11-09)
+        "call_closing", "tool_approval", "route_v2"}
+    # owner-directed removals: `mode` (2026-10-10), `use_thinking` (2026-10-13),
+    # `escalate_incomplete` (2026-11-09), and presentation, narration,
+    # review_verdict, needs_action, depth_met (2026-11-10; depth_route, also
+    # retired that day, was an addition, so it leaves the line above)
     assert _PRIOR_CONSUMERS - set(de.CONSUMERS) == {
-        "mode", "use_thinking", "escalate_incomplete"}
+        "mode", "use_thinking", "escalate_incomplete", "presentation",
+        "narration", "review_verdict", "needs_action", "depth_met"}
     # 2026-11-10 (owner): tool_approval now asks the SAFETY question and its
     # acting answer is "yes" (skip the prompt) - not refuse-only; its old
     # pre-call guard is removed, so it has no decision site at all.

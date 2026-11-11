@@ -117,11 +117,13 @@ def test_a_passing_consumer_shows_nine_clauses_in_order_job_and_the_owner_switch
 
 
 def test_the_jobs_of_event_type_and_unassigned_consumers(bench, client):
-    bars = {c: _bar("shadow", 5) for c in ("event_type:control", "mystery", "needs_action")}
+    # (2026-11-10: the assigned-job example was needs_action/interpret_step,
+    # retired with its job; click_safety/guard is an assigned consumer too.)
+    bars = {c: _bar("shadow", 5) for c in ("event_type:control", "mystery", "click_safety")}
     _write(bench, bars, {})
     got = _get(client)
-    assert (got["event_type:control"]["job"], got["mystery"]["job"], got["needs_action"]["job"]) == \
-           ("classify_event", "general", "interpret_step")
+    assert (got["event_type:control"]["job"], got["mystery"]["job"], got["click_safety"]["job"]) == \
+           ("classify_event", "general", "guard")
 
 
 def test_a_failing_consumer_names_the_first_missing_clause_in_words(bench, client):
@@ -172,20 +174,20 @@ def test_a_consumer_with_no_error_mass_is_waived_not_failed(bench, client):
 def test_the_acting_clause_applies_only_to_a_consumer_in_acting_enforced(bench, client):
     # the outsider was tool_approval until it joined ACTING_ENFORCED (2026-11-09);
     # web_intent is a yes/no consumer still outside the set
-    assert "needs_action" in cb.ACTING_ENFORCED and "web_intent" not in cb.ACTING_ENFORCED
-    acting = dict(acting_answer="no", acting_rows_above=17, acting_precision=0.706, acting_wilson_lb=0.49)
-    _write(bench, {"needs_action": _bar("shadow", 111), "web_intent": _bar("shadow", 111)},
-           {"needs_action": _entry(rows=111, **acting), "web_intent": _entry(rows=111, **acting)})
+    assert "tool_approval" in cb.ACTING_ENFORCED and "web_intent" not in cb.ACTING_ENFORCED
+    acting = dict(acting_answer="yes", acting_rows_above=17, acting_precision=0.706, acting_wilson_lb=0.49)
+    _write(bench, {"tool_approval": _bar("shadow", 111), "web_intent": _bar("shadow", 111)},
+           {"tool_approval": _entry(rows=111, **acting), "web_intent": _entry(rows=111, **acting)})
     got = _get(client)
-    k = _by_id(got["needs_action"]["clauses"])
+    k = _by_id(got["tool_approval"]["clauses"])
     assert (k["acting"]["met"], k["acting"]["value"], k["acting"]["need"]) == (False, 0.706, cb.MIN_PRECISION)
-    assert "'no'" in k["acting"]["words"] and got["needs_action"]["first_missing"] == "acting"
+    assert "'yes'" in k["acting"]["words"] and got["tool_approval"]["first_missing"] == "acting"
     ta = _by_id(got["web_intent"]["clauses"])["acting"]
     assert ta["met"] is None and got["web_intent"]["first_missing"] is None
     # the same consumer, its acting side holding
-    good = dict(acting_answer="no", acting_rows_above=60, acting_precision=0.95, acting_wilson_lb=0.89)
-    _write(bench, {"needs_action": _bar("enforced", 111)}, {"needs_action": _entry(rows=111, **good)})
-    c = _get(client)["needs_action"]
+    good = dict(acting_answer="yes", acting_rows_above=60, acting_precision=0.95, acting_wilson_lb=0.89)
+    _write(bench, {"tool_approval": _bar("enforced", 111)}, {"tool_approval": _entry(rows=111, **good)})
+    c = _get(client)["tool_approval"]
     assert _by_id(c["clauses"])["acting"]["met"] is True and c["first_missing"] is None
 
 
@@ -270,9 +272,10 @@ _TOP8 = [("tool_2", 0.3), ("tool_6", 0.2), ("tool_11", 0.15), ("tool_10", 0.09),
 
 
 def test_the_tap_carries_options_and_job_from_both_call_sites_of_the_ledger_writer(ledger, live):
+    # (2026-11-10: the shadow example was needs_action, retired; now click_safety)
     # call site 1: a SHADOW row, written by record_decision (the engine's shadow rows reach it through the kernel sink)
     AgentToolBridge().record_decision(
-        {"consumer_id": "needs_action", "engine": "d1", "chosen": "no", "confidence": 0.91, "route": "shadow",
+        {"consumer_id": "click_safety", "engine": "d1", "chosen": "no", "confidence": 0.91, "route": "shadow",
          "candidates": _CANDS, "turn_id": "t-" + uuid.uuid4().hex[:8]}, "shadow", session_id="s-oracle-view")
     # call site 2: a tool_choice row that dispatched a tool (_record_tool_event with a decision block)
     tb._DECISION_META.set({"consumer_id": "tool_choice", "engine": "d1", "chosen": "tool_2", "confidence": 0.8,
@@ -283,7 +286,7 @@ def test_the_tap_carries_options_and_job_from_both_call_sites_of_the_ledger_writ
         tb._DECISION_META.set(None)
     assert tb._LEDGER_LANE.flush(10.0)
     shadow, enforced = _decisions(live)
-    for d, consumer, job, acted in ((shadow, "needs_action", "interpret_step", "shadow"),
+    for d, consumer, job, acted in ((shadow, "click_safety", "guard", "shadow"),
                                     (enforced, "tool_choice", "route", "enforced")):
         assert (d["consumer"], d["job"], d["acted"]) == (consumer, job, acted)
         assert [(o["name"], o["p"]) for o in d["options"]] == _TOP8           # top 8, by p, descending

@@ -37,9 +37,7 @@ WS_URL = "ws://127.0.0.1:8090/ws/row-accumulator?session_id=row-accumulator"
 # Messages that trigger different consumers:
 # - tool_choice: any message that needs a tool
 # - web_intent: messages that need web search
-# - review_verdict: any completed step
 # - sufficient/done/on_track: any step completion
-# - needs_action: any message
 MESSAGES = [
     # ── LOCAL-TOOL prompts FIRST (2026-09-27) ──
     # The completion monitors (sufficient, done, on_track) and the per-step

@@ -124,6 +124,16 @@ def test_document_proximity_round_trip():
             turn_id="t1", conversation_id=session_id,
         )
 
+    # The chain append runs on the ordered durability lane (agent_kernel's
+    # document path), so wait for the lane before reading what it wrote.
+    # (2026-11-10: this read raced the lane and passed only because the
+    # retired presentation observer started a thread on the same path,
+    # which yielded to the lane worker first. Timing input only; the
+    # assertions are unchanged.)
+    from backend.utils import durability_queue
+
+    assert durability_queue.flush(10.0)
+
     # 3. Verify the chain append captured the correct coordinate string.
     expected_coord_str = format_coords(
         SAMPLE_COORD["x"], SAMPLE_COORD["y"],

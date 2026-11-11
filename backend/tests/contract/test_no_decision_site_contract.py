@@ -49,8 +49,9 @@ def test_no_decision_site_matches_the_source():
 
 
 def test_the_log_never_calls_a_shadow_only_consumer_deciding(monkeypatch, caplog):
-    # narration, not route_v2: route_v2 gained a decision site 2026-11-10
-    monkeypatch.setattr(de, "_owner_allow_list", lambda: {"narration", "tool_choice"})
+    # tool_approval, not route_v2 (gained a decision site 2026-11-10) and not
+    # narration (retired 2026-11-10): the one switchable shadow-only consumer left
+    monkeypatch.setattr(de, "_owner_allow_list", lambda: {"tool_approval", "tool_choice"})
     monkeypatch.setattr(de, "_enforcement", lambda c: (0.61, ""))
     monkeypatch.setattr(de, "_ENFORCEMENT_LOGGED", False)
     monkeypatch.setattr(de, "get_decision_engine", lambda: None)
@@ -58,5 +59,5 @@ def test_the_log_never_calls_a_shadow_only_consumer_deciding(monkeypatch, caplog
         de._log_enforcement_once()
     line = next(r.getMessage() for r in caplog.records if "enforcement:" in r.getMessage())
     deciding = line.split("deciding=")[1].split(";")[0]
-    assert "narration" not in deciding and "tool_choice@0.61" in deciding, line
-    assert "narration (earned @0.61, but no decision site: shadow only)" in line, line
+    assert "tool_approval" not in deciding and "tool_choice@0.61" in deciding, line
+    assert "tool_approval (earned @0.61, but no decision site: shadow only)" in line, line

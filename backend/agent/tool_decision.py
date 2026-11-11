@@ -394,61 +394,12 @@ def _goal_needs_action(goal: str) -> bool:
     g = (goal or "").lower()
     if not g:
         return False
-    _lexical = any(s in g for s in _ACTION_SIGNALS) or any(
+    # The lexical signal decides alone. The `needs_action` Oracle consult that
+    # could add a True here (shadow, sampled and enforced rungs) was RETIRED
+    # 2026-11-10 (decision_engine.CONSUMERS): no threshold reached precision
+    # 0.90. The SAFE direction is unchanged: a lexical True is final.
+    return any(s in g for s in _ACTION_SIGNALS) or any(
         s in g for s in _PATH_SIGNALS)
-    # The SAFE direction is STRUCTURAL, not calibrated: the engine may ADD a
-    # True ("when in doubt, act") but may never REMOVE one, so a model false
-    # negative can never stop a step that needs a tool. A lexical True is
-    # therefore final and the engine is NOT scored at all (Stage B, 2026-10-05:
-    # it could only widen what is already wide; one reply-path call saved).
-    if _lexical:
-        return True
-    # REQ-29 AC29.4 (T49): score `needs_action` and record the row. The lexical
-    # heuristic decides unless the enforcement chokepoint lets the Oracle act;
-    # not deciding, the score runs on the lane (off the reply path).
-    try:
-        from backend.agent import surface_shadow as _ss
-        from backend.agent.decision_engine import (
-            decides,
-            oracle_acts,
-            register_turn_pending,
-            sampled_consult_ok,
-            sampled_row,
-            scope_now,
-        )
-
-        _dec = decides("needs_action") is not None
-        _scope = scope_now()
-        # REQ-6 AC6.2 (Wave 5): the sampled rung - a bounded, deterministic
-        # share of consults let the engine's answer drive (labelled by the
-        # turn's outcome); the lexical incumbent keeps the rest.
-        if not _dec and sampled_consult_ok(
-                "needs_action", "|".join((
-                    _scope.get("turn_id", ""), _scope.get("step_id", ""),
-                    (goal or "")[:80]))):
-            _noul = _ss.score_surface_bool(
-                "needs_action", goal, engine=_ss.AUTO_ENGINE)
-            if _noul is None:
-                return _lexical  # incumbent fallback (AC6.2)
-            _decision = bool(_noul.true(0.5))
-            register_turn_pending(_scope, sampled_row(
-                "needs_action", _decision,
-                max(float(_noul.probability), 1.0 - float(_noul.probability)),
-                probability=round(float(_noul.probability), 4),
-                engine_latency_ms=_noul.engine_latency_ms,
-                state={"goal": goal}))  # the frame read: replayable (oracle.md 12)
-            return _decision
-        _value, _row = _ss.surface_bool(
-            "needs_action", goal,
-            brain_bool_fn=lambda: _lexical,
-            engine=_ss.AUTO_ENGINE,
-            enforced=_dec, defer=True,  # defer is ignored once enforced
-            acts=lambda c: oracle_acts("needs_action", c),
-        )
-        _ss.emit_row(_row)
-        return bool(_value)
-    except Exception:  # noqa: BLE001 — the heuristic is the fallback
-        return _lexical
 
 
 def _goal_needs_gather(goal: str) -> bool:
@@ -2225,7 +2176,7 @@ class ToolDecisionBox:
         # The arbiter is the Oracle's `web_intent` consumer through _mem_lookup,
         # which only pre-commits crawler_query for a CONFIDENT web-intent goal.
         # `_vetoed` now carries the memory/physics sanction only. See the removal
-        # note above _DEPTH_ROUTES.)
+        # note below _RECOVERY_STRATEGIES.)
 
         # ── 3. Build propose prompt and call router ────────────────────
         tool_list = "\n".join(
@@ -2893,30 +2844,6 @@ class ToolDecisionBox:
         "retry_same", "retry_different_tool", "decompose", "escalate",
     )
 
-    # ── Session 365: the CONTINUATION route vocabulary (`depth_route`) ──────
-    # The routes `AgentKernel._der_plan_next_step` can take once the Brain says
-    # it is done. These are the INCUMBENT's own branch names, DELIBERATELY:
-    # oracle.md 14.2 requires the engine and the live path to speak the same
-    # vocabulary, or "the comparison never matches and the report shows
-    # precision 0 as though it were a measurement".
-    #
-    # `next_step` was ADDED session 366 (handoff 3.4 / oracle.md 17.3.2). The
-    # first cut had only the four `done`-branch routes, and that branch needs the
-    # monitor consult to return done=True - which is rare - so the site could not
-    # fire often enough to collect one row. The not-done path is a real
-    # continuation decision too (the Brain named a next step), so it belongs in
-    # the menu. WITH IT, every consult that reaches a branch records exactly one
-    # row, and `brain_choice` still varies with state.
-    #
-    # The richer "how to deepen" sub-routes (deepen_with_tool / reread_evidence
-    # / verify_with_evidence / accept_partial) are NOT here yet: the incumbent
-    # cannot pick them, so they could never agree with it, and adding them now
-    # would deflate precision for no information. They become scoreable only
-    # once `deepen` is enforced and the engine's pick actually RUNS.
-    _DEPTH_ROUTES = (
-        "cover_open_fact", "bonus_ceiling", "deepen", "next_step", "finalize",
-    )
-
     # ── REMOVED (session 366): the LOCAL-workspace web veto ────────────────
     # `_WEB_GATHER_TOOLS`, `_LOCAL_WORKSPACE_MARKERS`, `_is_local_workspace_goal`
     # and `_local_web_veto` were a phrase-list band-aid, now deleted as debt
@@ -3196,153 +3123,6 @@ class ToolDecisionBox:
                 logger.warning("[TOOL_DECISION] recovery_strategy shadow dropped (lane full)")
         except Exception as _e:  # noqa: BLE001 - a shadow never raises
             logger.warning("[TOOL_DECISION] recovery_strategy shadow submit failed: %r", _e)
-
-    def depth_route(
-        self,
-        *,
-        incumbent_route: str,
-        coverage: float = 0.0,
-        open_facts: Optional[list] = None,
-        criteria: str = "",
-        grade: str = "",
-        depth_met: Optional[bool] = None,
-        pushes_used: int = 0,
-        session_id: str = "",
-        threshold: Optional[float] = None,
-        async_: bool = False,
-    ) -> Optional[Dict[str, Any]]:
-        """SHADOW: which continuation should the loop take now that the Brain
-        says it is done? Records the row and returns it; the caller's behaviour
-        is UNCHANGED (the incumbent's route stands).
-
-        WHY THIS SITE, AND WHY THIS IS THE ANSWER (session 365). The depth push
-        on its own is NOT a decision point — it is one of four returns inside
-        the continuation decision, and scoring the push alone would have given a
-        CONSTANT reference (oracle.md 14.1's "manufacture agreement" trap: the
-        precision would measure nothing). The continuation decision genuinely
-        chooses among four named routes, so `brain_choice` varies with state and
-        the parity is meaningful.
-
-        THE REFERENCE IS A NAME, COMPARED AS A NAME. `brain_choice` is the route
-        the live path ACTUALLY took, and it speaks the same vocabulary as the
-        menu — no translation, which is the safest case 14.2 describes. Both
-        keys (`brain_choice`, `chosen`) are on `tool_bridge._DECISION_META_KEYS`,
-        or the ledger would drop the reference in transit.
-
-        WHAT IT CANNOT MEASURE YET, stated plainly: this is parity with a
-        state-determined policy, not an outcome measurement. In shadow the
-        engine's pick does not RUN, so the event's outcome describes the
-        incumbent's route, not the engine's. Outcome labelling only becomes
-        possible after a flip — which is why shadow-first parity is the correct
-        first step rather than a compromise.
-
-        Never raises: a shadow consumer must never block a reply.
-
-        ``async_=True`` (the kernel's mode): the score and its row run on
-        lane("oracle_shadow") and this returns None at once - 69 inline scores,
-        33 s per coding eval run, sat on the continuation path (2026-10-01).
-        """
-        if async_:
-            try:
-                from backend.utils.durability_queue import lane
-
-                _kw = dict(
-                    incumbent_route=incumbent_route, coverage=coverage,
-                    open_facts=list(open_facts or []), criteria=criteria,
-                    grade=grade, depth_met=depth_met, pushes_used=pushes_used,
-                    session_id=session_id, threshold=threshold,
-                )
-                if not lane("oracle_shadow").submit(
-                        "depth_route", lambda: self.depth_route(**_kw)):
-                    logger.warning("[TOOL_DECISION] depth_route row dropped (lane full)")
-            except Exception as _e:  # noqa: BLE001 — an observer never blocks
-                logger.warning("[TOOL_DECISION] depth_route submit failed: %r", _e)
-            return None
-        _thr = self._decision_threshold if threshold is None else float(threshold)
-        eng = self._engine()
-        if eng is None:
-            return None
-        try:
-            # Criteria registration, mirroring recovery_strategy: without it the
-            # engine REFUSES to score the consumer, so no Noul is returned, no
-            # row is written, and the consumer can never reach the bar however
-            # often the continuation decision runs.
-            try:
-                from backend.agent.decision_engine import (
-                    get_consumer_spec,
-                    needs_upgrade,
-                    register_declared,
-                )
-
-                # REQ-4: the DECLARED type + criteria come from the declaration
-                # table; `needs_upgrade` also replaces a pre-REQ-4 spec (AC13.4).
-                if needs_upgrade(get_consumer_spec("depth_route")):
-                    register_declared("depth_route", (
-                        "The loop is deciding how to continue. What should "
-                        "it do next: cover a required fact that is still "
-                        "open, run the bounded bonus pass over the ceiling "
-                        "facts, push for more depth because the work is only "
-                        "superficially complete, pursue the next step the "
-                        "Brain named, or finalize and answer?"
-                    ), tuple(list(self._DEPTH_ROUTES) + [self._DE_DELEGATE]))
-            except Exception:  # noqa: BLE001 — criteria are best-effort
-                pass
-            frame = {
-                "goal": (criteria or "")[:200],
-                "coverage": round(float(coverage or 0.0), 3),
-                "open_facts": [str(_f) for _f in (open_facts or [])][:5],
-                "grade": grade or "",
-                "depth_met": depth_met,
-                "pushes_used": int(pushes_used or 0),
-                "incumbent_route": incumbent_route,
-            }
-            # MEASURED 2026-11-04: the depth_route rows carry no frame, so a
-            # live cohort cannot be replayed. One DEBUG line per judgment
-            # joins to the rows through the input_key (a hash of the
-            # consumer and this frame). Off the answer path.
-            logger.debug("[depth_route] frame: %r", frame)
-            ds = eng.decide(
-                "depth_route",
-                list(self._DEPTH_ROUTES) + [self._DE_DELEGATE],
-                frame,
-            )
-            if ds is None:
-                return None
-            row = {
-                "consumer_id": "depth_route",
-                "engine": getattr(eng, "model_id", None) or "decision-engine",
-                "chosen": ds.chosen,
-                "confidence": round(float(ds.confidence), 4),
-                "candidates": [
-                    {"name": c.name, "prob": round(c.prob, 4)}
-                    for c in (ds.distribution or ())
-                ],
-                "threshold": _thr,
-                "engine_latency_ms": ds.engine_latency_ms,
-                # The live path's route, kept as its own field so a report can
-                # see BOTH the reference and what the incumbent did even if the
-                # two ever diverge in naming.
-                "incumbent_route": incumbent_route,
-                # oracle.md 14.2: the parity reference, under the key the ledger
-                # passes through and the report reads.
-                "brain_choice": incumbent_route,
-                # v2 (2026-10-01): the Oracle job input now renders coverage,
-                # open facts, depth_met and grade - before, only `goal` was read.
-                # v3 (2026-10-10): the route job now also renders pushes_used
-                # and incumbent_route (frame/job mismatch fix). Bump on every
-                # frame shape change; never blend cohorts.
-                "criteria_version": "depth_route/v3",
-                "shadow": True,
-                # The frame the engine read (2026-11-04): the DEBUG line above
-                # was the only copy, so a question change still needed fresh
-                # live traffic. replay_consumer reads this dict directly.
-                "state": frame,
-            }
-            self._record_shadow_row(row, session_id=session_id)
-            return row
-        except Exception as _e:  # noqa: BLE001 — an observer never blocks
-            logger.warning("[TOOL_DECISION] depth_route gate failed: %r", _e)
-            return None
 
     def record_tool_call(
         self,
