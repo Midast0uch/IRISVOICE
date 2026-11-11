@@ -28,7 +28,7 @@ models:
     # deletion; oracle.md §9 — no fallback model). `path` is accepted for
     # factory-signature compatibility and is unused by the d1 backend.
     path: null
-    capabilities: ["tool_decision", "surface_choice", "narration_gate"]
+    capabilities: ["tool_decision"]
     constraints:
       # REQ-25 makes this block LIVE (it was never parsed — grep "oracle"
       # returned zero hits, so every value here was decorative). Was 32, which
