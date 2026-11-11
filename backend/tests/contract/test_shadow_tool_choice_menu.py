@@ -95,10 +95,9 @@ def developer(monkeypatch):
 def test_kernel_callers_pass_the_offered_menu():
     """Both shadow callers must pass `candidates`; without it the scorer falls
     back to the registry head (the vision tools)."""
-    src = (_REPO / "backend" / "agent" / "agent_kernel.py").read_text(
-        encoding="utf-8", errors="replace")
+    from backend.tests._kernel_source import kernel_tree
     calls = [
-        n for n in ast.walk(ast.parse(src))
+        n for n in ast.walk(kernel_tree())
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
         and n.func.attr == "record_shadow_tool_choice"
     ]

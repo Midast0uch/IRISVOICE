@@ -424,14 +424,15 @@ _AGENT_DIR = __import__("pathlib").Path(__file__).resolve().parents[2] / "agent"
 
 
 def _kernel_src():
-    return (_AGENT_DIR / "agent_kernel.py").read_text(encoding="utf-8", errors="replace")
+    from backend.tests._kernel_source import kernel_source
+    return kernel_source(encoding="utf-8", errors="replace")
 
 
 def _call_kwargs(src, attr, first_arg):
     import ast
 
     out = []
-    for n in ast.walk(ast.parse(src)):
+    for n in ast.walk(src):
         if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                 and n.func.attr == attr and n.args
                 and isinstance(n.args[0], ast.Constant)
@@ -446,7 +447,8 @@ def test_depth_met_and_done_sites_go_through_the_chokepoint(attr, consumer):
     """Fails on the old code: depth_met read `"depth_met" in enforced_consumers()`
     and a private IRIS_DEPTH_MET_THRESHOLD tau; `done` passed no `enforced=`."""
     src = _kernel_src()
-    (kw,) = _call_kwargs(src, attr, consumer)
+    from backend.tests._kernel_source import kernel_tree
+    (kw,) = _call_kwargs(kernel_tree(), attr, consumer)
     assert "enforced" in kw and "acts" in kw, kw
     assert f"oracle_acts('{consumer}'" in kw["acts"], kw["acts"]
     assert "threshold" not in kw, "a private tau came back"

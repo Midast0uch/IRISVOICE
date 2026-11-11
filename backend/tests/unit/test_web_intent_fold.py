@@ -51,16 +51,15 @@ class TestSingleConsumerNoCopies:
         assert ex._is_web_intent("") is False
 
         # (e) the kernel's private copy is gone: its method delegates
-        src = (_REPO / "backend" / "agent" / "agent_kernel.py").read_text(
-            encoding="utf-8", errors="replace")
-        tree = ast.parse(src)
+        from backend.tests._kernel_source import kernel_function_source, kernel_tree
+        tree = kernel_tree()
         fn = None
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name == "_is_web_search_request":
                 fn = node
                 break
         assert fn is not None
-        body = ast.get_source_segment(src, fn) or ""
+        body = kernel_function_source(fn.name)
         assert "_triggers" not in body, (
             "the kernel still carries its own web-trigger list — the fold "
             "into the single consumer did not happen"

@@ -42,8 +42,9 @@ def test_balance_leaves_the_clamp():
 
 
 def test_kernel_feeds_node_calls_to_the_physics():
-    src = _KERNEL.read_text(encoding="utf-8", errors="replace")
-    tree = ast.parse(src)
+    from backend.tests._kernel_source import kernel_source, kernel_tree
+    src = kernel_source(encoding="utf-8", errors="replace")
+    tree = kernel_tree()
     run_node = next(n for n in ast.walk(tree)
                     if isinstance(n, ast.FunctionDef) and n.name == "_der_run_node")
     assert any(isinstance(t, ast.Attribute) and t.attr == "node_calls"

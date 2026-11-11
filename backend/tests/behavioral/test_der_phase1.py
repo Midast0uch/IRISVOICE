@@ -82,7 +82,8 @@ def test_single_authority(monkeypatch):
     src = kernel_source(encoding="utf-8", errors="strict")
     # The deleted web-intent regex forced crawler_query via re.search on the
     # conversational query. Confirm that override is gone.
-    assert 'crawler_query' not in src.split("# Phase 1 (D1.4)")[0][-4000:], \
+    from backend.tests._kernel_source import kernel_function_source
+    assert 'crawler_query' not in kernel_function_source("_execute_plan_der").split("# Phase 1 (D1.4)")[0][-4000:], \
         "web-intent regex override must be deleted (D1.4)"
     # The only runtime resolver entry point is ToolDecisionBox.resolve(),
     # reached through the kernel's cached box. RE-POINTED 2026-09-26 (session

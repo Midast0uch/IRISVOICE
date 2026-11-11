@@ -50,7 +50,11 @@ def _calls_in(rel: str, name: str) -> bool:
     """True when *rel* contains a real call to *name* (parsed — a mention in a
     comment/docstring cannot satisfy the pin). Modeled on
     test_single_judge_and_wiring_contract._calls_in (design.md CT-4)."""
-    tree = ast.parse(_src(rel))
+    if rel == "backend/agent/agent_kernel.py":
+        from backend.tests._kernel_source import kernel_tree
+        tree = kernel_tree()
+    else:
+        tree = ast.parse(_src(rel))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             fn = node.func
@@ -183,7 +187,8 @@ def test_runner_has_a_production_caller():
     backend/agent/node_executor.run_node, called from AgentKernel._der_run_node.
     Same meaning (the node runner has a production caller), pointed at the
     runner that exists. nodes/runner.py itself is kept."""
-    tree = ast.parse(_src("backend/agent/agent_kernel.py"))
+    from backend.tests._kernel_source import kernel_tree
+    tree = kernel_tree()
     imports_run_node = any(
         isinstance(n, ast.ImportFrom)
         and n.module == "backend.agent.node_executor"

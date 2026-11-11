@@ -71,8 +71,8 @@ class TestNoAsyncioRunOnDerThread:
         thread, and the lookup goes through run_coroutine_threadsafe."""
         # (a) source pin, AST-based: a comment mentioning `asyncio.run` must not
         # satisfy or break this — only a real CALL node counts.
-        kernel_src = _src("backend/agent/agent_kernel.py")
-        gate = _func_source(kernel_src, "_mem_lookup")
+        from backend.tests._kernel_source import kernel_function_source
+        gate = kernel_function_source("_mem_lookup")
         assert not _calls_in(gate, "run"), (
             "`asyncio.run(...)` is back on the DER thread's memory gate"
         )

@@ -191,7 +191,8 @@ class TestVetoOrderInTheGatherHint:
     """
 
     def test_the_veto_precedes_the_web_intent_sanction(self):
-        src = Path(ak.__file__).read_text(encoding="utf-8", errors="replace")
+        from backend.tests._kernel_source import kernel_function_source
+        src = kernel_function_source("_get_tool_box")
         veto = src.index("if self._turn_is_bounded_content_ask():")
         sanction = src.index('"rationale": "web-intent (memory pre-filter)"')
         assert veto < sanction, (
@@ -200,7 +201,8 @@ class TestVetoOrderInTheGatherHint:
         )
 
     def test_the_veto_precedes_the_synthesis_read_steering(self):
-        src = Path(ak.__file__).read_text(encoding="utf-8", errors="replace")
+        from backend.tests._kernel_source import kernel_function_source
+        src = kernel_function_source("_get_tool_box")
         veto = src.index("if self._turn_is_bounded_content_ask():")
         steering = src.index(
             "REQ-3 AC4 / REQ-5 (specs/long-horizon-der-execution)"

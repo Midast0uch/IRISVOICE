@@ -186,8 +186,8 @@ def test_store_document_data_applies_the_ceiling_and_persists_provenance():
     the surrounding storage calls are best-effort and swallowed by design, which
     makes the payload unobservable from outside without a live store.
     """
-    src = _src("backend/agent/agent_kernel.py")
-    tree = ast.parse(src)
+    from backend.tests._kernel_source import kernel_tree
+    tree = kernel_tree()
 
     target = None
     for node in ast.walk(tree):

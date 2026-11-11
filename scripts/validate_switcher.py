@@ -169,7 +169,8 @@ def main() -> int:
           _direct.get("used_tokens") == _der.get("used_tokens") == 7_000,
           f"direct={_direct.get('used_tokens')} der={_der.get('used_tokens')}")
 
-    _kernel_src = AGENT_KERNEL_PATH.read_text(encoding="utf-8")
+    from backend.tests._kernel_source import kernel_source
+    _kernel_src = kernel_source(encoding="utf-8", errors="strict")
     check("direct (non-DER) reply path calls the shared emitter",
           "self._emit_context_usage()" in _kernel_src)
     check("DER path calls the shared emitter with step metadata",

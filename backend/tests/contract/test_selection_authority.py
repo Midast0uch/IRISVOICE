@@ -103,13 +103,14 @@ class TestCtSnapshot1:
 
 class TestCtAuthority1:
     @staticmethod
-    def _authority_lines(path: pathlib.Path) -> list[str]:
-        return [ln for ln in path.read_text(encoding="utf-8").splitlines()
+    def _authority_lines(text: str) -> list[str]:
+        return [ln for ln in text.splitlines()
                 if "[Authority]" in ln]
 
     def test_kernel_emits_authority_on_every_bind_path(self):
+        from backend.tests._kernel_source import kernel_source
         lines = self._authority_lines(
-            REPO_ROOT / "backend" / "agent" / "agent_kernel.py")
+            kernel_source(encoding="utf-8", errors="strict"))
         sources = {ln.split("source=")[1].split()[0] for ln in lines
                    if "source=" in ln}
         assert "set_role_binding" in sources, (
@@ -118,7 +119,8 @@ class TestCtAuthority1:
             "kernel set_model_selection lost its authority-chain line")
 
     def test_gateway_emits_authority_on_every_emit_path(self):
-        lines = self._authority_lines(REPO_ROOT / "backend" / "iris_gateway.py")
+        lines = self._authority_lines(
+            (REPO_ROOT / "backend" / "iris_gateway.py").read_text(encoding="utf-8"))
         joined = "\n".join(lines)
         assert "source=set_role_binding" in joined
         assert "source=confirm_card" in joined

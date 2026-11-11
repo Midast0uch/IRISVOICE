@@ -40,7 +40,8 @@ def _enclosing_functions(tree):
 
 
 def test_turn_end_bookkeeping_is_called_only_from_the_lane_job():
-    tree = ast.parse(_KERNEL.read_text(encoding="utf-8", errors="replace"))
+    from backend.tests._kernel_source import kernel_tree
+    tree = kernel_tree()
     inline = []
     for call, stack in _enclosing_functions(tree).items():
         fn = call.func

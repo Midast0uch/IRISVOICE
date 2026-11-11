@@ -69,7 +69,8 @@ def test_deferred_monitor_returns_before_the_score(monkeypatch):
 
 
 def test_kernel_turn_end_monitors_defer():
-    tree = ast.parse(_KERNEL.read_text(encoding="utf-8", errors="replace"))
+    from backend.tests._kernel_source import kernel_tree
+    tree = kernel_tree()
     calls = [
         n for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
@@ -100,8 +101,8 @@ def test_kernel_turn_end_monitors_defer():
 
 
 def test_kernel_wires_off_path_shadows():
-    src = _KERNEL.read_text(encoding="utf-8", errors="replace")
-    tree = ast.parse(src)
+    from backend.tests._kernel_source import kernel_tree
+    tree = kernel_tree()
     attrs = {
         n.func.attr: n for n in ast.walk(tree)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)

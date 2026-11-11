@@ -163,7 +163,8 @@ class TestFailureTriageSeamWired:
         43.1%) and a veto would have blocked more working calls than failed
         ones. Its seeding must not come back half-wired.
         """
-        calls = _attr_calls_in(ast.parse(_kernel_source()),
+        from backend.tests._kernel_source import kernel_tree
+        calls = _attr_calls_in(kernel_tree(),
                                "_der_handle_step_failure")
 
         assert "recovery_strategy" in calls, (

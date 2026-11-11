@@ -26,7 +26,8 @@ def _assigns_current_turn_id(fn: ast.AST) -> bool:
 
 
 def test_turn_entry_assigns_current_turn_id():
-    tree = ast.parse(_KERNEL.read_text(encoding="utf-8", errors="replace"))
+    from backend.tests._kernel_source import kernel_tree
+    tree = kernel_tree()
     entry = [
         n for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "process_text_message"

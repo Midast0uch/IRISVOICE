@@ -1,10 +1,15 @@
-"""Read the kernel's source as TEXT, whichever files it lives in.
+"""Read the kernel's source as TEXT or as an AST, whichever files it lives in.
 
 `backend/agent/agent_kernel.py` is being split into `backend/agent/kernel/`
 (docs/architecture/KERNEL_DECOMPOSITION.md). A test or script that scans the kernel
-source for a pattern reads it through `kernel_source()`: the facade text followed by
-every `kernel/**/*.py` text. Before any code moves that is exactly the text of
-agent_kernel.py.
+source reads it through one of three functions. Before any code moves each returns
+exactly what reading / parsing agent_kernel.py returns.
+
+  kernel_source(encoding, errors)  facade text followed by every kernel/**/*.py text
+  kernel_tree()                    one ast.Module for the whole kernel (Mixin class bodies
+                                   merged into `class AgentKernel`; linenos are those of the
+                                   node's own file, so compare them only inside one function)
+  kernel_function_source(name)     get_source_segment text of the ONE def called `name`
 
 The generator lives in `backend/agent/kernel/__init__.py` (written by
 `scripts/kernel_split_check.py init-package`). This helper loads that ONE file by path.
@@ -25,7 +30,7 @@ _INIT = os.path.join(
 )
 
 
-def kernel_source(encoding="utf-8", errors="replace"):
+def _load():
     spec = importlib.util.spec_from_file_location("_iris_kernel_source_loader", _INIT)
     mod = importlib.util.module_from_spec(spec)
     flag = sys.dont_write_bytecode
@@ -34,4 +39,16 @@ def kernel_source(encoding="utf-8", errors="replace"):
         spec.loader.exec_module(mod)
     finally:
         sys.dont_write_bytecode = flag
-    return mod.kernel_source(encoding=encoding, errors=errors)
+    return mod
+
+
+def kernel_source(encoding="utf-8", errors="replace"):
+    return _load().kernel_source(encoding=encoding, errors=errors)
+
+
+def kernel_tree():
+    return _load().kernel_tree()
+
+
+def kernel_function_source(name):
+    return _load().kernel_function_source(name)

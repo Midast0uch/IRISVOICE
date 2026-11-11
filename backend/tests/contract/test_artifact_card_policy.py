@@ -209,7 +209,8 @@ def test_the_gate_is_decided_before_the_first_task_start_emit():
 
     from backend.agent import agent_kernel as _mod
 
-    src = inspect.getsource(_mod)
+    from backend.tests._kernel_source import kernel_function_source
+    src = kernel_function_source("process_text_message")
     gate_at = src.find("card_warranted(")
     first_emit_at = src.find("IRISStreamEvent.TASK_START")
     assert gate_at != -1, "no card decision found in the kernel"

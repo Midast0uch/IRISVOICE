@@ -188,9 +188,8 @@ class TestProviderRouting:
     def test_no_naked_get_reasoning_model_in_synthesize(self, src):
         """_synthesize_response must NOT call get_reasoning_model() as executable code."""
         # Find the _synthesize_response function body
-        synth_start = src.find("def _synthesize_response")
-        next_def = src.find("\n    def ", synth_start + 1)
-        synth_src = src[synth_start:next_def] if next_def != -1 else src[synth_start:]
+        from backend.tests._kernel_source import kernel_function_source
+        synth_src = kernel_function_source("_synthesize_response")
 
         # Strip comment lines before checking — the function has a comment that says
         # "Do NOT call get_reasoning_model()" which is fine (and expected!).

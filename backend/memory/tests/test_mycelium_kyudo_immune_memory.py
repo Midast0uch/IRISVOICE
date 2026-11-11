@@ -118,8 +118,8 @@ def test_topological_violation_is_recorded_as_such_and_adds_its_weight(conn):
 
 
 def test_the_kernel_topo_path_records_topological_violation():
-    from backend.tests._kernel_source import kernel_source
-    src = kernel_source(encoding="utf-8", errors="replace")
+    from backend.tests._kernel_source import kernel_function_source
+    src = kernel_function_source("_der_physics_step")
     call = "mycelium_record_anomaly("
     at = src.index(call, src.index("tune_dffing_params(_session)"))
     window = src[at:at + 120]

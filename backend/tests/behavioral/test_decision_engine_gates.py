@@ -103,8 +103,8 @@ class TestCtDe6EventShapes:
 
     def test_document_render_data_keys_pinned(self):
         """The auto-render DOCUMENT_RENDER emit still carries its known keys."""
-        src = Path("backend/agent/agent_kernel.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
+        from backend.tests._kernel_source import kernel_tree
+        tree = kernel_tree()
         keys_seen = []
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "data":

@@ -127,11 +127,10 @@ class TestNoBypassCoverage:
         assert bridge.rows[0][0]["consumer_id"] == "tool_choice"
 
         # ── path 3: RespondDirect ──────────────────────────────────────────
-        src = (_REPO_ROOT / "backend" / "agent" / "agent_kernel.py").read_text(
-            encoding="utf-8", errors="replace")
+        from backend.tests._kernel_source import kernel_tree
         called = {
             node.func.attr
-            for node in ast.walk(ast.parse(src))
+            for node in ast.walk(kernel_tree())
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
         }
