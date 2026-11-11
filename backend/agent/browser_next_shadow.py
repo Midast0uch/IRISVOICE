@@ -182,6 +182,63 @@ def shadow_row(ds: Any, brain_choice: str, action: str,
     return row
 
 
+def sampled_pick(
+    *,
+    goal: str,
+    page_text: str,
+    element_id: Any,
+    done_when: Optional[str] = None,
+    calls_this_step: Optional[str] = None,
+    engine: Any = AUTO_ENGINE,
+) -> Optional[str]:
+    """The sampled rung (2026-11-10, owner: "add the honest label"): on a
+    bounded share of clicks the ORACLE'S element is clicked, and the turn
+    verdict labels that choice. Parity with the tool model's element could
+    never show which click was right (agreement 6/14 on this engine); the
+    turn verdict can. Returns the element id to click, or None (the model's
+    click stands). Synchronous: one Oracle call on sampled clicks only."""
+    try:
+        from backend.agent.decision_engine import sampled_consult_ok, sampled_row
+
+        scope = _scope_now()
+        key = "|".join((scope.get("turn_id", ""), scope.get("step_id", ""),
+                        str(scope.get("call_ordinal", "")), str(element_id)))
+        if not sampled_consult_ok(BROWSER_NEXT_CONSUMER, key):
+            return None
+        head, elements = parse_page(page_text)
+        ids = [e[0] for e in elements]
+        target = str(element_id).strip() if element_id is not None else ""
+        if not ids or target not in ids:
+            return None
+        frame = {
+            "goal": (goal or "")[:200],
+            "done_when": (done_when or "")[:200] or None,
+            "calls_this_step": (calls_this_step or "")[-300:] or None,
+            "last_result": head[:800] or None,
+            "option_criteria": {eid: label for eid, label in elements},
+        }
+        ds = score(frame, ids, engine)
+        if ds is None or str(ds.chosen) not in ids:
+            return None
+        row = sampled_row(
+            BROWSER_NEXT_CONSUMER, str(ds.chosen), float(ds.confidence),
+            engine_latency_ms=ds.engine_latency_ms, brain_choice=target,
+            # its own cohort, never pooled with the parity rows
+            criteria_version="browser_next/outcome-v1", n_options=len(ids),
+            # unscored until the verdict arrives, never "right" by default
+            label_source="outcome", **scope)
+        from backend.agent import turn_verdict_label as _tvl
+
+        if not _tvl.defer(row, emit_row):
+            emit_row(row)
+        logger.info("[browser_next] sampled click oracle=%s model=%s conf=%.3f",
+                    ds.chosen, target, float(ds.confidence))
+        return str(ds.chosen)
+    except Exception as e:  # noqa: BLE001 - the model's click stands on any fault
+        logger.debug("[browser_next] sampled pick failed: %r", e)
+        return None
+
+
 def record_browser_next(
     *,
     goal: str,

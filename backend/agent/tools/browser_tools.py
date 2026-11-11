@@ -711,6 +711,8 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
                     register_turn_pending(_scope_for_sample, sampled_row(
                         "click_safety", _row["chosen"], _row["confidence"],
                         engine_latency_ms=_row.get("engine_latency_ms"),
+                        # its own cohort (2026-11-10), apart from the parity rows
+                        criteria_version="click_safety/outcome-v1",
                         # the statement the model read (the screenshot is not
                         # stored): replayable text (oracle.md 12, 2026-11-09)
                         state={"goal": click_safety_shadow.statement(

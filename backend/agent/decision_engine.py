@@ -1706,6 +1706,9 @@ TIER_SAMPLABLE: frozenset = frozenset({
     # 2026-11-10: the turn route; labelled by the turn verdict
     # (turn_verdict_label), since a direct turn has no DER run grade.
     "route_v2",
+    # 2026-11-10: which element to click (browser_next_shadow.sampled_pick),
+    # labelled by the turn verdict.
+    "browser_next",
 })
 # AC6.6: refuse-direction ONLY - sampled, but the engine may only ever tighten
 # (refuse/veto where the incumbent allowed), never loosen. Wired at the

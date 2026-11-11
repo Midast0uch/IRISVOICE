@@ -3091,6 +3091,9 @@ class ToolDecisionBox:
                         ],
                         "route": "sampled",
                         "engine_latency_ms": ds.engine_latency_ms,
+                        # its own cohort (2026-11-10): outcome rows, never
+                        # pooled with the parity rows (recovery/route-v2)
+                        "criteria_version": "recovery/outcome-v1",
                     })
                 if ds is not None:
                     # The shadow PAIR: what the engine said vs what ran.

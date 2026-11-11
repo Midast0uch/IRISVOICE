@@ -17567,7 +17567,9 @@ Respond with a JSON object:
                 engine=str(eng.model_id or ""),
                 engine_latency_ms=ds.engine_latency_ms,
                 brain_choice="der" if gate_plans else "direct",
-                criteria_version="route_v2/binary-v1",
+                # its own cohort: outcome rows never pool with the parity
+                # rows (route_v2/binary-v1) in a scoped report
+                criteria_version="route_v2/outcome-v1",
                 # outcome-labelled from birth: without a verdict (a live turn
                 # swept unlabelled) decision_label leaves it unscored, never
                 # "right" by default
@@ -18901,6 +18903,30 @@ Respond with a JSON object:
             _decided["row"] = got[1]
             return got[0]
 
+        _bn_sampled: Dict[str, bool] = {}
+
+        def _on_call(name, params):
+            # PRE-call (run_node executes the same params dict after this):
+            # browser_next's sampled rung may swap the element the model chose
+            # for the Oracle's, labelled later by the turn verdict.
+            if name != "browser_act" or not isinstance(params, dict) \
+                    or params.get("element_id") is None:
+                return
+            try:
+                from backend.agent import browser_next_shadow as _bn
+
+                _hist0, _last0 = _step_so_far()
+                pick = _bn.sampled_pick(
+                    goal=goal, page_text=_last0 or "",
+                    element_id=params.get("element_id"),
+                    done_when=_done_when or None, calls_this_step=_hist0 or None)
+                if pick is not None:
+                    _orig = params.get("element_id")
+                    params["element_id"] = int(pick) if isinstance(_orig, int) else pick
+                    _bn_sampled["hit"] = True
+            except Exception as _bn_err:  # noqa: BLE001 - the model's click stands
+                logger.debug("[DER] browser_next sampled pick failed: %r", _bn_err)
+
         def _on_result(name, params, ok, approval_ok=None):
             # The call's OUTCOME is now known. Every node consult runs HERE,
             # post-hoc, on the PRE-CALL state: run_node calls this BEFORE it
@@ -18935,7 +18961,10 @@ Respond with a JSON object:
                                       params=params if isinstance(params, dict) else None,
                                       session_id=self.conversation_id or "voice")
             if name == "browser_act" and isinstance(params, dict) \
-                    and params.get("element_id") is not None:
+                    and params.get("element_id") is not None \
+                    and not _bn_sampled.pop("hit", False):
+                # (a sampled click is the Oracle's own element: its row is
+                # already held for the turn verdict, so no parity shadow)
                 try:
                     from backend.agent import browser_next_shadow as _bn
 
@@ -19043,6 +19072,7 @@ Respond with a JSON object:
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
             conv_id=self.conversation_id or "", helper_role=_helper,
             on_result=_on_result, choose_tool=_choose_tool,
+            on_call=_on_call,
             sees=_sees, look=_look,
             memory_facts=_step_facts,
             # the step's own criterion, its parent step, the reviewer's reason
