@@ -93,12 +93,26 @@ class _NoHistoryRegistry:
 
 
 class _HistoryRegistry:
-    """resolve() returns a source with last_error -> failure history."""
+    """resolve() returns a source with last_error -> failure history.
+
+    FIXTURE INPUT CHANGED, 2026-11-11, and called out because every assertion
+    is untouched: the recorded history was `last_error: "challenge"`. The race
+    is advertisement-gated (orchestrator._router_recovery_node -> the node
+    router), and fetch.vision stopped advertising CHALLENGE recovery after the
+    2026-08-11 live run (job 40e4e523: three vision escalations on walled
+    pages, 0/3 usable, ~4 min of a 7 min turn; see the comment in
+    capabilities._declare_node_metadata and test_websearch_budget_contract.py).
+    A challenge-history domain therefore no longer races; it parks. The
+    history is now `empty`, a reason fetch.vision DOES still recover, so these
+    tests exercise the race mechanism REQ-10 AC3/AC5 is about. Same change the
+    sibling test_history_based_race_path_still_used_when_history_present made
+    on 2026-08-12.
+    """
 
     async def resolve(self, query, quick=False):
         return {
             "hit": True,
-            "sources": [{"url": "https://a.example/", "domain": "a.example", "last_error": "challenge"}],
+            "sources": [{"url": "https://a.example/", "domain": "a.example", "last_error": "empty"}],
             "coverage_score": 1.0,
             "topics": ["q"],
         }

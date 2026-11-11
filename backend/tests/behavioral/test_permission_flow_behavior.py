@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from backend.agent.permissions import (
+    PERMISSION_TIMEOUT_DESTRUCTIVE,
+    PERMISSION_TIMEOUT_SIDE_EFFECT,
     PermissionTier,
     ToolPermissionRequest,
     classify_tool,
@@ -45,13 +47,17 @@ class TestPermissionFlow:
     def test_side_effect_requires_approval_in_developer(self):
         """Side-effect tools in developer mode create a pending request."""
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, level="developer", auto_approve=False
+        )
         assert req.status == "pending"
 
     def test_approve_side_effect_allows_execution(self):
         """Approved side-effect request can proceed."""
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, level="developer", auto_approve=False
+        )
         assert req.status == "pending"
 
         # Simulate user approval
@@ -78,7 +84,9 @@ class TestPermissionFlow:
     def test_timeout_returns_graceful_error(self):
         """Timed-out permission returns a graceful timeout error."""
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, level="developer", auto_approve=False
+        )
         req.timeout_seconds = 0.05
         system._pending[req.request_id] = req  # re-add with short timeout
 
@@ -99,13 +107,17 @@ class TestPermissionFlow:
     def test_personal_auto_approves_side_effect(self):
         """Personal mode auto-approves SIDE_EFFECT (no prompt)."""
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="personal")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, level="personal", auto_approve=True
+        )
         assert req.status == "approved"
 
     def test_developer_requires_approval_for_side_effect(self):
         """Developer mode requires approval for SIDE_EFFECT."""
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, level="developer", auto_approve=False
+        )
         assert req.status == "pending"  # not auto-approved
 
     def test_tool_bridge_integration_classify(self):
@@ -132,7 +144,9 @@ class TestPermissionEventBus:
         """Pending requests emit PERMISSION_REQUEST event."""
         system = ToolPermissionSystem()
         with patch.object(system._bus, "emit") as mock_emit:
-            system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+            system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, level="developer", auto_approve=False
+        )
             request_events = [
                 call for call in mock_emit.call_args_list
                 if call[0][0].value == "permission:request"
@@ -143,9 +157,20 @@ class TestPermissionEventBus:
         """Destructive requests include longer timeout in event data."""
         system = ToolPermissionSystem()
         with patch.object(system._bus, "emit") as mock_emit:
-            system.request_permission("delete_file", PermissionTier.DESTRUCTIVE, level="developer")
+            # auto_approve=True is the confirmation path (the session-331 default):
+            # DESTRUCTIVE then needs a two-step confirmation card.
+            system.request_permission(
+                "delete_file", PermissionTier.DESTRUCTIVE, level="developer", auto_approve=True
+            )
+            seen = False
             for call in mock_emit.call_args_list:
                 data = call[1].get("data", {})
                 if data.get("tier") == "destructive":
-                    assert data.get("timeout_seconds") == 60
+                    seen = True
+                    # Session 247 raised the timeouts (permissions.py comment; the
+                    # contract test test_destructive_timeout_longer pins 180 s). The
+                    # event must carry the constant, and it stays the longer window.
+                    assert data.get("timeout_seconds") == PERMISSION_TIMEOUT_DESTRUCTIVE
+                    assert PERMISSION_TIMEOUT_DESTRUCTIVE >= PERMISSION_TIMEOUT_SIDE_EFFECT
                     assert data.get("requires_confirmation") is True
+            assert seen, "no PERMISSION_REQUEST event with tier=destructive was emitted"

@@ -125,7 +125,9 @@ class TestFlow3_PermissionClassification:
 
     def test_side_effect_requires_approval_in_developer(self):
         tier = classify_tool("write_file")
-        action = get_permission_action(tier, "developer")
+        # Consent is the auto_approve toggle (KD-12/T18); mode is ignored. The
+        # default is ON (session-331), so the prompting path sets it OFF explicitly.
+        action = get_permission_action(tier, "developer", auto_approve=False)
         assert action == PermissionAction.REQUIRE_APPROVAL
 
     def test_destructive_param_escalation(self):
@@ -134,7 +136,7 @@ class TestFlow3_PermissionClassification:
 
     def test_personal_mode_auto_approves_side_effect(self):
         tier = classify_tool("write_file")
-        action = get_permission_action(tier, "personal")
+        action = get_permission_action(tier, "personal", auto_approve=True)
         assert action == PermissionAction.AUTO_APPROVE
 
 

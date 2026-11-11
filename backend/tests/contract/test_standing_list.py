@@ -115,14 +115,24 @@ async def test_ac6_unreadable_config_empty_and_prompts(
 async def test_ac3_standing_list_auto_approves(
     monkeypatch, tmp_path, approval_ui_attached
 ):
-    """A SESSION_APPROVABLE tool on the standing list is auto-approved every session."""
-    _write_cfg(monkeypatch, tmp_path, {"mode": "personal", "approved_tools": ["write_file"]})
+    """A SESSION_APPROVABLE tool on the standing list is auto-approved every session.
+
+    auto_approve is OFF in the config: since session 331 the toggle defaults ON
+    (permissions.DEFAULT_AUTO_APPROVE) and would approve the write without the
+    standing list; OFF makes the standing list the only thing that can approve.
+    """
+    _write_cfg(monkeypatch, tmp_path, {"mode": "personal", "auto_approve": False, "approved_tools": ["write_file"]})
     bus = get_event_bus()
     seen = []
     bus.subscribe(IRISStreamEvent.PERMISSION_REQUEST, seen.append)
     bridge = AgentToolBridge()
     bridge._mcp_servers = {"file_manager": FileManagerServer()}
     bridge._initialized = True
+    # Personal mode with no folder chosen asks "where should it go?" before a
+    # new file is written inside IRIS's own folder (commit ec714226, owner,
+    # live 2026-10-12). This test is about consent, so the session has a chosen
+    # folder (a temp workdir) and the folder question never fires.
+    bridge.set_session_workdir("t25-ac3", str(tmp_path))
     task = asyncio.create_task(
         bridge.execute_tool(
             "write_file", {"path": "w", "content": "v"},
@@ -145,7 +155,7 @@ async def test_edge_standing_list_reread_mid_session(
 ):
     """The standing list is re-read on every call, so a mid-session edit takes effect."""
     p = tmp_path / "iris_config.json"
-    p.write_text(json.dumps({"mode": "personal", "approved_tools": ["write_file"]}), encoding="utf-8")
+    p.write_text(json.dumps({"mode": "personal", "auto_approve": False, "approved_tools": ["write_file"]}), encoding="utf-8")
     monkeypatch.setattr("backend.capabilities._CFG_PATH", str(p))
 
     bus = get_event_bus()
@@ -154,6 +164,11 @@ async def test_edge_standing_list_reread_mid_session(
     bridge = AgentToolBridge()
     bridge._mcp_servers = {"file_manager": FileManagerServer()}
     bridge._initialized = True
+    # Personal mode with no folder chosen asks "where should it go?" before a
+    # new file is written inside IRIS's own folder (commit ec714226, owner,
+    # live 2026-10-12). This test is about consent, so the session has a chosen
+    # folder (a temp workdir) and the folder question never fires.
+    bridge.set_session_workdir("t25-edge", str(tmp_path))
 
     # First call: write_file is on the standing list -> auto-approved (no prompt)
     task1 = asyncio.create_task(
@@ -170,7 +185,7 @@ async def test_edge_standing_list_reread_mid_session(
     await task1
 
     # Edit the config to remove write_file; the next call re-reads and now prompts
-    p.write_text(json.dumps({"mode": "personal", "approved_tools": []}), encoding="utf-8")
+    p.write_text(json.dumps({"mode": "personal", "auto_approve": False, "approved_tools": []}), encoding="utf-8")
     task2 = asyncio.create_task(
         bridge.execute_tool(
             "write_file", {"path": "b", "content": "2"},
