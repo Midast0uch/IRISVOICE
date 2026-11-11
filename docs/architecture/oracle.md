@@ -100,10 +100,12 @@ route_v2/outcome-v1 50 distinct (37 right / 13 wrong); browser_next/outcome-v1 2
 Merged gate on 285662f9: coding 8/8, research 8/8, browser 10/10, 0 tracebacks.
 
 CONTAMINATED WINDOW: route_v2 rows from 2026-11-11 09:11 to 10:02 UTC (D1 batch,
-cal_f21 .. cal_t17) - the TTS worker hung (/health 503 `tts: loading`, log
-"play_stream skipped: the audio device was busy for 60s"); 8 of 17 turns timed
-out, 5 of them where the Oracle and the gate chose the SAME route. Exclude that
-window when judging route_v2 (the clean window was 14/14), or re-collect.
+cal_f21 .. cal_t17): 8 of 17 turns timed out, 5 of them where the Oracle and the
+gate chose the SAME route. Cause (traced from the log, commit f66bbac5): from
+09:11 the web searches were slow (74-215 s each, `[ApiHttpx] read timed out`);
+at 09:56 the TTS worker wedged and its restart blocked forever (see H.4.2), so
+/health read 503 `tts: loading` and the runner stopped. Exclude that window
+when judging route_v2 (the clean window was 14/14), or re-collect.
 
 ### H.3 How to run traffic without mixing data (do exactly this)
 
@@ -138,22 +140,23 @@ window when judging route_v2 (the clean window was 14/14), or re-collect.
 
 ### H.4 Not settled - and how to fix each
 
-1. **The bar's 5% minority clause fails tool_choice for being accurate** (4.7%
-   wrong of 2353 labelled, precision 0.968 / Wilson 0.959 above its threshold).
-   It still decides on the PERSISTED bar record; a `--write` would switch it
-   off. OWNER DECISION. Fix option: require a minimum COUNT of wrong rows
-   (enough to rank errors, e.g. >= 50) instead of a 5% share, in
-   `consumer_bar._derive_hardened`, with a guard; every other clause unchanged.
-2. **TTS hang under long web traffic** (H.2). Reproduce with the `cal_*_web`
-   calibration tasks in one run; read `logs/stackdump_tts.log` and
-   `backend/agent/speech_lanes.py` (`_play_with_watchdog`) /
-   `backend/agent/tts.py` (`_reaper_loop`). Fix before trusting web-task labels.
-3. **Rows scored on the lane AFTER their verdict are lost** (found by the
-   page_relevance work): `turn_verdict_label.defer` after `report_verdict`
-   holds the row until the 256-turn cap drops it. Affects done, sufficient,
-   page_relevance (lane-scored rows); not route_v2 / browser_next (written
-   before the turn ends). Fix: keep a bounded map of recent verdicts in
-   `turn_verdict_label` and label a late `defer` at once; guard it.
+1. FIXED 2026-11-11 (owner: "fix the unsettled issues"; commit 1495c1cf):
+   under a 5% share, >= `MIN_MINORITY_ROWS` (= 50) minority rows meet the
+   minority clause; AUROC and every other clause still apply in full, no
+   waiver (tool_choice: 110 wrong of 2353). Guard `TestMinorityByCount`. A
+   `--write` is now safe for tool_choice; re-run the scoped report first.
+2. FIXED (commit f66bbac5): `tts._restart_worker` closed a wedged worker's
+   pipes BEFORE killing it, and `close()` waits for the reader threads' blocked
+   reads, so the restart never finished (/health 503 `tts: loading`). It now
+   kills, waits <= 5 s, then closes. Guard `test_tts_restart_teardown_contract.py`.
+   STILL OPEN: the respawn's model load runs on the speaking thread (up to 300 s
+   of silent speech after a restart - move it to a background thread); a
+   `readiness()` "loading" with nothing loading should be counted; WHY the
+   worker stalls on a short phrase is unknown (no dump of the worker process).
+3. FIXED (commit 00427ec2): `turn_verdict_label` remembers recent verdicts
+   (bounded); a row deferred after its verdict is labelled at once
+   (`stats()["labelled_late"]`). Rows of done / sufficient / page_relevance
+   collected BEFORE this fix may have been lost - expect more rows after it.
 4. **done and sufficient fire too rarely** for 100 rows in useful time. done:
    only in `_der_plan_next_step`; best tasks m03 (~5 rows/run), r17 (~3.4),
    m02 / r16 / r19 (~2). sufficient: only on a failed critical gather step
@@ -171,13 +174,12 @@ window when judging route_v2 (the clean window was 14/14), or re-collect.
    speed: MiniMax median 98 s, DeepSeek V4.1 Flash 52 s on 8 tasks, 2026-11-10).
    Re-recording the standards is an owner decision; never compare runs from
    different hours as evidence about code (section 0 rule 4).
-9. **Pre-existing test failures** (same on the committed code): test_permission_flow_behavior
-   (5), test_standing_list (2), test_e2e_pipeline side-effect-requires-approval,
-   behavioral/test_tool_registry idempotent beside tests/test_tool_registry.py,
-   test_dispatch_contract race / loser-cancelled (2), and the list in the
-   retirement commit 4d947e1a.
-10. `agent_config.yaml` still lists "surface_choice", "narration_gate" under the
-   Oracle capabilities (read by nothing): one-line cleanup.
+9. FIXED for the permission, standing-list, e2e, tool-registry and dispatch
+   tests (commit a24a508f, test-only, each change cites the owner decision that
+   made the old test stale). Still failing as before: the list in the
+   retirement commit 4d947e1a, and test_s10_oracle_model_hash_hit_reads_no_model_bytes
+   (imports the retired decision_backend_onnx).
+10. FIXED (commit 950d6053).
 
 ### H.5 Finalize the new model (d1-2B) - the order
 
