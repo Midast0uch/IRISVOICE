@@ -1,0 +1,7 @@
+{
+ "method:_local_openai_base": {
+  "old": "f61537fac4eb5036854a89a4adbfb2514a05f7ddbd35ea19fe36b5fe349c5b91",
+  "new": "8741a7aa5a0cd3bf941035f33dcf6e944a06ce415d0dbf5da26bad929f497047",
+  "reason": "relative import made absolute (module moved from backend/agent to backend/agent/kernel); 1 line(s)"
+ }
+}
