@@ -2,6 +2,9 @@
 # Bodies are byte-identical to the originals (guard: kernel_split_check.py manifest --check).
 from __future__ import annotations
 
+from backend.agent.kernel.der.finalize import (
+    _remember_turn_urls,
+)
 from typing import Any, Dict, Optional, List, Callable, Tuple, Sequence
 import json
 import time
