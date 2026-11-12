@@ -1007,6 +1007,18 @@ class ContextMixin:
                 if len(history) > _RECENCY_TURNS
                 else list(history)
             )
+            # Floor: the last user/assistant pair. Recalled chunks can take the
+            # whole budget (they are capped at 0.6 x window, the budget is a
+            # fixed 24k), and the trim then emptied the recency anchor: a
+            # follow-up ("and the second one?") went out with zero prior turns
+            # (reproduced 2026-11-12, budget_for_history=-2587).
+            _floor = (
+                recent[-2:]
+                if len(recent) >= 2
+                and recent[-2].get("role") == "user"
+                and recent[-1].get("role") == "assistant"
+                else []
+            )
             recent_tokens = self._count_tokens(recent)
             while recent and recent_tokens > max(budget_for_history, 0):
                 removed_item = recent.pop(0)
@@ -1016,6 +1028,13 @@ class ContextMixin:
             _clm_n_budget = len(recent)
             while recent and recent[0].get("role") != "user":
                 recent.pop(0)
+            if (
+                not recent
+                and _floor
+                and self._count_tokens(_floor) <= self._DIRECT_CTX_BUDGET
+            ):
+                recent = list(_floor)
+                _clm_n_budget = len(recent)
             history_block = recent
         else:
             # No chunks yet (first message / empty DB): full rolling window fallback

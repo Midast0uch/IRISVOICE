@@ -1088,55 +1088,11 @@ class DerRunMixin:
                     except Exception as _nb_exc:
                         loud_error(_nb_exc, "ontology_recall_neighborhood")
 
-                    # REQ-12 AC3 (T48, 2026-10-29): the step's own CHUNK memory.
-                    # The neighborhood above is chain rows typed by node_type +
-                    # domain, and an episode is not a fact: neither carries a
-                    # taught USER statement. That lives in a context_fragment
-                    # chunk (the turn pair), so the step that must answer recalls
-                    # it HERE, on the node that needs it - not in the planner.
-                    # Bounded to 3 x 300 chars, trusted only, cross-conversation.
-                    try:
-                        _ep_store = getattr(self._memory_interface, "episodic", None)
-                        _step_goal = getattr(item, "description", "") or ""
-                        if _ep_store is not None and _step_goal:
-                            _ch_rows = _ep_store.retrieve_context_chunks(
-                                _step_goal,
-                                session_id=None,
-                                limit=3,
-                                min_similarity=0.35,
-                                chunk_types=["context_fragment"],
-                                zones=["trusted"],
-                                with_meta=True,
-                            ) or []
-                            # REQ-12 AC2 (T48): `trusted` only means "not outside
-                            # content". Each row carries its PRODUCER, so the step
-                            # can weigh the user's statement above this agent's
-                            # own earlier answer instead of treating them alike.
-                            _LABELS = {
-                                "user_statement": "the user stated",
-                                "agent_step": "your earlier answer",
-                            }
-                            _ch_rows = sorted(
-                                _ch_rows,
-                                key=lambda r: 0 if r.get("producer") == "user_statement" else 1,
-                            )
-                            _ch_txt = "\n- ".join(
-                                "[{}] {}".format(
-                                    _LABELS.get(
-                                        r.get("producer"),
-                                        str(r.get("producer") or "memory").replace("tool:", "tool "),
-                                    ),
-                                    str(r.get("content") or "").strip()[:300].replace("\n", " "),
-                                )
-                                for r in _ch_rows if str(r.get("content") or "").strip()
-                            )
-                            if _ch_txt:
-                                _prior_ch = getattr(item, "coordinate_signal", "") or ""
-                                item.coordinate_signal = (
-                                    _prior_ch + "\nRELEVANT MEMORY:\n- " + _ch_txt
-                                ).strip()
-                    except Exception as _ch_exc:
-                        loud_error(_ch_exc, "step_chunk_recall")
+                    # REQ-12 AC3 (T48): the step's chunk memory reaches the prompt
+                    # through assemble_evidence -> _memory_facts (evidence.py), the
+                    # same retrieval. A copy here wrote into coordinate_signal,
+                    # which no prompt reads; removed 2026-11-12 (one fewer
+                    # retrieve_context_chunks per step).
 
                     # â”€â”€ REQ-3 T8 AC1/AC3: the node's compressed memory record is
                     # a FIRST-CLASS step input (not opt-in). If this item carries

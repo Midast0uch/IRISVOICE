@@ -38,6 +38,7 @@ from .transport import (
     InProcessTransport,
     OllamaTransport,
     OpenAICompatTransport,
+    PerThreadUsage,
     Transport,
 )
 from ..rate_meter import get_rate_meter, metered, quota_key
@@ -255,6 +256,9 @@ class InferenceRouter:
         router = InferenceRouter(config)
         text, thinking, tools = router.generate("reasoning", messages, tools)
     """
+
+    # Per calling thread: parallel DER nodes share this router (PerThreadUsage).
+    last_usage = PerThreadUsage()
 
     def __init__(self, config: Any) -> None:
         # Process-wide singletons (REQ-5): provider instances and role bindings

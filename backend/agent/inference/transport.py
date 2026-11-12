@@ -312,6 +312,41 @@ def parse_thinking(text: str) -> Tuple[str, str]:
     return "\n\n".join(thinking_parts), clean
 
 
+class PerThreadUsage:
+    """``last_usage`` kept per CALLING THREAD, not per object.
+
+    One transport object serves every call to its provider (the router caches
+    it), and one router serves every call of its kernel, including parallel
+    DER nodes. As a plain attribute, a call that finished a moment later
+    overwrote the usage before the first caller read it, so a node was
+    credited with another node's tokens (measured offline 2026-11-12: 140-170
+    of 400 concurrent calls read a foreign value). ``generate`` is synchronous
+    and its callers read ``last_usage`` on the same thread right after it
+    returns, so a thread-local slot gives each caller its own call's usage.
+    Reads and writes keep the attribute syntax: no reader changes.
+    """
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._slot = f"_{name}_per_thread"
+
+    def _local(self, obj: Any) -> Any:
+        # setdefault: atomic, so two threads that arrive first together share
+        # one slot. Created lazily because objects built with __new__ (tests)
+        # never run __init__.
+        local = obj.__dict__.get(self._slot)
+        if local is None:
+            local = obj.__dict__.setdefault(self._slot, _threading.local())
+        return local
+
+    def __get__(self, obj: Any, objtype: Optional[type] = None) -> Any:
+        if obj is None:
+            return self
+        return getattr(self._local(obj), "value", None)
+
+    def __set__(self, obj: Any, value: Optional[Dict[str, int]]) -> None:
+        self._local(obj).value = value
+
+
 # ---------------------------------------------------------------------------
 # Transport protocol  (structural typing via the Protocol class below)
 # ---------------------------------------------------------------------------
@@ -717,6 +752,8 @@ class ApiHttpxTransport:
 
     Does **not** use LiteLLM — httpx avoids the thread-pool hang issue.
     """
+
+    last_usage = PerThreadUsage()
 
     def __init__(
         self, api_base_url: str, api_key: str, quota_id: Optional[str] = None
@@ -1281,6 +1318,8 @@ class OpenAICompatTransport:
     - Same streaming/thinking/tool-call parsing as ``ApiHttpxTransport``.
     - 3-attempt retry with exponential backoff.
     """
+
+    last_usage = PerThreadUsage()
 
     def __init__(self, endpoint: str, quota_id: Optional[str] = None) -> None:
         self._endpoint = endpoint.rstrip("/")
@@ -1910,6 +1949,8 @@ class OllamaTransport:
     No streaming support — Ollama native API is called non-streaming.
     Tools: sent when given; tool calls come back in the OpenAI shape.
     """
+
+    last_usage = PerThreadUsage()
 
     def __init__(
         self, endpoint: str = "http://localhost:11434", quota_id: Optional[str] = None
