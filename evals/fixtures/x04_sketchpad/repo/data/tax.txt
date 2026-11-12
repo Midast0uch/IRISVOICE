@@ -1,0 +1,105 @@
+SHIPPING TAX RULES 2026
+
+Tax is added to the shipping cost of an order and depends on the region of its zone.
+For zones in the north region the tax rate is 5 percent.
+For zones in the south region the tax rate is 8 percent.
+For zones in the east region the tax rate is 6 percent.
+For zones in the west region the tax rate is 10 percent.
+Memo 488: carrier C surcharges are handled elsewhere.
+Archive ref 8485: superseded 2025 table, ignore.
+Memo 719: carrier C surcharges are handled elsewhere.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Memo 983: carrier B surcharges are handled elsewhere.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Archive ref 2033: superseded 2025 table, ignore.
+Archive ref 2510: superseded 2025 table, ignore.
+Memo 573: carrier B surcharges are handled elsewhere.
+Archive ref 2372: superseded 2025 table, ignore.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Memo 104: carrier C surcharges are handled elsewhere.
+Archive ref 6668: superseded 2025 table, ignore.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Archive ref 5171: superseded 2025 table, ignore.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Memo 616: carrier A surcharges are handled elsewhere.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Archive ref 4442: superseded 2025 table, ignore.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Archive ref 9325: superseded 2025 table, ignore.
+Memo 950: carrier A surcharges are handled elsewhere.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Archive ref 2820: superseded 2025 table, ignore.
+Archive ref 4062: superseded 2025 table, ignore.
+Archive ref 1327: superseded 2025 table, ignore.
+Archive ref 8823: superseded 2025 table, ignore.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Archive ref 8790: superseded 2025 table, ignore.
+Memo 500: carrier C surcharges are handled elsewhere.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Memo 818: carrier C surcharges are handled elsewhere.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Archive ref 9897: superseded 2025 table, ignore.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Archive ref 8492: superseded 2025 table, ignore.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Memo 410: carrier C surcharges are handled elsewhere.
+Memo 720: carrier C surcharges are handled elsewhere.
+Archive ref 3056: superseded 2025 table, ignore.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Archive ref 2783: superseded 2025 table, ignore.
+Archive ref 1662: superseded 2025 table, ignore.
+Memo 299: carrier A surcharges are handled elsewhere.
+Memo 682: carrier C surcharges are handled elsewhere.
+Memo 975: carrier B surcharges are handled elsewhere.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Archive ref 1235: superseded 2025 table, ignore.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Archive ref 6546: superseded 2025 table, ignore.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Archive ref 6692: superseded 2025 table, ignore.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Memo 947: carrier A surcharges are handled elsewhere.
+Memo 591: carrier A surcharges are handled elsewhere.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Archive ref 4198: superseded 2025 table, ignore.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Archive ref 9554: superseded 2025 table, ignore.
+Archive ref 9147: superseded 2025 table, ignore.
+Memo 454: carrier B surcharges are handled elsewhere.
+Archive ref 6108: superseded 2025 table, ignore.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Weights are rounded UP to the next whole kilogram before the per-kg rate applies.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.
+Archive ref 7803: superseded 2025 table, ignore.
+Memo 782: carrier B surcharges are handled elsewhere.
+Customs notes are filed quarterly by the compliance desk and do not change these rates.
+Archive ref 7234: superseded 2025 table, ignore.
+Rounding: the final cost of EACH order is rounded half up to whole cents; totals add the rounded costs.

@@ -1,0 +1,93 @@
+2026-03-14 06:44:39 svc-04 INFO  connected to catalog at 10.1.5.23 in 19ms
+2026-03-14 06:44:40 svc-04 INFO  connected to edge at 10.1.2.90 in 56ms
+2026-03-14 06:44:43 svc-04 INFO  connected to search at 10.1.3.26 in 63ms
+2026-03-14 06:44:49 svc-04 INFO  heartbeat ok uptime=24434s rss_mb=456
+2026-03-14 06:44:50 svc-04 DEBUG cache hit key=user:2156 ttl=597s
+2026-03-14 06:44:56 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=55 conns=53
+2026-03-14 06:44:58 svc-04 DEBUG cache hit key=user:3662 ttl=350s
+2026-03-14 06:45:02 svc-04 INFO  connected to auth at 10.3.2.75 in 46ms
+2026-03-14 06:45:04 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=139 conns=27
+2026-03-14 06:45:08 svc-04 WARN  slow response from 10.3.8.33 after 1466ms (no error)
+2026-03-14 06:45:12 svc-04 DEBUG cache hit key=user:3961 ttl=189s
+2026-03-14 06:45:14 svc-04 INFO  request id=36427841 path=/api/v2/orders status=200 ms=248
+2026-03-14 06:45:21 svc-04 INFO  connected to search at 10.2.2.23 in 37ms
+2026-03-14 06:45:29 svc-04 WARN  retrying after E-2203 on 10.2.0.86 attempt=1 (recovered)
+2026-03-14 06:45:30 svc-04 INFO  connected to sync at 10.2.1.37 in 7ms
+2026-03-14 06:45:36 svc-04 DEBUG cache hit key=user:4792 ttl=116s
+2026-03-14 06:45:40 svc-04 INFO  request id=48833684 path=/api/v2/cart status=200 ms=263
+2026-03-14 06:45:44 svc-04 WARN  slow response from 10.1.7.89 after 1776ms (no error)
+2026-03-14 06:45:52 svc-04 DEBUG cache hit key=user:1806 ttl=172s
+2026-03-14 06:45:55 svc-04 INFO  heartbeat ok uptime=48666s rss_mb=139
+2026-03-14 06:45:59 svc-04 INFO  connected to search at 10.2.0.73 in 66ms
+2026-03-14 06:46:06 svc-04 INFO  connected to auth at 10.1.5.61 in 21ms
+2026-03-14 06:46:10 svc-04 WARN  retrying after E-4417 on 10.1.5.52 attempt=1 (recovered)
+2026-03-14 06:46:14 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=257 conns=46
+2026-03-14 06:46:15 svc-04 INFO  connected to mailer at 10.1.7.67 in 62ms
+2026-03-14 06:46:17 svc-04 INFO  connected to search at 10.3.8.4 in 50ms
+2026-03-14 06:46:21 svc-04 WARN  retrying after E-2203 on 10.3.6.95 attempt=2 (recovered)
+2026-03-14 06:46:28 svc-04 WARN  retrying after E-9001 on 10.1.1.48 attempt=1 (recovered)
+2026-03-14 06:46:33 svc-04 INFO  heartbeat ok uptime=70056s rss_mb=598
+2026-03-14 06:46:39 svc-04 INFO  heartbeat ok uptime=43590s rss_mb=387
+2026-03-14 06:46:47 svc-04 INFO  connected to catalog at 10.3.1.31 in 44ms
+2026-03-14 06:46:48 svc-04 DEBUG cache hit key=user:7893 ttl=331s
+2026-03-14 06:46:54 svc-04 DEBUG cache hit key=user:4205 ttl=521s
+2026-03-14 06:46:55 svc-04 INFO  connected to catalog at 10.1.1.62 in 6ms
+2026-03-14 06:47:01 svc-04 WARN  slow response from 10.2.6.98 after 1240ms (no error)
+2026-03-14 06:47:04 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=270 conns=75
+2026-03-14 06:47:12 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=275 conns=89
+2026-03-14 06:47:15 svc-04 INFO  request id=53260851 path=/api/v2/items status=200 ms=199
+2026-03-14 06:47:17 svc-04 WARN  slow response from 10.3.8.36 after 1772ms (no error)
+2026-03-14 06:47:22 svc-04 INFO  connected to mailer at 10.2.4.90 in 66ms
+2026-03-14 06:47:28 svc-04 INFO  heartbeat ok uptime=36721s rss_mb=376
+2026-03-14 06:47:33 svc-04 INFO  heartbeat ok uptime=32966s rss_mb=149
+2026-03-14 06:47:40 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=87 conns=27
+2026-03-14 06:47:43 svc-04 WARN  retrying after E-2203 on 10.2.3.92 attempt=2 (recovered)
+2026-03-14 06:47:51 svc-04 DEBUG cache hit key=user:7674 ttl=174s
+2026-03-14 06:51:41 svc-04 ERROR [E-7742] token signature invalid (host=10.3.1.58 attempt=2)
+2026-03-14 06:48:02 svc-04 WARN  retrying after E-4417 on 10.3.6.44 attempt=1 (recovered)
+2026-03-14 06:51:42 svc-04 ERROR [E-7742] token signature invalid (host=10.2.5.50 attempt=4)
+2026-03-14 06:48:10 svc-04 WARN  retrying after E-4417 on 10.1.0.36 attempt=2 (recovered)
+2026-03-14 06:48:17 svc-04 INFO  request id=36742909 path=/api/v2/cart status=200 ms=381
+2026-03-14 06:48:22 svc-04 INFO  request id=25303713 path=/api/v2/orders status=200 ms=331
+2026-03-14 06:48:30 svc-04 INFO  request id=83217390 path=/static/app.js status=200 ms=191
+2026-03-14 06:48:37 svc-04 INFO  heartbeat ok uptime=34480s rss_mb=704
+2026-03-14 06:48:42 svc-04 WARN  slow response from 10.1.7.48 after 1373ms (no error)
+2026-03-14 06:48:46 svc-04 WARN  slow response from 10.2.7.39 after 1593ms (no error)
+2026-03-14 06:48:51 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=281 conns=47
+2026-03-14 06:48:58 svc-04 INFO  connected to search at 10.2.7.84 in 27ms
+2026-03-14 06:49:03 svc-04 INFO  connected to edge at 10.3.0.66 in 36ms
+2026-03-14 06:49:06 svc-04 INFO  request id=25449941 path=/api/v1/login status=200 ms=287
+2026-03-14 06:49:14 svc-04 INFO  connected to ingest at 10.1.8.2 in 22ms
+2026-03-14 06:49:17 svc-04 WARN  slow response from 10.2.8.18 after 1953ms (no error)
+2026-03-14 06:49:18 svc-04 WARN  slow response from 10.2.3.30 after 1775ms (no error)
+2026-03-14 06:49:20 svc-04 DEBUG cache hit key=user:2431 ttl=38s
+2026-03-14 06:49:21 svc-04 WARN  slow response from 10.2.0.35 after 1115ms (no error)
+2026-03-14 06:49:28 svc-04 DEBUG cache hit key=user:5194 ttl=182s
+2026-03-14 06:49:35 svc-04 INFO  heartbeat ok uptime=25311s rss_mb=662
+2026-03-14 06:49:43 svc-04 INFO  heartbeat ok uptime=28202s rss_mb=886
+2026-03-14 06:49:50 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=139 conns=78
+2026-03-14 06:49:51 svc-04 WARN  slow response from 10.2.8.28 after 890ms (no error)
+2026-03-14 06:49:52 svc-04 DEBUG cache hit key=user:7568 ttl=582s
+2026-03-14 06:50:00 svc-04 DEBUG cache hit key=user:6087 ttl=412s
+2026-03-14 06:50:08 svc-04 INFO  heartbeat ok uptime=85789s rss_mb=730
+2026-03-14 06:50:10 svc-04 INFO  connected to mailer at 10.2.2.55 in 13ms
+2026-03-14 06:50:15 svc-04 WARN  retrying after E-2203 on 10.2.4.86 attempt=1 (recovered)
+2026-03-14 06:50:16 svc-04 DEBUG cache hit key=user:9200 ttl=146s
+2026-03-14 06:50:17 svc-04 INFO  request id=96090522 path=/static/app.js status=200 ms=364
+2026-03-14 06:50:24 svc-04 WARN  slow response from 10.1.8.26 after 1725ms (no error)
+2026-03-14 06:50:26 svc-04 INFO  connected to billing at 10.3.8.66 in 57ms
+2026-03-14 06:50:31 svc-04 WARN  retrying after E-4417 on 10.2.5.17 attempt=2 (recovered)
+2026-03-14 06:50:36 svc-04 INFO  request id=61587461 path=/api/v2/items status=200 ms=140
+2026-03-14 06:50:42 svc-04 INFO  request id=86104527 path=/api/v2/cart status=200 ms=35
+2026-03-14 06:50:45 svc-04 INFO  connected to edge at 10.1.2.20 in 45ms
+2026-03-14 06:50:46 svc-04 WARN  retrying after E-9001 on 10.3.4.86 attempt=1 (recovered)
+2026-03-14 06:50:50 svc-04 INFO  metrics errors=0 error_rate=0.00 p95_ms=247 conns=15
+2026-03-14 06:50:53 svc-04 WARN  retrying after E-9001 on 10.1.3.34 attempt=2 (recovered)
+2026-03-14 06:50:55 svc-04 INFO  request id=83543321 path=/api/v2/cart status=200 ms=306
+2026-03-14 06:51:00 svc-04 INFO  request id=74528928 path=/api/v2/cart status=200 ms=214
+2026-03-14 06:51:01 svc-04 WARN  retrying after E-2203 on 10.1.1.60 attempt=1 (recovered)
+2026-03-14 06:51:09 svc-04 DEBUG cache hit key=user:4529 ttl=324s
+2026-03-14 06:51:17 svc-04 DEBUG cache hit key=user:1536 ttl=573s
+2026-03-14 06:51:20 svc-04 INFO  request id=19659394 path=/healthz status=200 ms=299
+2026-03-14 06:51:25 svc-04 DEBUG cache hit key=user:3896 ttl=40s
+2026-03-14 06:51:33 svc-04 WARN  retrying after E-2203 on 10.2.4.39 attempt=2 (recovered)

@@ -1,0 +1,91 @@
+2026-03-14 06:40:38 svc-06 WARN  retrying after E-2203 on 10.2.0.40 attempt=1 (recovered)
+2026-03-14 06:40:40 svc-06 INFO  request id=40484729 path=/api/v2/items status=200 ms=336
+2026-03-14 06:40:48 svc-06 WARN  retrying after E-2203 on 10.2.4.56 attempt=2 (recovered)
+2026-03-14 06:40:53 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=197 conns=56
+2026-03-14 06:40:57 svc-06 INFO  heartbeat ok uptime=53622s rss_mb=753
+2026-03-14 06:41:01 svc-06 INFO  request id=96202180 path=/static/app.js status=200 ms=358
+2026-03-14 06:41:07 svc-06 WARN  slow response from 10.2.6.47 after 1305ms (no error)
+2026-03-14 06:41:08 svc-06 INFO  connected to sync at 10.3.4.97 in 60ms
+2026-03-14 06:41:15 svc-06 INFO  heartbeat ok uptime=70587s rss_mb=878
+2026-03-14 06:41:20 svc-06 WARN  retrying after E-9001 on 10.3.4.12 attempt=2 (recovered)
+2026-03-14 06:41:21 svc-06 INFO  heartbeat ok uptime=80215s rss_mb=277
+2026-03-14 06:41:29 svc-06 INFO  heartbeat ok uptime=95544s rss_mb=115
+2026-03-14 06:41:35 svc-06 INFO  heartbeat ok uptime=36064s rss_mb=87
+2026-03-14 06:41:42 svc-06 INFO  connected to search at 10.2.1.65 in 16ms
+2026-03-14 06:41:44 svc-06 WARN  slow response from 10.3.0.28 after 1797ms (no error)
+2026-03-14 06:41:45 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=128 conns=28
+2026-03-14 06:41:46 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=226 conns=25
+2026-03-14 06:47:40 svc-06 ERROR [E-4417] upstream timeout after retries (host=10.3.1.59 attempt=4)
+2026-03-14 06:41:54 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=158 conns=29
+2026-03-14 06:41:57 svc-06 DEBUG cache hit key=user:6208 ttl=257s
+2026-03-14 06:42:00 svc-06 WARN  slow response from 10.3.6.41 after 1405ms (no error)
+2026-03-14 06:42:05 svc-06 DEBUG cache hit key=user:4370 ttl=236s
+2026-03-14 06:42:09 svc-06 WARN  retrying after E-9001 on 10.1.6.47 attempt=1 (recovered)
+2026-03-14 06:42:16 svc-06 DEBUG cache hit key=user:2453 ttl=400s
+2026-03-14 06:42:19 svc-06 INFO  connected to sync at 10.1.4.22 in 74ms
+2026-03-14 06:42:27 svc-06 INFO  connected to edge at 10.3.1.75 in 7ms
+2026-03-14 06:42:33 svc-06 INFO  request id=75732739 path=/api/v1/login status=200 ms=236
+2026-03-14 06:42:38 svc-06 WARN  retrying after E-9001 on 10.1.5.85 attempt=2 (recovered)
+2026-03-14 06:42:43 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=129 conns=50
+2026-03-14 06:42:50 svc-06 WARN  slow response from 10.1.3.5 after 2221ms (no error)
+2026-03-14 06:42:57 svc-06 WARN  retrying after E-4417 on 10.3.7.76 attempt=2 (recovered)
+2026-03-14 06:43:00 svc-06 DEBUG cache hit key=user:8539 ttl=489s
+2026-03-14 06:43:07 svc-06 WARN  retrying after E-2203 on 10.1.1.29 attempt=1 (recovered)
+2026-03-14 06:43:10 svc-06 WARN  retrying after E-9001 on 10.1.4.32 attempt=1 (recovered)
+2026-03-14 06:43:13 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=220 conns=84
+2026-03-14 06:43:17 svc-06 INFO  heartbeat ok uptime=53267s rss_mb=137
+2026-03-14 06:43:25 svc-06 DEBUG cache hit key=user:6979 ttl=209s
+2026-03-14 06:43:32 svc-06 INFO  heartbeat ok uptime=20704s rss_mb=317
+2026-03-14 06:43:40 svc-06 DEBUG cache hit key=user:7381 ttl=75s
+2026-03-14 06:43:44 svc-06 INFO  request id=74809057 path=/api/v2/items status=200 ms=184
+2026-03-14 06:43:48 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=69 conns=79
+2026-03-14 06:43:55 svc-06 INFO  request id=53426873 path=/api/v2/items status=200 ms=365
+2026-03-14 06:44:03 svc-06 WARN  slow response from 10.1.0.67 after 1102ms (no error)
+2026-03-14 06:44:04 svc-06 DEBUG cache hit key=user:4157 ttl=412s
+2026-03-14 06:44:11 svc-06 WARN  retrying after E-2203 on 10.1.3.53 attempt=1 (recovered)
+2026-03-14 06:47:46 svc-06 ERROR [E-4417] upstream timeout after retries (host=10.1.6.33 attempt=2)
+2026-03-14 06:44:25 svc-06 WARN  retrying after E-2203 on 10.1.2.3 attempt=2 (recovered)
+2026-03-14 06:44:26 svc-06 WARN  retrying after E-4417 on 10.1.1.37 attempt=2 (recovered)
+2026-03-14 06:44:33 svc-06 INFO  request id=33677337 path=/api/v2/items status=200 ms=17
+2026-03-14 06:44:38 svc-06 INFO  connected to sync at 10.2.1.55 in 58ms
+2026-03-14 06:44:40 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=122 conns=19
+2026-03-14 06:44:42 svc-06 INFO  connected to catalog at 10.3.0.14 in 77ms
+2026-03-14 06:44:44 svc-06 INFO  request id=60897487 path=/api/v1/login status=200 ms=23
+2026-03-14 06:44:51 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=237 conns=37
+2026-03-14 06:44:57 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=292 conns=81
+2026-03-14 06:45:01 svc-06 WARN  retrying after E-2203 on 10.3.3.67 attempt=1 (recovered)
+2026-03-14 06:45:05 svc-06 INFO  connected to search at 10.2.5.31 in 11ms
+2026-03-14 06:45:07 svc-06 WARN  retrying after E-4417 on 10.2.5.18 attempt=1 (recovered)
+2026-03-14 06:45:08 svc-06 WARN  slow response from 10.1.5.48 after 1922ms (no error)
+2026-03-14 06:45:09 svc-06 INFO  request id=42543817 path=/healthz status=200 ms=187
+2026-03-14 06:45:15 svc-06 DEBUG cache hit key=user:8854 ttl=496s
+2026-03-14 06:45:23 svc-06 INFO  connected to billing at 10.2.8.80 in 62ms
+2026-03-14 06:45:31 svc-06 INFO  heartbeat ok uptime=98024s rss_mb=382
+2026-03-14 06:45:38 svc-06 WARN  retrying after E-9001 on 10.1.1.62 attempt=2 (recovered)
+2026-03-14 06:45:40 svc-06 DEBUG cache hit key=user:7463 ttl=325s
+2026-03-14 06:45:47 svc-06 INFO  connected to mailer at 10.1.3.71 in 17ms
+2026-03-14 06:45:54 svc-06 INFO  request id=29562617 path=/api/v2/items status=200 ms=126
+2026-03-14 06:46:02 svc-06 WARN  slow response from 10.2.2.12 after 2219ms (no error)
+2026-03-14 06:46:05 svc-06 DEBUG cache hit key=user:6582 ttl=527s
+2026-03-14 06:46:10 svc-06 WARN  slow response from 10.3.6.52 after 1186ms (no error)
+2026-03-14 06:46:13 svc-06 INFO  connected to edge at 10.3.6.16 in 49ms
+2026-03-14 06:46:14 svc-06 WARN  slow response from 10.3.4.97 after 2061ms (no error)
+2026-03-14 06:46:19 svc-06 INFO  heartbeat ok uptime=14784s rss_mb=439
+2026-03-14 06:46:25 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=26 conns=70
+2026-03-14 06:46:29 svc-06 INFO  request id=36700216 path=/healthz status=200 ms=259
+2026-03-14 06:46:30 svc-06 WARN  slow response from 10.3.3.29 after 1946ms (no error)
+2026-03-14 06:46:33 svc-06 INFO  connected to ingest at 10.2.4.61 in 77ms
+2026-03-14 06:46:39 svc-06 INFO  connected to mailer at 10.1.2.78 in 45ms
+2026-03-14 06:46:42 svc-06 INFO  connected to sync at 10.1.8.58 in 8ms
+2026-03-14 06:46:43 svc-06 WARN  slow response from 10.1.1.38 after 1199ms (no error)
+2026-03-14 06:46:51 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=102 conns=42
+2026-03-14 06:46:59 svc-06 WARN  slow response from 10.3.5.20 after 827ms (no error)
+2026-03-14 06:47:03 svc-06 INFO  request id=39129294 path=/api/v2/items status=200 ms=43
+2026-03-14 06:47:07 svc-06 INFO  heartbeat ok uptime=82252s rss_mb=806
+2026-03-14 06:47:08 svc-06 WARN  slow response from 10.2.0.73 after 1823ms (no error)
+2026-03-14 06:47:14 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=27 conns=14
+2026-03-14 06:47:50 svc-06 ERROR [E-4417] upstream timeout after retries (host=10.1.4.97 attempt=1)
+2026-03-14 06:47:24 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=89 conns=86
+2026-03-14 06:47:25 svc-06 INFO  heartbeat ok uptime=20554s rss_mb=287
+2026-03-14 06:47:29 svc-06 DEBUG cache hit key=user:1804 ttl=13s
+2026-03-14 06:47:37 svc-06 INFO  metrics errors=0 error_rate=0.00 p95_ms=253 conns=10

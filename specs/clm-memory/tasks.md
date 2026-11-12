@@ -191,6 +191,44 @@ same-conditions A/B, numbers named with their cohort.
 
 ## Wave 2 - Offload, placeholder, re-expand (the first behavior change)
 
+> **Wave 2 state 2026-11-12.**
+> DONE (unwired): T2.1 + T2.2 core in `context_view.py` (placeholder, MIN_SAVING = 256
+> from 730 real tool messages, `offload_decision` with nine counted refusal reasons,
+> `set_aside_batch` / `restore`; a set-aside keeps every message in place and replaces
+> only the result CONTENT, so no orphan tool_calls and no role change);
+> `contract/test_view_offload_gate_contract.py` 16 tests. T2.7 the `--group context`
+> tasks x01-x05 with seeded fixtures, `evals/context_report.py`, `prior_turns` in the
+> harness, and an eval-only message dump (`IRIS_CLM_DUMP_DIR`).
+>
+> **BEFORE run of `--group context` (two passes, opencodego / deepseek-v4.1-flash,
+> window 128,000, no offload code live):** x01, x02, x03, x04 PASS 2/2; x05 FAIL 2/2
+> (the 30,000-char pasted turns each start heavy work: 168 model calls, ~30 min, a
+> prior turn got no reply - the task as built measures a timeout, not history; it
+> must be redesigned before it counts). Max context fill 0.06-0.20 (x05 0.31), blind
+> drops 0, needed facts in the final call: x01 7/7, x02 1/1, x04 4/4, x03 3/12 (it
+> still passed: the model carried computed values, not the leaves).
+> **What this means:** on a 128k model the node path cannot fill the window (one node
+> tops out near 42k tokens = 0.33) and these tasks pass WITHOUT CLM. The gain must be
+> shown where pressure exists: a small-window local model (T2.8). T2.8 therefore moves
+> INTO the Wave 2 gate: same tasks, same small model, offload off vs on.
+>
+> **WHERE A TOOL RESULT LIVES (owner decision 2026-11-12, replaces "document store"):**
+> the document store is for ARTIFACTS (web/research results, documents the agent
+> makes); tool results do not go there. The exact text of a node tool result goes to
+> the CHAT RECORD (`data/conversations.db`, `backend/conversation_store.py`) in a new
+> table keyed by conversation and turn, deleted with its conversation; the NODE
+> TAXONOMY carries the reference: the `OFFLOADED` memory event (label already seeded,
+> payload = the ref, never content - S12) links the node to that row, so the memory
+> dashboard can show it on the strand. Rules: write on an ordered lane, never on the
+> answer path; only a result longer than what later steps keep (> 2,500 chars);
+> never a store read; a size cap per row and a row cap per conversation (growth has
+> a budget); `Ref(kind="tool_result", id)`. Note for the owner: conversations.db is
+> a PLAINTEXT sqlite file (memory.db is encrypted); chat messages already live
+> there in plaintext, and tool results (file contents) would too.
+> The in-node `held` ref (the view returns its own bytes while the node runs) stays
+> for the node's own restore; a placeholder that can outlive the node carries the
+> `tool_result` ref.
+
 - [ ] **T2.1** (CLM-2 AC1, AC5): placeholder format + break-even from T0.1 data.
   DONE = unit tests on format and arithmetic; `MIN_SAVING` written with its measurement.
   NOT THIS = a template system.

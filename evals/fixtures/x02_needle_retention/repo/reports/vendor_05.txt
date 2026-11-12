@@ -1,0 +1,193 @@
+VENDOR REPORT 05 - period 2026-Q1
+vendor_ref: V2964
+credit_total: 868.79
+invoice_subtotal: 850.46
+note: delivery batch 899 acknowledged by dock-c at 13:05
+line_item 112: rack kit qty=51 amount: 712.48
+credit_total: 352.83
+note: delivery batch 985 acknowledged by dock-b at 10:14
+invoice_subtotal: 442.43
+invoice_subtotal: 269.67
+credit_total: 141.37
+line_item 293: support hours qty=6 amount: 426.19
+line_item 719: rack kit qty=50 amount: 22.88
+line_item 433: freight qty=44 amount: 273.30
+note: delivery batch 972 acknowledged by dock-c at 16:27
+credit_total: 889.78
+line_item 829: bolts qty=58 amount: 749.50
+invoice_subtotal: 437.95
+invoice_subtotal: 503.24
+credit_total: 767.24
+invoice_subtotal: 737.64
+invoice_subtotal: 330.28
+line_item 532: bolts qty=28 amount: 188.64
+credit_total: 101.34
+line_item 181: licence qty=6 amount: 986.51
+note: delivery batch 751 acknowledged by dock-a at 06:50
+credit_total: 101.02
+invoice_subtotal: 915.45
+credit_total: 930.75
+invoice_subtotal: 598.76
+credit_total: 520.72
+invoice_subtotal: 98.66
+invoice_subtotal: 542.92
+note: delivery batch 660 acknowledged by dock-c at 07:06
+invoice_subtotal: 542.77
+line_item 816: rack kit qty=21 amount: 982.50
+credit_total: 777.90
+note: delivery batch 435 acknowledged by dock-a at 10:39
+credit_total: 785.51
+invoice_subtotal: 655.15
+line_item 721: bolts qty=43 amount: 456.40
+invoice_subtotal: 369.96
+invoice_subtotal: 675.52
+line_item 488: bolts qty=43 amount: 355.07
+credit_total: 931.61
+line_item 655: support hours qty=34 amount: 600.88
+invoice_subtotal: 469.71
+line_item 672: licence qty=16 amount: 321.90
+note: delivery batch 393 acknowledged by dock-a at 11:47
+line_item 684: rack kit qty=43 amount: 315.37
+line_item 013: freight qty=40 amount: 397.93
+note: delivery batch 116 acknowledged by dock-b at 13:36
+note: delivery batch 638 acknowledged by dock-b at 17:13
+credit_total: 125.65
+credit_total: 401.08
+invoice_subtotal: 18.01
+line_item 441: support hours qty=25 amount: 290.64
+invoice_subtotal: 152.21
+invoice_subtotal: 349.10
+invoice_subtotal: 548.28
+line_item 410: support hours qty=6 amount: 918.65
+invoice_total: 3491.32
+credit_total: 73.27
+note: delivery batch 419 acknowledged by dock-c at 17:46
+note: delivery batch 552 acknowledged by dock-b at 06:58
+note: delivery batch 802 acknowledged by dock-a at 18:20
+note: delivery batch 487 acknowledged by dock-b at 15:39
+note: delivery batch 811 acknowledged by dock-a at 10:02
+credit_total: 471.79
+credit_total: 817.83
+invoice_total: 4302.89
+line_item 179: rack kit qty=24 amount: 772.69
+credit_total: 767.33
+credit_total: 810.07
+line_item 495: freight qty=53 amount: 258.41
+credit_total: 570.31
+note: delivery batch 772 acknowledged by dock-a at 08:48
+invoice_subtotal: 358.71
+invoice_subtotal: 250.77
+line_item 770: cable qty=38 amount: 534.58
+note: delivery batch 714 acknowledged by dock-a at 09:47
+invoice_subtotal: 449.37
+line_item 671: rack kit qty=52 amount: 544.06
+invoice_subtotal: 698.88
+invoice_subtotal: 778.12
+note: delivery batch 249 acknowledged by dock-a at 06:43
+note: delivery batch 847 acknowledged by dock-c at 14:29
+note: delivery batch 397 acknowledged by dock-a at 13:36
+invoice_subtotal: 720.78
+line_item 367: licence qty=49 amount: 241.12
+credit_total: 246.20
+invoice_subtotal: 483.97
+line_item 451: cable qty=4 amount: 386.57
+credit_total: 641.05
+invoice_subtotal: 483.42
+note: delivery batch 779 acknowledged by dock-a at 10:16
+credit_total: 602.06
+invoice_subtotal: 407.32
+invoice_total: 897.56
+credit_total: 748.22
+invoice_subtotal: 98.28
+line_item 795: support hours qty=56 amount: 193.15
+invoice_subtotal: 102.66
+note: delivery batch 350 acknowledged by dock-a at 13:33
+line_item 459: freight qty=13 amount: 511.66
+invoice_subtotal: 743.47
+credit_total: 40.13
+credit_total: 796.73
+note: delivery batch 713 acknowledged by dock-a at 12:38
+credit_total: 543.34
+line_item 172: support hours qty=9 amount: 568.30
+invoice_subtotal: 394.23
+credit_total: 765.83
+note: delivery batch 627 acknowledged by dock-b at 11:15
+invoice_subtotal: 895.35
+note: delivery batch 118 acknowledged by dock-a at 06:29
+invoice_subtotal: 785.28
+line_item 640: cable qty=55 amount: 951.10
+credit_total: 701.08
+invoice_subtotal: 817.25
+credit_total: 731.98
+credit_total: 933.73
+invoice_subtotal: 445.86
+line_item 857: cable qty=58 amount: 31.45
+credit_total: 530.05
+note: delivery batch 670 acknowledged by dock-c at 09:23
+invoice_subtotal: 38.91
+note: delivery batch 610 acknowledged by dock-b at 13:38
+line_item 009: rack kit qty=9 amount: 38.78
+line_item 730: rack kit qty=7 amount: 35.28
+note: delivery batch 994 acknowledged by dock-b at 11:50
+note: delivery batch 677 acknowledged by dock-b at 19:49
+line_item 007: rack kit qty=41 amount: 903.91
+note: delivery batch 466 acknowledged by dock-a at 09:01
+line_item 507: licence qty=20 amount: 98.29
+line_item 874: freight qty=52 amount: 23.43
+line_item 410: freight qty=45 amount: 448.39
+line_item 083: freight qty=24 amount: 249.09
+credit_total: 614.53
+credit_total: 527.88
+note: delivery batch 495 acknowledged by dock-a at 12:51
+line_item 145: licence qty=41 amount: 466.78
+invoice_subtotal: 377.31
+note: delivery batch 558 acknowledged by dock-a at 10:05
+invoice_subtotal: 319.02
+credit_total: 375.45
+credit_total: 679.31
+invoice_subtotal: 205.57
+credit_total: 632.60
+note: delivery batch 763 acknowledged by dock-c at 10:36
+line_item 496: support hours qty=31 amount: 980.78
+note: delivery batch 405 acknowledged by dock-c at 15:21
+credit_total: 56.03
+credit_total: 758.49
+invoice_subtotal: 179.24
+note: delivery batch 262 acknowledged by dock-c at 06:27
+note: delivery batch 949 acknowledged by dock-a at 08:57
+line_item 084: freight qty=35 amount: 662.87
+credit_total: 618.98
+note: delivery batch 537 acknowledged by dock-b at 16:13
+note: delivery batch 175 acknowledged by dock-c at 10:58
+line_item 839: support hours qty=2 amount: 248.20
+credit_total: 282.01
+note: delivery batch 891 acknowledged by dock-a at 06:48
+note: delivery batch 889 acknowledged by dock-b at 10:23
+invoice_subtotal: 959.78
+note: delivery batch 801 acknowledged by dock-b at 06:39
+invoice_subtotal: 332.61
+note: delivery batch 606 acknowledged by dock-c at 17:39
+invoice_subtotal: 803.20
+line_item 566: freight qty=7 amount: 342.38
+line_item 576: freight qty=35 amount: 591.98
+credit_total: 724.87
+note: delivery batch 901 acknowledged by dock-c at 15:16
+line_item 162: rack kit qty=27 amount: 782.47
+line_item 376: support hours qty=23 amount: 236.70
+line_item 582: support hours qty=36 amount: 411.01
+line_item 791: support hours qty=22 amount: 590.98
+line_item 188: bolts qty=1 amount: 157.56
+invoice_subtotal: 524.63
+line_item 420: cable qty=6 amount: 493.30
+invoice_subtotal: 188.50
+invoice_subtotal: 994.34
+note: delivery batch 528 acknowledged by dock-b at 09:43
+invoice_subtotal: 693.08
+note: delivery batch 693 acknowledged by dock-b at 14:18
+invoice_total: 273.46
+invoice_subtotal: 491.09
+note: delivery batch 842 acknowledged by dock-b at 09:37
+invoice_subtotal: 268.52
+note: delivery batch 777 acknowledged by dock-c at 19:58
+line_item 106: freight qty=36 amount: 204.11
+line_item 547: freight qty=5 amount: 119.79

@@ -1,0 +1,91 @@
+2026-03-14 06:29:17 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=246 conns=38
+2026-03-14 06:29:22 svc-07 WARN  slow response from 10.3.0.18 after 1554ms (no error)
+2026-03-14 06:29:30 svc-07 WARN  slow response from 10.3.0.8 after 1912ms (no error)
+2026-03-14 06:29:38 svc-07 INFO  heartbeat ok uptime=26227s rss_mb=113
+2026-03-14 06:29:43 svc-07 INFO  connected to catalog at 10.1.0.90 in 78ms
+2026-03-14 06:29:49 svc-07 WARN  retrying after E-9001 on 10.2.6.68 attempt=2 (recovered)
+2026-03-14 06:29:57 svc-07 WARN  retrying after E-4417 on 10.1.4.22 attempt=1 (recovered)
+2026-03-14 06:30:05 svc-07 INFO  heartbeat ok uptime=22839s rss_mb=718
+2026-03-14 06:30:09 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=176 conns=74
+2026-03-14 06:30:10 svc-07 INFO  connected to edge at 10.2.5.53 in 11ms
+2026-03-14 06:30:16 svc-07 INFO  heartbeat ok uptime=57106s rss_mb=372
+2026-03-14 06:30:23 svc-07 WARN  slow response from 10.3.2.48 after 1911ms (no error)
+2026-03-14 06:30:30 svc-07 WARN  retrying after E-2203 on 10.2.2.86 attempt=2 (recovered)
+2026-03-14 06:30:35 svc-07 WARN  retrying after E-4417 on 10.2.2.59 attempt=1 (recovered)
+2026-03-14 06:30:37 svc-07 INFO  heartbeat ok uptime=72749s rss_mb=895
+2026-03-14 06:30:40 svc-07 DEBUG cache hit key=user:4752 ttl=222s
+2026-03-14 06:30:41 svc-07 INFO  heartbeat ok uptime=35296s rss_mb=83
+2026-03-14 06:30:48 svc-07 INFO  connected to sync at 10.2.2.17 in 49ms
+2026-03-14 06:30:49 svc-07 DEBUG cache hit key=user:7605 ttl=573s
+2026-03-14 06:30:57 svc-07 INFO  heartbeat ok uptime=82603s rss_mb=685
+2026-03-14 06:31:04 svc-07 DEBUG cache hit key=user:3849 ttl=361s
+2026-03-14 06:31:10 svc-07 INFO  heartbeat ok uptime=96783s rss_mb=369
+2026-03-14 06:31:18 svc-07 WARN  retrying after E-2203 on 10.3.8.52 attempt=2 (recovered)
+2026-03-14 06:31:19 svc-07 WARN  slow response from 10.3.1.79 after 1169ms (no error)
+2026-03-14 06:31:22 svc-07 WARN  retrying after E-9001 on 10.1.2.65 attempt=2 (recovered)
+2026-03-14 06:31:28 svc-07 INFO  request id=41967187 path=/api/v2/orders status=200 ms=350
+2026-03-14 06:31:29 svc-07 WARN  retrying after E-9001 on 10.1.2.60 attempt=2 (recovered)
+2026-03-14 06:31:35 svc-07 WARN  slow response from 10.3.3.90 after 901ms (no error)
+2026-03-14 06:31:42 svc-07 WARN  retrying after E-9001 on 10.1.6.7 attempt=2 (recovered)
+2026-03-14 06:31:46 svc-07 WARN  retrying after E-4417 on 10.2.3.11 attempt=2 (recovered)
+2026-03-14 06:31:52 svc-07 INFO  connected to sync at 10.3.5.40 in 9ms
+2026-03-14 06:31:55 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=86 conns=35
+2026-03-14 06:32:02 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=158 conns=39
+2026-03-14 06:32:04 svc-07 WARN  slow response from 10.3.4.98 after 1859ms (no error)
+2026-03-14 06:32:10 svc-07 WARN  slow response from 10.3.6.45 after 2169ms (no error)
+2026-03-14 06:32:12 svc-07 WARN  slow response from 10.3.1.74 after 2193ms (no error)
+2026-03-14 06:32:17 svc-07 INFO  request id=93002454 path=/api/v2/orders status=200 ms=8
+2026-03-14 06:32:23 svc-07 DEBUG cache hit key=user:8841 ttl=409s
+2026-03-14 06:32:30 svc-07 DEBUG cache hit key=user:4396 ttl=104s
+2026-03-14 06:32:36 svc-07 WARN  retrying after E-4417 on 10.3.8.89 attempt=1 (recovered)
+2026-03-14 06:32:38 svc-07 INFO  connected to ingest at 10.3.7.50 in 54ms
+2026-03-14 06:32:41 svc-07 DEBUG cache hit key=user:3722 ttl=289s
+2026-03-14 06:32:49 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=108 conns=28
+2026-03-14 06:32:50 svc-07 INFO  heartbeat ok uptime=96625s rss_mb=492
+2026-03-14 06:32:56 svc-07 INFO  request id=37462123 path=/api/v2/orders status=200 ms=167
+2026-03-14 06:32:59 svc-07 INFO  connected to mailer at 10.3.7.58 in 57ms
+2026-03-14 06:33:07 svc-07 DEBUG cache hit key=user:6893 ttl=342s
+2026-03-14 06:33:14 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=118 conns=34
+2026-03-14 06:33:20 svc-07 INFO  heartbeat ok uptime=95954s rss_mb=277
+2026-03-14 06:33:22 svc-07 WARN  retrying after E-9001 on 10.1.7.66 attempt=2 (recovered)
+2026-03-14 06:33:23 svc-07 INFO  connected to ingest at 10.2.1.46 in 12ms
+2026-03-14 06:33:28 svc-07 INFO  connected to catalog at 10.2.1.49 in 16ms
+2026-03-14 06:33:33 svc-07 WARN  retrying after E-2203 on 10.2.0.54 attempt=1 (recovered)
+2026-03-14 06:33:35 svc-07 INFO  request id=65837731 path=/api/v2/items status=200 ms=256
+2026-03-14 06:33:42 svc-07 WARN  retrying after E-4417 on 10.3.7.61 attempt=1 (recovered)
+2026-03-14 06:33:45 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=267 conns=29
+2026-03-14 06:33:50 svc-07 WARN  retrying after E-4417 on 10.3.1.79 attempt=1 (recovered)
+2026-03-14 06:33:57 svc-07 INFO  heartbeat ok uptime=5454s rss_mb=794
+2026-03-14 06:34:01 svc-07 INFO  heartbeat ok uptime=68141s rss_mb=832
+2026-03-14 06:34:06 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=151 conns=83
+2026-03-14 06:34:09 svc-07 DEBUG cache hit key=user:6149 ttl=553s
+2026-03-14 06:34:13 svc-07 INFO  connected to auth at 10.1.5.15 in 51ms
+2026-03-14 06:34:14 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=141 conns=31
+2026-03-14 06:34:17 svc-07 WARN  retrying after E-4417 on 10.2.2.20 attempt=2 (recovered)
+2026-03-14 06:34:19 svc-07 WARN  slow response from 10.2.6.4 after 897ms (no error)
+2026-03-14 06:34:24 svc-07 WARN  slow response from 10.2.7.78 after 981ms (no error)
+2026-03-14 06:34:27 svc-07 INFO  connected to billing at 10.2.8.40 in 10ms
+2026-03-14 06:34:31 svc-07 INFO  request id=86797116 path=/api/v2/items status=200 ms=55
+2026-03-14 06:34:39 svc-07 WARN  slow response from 10.2.2.4 after 1621ms (no error)
+2026-03-14 06:34:41 svc-07 INFO  heartbeat ok uptime=91982s rss_mb=853
+2026-03-14 06:34:44 svc-07 INFO  heartbeat ok uptime=28356s rss_mb=265
+2026-03-14 06:34:46 svc-07 INFO  connected to search at 10.1.7.64 in 3ms
+2026-03-14 06:34:50 svc-07 INFO  heartbeat ok uptime=26387s rss_mb=597
+2026-03-14 06:34:55 svc-07 WARN  slow response from 10.2.0.84 after 1192ms (no error)
+2026-03-14 06:34:58 svc-07 WARN  retrying after E-2203 on 10.2.5.3 attempt=1 (recovered)
+2026-03-14 06:35:01 svc-07 INFO  connected to mailer at 10.3.5.70 in 44ms
+2026-03-14 06:35:04 svc-07 WARN  retrying after E-2203 on 10.2.0.29 attempt=2 (recovered)
+2026-03-14 06:35:11 svc-07 INFO  request id=13543296 path=/api/v1/login status=200 ms=205
+2026-03-14 06:35:12 svc-07 WARN  retrying after E-9001 on 10.3.5.18 attempt=2 (recovered)
+2026-03-14 06:35:20 svc-07 WARN  retrying after E-4417 on 10.3.1.21 attempt=1 (recovered)
+2026-03-14 06:35:25 svc-07 INFO  heartbeat ok uptime=76085s rss_mb=104
+2026-03-14 06:35:28 svc-07 INFO  request id=22389459 path=/api/v2/orders status=200 ms=328
+2026-03-14 06:35:32 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=101 conns=31
+2026-03-14 06:35:39 svc-07 WARN  retrying after E-9001 on 10.2.6.53 attempt=2 (recovered)
+2026-03-14 06:35:42 svc-07 WARN  slow response from 10.2.5.41 after 1317ms (no error)
+2026-03-14 06:35:48 svc-07 DEBUG cache hit key=user:5864 ttl=580s
+2026-03-14 06:35:56 svc-07 INFO  request id=30372978 path=/api/v1/login status=200 ms=347
+2026-03-14 06:35:59 svc-07 INFO  heartbeat ok uptime=78234s rss_mb=129
+2026-03-14 06:36:00 svc-07 INFO  metrics errors=0 error_rate=0.00 p95_ms=142 conns=51
+2026-03-14 06:36:04 svc-07 INFO  request id=52753679 path=/api/v2/items status=200 ms=194
+2026-03-14 06:36:06 svc-07 INFO  connected to edge at 10.2.3.4 in 17ms

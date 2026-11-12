@@ -1,0 +1,91 @@
+2026-03-14 06:00:41 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=200 conns=39
+2026-03-14 06:00:47 svc-10 INFO  heartbeat ok uptime=15806s rss_mb=880
+2026-03-14 06:00:55 svc-10 INFO  connected to mailer at 10.1.3.97 in 3ms
+2026-03-14 06:01:03 svc-10 WARN  retrying after E-2203 on 10.1.8.41 attempt=1 (recovered)
+2026-03-14 06:01:08 svc-10 WARN  slow response from 10.1.3.42 after 1675ms (no error)
+2026-03-14 06:01:14 svc-10 WARN  retrying after E-2203 on 10.2.2.93 attempt=1 (recovered)
+2026-03-14 06:01:16 svc-10 INFO  heartbeat ok uptime=21239s rss_mb=872
+2026-03-14 06:01:18 svc-10 INFO  connected to mailer at 10.1.5.31 in 23ms
+2026-03-14 06:01:23 svc-10 INFO  request id=87418336 path=/api/v2/orders status=200 ms=207
+2026-03-14 06:01:25 svc-10 INFO  connected to catalog at 10.3.0.27 in 64ms
+2026-03-14 06:01:27 svc-10 WARN  slow response from 10.2.3.85 after 866ms (no error)
+2026-03-14 06:01:29 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=155 conns=78
+2026-03-14 06:07:33 svc-10 ERROR [E-7742] token signature invalid (host=10.2.8.87 attempt=4)
+2026-03-14 06:01:37 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=244 conns=12
+2026-03-14 06:01:45 svc-10 WARN  slow response from 10.1.7.76 after 953ms (no error)
+2026-03-14 06:01:48 svc-10 INFO  connected to catalog at 10.3.6.65 in 32ms
+2026-03-14 06:01:53 svc-10 DEBUG cache hit key=user:5196 ttl=404s
+2026-03-14 06:01:57 svc-10 DEBUG cache hit key=user:1517 ttl=444s
+2026-03-14 06:01:59 svc-10 WARN  retrying after E-2203 on 10.2.7.13 attempt=1 (recovered)
+2026-03-14 06:02:03 svc-10 DEBUG cache hit key=user:7437 ttl=326s
+2026-03-14 06:02:06 svc-10 WARN  slow response from 10.2.6.30 after 1227ms (no error)
+2026-03-14 06:02:11 svc-10 WARN  slow response from 10.1.4.45 after 1544ms (no error)
+2026-03-14 06:02:15 svc-10 INFO  heartbeat ok uptime=82691s rss_mb=819
+2026-03-14 06:02:18 svc-10 WARN  slow response from 10.2.8.81 after 1398ms (no error)
+2026-03-14 06:02:21 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=153 conns=77
+2026-03-14 06:02:27 svc-10 INFO  heartbeat ok uptime=99860s rss_mb=241
+2026-03-14 06:02:30 svc-10 WARN  retrying after E-9001 on 10.2.1.75 attempt=2 (recovered)
+2026-03-14 06:02:37 svc-10 WARN  slow response from 10.1.3.2 after 1542ms (no error)
+2026-03-14 06:02:42 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=39 conns=15
+2026-03-14 06:02:47 svc-10 INFO  request id=26962827 path=/healthz status=200 ms=339
+2026-03-14 06:02:54 svc-10 INFO  request id=30890511 path=/api/v2/orders status=200 ms=110
+2026-03-14 06:03:01 svc-10 DEBUG cache hit key=user:3694 ttl=258s
+2026-03-14 06:03:04 svc-10 INFO  connected to billing at 10.1.7.83 in 78ms
+2026-03-14 06:03:09 svc-10 INFO  connected to search at 10.1.1.70 in 57ms
+2026-03-14 06:03:11 svc-10 WARN  slow response from 10.1.2.98 after 1859ms (no error)
+2026-03-14 06:03:15 svc-10 INFO  connected to search at 10.3.8.30 in 11ms
+2026-03-14 06:03:18 svc-10 WARN  retrying after E-2203 on 10.1.6.89 attempt=2 (recovered)
+2026-03-14 06:03:24 svc-10 WARN  slow response from 10.1.2.33 after 992ms (no error)
+2026-03-14 06:03:31 svc-10 DEBUG cache hit key=user:7832 ttl=248s
+2026-03-14 06:03:38 svc-10 DEBUG cache hit key=user:4825 ttl=545s
+2026-03-14 06:03:39 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=207 conns=85
+2026-03-14 06:03:42 svc-10 WARN  slow response from 10.1.8.94 after 1219ms (no error)
+2026-03-14 06:03:43 svc-10 INFO  heartbeat ok uptime=21317s rss_mb=739
+2026-03-14 06:03:45 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=183 conns=51
+2026-03-14 06:03:51 svc-10 WARN  retrying after E-4417 on 10.2.4.40 attempt=2 (recovered)
+2026-03-14 06:03:53 svc-10 INFO  heartbeat ok uptime=98626s rss_mb=881
+2026-03-14 06:03:57 svc-10 INFO  connected to search at 10.2.5.47 in 11ms
+2026-03-14 06:03:59 svc-10 WARN  retrying after E-4417 on 10.3.7.94 attempt=2 (recovered)
+2026-03-14 06:04:06 svc-10 WARN  retrying after E-9001 on 10.2.1.63 attempt=2 (recovered)
+2026-03-14 06:04:14 svc-10 WARN  slow response from 10.2.0.95 after 1562ms (no error)
+2026-03-14 06:04:20 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=116 conns=58
+2026-03-14 06:04:24 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=266 conns=42
+2026-03-14 06:04:31 svc-10 INFO  request id=99799579 path=/healthz status=200 ms=373
+2026-03-14 06:04:32 svc-10 DEBUG cache hit key=user:2600 ttl=283s
+2026-03-14 06:04:38 svc-10 WARN  slow response from 10.3.1.42 after 1228ms (no error)
+2026-03-14 06:04:45 svc-10 INFO  heartbeat ok uptime=84556s rss_mb=725
+2026-03-14 06:04:49 svc-10 WARN  slow response from 10.2.6.96 after 2195ms (no error)
+2026-03-14 06:04:51 svc-10 INFO  connected to mailer at 10.2.3.5 in 9ms
+2026-03-14 06:04:59 svc-10 INFO  connected to auth at 10.1.3.20 in 77ms
+2026-03-14 06:05:06 svc-10 INFO  request id=54449655 path=/api/v2/items status=200 ms=112
+2026-03-14 06:05:12 svc-10 INFO  heartbeat ok uptime=22279s rss_mb=740
+2026-03-14 06:05:19 svc-10 WARN  retrying after E-4417 on 10.3.0.19 attempt=2 (recovered)
+2026-03-14 06:05:21 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=170 conns=63
+2026-03-14 06:05:23 svc-10 INFO  request id=20521969 path=/api/v1/login status=200 ms=31
+2026-03-14 06:05:31 svc-10 DEBUG cache hit key=user:3623 ttl=70s
+2026-03-14 06:05:37 svc-10 INFO  connected to mailer at 10.2.1.44 in 60ms
+2026-03-14 06:05:42 svc-10 DEBUG cache hit key=user:2096 ttl=121s
+2026-03-14 06:05:50 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=118 conns=31
+2026-03-14 06:05:53 svc-10 WARN  retrying after E-4417 on 10.1.0.72 attempt=1 (recovered)
+2026-03-14 06:05:55 svc-10 WARN  retrying after E-2203 on 10.3.0.42 attempt=1 (recovered)
+2026-03-14 06:06:02 svc-10 INFO  heartbeat ok uptime=2654s rss_mb=664
+2026-03-14 06:06:09 svc-10 WARN  retrying after E-4417 on 10.1.0.65 attempt=1 (recovered)
+2026-03-14 06:06:11 svc-10 WARN  retrying after E-9001 on 10.2.0.84 attempt=2 (recovered)
+2026-03-14 06:06:18 svc-10 INFO  heartbeat ok uptime=57255s rss_mb=354
+2026-03-14 06:06:23 svc-10 WARN  slow response from 10.3.5.35 after 1364ms (no error)
+2026-03-14 06:06:30 svc-10 INFO  request id=39470181 path=/healthz status=200 ms=362
+2026-03-14 06:06:35 svc-10 WARN  slow response from 10.1.1.95 after 898ms (no error)
+2026-03-14 06:06:36 svc-10 INFO  request id=19042277 path=/static/app.js status=200 ms=48
+2026-03-14 06:06:39 svc-10 INFO  request id=34028634 path=/api/v2/items status=200 ms=226
+2026-03-14 06:06:45 svc-10 INFO  connected to sync at 10.1.1.14 in 33ms
+2026-03-14 06:06:47 svc-10 INFO  heartbeat ok uptime=68584s rss_mb=235
+2026-03-14 06:06:52 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=138 conns=11
+2026-03-14 06:06:57 svc-10 DEBUG cache hit key=user:7797 ttl=310s
+2026-03-14 06:07:02 svc-10 INFO  heartbeat ok uptime=23462s rss_mb=568
+2026-03-14 06:07:07 svc-10 INFO  request id=85813856 path=/api/v2/items status=200 ms=153
+2026-03-14 06:07:14 svc-10 INFO  request id=89665406 path=/static/app.js status=200 ms=111
+2026-03-14 06:07:16 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=144 conns=12
+2026-03-14 06:07:24 svc-10 INFO  metrics errors=0 error_rate=0.00 p95_ms=74 conns=53
+2026-03-14 06:07:28 svc-10 INFO  connected to billing at 10.2.2.20 in 65ms
+2026-03-14 06:07:29 svc-10 WARN  retrying after E-9001 on 10.3.7.18 attempt=2 (recovered)
+2026-03-14 06:07:32 svc-10 INFO  request id=73648129 path=/api/v2/cart status=200 ms=42

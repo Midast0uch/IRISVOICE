@@ -1,0 +1,92 @@
+2026-03-14 06:36:33 svc-09 INFO  heartbeat ok uptime=9593s rss_mb=140
+2026-03-14 06:36:39 svc-09 INFO  connected to catalog at 10.3.5.54 in 30ms
+2026-03-14 06:36:45 svc-09 INFO  connected to catalog at 10.3.1.78 in 47ms
+2026-03-14 06:36:48 svc-09 DEBUG cache hit key=user:1371 ttl=203s
+2026-03-14 06:36:52 svc-09 INFO  request id=33966519 path=/static/app.js status=200 ms=381
+2026-03-14 06:36:54 svc-09 INFO  request id=43443943 path=/static/app.js status=200 ms=364
+2026-03-14 06:36:55 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=62 conns=13
+2026-03-14 06:37:02 svc-09 INFO  heartbeat ok uptime=63435s rss_mb=447
+2026-03-14 06:43:03 svc-09 ERROR [E-2203] checksum mismatch on shard (host=10.3.0.64 attempt=3)
+2026-03-14 06:37:04 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=202 conns=27
+2026-03-14 06:37:10 svc-09 INFO  request id=21004221 path=/api/v2/items status=200 ms=20
+2026-03-14 06:37:15 svc-09 DEBUG cache hit key=user:8486 ttl=244s
+2026-03-14 06:37:22 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=74 conns=35
+2026-03-14 06:37:24 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=152 conns=44
+2026-03-14 06:37:31 svc-09 INFO  connected to ingest at 10.2.7.62 in 41ms
+2026-03-14 06:37:32 svc-09 INFO  heartbeat ok uptime=26872s rss_mb=581
+2026-03-14 06:37:37 svc-09 INFO  connected to ingest at 10.1.0.82 in 45ms
+2026-03-14 06:37:42 svc-09 WARN  retrying after E-9001 on 10.3.4.60 attempt=1 (recovered)
+2026-03-14 06:37:49 svc-09 WARN  retrying after E-2203 on 10.3.7.91 attempt=1 (recovered)
+2026-03-14 06:37:50 svc-09 DEBUG cache hit key=user:9758 ttl=454s
+2026-03-14 06:37:54 svc-09 WARN  retrying after E-9001 on 10.3.5.32 attempt=2 (recovered)
+2026-03-14 06:38:01 svc-09 DEBUG cache hit key=user:4333 ttl=258s
+2026-03-14 06:38:09 svc-09 INFO  heartbeat ok uptime=55480s rss_mb=682
+2026-03-14 06:38:10 svc-09 INFO  connected to edge at 10.2.6.88 in 72ms
+2026-03-14 06:38:13 svc-09 WARN  retrying after E-9001 on 10.3.4.25 attempt=1 (recovered)
+2026-03-14 06:38:17 svc-09 INFO  request id=97978673 path=/api/v1/login status=200 ms=201
+2026-03-14 06:38:20 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=77 conns=20
+2026-03-14 06:38:28 svc-09 WARN  retrying after E-2203 on 10.1.5.46 attempt=1 (recovered)
+2026-03-14 06:38:33 svc-09 WARN  slow response from 10.3.2.4 after 1151ms (no error)
+2026-03-14 06:38:36 svc-09 INFO  connected to sync at 10.2.5.31 in 44ms
+2026-03-14 06:38:37 svc-09 WARN  retrying after E-2203 on 10.2.8.80 attempt=2 (recovered)
+2026-03-14 06:38:39 svc-09 INFO  connected to ingest at 10.3.7.72 in 43ms
+2026-03-14 06:38:42 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=239 conns=86
+2026-03-14 06:38:45 svc-09 INFO  heartbeat ok uptime=22264s rss_mb=532
+2026-03-14 06:38:51 svc-09 WARN  retrying after E-9001 on 10.1.1.37 attempt=2 (recovered)
+2026-03-14 06:38:53 svc-09 WARN  slow response from 10.1.7.25 after 903ms (no error)
+2026-03-14 06:38:54 svc-09 WARN  retrying after E-9001 on 10.3.2.78 attempt=1 (recovered)
+2026-03-14 06:38:58 svc-09 WARN  retrying after E-9001 on 10.2.5.44 attempt=2 (recovered)
+2026-03-14 06:39:04 svc-09 INFO  request id=31626087 path=/api/v1/login status=200 ms=134
+2026-03-14 06:39:05 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=36 conns=28
+2026-03-14 06:39:07 svc-09 INFO  heartbeat ok uptime=58233s rss_mb=662
+2026-03-14 06:39:13 svc-09 WARN  slow response from 10.3.7.68 after 1558ms (no error)
+2026-03-14 06:39:15 svc-09 INFO  request id=72539751 path=/api/v1/login status=200 ms=146
+2026-03-14 06:39:20 svc-09 INFO  request id=11941024 path=/api/v2/orders status=200 ms=212
+2026-03-14 06:39:25 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=297 conns=63
+2026-03-14 06:39:27 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=205 conns=18
+2026-03-14 06:39:30 svc-09 INFO  connected to catalog at 10.3.5.75 in 39ms
+2026-03-14 06:39:38 svc-09 WARN  retrying after E-4417 on 10.3.1.47 attempt=1 (recovered)
+2026-03-14 06:39:43 svc-09 INFO  heartbeat ok uptime=65535s rss_mb=315
+2026-03-14 06:39:48 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=104 conns=14
+2026-03-14 06:39:55 svc-09 WARN  slow response from 10.2.7.64 after 2291ms (no error)
+2026-03-14 06:39:56 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=75 conns=67
+2026-03-14 06:39:58 svc-09 INFO  request id=66876771 path=/healthz status=200 ms=119
+2026-03-14 06:40:03 svc-09 INFO  request id=50716577 path=/api/v2/orders status=200 ms=194
+2026-03-14 06:40:06 svc-09 INFO  request id=15123235 path=/api/v2/items status=200 ms=233
+2026-03-14 06:40:11 svc-09 WARN  retrying after E-4417 on 10.3.5.31 attempt=1 (recovered)
+2026-03-14 06:40:13 svc-09 DEBUG cache hit key=user:7686 ttl=517s
+2026-03-14 06:40:18 svc-09 INFO  connected to auth at 10.1.1.25 in 67ms
+2026-03-14 06:40:23 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=272 conns=57
+2026-03-14 06:40:24 svc-09 INFO  heartbeat ok uptime=6222s rss_mb=584
+2026-03-14 06:40:28 svc-09 WARN  slow response from 10.1.5.33 after 1725ms (no error)
+2026-03-14 06:40:34 svc-09 INFO  heartbeat ok uptime=25225s rss_mb=766
+2026-03-14 06:40:40 svc-09 DEBUG cache hit key=user:8663 ttl=257s
+2026-03-14 06:40:44 svc-09 WARN  slow response from 10.2.6.24 after 2362ms (no error)
+2026-03-14 06:40:49 svc-09 WARN  slow response from 10.2.7.90 after 1790ms (no error)
+2026-03-14 06:40:54 svc-09 DEBUG cache hit key=user:4374 ttl=523s
+2026-03-14 06:41:01 svc-09 INFO  connected to billing at 10.2.6.40 in 44ms
+2026-03-14 06:41:02 svc-09 DEBUG cache hit key=user:7248 ttl=435s
+2026-03-14 06:41:05 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=189 conns=56
+2026-03-14 06:41:08 svc-09 WARN  retrying after E-9001 on 10.2.0.63 attempt=2 (recovered)
+2026-03-14 06:41:14 svc-09 DEBUG cache hit key=user:6163 ttl=409s
+2026-03-14 06:41:15 svc-09 WARN  retrying after E-9001 on 10.1.0.22 attempt=1 (recovered)
+2026-03-14 06:41:21 svc-09 DEBUG cache hit key=user:7065 ttl=458s
+2026-03-14 06:41:26 svc-09 INFO  heartbeat ok uptime=86568s rss_mb=608
+2026-03-14 06:43:08 svc-09 ERROR [E-2203] checksum mismatch on shard (host=10.3.8.53 attempt=3)
+2026-03-14 06:41:34 svc-09 INFO  connected to search at 10.3.1.13 in 17ms
+2026-03-14 06:41:40 svc-09 INFO  heartbeat ok uptime=13724s rss_mb=168
+2026-03-14 06:41:48 svc-09 INFO  connected to search at 10.2.3.3 in 8ms
+2026-03-14 06:41:50 svc-09 INFO  connected to search at 10.2.3.10 in 42ms
+2026-03-14 06:41:56 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=271 conns=19
+2026-03-14 06:41:59 svc-09 DEBUG cache hit key=user:4091 ttl=590s
+2026-03-14 06:42:04 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=226 conns=51
+2026-03-14 06:42:11 svc-09 INFO  metrics errors=0 error_rate=0.00 p95_ms=290 conns=84
+2026-03-14 06:42:16 svc-09 WARN  retrying after E-2203 on 10.1.6.46 attempt=1 (recovered)
+2026-03-14 06:42:19 svc-09 INFO  heartbeat ok uptime=26867s rss_mb=513
+2026-03-14 06:42:24 svc-09 INFO  heartbeat ok uptime=2464s rss_mb=720
+2026-03-14 06:42:32 svc-09 INFO  request id=48700346 path=/healthz status=200 ms=282
+2026-03-14 06:42:40 svc-09 WARN  slow response from 10.2.5.62 after 1543ms (no error)
+2026-03-14 06:42:45 svc-09 DEBUG cache hit key=user:3822 ttl=197s
+2026-03-14 06:42:49 svc-09 WARN  retrying after E-9001 on 10.2.3.60 attempt=2 (recovered)
+2026-03-14 06:42:55 svc-09 INFO  connected to auth at 10.3.6.81 in 45ms
+2026-03-14 06:43:01 svc-09 DEBUG cache hit key=user:9181 ttl=480s

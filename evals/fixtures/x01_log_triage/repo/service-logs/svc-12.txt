@@ -1,0 +1,91 @@
+2026-03-14 06:47:44 svc-12 WARN  slow response from 10.3.6.89 after 1009ms (no error)
+2026-03-14 06:47:48 svc-12 INFO  heartbeat ok uptime=39733s rss_mb=557
+2026-03-14 06:47:55 svc-12 WARN  retrying after E-2203 on 10.2.8.89 attempt=2 (recovered)
+2026-03-14 06:47:56 svc-12 DEBUG cache hit key=user:6506 ttl=139s
+2026-03-14 06:48:02 svc-12 WARN  retrying after E-4417 on 10.2.4.31 attempt=1 (recovered)
+2026-03-14 06:48:03 svc-12 WARN  slow response from 10.3.7.37 after 1911ms (no error)
+2026-03-14 06:48:04 svc-12 WARN  slow response from 10.3.8.35 after 1690ms (no error)
+2026-03-14 06:48:12 svc-12 WARN  retrying after E-4417 on 10.1.6.29 attempt=2 (recovered)
+2026-03-14 06:48:16 svc-12 INFO  heartbeat ok uptime=85675s rss_mb=475
+2026-03-14 06:48:24 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=41 conns=89
+2026-03-14 06:48:25 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=187 conns=31
+2026-03-14 06:48:30 svc-12 WARN  retrying after E-2203 on 10.3.1.80 attempt=1 (recovered)
+2026-03-14 06:48:35 svc-12 DEBUG cache hit key=user:7761 ttl=491s
+2026-03-14 06:48:43 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=282 conns=38
+2026-03-14 06:48:48 svc-12 WARN  slow response from 10.1.6.86 after 1838ms (no error)
+2026-03-14 06:48:56 svc-12 DEBUG cache hit key=user:4507 ttl=186s
+2026-03-14 06:49:02 svc-12 WARN  retrying after E-4417 on 10.1.4.18 attempt=2 (recovered)
+2026-03-14 06:49:05 svc-12 WARN  retrying after E-4417 on 10.2.4.87 attempt=1 (recovered)
+2026-03-14 06:49:07 svc-12 WARN  slow response from 10.1.8.39 after 940ms (no error)
+2026-03-14 06:49:14 svc-12 WARN  slow response from 10.2.4.79 after 1328ms (no error)
+2026-03-14 06:49:17 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=242 conns=26
+2026-03-14 06:49:24 svc-12 INFO  connected to auth at 10.3.7.66 in 2ms
+2026-03-14 06:49:28 svc-12 WARN  slow response from 10.1.8.14 after 1279ms (no error)
+2026-03-14 06:49:31 svc-12 INFO  request id=15725560 path=/static/app.js status=200 ms=145
+2026-03-14 06:49:35 svc-12 INFO  request id=17061167 path=/api/v2/orders status=200 ms=370
+2026-03-14 06:49:43 svc-12 DEBUG cache hit key=user:1251 ttl=315s
+2026-03-14 06:49:47 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=140 conns=60
+2026-03-14 06:49:49 svc-12 WARN  slow response from 10.2.8.84 after 854ms (no error)
+2026-03-14 06:49:53 svc-12 INFO  connected to search at 10.2.3.56 in 78ms
+2026-03-14 06:49:58 svc-12 WARN  slow response from 10.1.4.59 after 1130ms (no error)
+2026-03-14 06:50:05 svc-12 WARN  retrying after E-4417 on 10.1.5.54 attempt=1 (recovered)
+2026-03-14 06:50:06 svc-12 INFO  connected to edge at 10.1.2.36 in 50ms
+2026-03-14 06:50:11 svc-12 WARN  slow response from 10.3.4.49 after 1700ms (no error)
+2026-03-14 06:50:17 svc-12 INFO  connected to sync at 10.3.6.14 in 8ms
+2026-03-14 06:50:18 svc-12 WARN  slow response from 10.1.7.60 after 1658ms (no error)
+2026-03-14 06:50:26 svc-12 INFO  heartbeat ok uptime=66078s rss_mb=266
+2026-03-14 06:50:34 svc-12 INFO  heartbeat ok uptime=87853s rss_mb=116
+2026-03-14 06:50:42 svc-12 INFO  heartbeat ok uptime=78386s rss_mb=127
+2026-03-14 06:50:43 svc-12 DEBUG cache hit key=user:4216 ttl=60s
+2026-03-14 06:50:46 svc-12 DEBUG cache hit key=user:4688 ttl=208s
+2026-03-14 06:50:53 svc-12 INFO  connected to auth at 10.1.2.98 in 34ms
+2026-03-14 06:50:56 svc-12 WARN  retrying after E-2203 on 10.3.4.88 attempt=1 (recovered)
+2026-03-14 06:51:00 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=262 conns=70
+2026-03-14 06:51:02 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=170 conns=59
+2026-03-14 06:54:08 svc-12 ERROR [E-4417] upstream timeout after retries (host=10.3.5.2 attempt=1)
+2026-03-14 06:51:07 svc-12 INFO  connected to catalog at 10.2.8.45 in 8ms
+2026-03-14 06:51:08 svc-12 DEBUG cache hit key=user:1507 ttl=248s
+2026-03-14 06:51:11 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=273 conns=26
+2026-03-14 06:51:12 svc-12 INFO  heartbeat ok uptime=29046s rss_mb=365
+2026-03-14 06:51:18 svc-12 INFO  request id=90001667 path=/api/v2/orders status=200 ms=133
+2026-03-14 06:51:23 svc-12 INFO  heartbeat ok uptime=11690s rss_mb=896
+2026-03-14 06:51:27 svc-12 DEBUG cache hit key=user:3784 ttl=321s
+2026-03-14 06:51:28 svc-12 WARN  retrying after E-4417 on 10.3.1.9 attempt=2 (recovered)
+2026-03-14 06:51:29 svc-12 WARN  retrying after E-2203 on 10.3.7.6 attempt=1 (recovered)
+2026-03-14 06:51:37 svc-12 INFO  heartbeat ok uptime=49181s rss_mb=500
+2026-03-14 06:51:39 svc-12 WARN  slow response from 10.3.7.34 after 2006ms (no error)
+2026-03-14 06:51:44 svc-12 WARN  retrying after E-9001 on 10.3.1.41 attempt=1 (recovered)
+2026-03-14 06:51:52 svc-12 INFO  connected to auth at 10.2.4.12 in 10ms
+2026-03-14 06:51:53 svc-12 WARN  slow response from 10.2.1.53 after 1204ms (no error)
+2026-03-14 06:51:56 svc-12 INFO  heartbeat ok uptime=74074s rss_mb=199
+2026-03-14 06:51:58 svc-12 INFO  connected to auth at 10.3.8.78 in 18ms
+2026-03-14 06:52:02 svc-12 INFO  connected to catalog at 10.2.3.19 in 56ms
+2026-03-14 06:52:04 svc-12 INFO  heartbeat ok uptime=53072s rss_mb=820
+2026-03-14 06:52:11 svc-12 WARN  slow response from 10.1.2.31 after 1925ms (no error)
+2026-03-14 06:52:12 svc-12 INFO  heartbeat ok uptime=66556s rss_mb=641
+2026-03-14 06:52:16 svc-12 WARN  retrying after E-4417 on 10.2.6.41 attempt=1 (recovered)
+2026-03-14 06:52:23 svc-12 INFO  heartbeat ok uptime=33319s rss_mb=383
+2026-03-14 06:54:12 svc-12 ERROR [E-4417] upstream timeout after retries (host=10.3.6.82 attempt=4)
+2026-03-14 06:52:28 svc-12 INFO  request id=13670969 path=/api/v2/orders status=200 ms=363
+2026-03-14 06:52:35 svc-12 WARN  slow response from 10.1.7.51 after 1654ms (no error)
+2026-03-14 06:52:41 svc-12 INFO  connected to ingest at 10.1.1.53 in 71ms
+2026-03-14 06:52:44 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=290 conns=78
+2026-03-14 06:52:47 svc-12 WARN  slow response from 10.3.4.39 after 1179ms (no error)
+2026-03-14 06:52:48 svc-12 WARN  retrying after E-9001 on 10.3.2.47 attempt=2 (recovered)
+2026-03-14 06:52:54 svc-12 INFO  connected to sync at 10.3.7.24 in 61ms
+2026-03-14 06:52:55 svc-12 INFO  request id=71053975 path=/api/v2/items status=200 ms=69
+2026-03-14 06:52:57 svc-12 WARN  retrying after E-2203 on 10.1.5.90 attempt=2 (recovered)
+2026-03-14 06:53:05 svc-12 WARN  slow response from 10.3.3.16 after 2029ms (no error)
+2026-03-14 06:53:12 svc-12 WARN  retrying after E-4417 on 10.1.8.49 attempt=2 (recovered)
+2026-03-14 06:53:18 svc-12 INFO  connected to billing at 10.2.5.13 in 67ms
+2026-03-14 06:53:26 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=101 conns=38
+2026-03-14 06:53:29 svc-12 WARN  slow response from 10.1.2.79 after 2259ms (no error)
+2026-03-14 06:53:34 svc-12 WARN  slow response from 10.1.4.62 after 1141ms (no error)
+2026-03-14 06:53:38 svc-12 INFO  heartbeat ok uptime=96413s rss_mb=866
+2026-03-14 06:53:39 svc-12 DEBUG cache hit key=user:9795 ttl=468s
+2026-03-14 06:53:45 svc-12 INFO  metrics errors=0 error_rate=0.00 p95_ms=59 conns=27
+2026-03-14 06:53:48 svc-12 INFO  connected to auth at 10.1.5.92 in 51ms
+2026-03-14 06:53:52 svc-12 INFO  connected to edge at 10.1.8.25 in 28ms
+2026-03-14 06:53:54 svc-12 INFO  connected to search at 10.2.6.79 in 47ms
+2026-03-14 06:53:57 svc-12 DEBUG cache hit key=user:8357 ttl=450s
+2026-03-14 06:54:02 svc-12 WARN  retrying after E-9001 on 10.3.7.16 attempt=2 (recovered)

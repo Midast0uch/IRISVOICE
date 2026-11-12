@@ -1,0 +1,437 @@
+Chunk 7 of 7 of the staging deploy log. Do not analyze it, just reply with the single word ok.
+
+2026-03-14 12:25:04 deploy-agent WARN  slow pull for layer 17 (7s)
+2026-03-14 09:36:18 deploy-agent INFO  step=verify pod=stg-13 ms=457
+2026-03-14 04:24:57 deploy-agent INFO  step=fetch pod=stg-36 ms=389
+2026-03-14 14:12:09 deploy-agent WARN  slow pull for layer 7 (18s)
+2026-03-14 23:29:08 deploy-agent INFO  step=unpack pod=stg-5 ms=827
+2026-03-14 23:47:58 registry INFO  pulled image sha256:ee8eedc62 size_mb=486
+2026-03-14 22:30:57 gate INFO  health check 9 passed in 650ms
+2026-03-14 12:26:16 gate INFO  health check 46 passed in 50ms
+2026-03-14 04:48:47 scheduler INFO  placed job 770613 on node n18 cpu=3
+2026-03-14 08:27:29 deploy-agent INFO  step=fetch pod=stg-3 ms=385
+2026-03-14 10:11:06 deploy-agent WARN  slow pull for layer 15 (14s)
+2026-03-14 08:08:25 gate INFO  health check 16 passed in 185ms
+2026-03-14 22:45:06 registry INFO  pulled image sha256:ae6856022 size_mb=98
+2026-03-14 09:47:48 gate INFO  health check 49 passed in 518ms
+2026-03-14 02:35:43 gate INFO  health check 18 passed in 508ms
+2026-03-14 15:05:22 gate INFO  health check 26 passed in 548ms
+2026-03-14 18:45:17 deploy-agent INFO  step=migrate pod=stg-13 ms=716
+2026-03-14 12:26:47 deploy-agent WARN  slow pull for layer 28 (19s)
+2026-03-14 13:31:08 deploy-agent WARN  slow pull for layer 23 (12s)
+2026-03-14 13:39:38 deploy-agent WARN  slow pull for layer 1 (19s)
+2026-03-14 11:45:34 gate INFO  health check 29 passed in 584ms
+2026-03-14 16:10:39 deploy-agent WARN  slow pull for layer 19 (6s)
+2026-03-14 15:24:40 scheduler INFO  placed job 578751 on node n13 cpu=9
+2026-03-14 00:24:54 deploy-agent WARN  slow pull for layer 8 (7s)
+2026-03-14 06:12:24 scheduler INFO  placed job 386567 on node n13 cpu=1
+2026-03-14 18:44:39 scheduler INFO  placed job 572072 on node n10 cpu=2
+2026-03-14 19:42:31 scheduler INFO  placed job 493887 on node n19 cpu=10
+2026-03-14 18:25:08 registry INFO  pulled image sha256:1ae2c2d1f size_mb=109
+2026-03-14 17:10:25 scheduler INFO  placed job 751970 on node n29 cpu=6
+2026-03-14 08:56:04 registry INFO  pulled image sha256:e1b2d0344 size_mb=304
+2026-03-14 00:48:22 gate INFO  health check 37 passed in 461ms
+2026-03-14 21:36:46 scheduler INFO  placed job 640849 on node n19 cpu=5
+2026-03-14 10:02:52 scheduler INFO  placed job 146973 on node n5 cpu=4
+2026-03-14 02:42:28 gate INFO  health check 48 passed in 575ms
+2026-03-14 10:46:31 gate INFO  health check 5 passed in 73ms
+2026-03-14 21:37:51 deploy-agent INFO  step=migrate pod=stg-11 ms=867
+2026-03-14 00:08:49 deploy-agent INFO  step=warm pod=stg-9 ms=81
+2026-03-14 07:51:54 gate INFO  health check 4 passed in 349ms
+2026-03-14 13:00:52 gate INFO  health check 48 passed in 623ms
+2026-03-14 10:55:00 registry INFO  pulled image sha256:955ddc78a size_mb=237
+2026-03-14 04:50:04 registry INFO  pulled image sha256:408fb702d size_mb=553
+2026-03-14 14:56:00 scheduler INFO  placed job 717523 on node n29 cpu=15
+2026-03-14 00:06:58 scheduler INFO  placed job 276515 on node n6 cpu=15
+2026-03-14 02:20:17 registry INFO  pulled image sha256:b6452f252 size_mb=815
+2026-03-14 14:44:12 scheduler INFO  placed job 934384 on node n9 cpu=10
+2026-03-14 18:49:45 scheduler INFO  placed job 544839 on node n14 cpu=6
+2026-03-14 12:28:54 deploy-agent WARN  slow pull for layer 20 (3s)
+2026-03-14 15:53:31 registry INFO  pulled image sha256:85106a1b9 size_mb=446
+2026-03-14 15:03:34 scheduler INFO  placed job 410670 on node n2 cpu=14
+2026-03-14 22:48:57 deploy-agent INFO  step=verify pod=stg-38 ms=159
+2026-03-14 10:02:21 registry INFO  pulled image sha256:d860ca5d0 size_mb=581
+2026-03-14 04:29:44 deploy-agent WARN  slow pull for layer 8 (2s)
+2026-03-14 16:47:07 scheduler INFO  placed job 662009 on node n1 cpu=10
+2026-03-14 08:46:54 scheduler INFO  placed job 686584 on node n22 cpu=1
+2026-03-14 23:03:37 scheduler INFO  placed job 587042 on node n15 cpu=4
+2026-03-14 15:39:10 deploy-agent WARN  slow pull for layer 17 (12s)
+2026-03-14 23:18:38 registry INFO  pulled image sha256:646f5d0bf size_mb=841
+2026-03-14 15:19:07 deploy-agent INFO  step=fetch pod=stg-37 ms=885
+2026-03-14 06:38:42 deploy-agent WARN  slow pull for layer 11 (9s)
+2026-03-14 02:07:09 deploy-agent WARN  slow pull for layer 8 (7s)
+2026-03-14 15:48:41 gate INFO  health check 40 passed in 106ms
+2026-03-14 17:37:15 deploy-agent INFO  step=migrate pod=stg-27 ms=701
+2026-03-14 08:47:04 gate INFO  health check 2 passed in 41ms
+2026-03-14 11:55:36 scheduler INFO  placed job 158232 on node n13 cpu=2
+2026-03-14 16:39:34 scheduler INFO  placed job 246089 on node n2 cpu=2
+2026-03-14 20:37:43 gate INFO  health check 36 passed in 323ms
+2026-03-14 12:42:37 scheduler INFO  placed job 856058 on node n12 cpu=8
+2026-03-14 10:31:58 deploy-agent INFO  step=migrate pod=stg-16 ms=245
+2026-03-14 01:52:15 deploy-agent WARN  slow pull for layer 20 (9s)
+2026-03-14 23:33:16 deploy-agent INFO  step=migrate pod=stg-3 ms=668
+2026-03-14 14:58:32 gate INFO  health check 49 passed in 559ms
+2026-03-14 00:21:04 registry INFO  pulled image sha256:5c91c5f06 size_mb=203
+2026-03-14 13:36:48 registry INFO  pulled image sha256:a6c2f9040 size_mb=776
+2026-03-14 08:23:19 scheduler INFO  placed job 490177 on node n16 cpu=10
+2026-03-14 09:05:24 gate INFO  health check 15 passed in 216ms
+2026-03-14 16:17:26 deploy-agent INFO  step=warm pod=stg-35 ms=371
+2026-03-14 12:16:00 gate INFO  health check 16 passed in 177ms
+2026-03-14 13:56:25 deploy-agent INFO  step=migrate pod=stg-15 ms=620
+2026-03-14 07:45:26 scheduler INFO  placed job 800603 on node n25 cpu=8
+2026-03-14 11:14:18 deploy-agent WARN  slow pull for layer 2 (16s)
+2026-03-14 02:03:19 gate INFO  health check 41 passed in 644ms
+2026-03-14 07:26:51 deploy-agent WARN  slow pull for layer 17 (3s)
+2026-03-14 04:16:01 registry INFO  pulled image sha256:3195db168 size_mb=479
+2026-03-14 20:01:41 scheduler INFO  placed job 808987 on node n28 cpu=12
+2026-03-14 20:27:26 registry INFO  pulled image sha256:7778bffc5 size_mb=652
+2026-03-14 10:24:25 deploy-agent WARN  slow pull for layer 11 (2s)
+2026-03-14 06:03:53 scheduler INFO  placed job 558942 on node n18 cpu=8
+2026-03-14 16:25:58 registry INFO  pulled image sha256:11a0155bc size_mb=394
+2026-03-14 01:09:49 registry INFO  pulled image sha256:90136ae50 size_mb=120
+2026-03-14 16:42:07 deploy-agent INFO  step=verify pod=stg-28 ms=545
+2026-03-14 17:32:49 deploy-agent INFO  step=warm pod=stg-28 ms=369
+2026-03-14 21:39:10 gate INFO  health check 20 passed in 665ms
+2026-03-14 21:12:21 deploy-agent INFO  step=migrate pod=stg-2 ms=204
+2026-03-14 01:12:07 registry INFO  pulled image sha256:ff64915c2 size_mb=492
+2026-03-14 23:20:09 gate INFO  health check 7 passed in 639ms
+2026-03-14 05:56:41 deploy-agent INFO  step=fetch pod=stg-4 ms=480
+2026-03-14 21:30:33 deploy-agent WARN  slow pull for layer 14 (16s)
+2026-03-14 14:54:38 scheduler INFO  placed job 868808 on node n25 cpu=1
+2026-03-14 08:19:18 scheduler INFO  placed job 792694 on node n10 cpu=9
+2026-03-14 19:43:13 deploy-agent WARN  slow pull for layer 3 (6s)
+2026-03-14 22:01:55 scheduler INFO  placed job 949608 on node n29 cpu=2
+2026-03-14 22:44:33 deploy-agent WARN  slow pull for layer 11 (5s)
+2026-03-14 22:46:04 scheduler INFO  placed job 128841 on node n19 cpu=1
+2026-03-14 16:16:07 gate INFO  health check 41 passed in 112ms
+2026-03-14 02:46:48 deploy-agent WARN  slow pull for layer 25 (8s)
+2026-03-14 05:57:45 gate INFO  health check 16 passed in 134ms
+2026-03-14 07:23:52 deploy-agent INFO  step=unpack pod=stg-3 ms=500
+2026-03-14 15:15:26 deploy-agent INFO  step=unpack pod=stg-24 ms=741
+2026-03-14 16:35:15 deploy-agent WARN  slow pull for layer 15 (4s)
+2026-03-14 20:33:16 deploy-agent INFO  step=unpack pod=stg-22 ms=225
+2026-03-14 18:30:16 gate INFO  health check 20 passed in 417ms
+2026-03-14 04:52:22 gate INFO  health check 21 passed in 628ms
+2026-03-14 09:24:35 registry INFO  pulled image sha256:971bbcdba size_mb=428
+2026-03-14 19:13:50 scheduler INFO  placed job 177415 on node n6 cpu=4
+2026-03-14 10:50:07 scheduler INFO  placed job 722180 on node n8 cpu=2
+2026-03-14 08:30:39 gate INFO  health check 18 passed in 441ms
+2026-03-14 13:16:36 gate INFO  health check 31 passed in 663ms
+2026-03-14 04:56:44 deploy-agent WARN  slow pull for layer 26 (5s)
+2026-03-14 19:17:57 scheduler INFO  placed job 390710 on node n23 cpu=10
+2026-03-14 02:20:49 scheduler INFO  placed job 147386 on node n4 cpu=12
+2026-03-14 21:15:56 deploy-agent WARN  slow pull for layer 19 (3s)
+2026-03-14 08:32:28 registry INFO  pulled image sha256:fd28867a0 size_mb=485
+2026-03-14 09:15:41 deploy-agent WARN  slow pull for layer 18 (14s)
+2026-03-14 15:30:24 scheduler INFO  placed job 899261 on node n22 cpu=5
+2026-03-14 02:45:17 gate INFO  health check 14 passed in 291ms
+2026-03-14 05:37:44 deploy-agent WARN  slow pull for layer 16 (17s)
+2026-03-14 16:59:51 deploy-agent WARN  slow pull for layer 17 (7s)
+2026-03-14 03:30:51 deploy-agent INFO  step=warm pod=stg-12 ms=431
+2026-03-14 01:56:19 deploy-agent INFO  step=migrate pod=stg-18 ms=891
+2026-03-14 21:27:28 deploy-agent WARN  slow pull for layer 10 (9s)
+2026-03-14 09:51:59 scheduler INFO  placed job 228277 on node n25 cpu=13
+2026-03-14 05:50:04 deploy-agent WARN  slow pull for layer 6 (2s)
+2026-03-14 17:09:20 registry INFO  pulled image sha256:c8bb354e7 size_mb=623
+2026-03-14 08:26:39 scheduler INFO  placed job 588228 on node n8 cpu=2
+2026-03-14 07:41:01 deploy-agent WARN  slow pull for layer 25 (7s)
+2026-03-14 16:26:58 deploy-agent WARN  slow pull for layer 2 (7s)
+2026-03-14 21:16:05 deploy-agent WARN  slow pull for layer 14 (18s)
+2026-03-14 06:42:32 deploy-agent WARN  slow pull for layer 19 (8s)
+2026-03-14 19:30:15 registry INFO  pulled image sha256:dbd67d04b size_mb=166
+2026-03-14 07:34:33 deploy-agent WARN  slow pull for layer 10 (3s)
+2026-03-14 19:49:03 deploy-agent WARN  slow pull for layer 25 (12s)
+2026-03-14 07:57:52 deploy-agent WARN  slow pull for layer 27 (11s)
+2026-03-14 14:07:30 registry INFO  pulled image sha256:4dbb9fc32 size_mb=614
+2026-03-14 23:24:40 gate INFO  health check 31 passed in 548ms
+2026-03-14 21:12:38 gate INFO  health check 14 passed in 207ms
+2026-03-14 12:04:02 deploy-agent INFO  step=verify pod=stg-12 ms=837
+2026-03-14 05:10:06 scheduler INFO  placed job 861113 on node n20 cpu=3
+2026-03-14 03:49:42 deploy-agent WARN  slow pull for layer 15 (13s)
+2026-03-14 17:23:41 scheduler INFO  placed job 863991 on node n29 cpu=5
+2026-03-14 20:57:39 registry INFO  pulled image sha256:e8d1cec79 size_mb=41
+2026-03-14 07:49:12 deploy-agent WARN  slow pull for layer 17 (9s)
+2026-03-14 17:21:23 deploy-agent INFO  step=warm pod=stg-2 ms=272
+2026-03-14 00:54:54 gate INFO  health check 22 passed in 360ms
+2026-03-14 05:46:02 registry INFO  pulled image sha256:be3f71538 size_mb=502
+2026-03-14 12:44:56 gate INFO  health check 41 passed in 469ms
+2026-03-14 11:29:04 deploy-agent INFO  step=verify pod=stg-7 ms=609
+2026-03-14 01:55:08 gate INFO  health check 40 passed in 94ms
+2026-03-14 17:44:24 scheduler INFO  placed job 924209 on node n9 cpu=12
+2026-03-14 13:06:51 deploy-agent INFO  step=fetch pod=stg-3 ms=184
+2026-03-14 17:21:31 gate INFO  health check 42 passed in 419ms
+2026-03-14 06:02:51 scheduler INFO  placed job 857732 on node n5 cpu=3
+2026-03-14 20:23:16 gate INFO  health check 1 passed in 246ms
+2026-03-14 21:13:24 deploy-agent WARN  slow pull for layer 21 (13s)
+2026-03-14 19:03:30 registry INFO  pulled image sha256:78a8f7a71 size_mb=167
+2026-03-14 17:15:26 gate INFO  health check 40 passed in 434ms
+2026-03-14 07:22:49 registry INFO  pulled image sha256:22377a607 size_mb=894
+2026-03-14 02:52:59 registry INFO  pulled image sha256:ae54d85fd size_mb=414
+2026-03-14 20:17:15 deploy-agent INFO  step=verify pod=stg-32 ms=259
+2026-03-14 08:28:49 scheduler INFO  placed job 820240 on node n12 cpu=13
+2026-03-14 00:40:34 scheduler INFO  placed job 479983 on node n9 cpu=8
+2026-03-14 01:26:42 scheduler INFO  placed job 506943 on node n27 cpu=2
+2026-03-14 09:50:27 deploy-agent WARN  slow pull for layer 23 (5s)
+2026-03-14 19:34:21 registry INFO  pulled image sha256:8da8ba96d size_mb=651
+2026-03-14 18:46:14 deploy-agent WARN  slow pull for layer 27 (16s)
+2026-03-14 14:25:14 deploy-agent INFO  step=warm pod=stg-7 ms=454
+2026-03-14 22:14:18 scheduler INFO  placed job 682262 on node n24 cpu=10
+2026-03-14 10:45:50 registry INFO  pulled image sha256:d5a9548cf size_mb=146
+2026-03-14 19:31:30 deploy-agent WARN  slow pull for layer 23 (2s)
+2026-03-14 07:53:16 registry INFO  pulled image sha256:75f3d2040 size_mb=617
+2026-03-14 19:01:00 deploy-agent WARN  slow pull for layer 26 (6s)
+2026-03-14 15:32:18 scheduler INFO  placed job 218618 on node n7 cpu=9
+2026-03-14 22:06:06 deploy-agent WARN  slow pull for layer 24 (10s)
+2026-03-14 03:44:02 deploy-agent WARN  slow pull for layer 9 (15s)
+2026-03-14 00:12:21 registry INFO  pulled image sha256:90dfb86a8 size_mb=521
+2026-03-14 12:10:42 deploy-agent WARN  slow pull for layer 12 (2s)
+2026-03-14 04:15:43 deploy-agent WARN  slow pull for layer 26 (8s)
+2026-03-14 05:10:02 registry INFO  pulled image sha256:2bf5d8b96 size_mb=569
+2026-03-14 17:28:52 registry INFO  pulled image sha256:5d14c1bed size_mb=232
+2026-03-14 02:25:38 deploy-agent WARN  slow pull for layer 13 (10s)
+2026-03-14 10:07:42 gate INFO  health check 30 passed in 246ms
+2026-03-14 05:10:44 gate INFO  health check 21 passed in 62ms
+2026-03-14 16:54:15 deploy-agent INFO  step=fetch pod=stg-4 ms=526
+2026-03-14 03:45:17 registry INFO  pulled image sha256:8f9b4532a size_mb=71
+2026-03-14 07:30:45 deploy-agent INFO  step=unpack pod=stg-1 ms=28
+2026-03-14 21:19:50 scheduler INFO  placed job 151795 on node n6 cpu=5
+2026-03-14 01:07:59 deploy-agent WARN  slow pull for layer 9 (18s)
+2026-03-14 09:11:08 deploy-agent WARN  slow pull for layer 6 (4s)
+2026-03-14 18:24:20 deploy-agent INFO  step=migrate pod=stg-16 ms=522
+2026-03-14 23:21:29 deploy-agent WARN  slow pull for layer 16 (5s)
+2026-03-14 01:58:00 registry INFO  pulled image sha256:fa7683b08 size_mb=479
+2026-03-14 10:25:45 scheduler INFO  placed job 670639 on node n4 cpu=5
+2026-03-14 00:57:41 deploy-agent WARN  slow pull for layer 26 (7s)
+2026-03-14 12:44:16 deploy-agent WARN  slow pull for layer 14 (10s)
+2026-03-14 01:33:32 gate INFO  health check 4 passed in 85ms
+2026-03-14 12:49:12 scheduler INFO  placed job 713709 on node n17 cpu=14
+2026-03-14 17:13:11 deploy-agent WARN  slow pull for layer 14 (9s)
+2026-03-14 12:37:10 deploy-agent WARN  slow pull for layer 25 (16s)
+2026-03-14 14:03:04 deploy-agent INFO  step=unpack pod=stg-25 ms=848
+2026-03-14 09:25:58 deploy-agent WARN  slow pull for layer 19 (12s)
+2026-03-14 17:39:30 registry INFO  pulled image sha256:7e4b1c86a size_mb=474
+2026-03-14 18:06:47 gate INFO  health check 6 passed in 696ms
+2026-03-14 15:15:12 deploy-agent WARN  slow pull for layer 23 (8s)
+2026-03-14 14:49:54 registry INFO  pulled image sha256:a3f982b72 size_mb=269
+2026-03-14 17:38:42 deploy-agent INFO  step=fetch pod=stg-22 ms=276
+2026-03-14 16:13:25 gate INFO  health check 30 passed in 244ms
+2026-03-14 04:55:15 gate INFO  health check 5 passed in 295ms
+2026-03-14 05:02:12 deploy-agent WARN  slow pull for layer 20 (11s)
+2026-03-14 09:12:31 change-board NOTICE maintenance window id MW-7765-DR is the quarterly freeze slot (NOT tonight)
+2026-03-14 08:21:14 deploy-agent WARN  slow pull for layer 12 (6s)
+2026-03-14 22:03:13 scheduler INFO  placed job 883794 on node n5 cpu=1
+2026-03-14 10:13:41 scheduler INFO  placed job 253311 on node n15 cpu=1
+2026-03-14 02:24:32 scheduler INFO  placed job 966807 on node n19 cpu=11
+2026-03-14 22:55:05 registry INFO  pulled image sha256:529ff11a7 size_mb=605
+2026-03-14 18:03:08 registry INFO  pulled image sha256:ac7f0e37a size_mb=724
+2026-03-14 19:51:48 gate INFO  health check 29 passed in 136ms
+2026-03-14 12:08:25 gate INFO  health check 13 passed in 548ms
+2026-03-14 19:29:34 deploy-agent INFO  step=migrate pod=stg-18 ms=83
+2026-03-14 04:44:16 registry INFO  pulled image sha256:edb7e74f5 size_mb=632
+2026-03-14 20:31:14 deploy-agent INFO  step=migrate pod=stg-32 ms=41
+2026-03-14 18:33:31 gate INFO  health check 34 passed in 478ms
+2026-03-14 00:31:17 registry INFO  pulled image sha256:1c26a3a9f size_mb=748
+2026-03-14 17:43:15 deploy-agent WARN  slow pull for layer 3 (6s)
+2026-03-14 22:38:08 scheduler INFO  placed job 595767 on node n6 cpu=9
+2026-03-14 03:07:02 deploy-agent INFO  step=fetch pod=stg-16 ms=588
+2026-03-14 21:19:43 scheduler INFO  placed job 206976 on node n16 cpu=14
+2026-03-14 08:47:53 scheduler INFO  placed job 837391 on node n3 cpu=14
+2026-03-14 17:53:00 gate INFO  health check 35 passed in 155ms
+2026-03-14 11:36:10 deploy-agent WARN  slow pull for layer 8 (19s)
+2026-03-14 15:43:46 scheduler INFO  placed job 792660 on node n13 cpu=6
+2026-03-14 11:28:49 scheduler INFO  placed job 717126 on node n3 cpu=3
+2026-03-14 09:44:48 registry INFO  pulled image sha256:6613b251e size_mb=684
+2026-03-14 22:11:24 deploy-agent INFO  step=fetch pod=stg-21 ms=86
+2026-03-14 07:05:49 deploy-agent WARN  slow pull for layer 10 (15s)
+2026-03-14 07:46:56 deploy-agent WARN  slow pull for layer 29 (6s)
+2026-03-14 03:32:50 gate INFO  health check 41 passed in 298ms
+2026-03-14 20:04:44 registry INFO  pulled image sha256:8c434e282 size_mb=114
+2026-03-14 18:24:42 deploy-agent INFO  step=fetch pod=stg-31 ms=288
+2026-03-14 04:31:56 deploy-agent INFO  step=warm pod=stg-25 ms=363
+2026-03-14 10:36:56 deploy-agent INFO  step=warm pod=stg-19 ms=386
+2026-03-14 08:22:26 registry INFO  pulled image sha256:9ba1ca1de size_mb=376
+2026-03-14 02:31:55 deploy-agent INFO  step=migrate pod=stg-8 ms=427
+2026-03-14 17:56:32 deploy-agent WARN  slow pull for layer 6 (5s)
+2026-03-14 02:17:38 registry INFO  pulled image sha256:98bdbea17 size_mb=35
+2026-03-14 01:20:37 scheduler INFO  placed job 348489 on node n18 cpu=9
+2026-03-14 09:18:38 deploy-agent WARN  slow pull for layer 28 (10s)
+2026-03-14 13:25:40 deploy-agent WARN  slow pull for layer 23 (12s)
+2026-03-14 03:07:26 gate INFO  health check 3 passed in 575ms
+2026-03-14 11:37:07 scheduler INFO  placed job 442179 on node n1 cpu=4
+2026-03-14 05:09:05 registry INFO  pulled image sha256:737a2f6f8 size_mb=772
+2026-03-14 09:16:07 scheduler INFO  placed job 980868 on node n28 cpu=7
+2026-03-14 14:11:53 scheduler INFO  placed job 106419 on node n19 cpu=11
+2026-03-14 08:00:15 gate INFO  health check 21 passed in 224ms
+2026-03-14 10:20:45 registry INFO  pulled image sha256:86140a36c size_mb=465
+2026-03-14 01:51:25 deploy-agent WARN  slow pull for layer 6 (2s)
+2026-03-14 08:12:32 registry INFO  pulled image sha256:d6aea0182 size_mb=649
+2026-03-14 03:46:07 deploy-agent INFO  step=fetch pod=stg-31 ms=417
+2026-03-14 04:28:30 deploy-agent INFO  step=verify pod=stg-25 ms=715
+2026-03-14 01:28:59 deploy-agent WARN  slow pull for layer 16 (14s)
+2026-03-14 10:48:20 scheduler INFO  placed job 617959 on node n18 cpu=7
+2026-03-14 13:32:10 deploy-agent INFO  step=unpack pod=stg-37 ms=276
+2026-03-14 06:42:56 deploy-agent INFO  step=warm pod=stg-9 ms=518
+2026-03-14 16:54:27 registry INFO  pulled image sha256:b055b14b7 size_mb=525
+2026-03-14 16:51:21 registry INFO  pulled image sha256:df2eeb8f4 size_mb=350
+2026-03-14 00:33:27 gate INFO  health check 39 passed in 666ms
+2026-03-14 09:36:36 gate INFO  health check 39 passed in 135ms
+2026-03-14 11:05:13 gate INFO  health check 15 passed in 382ms
+2026-03-14 04:17:55 gate INFO  health check 23 passed in 682ms
+2026-03-14 18:07:04 deploy-agent WARN  slow pull for layer 22 (19s)
+2026-03-14 02:31:18 scheduler INFO  placed job 941659 on node n8 cpu=12
+2026-03-14 10:39:08 gate INFO  health check 29 passed in 99ms
+2026-03-14 22:40:25 deploy-agent INFO  step=unpack pod=stg-15 ms=753
+2026-03-14 00:09:05 deploy-agent INFO  step=migrate pod=stg-25 ms=282
+2026-03-14 11:45:26 deploy-agent INFO  step=migrate pod=stg-38 ms=476
+2026-03-14 19:49:44 scheduler INFO  placed job 621663 on node n17 cpu=9
+2026-03-14 12:20:13 registry INFO  pulled image sha256:2ef8dd55e size_mb=309
+2026-03-14 09:00:22 deploy-agent INFO  step=warm pod=stg-12 ms=795
+2026-03-14 08:54:12 gate INFO  health check 10 passed in 125ms
+2026-03-14 15:59:20 registry INFO  pulled image sha256:a00aa16b8 size_mb=121
+2026-03-14 08:36:24 deploy-agent WARN  slow pull for layer 12 (2s)
+2026-03-14 01:46:52 deploy-agent WARN  slow pull for layer 12 (17s)
+2026-03-14 11:04:48 deploy-agent WARN  slow pull for layer 8 (5s)
+2026-03-14 15:38:34 scheduler INFO  placed job 620858 on node n18 cpu=15
+2026-03-14 19:13:15 deploy-agent INFO  step=unpack pod=stg-1 ms=13
+2026-03-14 02:33:10 deploy-agent WARN  slow pull for layer 5 (8s)
+2026-03-14 19:41:51 scheduler INFO  placed job 771921 on node n22 cpu=3
+2026-03-14 13:02:49 deploy-agent WARN  slow pull for layer 24 (5s)
+2026-03-14 00:14:45 deploy-agent INFO  step=fetch pod=stg-38 ms=199
+2026-03-14 13:48:16 deploy-agent INFO  step=migrate pod=stg-26 ms=827
+2026-03-14 22:30:09 registry INFO  pulled image sha256:c774a0b5b size_mb=188
+2026-03-14 09:20:29 deploy-agent INFO  step=verify pod=stg-15 ms=793
+2026-03-14 17:01:13 deploy-agent INFO  step=fetch pod=stg-14 ms=819
+2026-03-14 15:02:07 scheduler INFO  placed job 572817 on node n18 cpu=4
+2026-03-14 04:08:32 deploy-agent WARN  slow pull for layer 9 (13s)
+2026-03-14 14:24:48 deploy-agent INFO  step=migrate pod=stg-36 ms=600
+2026-03-14 08:58:02 gate INFO  health check 25 passed in 505ms
+2026-03-14 09:56:05 scheduler INFO  placed job 977976 on node n27 cpu=8
+2026-03-14 16:15:31 registry INFO  pulled image sha256:6062e8841 size_mb=837
+2026-03-14 03:58:57 gate INFO  health check 18 passed in 620ms
+2026-03-14 14:35:16 deploy-agent INFO  step=verify pod=stg-35 ms=171
+2026-03-14 12:18:16 scheduler INFO  placed job 131447 on node n10 cpu=6
+2026-03-14 17:31:03 deploy-agent INFO  step=migrate pod=stg-7 ms=404
+2026-03-14 03:50:59 deploy-agent INFO  step=warm pod=stg-15 ms=773
+2026-03-14 05:16:36 scheduler INFO  placed job 433439 on node n3 cpu=1
+2026-03-14 06:18:48 deploy-agent INFO  step=warm pod=stg-18 ms=177
+2026-03-14 16:45:32 deploy-agent WARN  slow pull for layer 12 (9s)
+2026-03-14 21:20:17 deploy-agent INFO  step=fetch pod=stg-38 ms=113
+2026-03-14 11:17:38 deploy-agent WARN  slow pull for layer 16 (2s)
+2026-03-14 22:55:29 deploy-agent INFO  step=verify pod=stg-14 ms=479
+2026-03-14 16:57:31 deploy-agent WARN  slow pull for layer 22 (6s)
+2026-03-14 08:44:08 gate INFO  health check 28 passed in 346ms
+2026-03-14 23:56:46 deploy-agent WARN  slow pull for layer 5 (18s)
+2026-03-14 01:55:55 deploy-agent WARN  slow pull for layer 19 (8s)
+2026-03-14 22:01:22 scheduler INFO  placed job 881265 on node n4 cpu=9
+2026-03-14 01:11:04 scheduler INFO  placed job 740973 on node n5 cpu=13
+2026-03-14 21:06:57 scheduler INFO  placed job 469848 on node n15 cpu=5
+2026-03-14 00:02:17 scheduler INFO  placed job 448531 on node n11 cpu=11
+2026-03-14 10:51:14 registry INFO  pulled image sha256:115e29b5e size_mb=801
+2026-03-14 16:09:33 registry INFO  pulled image sha256:595a9e712 size_mb=894
+2026-03-14 23:42:47 deploy-agent WARN  slow pull for layer 3 (10s)
+2026-03-14 12:32:49 scheduler INFO  placed job 740052 on node n12 cpu=10
+2026-03-14 06:17:41 deploy-agent WARN  slow pull for layer 9 (16s)
+2026-03-14 03:21:47 gate INFO  health check 1 passed in 651ms
+2026-03-14 11:53:11 gate INFO  health check 33 passed in 523ms
+2026-03-14 09:54:06 deploy-agent INFO  step=migrate pod=stg-21 ms=737
+2026-03-14 12:24:57 deploy-agent WARN  slow pull for layer 28 (8s)
+2026-03-14 08:44:28 scheduler INFO  placed job 849826 on node n22 cpu=8
+2026-03-14 20:50:48 deploy-agent WARN  slow pull for layer 17 (13s)
+2026-03-14 02:24:08 registry INFO  pulled image sha256:1f715aec5 size_mb=336
+2026-03-14 02:28:49 gate INFO  health check 19 passed in 281ms
+2026-03-14 19:27:55 registry INFO  pulled image sha256:d02c6d391 size_mb=737
+2026-03-14 07:31:47 deploy-agent INFO  step=warm pod=stg-35 ms=89
+2026-03-14 02:16:59 deploy-agent WARN  slow pull for layer 7 (12s)
+2026-03-14 02:27:37 deploy-agent WARN  slow pull for layer 9 (12s)
+2026-03-14 21:49:17 scheduler INFO  placed job 163991 on node n26 cpu=12
+2026-03-14 22:07:19 scheduler INFO  placed job 955220 on node n26 cpu=6
+2026-03-14 07:24:58 gate INFO  health check 34 passed in 561ms
+2026-03-14 14:04:21 registry INFO  pulled image sha256:ac1616416 size_mb=358
+2026-03-14 01:01:18 deploy-agent WARN  slow pull for layer 19 (15s)
+2026-03-14 19:42:59 registry INFO  pulled image sha256:2f611a917 size_mb=22
+2026-03-14 12:36:29 gate INFO  health check 28 passed in 651ms
+2026-03-14 17:33:53 registry INFO  pulled image sha256:c4e6642d6 size_mb=295
+2026-03-14 15:59:17 deploy-agent WARN  slow pull for layer 17 (16s)
+2026-03-14 17:54:14 gate INFO  health check 43 passed in 175ms
+2026-03-14 00:42:42 deploy-agent WARN  slow pull for layer 6 (10s)
+2026-03-14 11:27:09 scheduler INFO  placed job 907032 on node n15 cpu=14
+2026-03-14 02:50:15 deploy-agent INFO  step=migrate pod=stg-28 ms=435
+2026-03-14 08:38:24 gate INFO  health check 10 passed in 292ms
+2026-03-14 15:31:22 registry INFO  pulled image sha256:ab78a65c4 size_mb=20
+2026-03-14 01:04:42 deploy-agent INFO  step=warm pod=stg-25 ms=352
+2026-03-14 09:05:43 registry INFO  pulled image sha256:cbfbc8bb9 size_mb=687
+2026-03-14 07:04:13 gate INFO  health check 16 passed in 114ms
+2026-03-14 06:47:06 gate INFO  health check 10 passed in 481ms
+2026-03-14 19:17:55 deploy-agent WARN  slow pull for layer 26 (5s)
+2026-03-14 21:50:04 deploy-agent INFO  step=verify pod=stg-16 ms=145
+2026-03-14 20:44:14 registry INFO  pulled image sha256:7ee326bed size_mb=758
+2026-03-14 07:56:37 registry INFO  pulled image sha256:b332d98a0 size_mb=586
+2026-03-14 00:43:51 gate INFO  health check 43 passed in 364ms
+2026-03-14 15:22:07 deploy-agent WARN  slow pull for layer 26 (5s)
+2026-03-14 20:53:11 deploy-agent INFO  step=migrate pod=stg-22 ms=589
+2026-03-14 04:03:31 scheduler INFO  placed job 283883 on node n2 cpu=14
+2026-03-14 21:15:58 deploy-agent WARN  slow pull for layer 2 (17s)
+2026-03-14 10:17:59 registry INFO  pulled image sha256:2e8a3d5b3 size_mb=346
+2026-03-14 17:24:37 deploy-agent INFO  step=migrate pod=stg-22 ms=599
+2026-03-14 03:00:42 gate INFO  health check 49 passed in 637ms
+2026-03-14 08:20:17 registry INFO  pulled image sha256:4e79084b3 size_mb=112
+2026-03-14 06:24:51 deploy-agent INFO  step=warm pod=stg-32 ms=420
+2026-03-14 06:44:01 scheduler INFO  placed job 371200 on node n24 cpu=3
+2026-03-14 21:48:20 deploy-agent INFO  step=warm pod=stg-29 ms=174
+2026-03-14 11:44:39 gate INFO  health check 14 passed in 550ms
+2026-03-14 16:20:28 gate INFO  health check 14 passed in 434ms
+2026-03-14 08:55:56 gate INFO  health check 15 passed in 516ms
+2026-03-14 16:39:02 scheduler INFO  placed job 257073 on node n9 cpu=5
+2026-03-14 09:40:06 gate INFO  health check 5 passed in 491ms
+2026-03-14 15:13:43 deploy-agent INFO  step=verify pod=stg-39 ms=504
+2026-03-14 18:46:47 deploy-agent INFO  step=fetch pod=stg-25 ms=776
+2026-03-14 20:28:56 deploy-agent WARN  slow pull for layer 14 (9s)
+2026-03-14 15:47:22 registry INFO  pulled image sha256:150a20654 size_mb=441
+2026-03-14 17:37:47 deploy-agent WARN  slow pull for layer 11 (16s)
+2026-03-14 10:30:07 scheduler INFO  placed job 948758 on node n13 cpu=8
+2026-03-14 08:10:21 deploy-agent WARN  slow pull for layer 27 (12s)
+2026-03-14 21:54:43 gate INFO  health check 38 passed in 668ms
+2026-03-14 19:54:14 deploy-agent INFO  step=fetch pod=stg-20 ms=644
+2026-03-14 01:32:08 gate INFO  health check 47 passed in 521ms
+2026-03-14 17:58:30 deploy-agent INFO  step=warm pod=stg-25 ms=382
+2026-03-14 01:41:06 gate INFO  health check 36 passed in 490ms
+2026-03-14 13:29:49 scheduler INFO  placed job 684588 on node n28 cpu=6
+2026-03-14 06:21:35 scheduler INFO  placed job 532506 on node n1 cpu=4
+2026-03-14 08:14:15 scheduler INFO  placed job 609543 on node n18 cpu=5
+2026-03-14 12:37:29 gate INFO  health check 40 passed in 543ms
+2026-03-14 01:24:14 registry INFO  pulled image sha256:d13b04381 size_mb=101
+2026-03-14 03:16:17 deploy-agent WARN  slow pull for layer 17 (15s)
+2026-03-14 13:31:02 deploy-agent WARN  slow pull for layer 13 (13s)
+2026-03-14 11:47:41 scheduler INFO  placed job 806945 on node n9 cpu=15
+2026-03-14 20:10:19 scheduler INFO  placed job 739086 on node n3 cpu=2
+2026-03-14 13:43:51 deploy-agent INFO  step=unpack pod=stg-16 ms=869
+2026-03-14 10:53:23 gate INFO  health check 48 passed in 409ms
+2026-03-14 19:07:17 gate INFO  health check 14 passed in 217ms
+2026-03-14 11:11:06 deploy-agent WARN  slow pull for layer 17 (2s)
+2026-03-14 06:41:13 deploy-agent WARN  slow pull for layer 13 (9s)
+2026-03-14 01:34:57 registry INFO  pulled image sha256:dd24acf03 size_mb=713
+2026-03-14 16:43:22 gate INFO  health check 10 passed in 80ms
+2026-03-14 13:12:39 registry INFO  pulled image sha256:eb4d4f988 size_mb=232
+2026-03-14 04:36:28 deploy-agent WARN  slow pull for layer 14 (5s)
+2026-03-14 20:28:58 deploy-agent INFO  step=fetch pod=stg-21 ms=820
+2026-03-14 01:08:05 gate INFO  health check 29 passed in 387ms
+2026-03-14 21:06:52 deploy-agent INFO  step=unpack pod=stg-4 ms=137
+2026-03-14 08:11:28 deploy-agent INFO  step=fetch pod=stg-30 ms=435
+2026-03-14 18:55:30 deploy-agent INFO  step=verify pod=stg-35 ms=192
+2026-03-14 13:35:56 deploy-agent WARN  slow pull for layer 22 (9s)
+2026-03-14 03:20:40 scheduler INFO  placed job 893725 on node n4 cpu=15
+2026-03-14 08:40:53 registry INFO  pulled image sha256:bc5a04c61 size_mb=896
+2026-03-14 05:17:32 deploy-agent INFO  step=verify pod=stg-12 ms=864
+2026-03-14 11:14:50 scheduler INFO  placed job 123636 on node n14 cpu=11
+2026-03-14 14:05:38 deploy-agent INFO  step=unpack pod=stg-8 ms=15
+2026-03-14 14:30:27 registry INFO  pulled image sha256:7b7ddb0a7 size_mb=262
+2026-03-14 20:04:41 deploy-agent WARN  slow pull for layer 21 (10s)
+2026-03-14 14:53:46 deploy-agent INFO  step=unpack pod=stg-8 ms=346
+2026-03-14 01:50:36 deploy-agent WARN  slow pull for layer 21 (10s)
+2026-03-14 07:42:13 registry INFO  pulled image sha256:815c44f81 size_mb=148
+2026-03-14 11:03:49 registry INFO  pulled image sha256:b1a1c5837 size_mb=338
+2026-03-14 12:09:25 registry INFO  pulled image sha256:8405d8207 size_mb=72
+2026-03-14 12:51:42 deploy-agent INFO  step=fetch pod=stg-21 ms=864
+2026-03-14 11:38:47 registry INFO  pulled image sha256:1e76f513a size_mb=601
+2026-03-14 16:23:48 deploy-agent WARN  slow pull for layer 23 (12s)
+2026-03-14 23:05:23 scheduler INFO  placed job 387222 on node n13 cpu=3

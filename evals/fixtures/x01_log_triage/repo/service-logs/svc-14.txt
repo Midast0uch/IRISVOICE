@@ -1,0 +1,92 @@
+2026-03-14 06:02:03 svc-14 INFO  request id=68201294 path=/api/v1/login status=200 ms=224
+2026-03-14 06:02:09 svc-14 WARN  slow response from 10.3.5.64 after 1708ms (no error)
+2026-03-14 06:02:12 svc-14 DEBUG cache hit key=user:6718 ttl=171s
+2026-03-14 06:02:15 svc-14 DEBUG cache hit key=user:6689 ttl=522s
+2026-03-14 06:02:22 svc-14 WARN  retrying after E-9001 on 10.2.3.77 attempt=1 (recovered)
+2026-03-14 06:02:30 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=95 conns=68
+2026-03-14 06:02:36 svc-14 INFO  connected to search at 10.3.4.34 in 58ms
+2026-03-14 06:02:41 svc-14 DEBUG cache hit key=user:2076 ttl=177s
+2026-03-14 06:02:46 svc-14 WARN  slow response from 10.1.7.41 after 830ms (no error)
+2026-03-14 06:09:14 svc-14 ERROR [E-8810] lease expired before commit (host=10.2.7.81 attempt=2)
+2026-03-14 06:02:52 svc-14 WARN  retrying after E-9001 on 10.2.1.10 attempt=1 (recovered)
+2026-03-14 06:03:00 svc-14 DEBUG cache hit key=user:1392 ttl=557s
+2026-03-14 06:03:02 svc-14 INFO  heartbeat ok uptime=26289s rss_mb=891
+2026-03-14 06:03:04 svc-14 WARN  retrying after E-2203 on 10.1.4.79 attempt=1 (recovered)
+2026-03-14 06:03:12 svc-14 WARN  slow response from 10.1.7.29 after 1891ms (no error)
+2026-03-14 06:09:20 svc-14 ERROR [E-3369] queue overflow, dropping batch (host=10.3.2.75 attempt=1)
+2026-03-14 06:03:18 svc-14 WARN  retrying after E-9001 on 10.2.0.86 attempt=1 (recovered)
+2026-03-14 06:03:25 svc-14 INFO  request id=44315190 path=/api/v2/items status=200 ms=40
+2026-03-14 06:03:28 svc-14 INFO  heartbeat ok uptime=79313s rss_mb=660
+2026-03-14 06:03:29 svc-14 WARN  retrying after E-2203 on 10.3.0.74 attempt=2 (recovered)
+2026-03-14 06:09:25 svc-14 ERROR [E-3369] queue overflow, dropping batch (host=10.2.6.13 attempt=2)
+2026-03-14 06:03:36 svc-14 INFO  request id=11551917 path=/api/v1/login status=200 ms=186
+2026-03-14 06:03:43 svc-14 INFO  request id=64866869 path=/healthz status=200 ms=152
+2026-03-14 06:03:44 svc-14 INFO  heartbeat ok uptime=32456s rss_mb=546
+2026-03-14 06:03:50 svc-14 DEBUG cache hit key=user:5022 ttl=161s
+2026-03-14 06:03:55 svc-14 INFO  heartbeat ok uptime=75565s rss_mb=682
+2026-03-14 06:03:57 svc-14 INFO  connected to auth at 10.1.3.11 in 73ms
+2026-03-14 06:03:58 svc-14 INFO  request id=44314042 path=/static/app.js status=200 ms=48
+2026-03-14 06:04:04 svc-14 INFO  connected to ingest at 10.3.2.77 in 77ms
+2026-03-14 06:04:06 svc-14 DEBUG cache hit key=user:1581 ttl=268s
+2026-03-14 06:04:11 svc-14 WARN  slow response from 10.2.4.75 after 2036ms (no error)
+2026-03-14 06:04:18 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=33 conns=38
+2026-03-14 06:04:24 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=157 conns=30
+2026-03-14 06:04:30 svc-14 WARN  slow response from 10.1.7.22 after 1438ms (no error)
+2026-03-14 06:04:38 svc-14 WARN  slow response from 10.3.6.91 after 1836ms (no error)
+2026-03-14 06:04:41 svc-14 WARN  slow response from 10.2.4.65 after 2154ms (no error)
+2026-03-14 06:04:43 svc-14 DEBUG cache hit key=user:5003 ttl=291s
+2026-03-14 06:04:46 svc-14 INFO  request id=40126720 path=/static/app.js status=200 ms=73
+2026-03-14 06:04:51 svc-14 WARN  slow response from 10.1.7.37 after 1649ms (no error)
+2026-03-14 06:04:59 svc-14 INFO  connected to sync at 10.2.7.74 in 78ms
+2026-03-14 06:05:04 svc-14 INFO  request id=20253295 path=/api/v2/cart status=200 ms=167
+2026-03-14 06:09:29 svc-14 ERROR [E-3369] queue overflow, dropping batch (host=10.1.2.5 attempt=1)
+2026-03-14 06:05:08 svc-14 WARN  retrying after E-2203 on 10.3.2.37 attempt=1 (recovered)
+2026-03-14 06:05:14 svc-14 DEBUG cache hit key=user:7745 ttl=120s
+2026-03-14 06:05:17 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=53 conns=73
+2026-03-14 06:05:18 svc-14 INFO  connected to sync at 10.2.7.52 in 12ms
+2026-03-14 06:05:21 svc-14 WARN  retrying after E-4417 on 10.3.5.86 attempt=2 (recovered)
+2026-03-14 06:05:29 svc-14 WARN  retrying after E-9001 on 10.2.7.37 attempt=2 (recovered)
+2026-03-14 06:05:36 svc-14 WARN  slow response from 10.3.4.98 after 2101ms (no error)
+2026-03-14 06:05:38 svc-14 INFO  request id=87492191 path=/static/app.js status=200 ms=243
+2026-03-14 06:05:40 svc-14 WARN  slow response from 10.2.2.40 after 1479ms (no error)
+2026-03-14 06:05:47 svc-14 INFO  connected to ingest at 10.1.1.15 in 78ms
+2026-03-14 06:05:54 svc-14 INFO  connected to sync at 10.2.8.97 in 63ms
+2026-03-14 06:05:55 svc-14 WARN  retrying after E-2203 on 10.2.6.67 attempt=1 (recovered)
+2026-03-14 06:06:03 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=281 conns=45
+2026-03-14 06:06:07 svc-14 INFO  connected to billing at 10.2.8.94 in 65ms
+2026-03-14 06:06:13 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=251 conns=13
+2026-03-14 06:06:21 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=172 conns=7
+2026-03-14 06:06:22 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=74 conns=4
+2026-03-14 06:06:25 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=25 conns=68
+2026-03-14 06:06:27 svc-14 INFO  connected to auth at 10.1.8.66 in 36ms
+2026-03-14 06:06:29 svc-14 DEBUG cache hit key=user:5469 ttl=396s
+2026-03-14 06:06:34 svc-14 INFO  request id=55257116 path=/api/v2/items status=200 ms=397
+2026-03-14 06:06:41 svc-14 INFO  heartbeat ok uptime=74074s rss_mb=755
+2026-03-14 06:06:44 svc-14 WARN  slow response from 10.3.5.36 after 1640ms (no error)
+2026-03-14 06:06:51 svc-14 INFO  request id=58834562 path=/api/v2/items status=200 ms=360
+2026-03-14 06:06:58 svc-14 WARN  slow response from 10.1.0.68 after 978ms (no error)
+2026-03-14 06:07:05 svc-14 INFO  heartbeat ok uptime=21845s rss_mb=707
+2026-03-14 06:07:10 svc-14 DEBUG cache hit key=user:9956 ttl=376s
+2026-03-14 06:07:13 svc-14 WARN  retrying after E-9001 on 10.2.8.34 attempt=2 (recovered)
+2026-03-14 06:07:18 svc-14 DEBUG cache hit key=user:7443 ttl=382s
+2026-03-14 06:07:26 svc-14 WARN  retrying after E-9001 on 10.1.8.15 attempt=2 (recovered)
+2026-03-14 06:07:32 svc-14 INFO  request id=30555393 path=/api/v1/login status=200 ms=318
+2026-03-14 06:07:34 svc-14 INFO  request id=27812936 path=/healthz status=200 ms=109
+2026-03-14 06:07:38 svc-14 WARN  retrying after E-4417 on 10.2.1.98 attempt=2 (recovered)
+2026-03-14 06:07:40 svc-14 DEBUG cache hit key=user:3714 ttl=158s
+2026-03-14 06:07:42 svc-14 WARN  retrying after E-2203 on 10.3.7.98 attempt=2 (recovered)
+2026-03-14 06:07:50 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=54 conns=50
+2026-03-14 06:09:31 svc-14 ERROR [E-3369] queue overflow, dropping batch (host=10.2.5.84 attempt=3)
+2026-03-14 06:08:04 svc-14 INFO  heartbeat ok uptime=95817s rss_mb=730
+2026-03-14 06:08:12 svc-14 WARN  retrying after E-9001 on 10.1.8.43 attempt=1 (recovered)
+2026-03-14 06:08:13 svc-14 DEBUG cache hit key=user:3701 ttl=17s
+2026-03-14 06:08:21 svc-14 INFO  connected to ingest at 10.2.4.12 in 49ms
+2026-03-14 06:08:28 svc-14 INFO  connected to edge at 10.1.2.87 in 31ms
+2026-03-14 06:08:29 svc-14 INFO  request id=81623971 path=/healthz status=200 ms=252
+2026-03-14 06:08:36 svc-14 WARN  slow response from 10.1.7.70 after 1549ms (no error)
+2026-03-14 06:08:41 svc-14 DEBUG cache hit key=user:9523 ttl=192s
+2026-03-14 06:08:43 svc-14 INFO  connected to edge at 10.1.2.45 in 46ms
+2026-03-14 06:08:47 svc-14 INFO  request id=84083080 path=/healthz status=200 ms=155
+2026-03-14 06:08:54 svc-14 INFO  metrics errors=0 error_rate=0.00 p95_ms=38 conns=74
+2026-03-14 06:09:02 svc-14 INFO  heartbeat ok uptime=27228s rss_mb=849
+2026-03-14 06:09:07 svc-14 INFO  request id=81593762 path=/static/app.js status=200 ms=105

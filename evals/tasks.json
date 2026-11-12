@@ -6799,6 +6799,122 @@
       "prompt": "Work in the project directory {workdir}. Add a function largest(a, b) -> int to calculator.py. The function The larger of a and b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
+    },
+    {
+      "group": "context",
+      "mode": "developer",
+      "path": "dev_cli",
+      "timeout_s": 1800,
+      "id": "x01_log_triage",
+      "prompt": "The project is in {workdir}. The service-logs/ folder holds 14 service logs (svc-01.txt to svc-14.txt). List every distinct error code (format E-nnnn) that appears on an ERROR line, not on WARN or INFO lines, and tell me how many ERROR lines there are in total across all 14 logs. Do not change any file.",
+      "reply_patterns": [
+        "E\\-1096",
+        "E\\-2203",
+        "E\\-3369",
+        "E\\-4417",
+        "E\\-5531",
+        "E\\-7742",
+        "E\\-8810",
+        "\\b32\\b"
+      ],
+      "pressure": {
+        "reads": 14,
+        "read_chars": 103282,
+        "needs": "early and late reads combined: 7 codes over 14 files, count over all"
+      }
+    },
+    {
+      "group": "context",
+      "mode": "developer",
+      "path": "dev_cli",
+      "timeout_s": 1800,
+      "id": "x02_needle_retention",
+      "prompt": "The project is in {workdir}. First read notes/00_provisioning.md and note the CURRENT rollback token. Then read every report in reports/ (vendor_01.txt to vendor_12.txt) and add up all the invoice_total values (not invoice_subtotal, not credit_total). Reply with the rollback token and the sum of the invoice totals. Do not change any file.",
+      "reply_patterns": [
+        "RB\\-7731\\-KX",
+        "117,?726\\.63"
+      ],
+      "pressure": {
+        "reads": 13,
+        "read_chars": 85793,
+        "needs": "fact from the first read used after 12 large reads"
+      }
+    },
+    {
+      "group": "context",
+      "mode": "developer",
+      "path": "dev_cli",
+      "timeout_s": 1800,
+      "id": "x03_kv_chain",
+      "prompt": "The project is in {workdir}. The kv/ folder holds 24 shard files (shard-01.kv to shard-24.kv). Each line is 'key = expression' and '@name' means the value of another key, which is defined in some shard. Work out the integer value of the key final (not final_a_old or any other look-alike) and tell me the number. Do not change any file.",
+      "reply_patterns": [
+        "(?<![\\d,.])51,?040(?![\\d])"
+      ],
+      "pressure": {
+        "reads": 24,
+        "read_chars": 44400,
+        "needs": "state carried over 24 small reads: 12 leaves, 3 mids, 1 final"
+      }
+    },
+    {
+      "group": "context",
+      "mode": "developer",
+      "path": "dev_cli",
+      "timeout_s": 1800,
+      "id": "x04_sketchpad",
+      "prompt": "The project is in {workdir}. For the orders ORD-0023, ORD-0061, ORD-0098, ORD-0140 in data/orders.csv work out the shipping cost of each: the zone's base rate plus its per-kg rate times the weight (data/zones.csv), then multiplied by the class multiplier (data/classes.csv), then plus the tax for the zone's region (data/tax.txt, which also says how to round). Tell me the cost of each order and the grand total, in dollars. Do not change any file.",
+      "reply_patterns": [
+        "23\\.92",
+        "20\\.08",
+        "28\\.61",
+        "12\\.05",
+        "84\\.66"
+      ],
+      "pressure": {
+        "reads": 4,
+        "read_chars": 16215,
+        "needs": "intermediates per order (zone, weight, rates, multiplier, tax) kept until the total"
+      }
+    },
+    {
+      "id": "x05_history_needle",
+      "group": "context",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 900,
+      "prior_timeout_s": 600,
+      "prior_turns": [
+        {
+          "fixture": "x05_history_needle/turns/t1.txt"
+        },
+        {
+          "fixture": "x05_history_needle/turns/t2.txt"
+        },
+        {
+          "fixture": "x05_history_needle/turns/t3.txt"
+        },
+        {
+          "fixture": "x05_history_needle/turns/t4.txt"
+        },
+        {
+          "fixture": "x05_history_needle/turns/t5.txt"
+        },
+        {
+          "fixture": "x05_history_needle/turns/t6.txt"
+        },
+        {
+          "fixture": "x05_history_needle/turns/t7.txt"
+        }
+      ],
+      "prompt": "In the third chunk of the deploy log I pasted, which maintenance window id did tonight's deploy run in? Reply with the id only.",
+      "reply_patterns": [
+        "MW\\-5532\\-QF"
+      ],
+      "pressure": {
+        "reads": 0,
+        "read_chars": 210000,
+        "needs": "fact in turn 3 of 7 pasted turns; the last 5 turns are 150,000 chars"
+      }
     }
   ]
 }

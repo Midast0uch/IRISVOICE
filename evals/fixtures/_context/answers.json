@@ -1,0 +1,115 @@
+{
+  "x01": {
+    "codes": [
+      "E-1096",
+      "E-2203",
+      "E-3369",
+      "E-4417",
+      "E-5531",
+      "E-7742",
+      "E-8810"
+    ],
+    "error_lines": 32,
+    "file_chars": {
+      "svc-01": 7365,
+      "svc-02": 7326,
+      "svc-03": 7342,
+      "svc-04": 7394,
+      "svc-05": 7406,
+      "svc-06": 7393,
+      "svc-07": 7346,
+      "svc-08": 7339,
+      "svc-09": 7390,
+      "svc-10": 7374,
+      "svc-11": 7371,
+      "svc-12": 7340,
+      "svc-13": 7391,
+      "svc-14": 7505
+    },
+    "needles": [
+      "E-1096",
+      "E-2203",
+      "E-3369",
+      "E-4417",
+      "E-5531",
+      "E-7742",
+      "E-8810"
+    ]
+  },
+  "x02": {
+    "token": "RB-7731-KX",
+    "sum": "117726.63",
+    "file_chars": {
+      "vendor_01.txt": 7104,
+      "vendor_02.txt": 7129,
+      "vendor_03.txt": 7108,
+      "vendor_04.txt": 7104,
+      "vendor_05.txt": 7112,
+      "vendor_06.txt": 7108,
+      "vendor_07.txt": 7099,
+      "vendor_08.txt": 7140,
+      "vendor_09.txt": 7130,
+      "vendor_10.txt": 7122,
+      "vendor_11.txt": 7109,
+      "vendor_12.txt": 7108
+    },
+    "needles": [
+      "RB-7731-KX"
+    ]
+  },
+  "x03": {
+    "final": 51040,
+    "mid_a": 255,
+    "mid_b": 201,
+    "mid_c": 215,
+    "needles": [
+      "base_a = 43",
+      "base_b = 82",
+      "base_c = 54",
+      "base_d = 65",
+      "base_e = 59",
+      "base_f = 51",
+      "base_g = 40",
+      "base_h = 56",
+      "base_i = 41",
+      "base_j = 63",
+      "base_k = 44",
+      "base_l = 64"
+    ]
+  },
+  "x04": {
+    "orders": [
+      "ORD-0023",
+      "ORD-0061",
+      "ORD-0098",
+      "ORD-0140"
+    ],
+    "costs_cents": {
+      "ORD-0023": 2392,
+      "ORD-0061": 2008,
+      "ORD-0098": 2861,
+      "ORD-0140": 1205
+    },
+    "total_cents": 8466,
+    "needles": [
+      "ORD-0023,Z-29,22.3,express",
+      "ORD-0061,Z-30,5.3,bulky",
+      "ORD-0098,Z-38,11.3,fragile",
+      "ORD-0140,Z-13,2.1,standard"
+    ],
+    "file_chars": {
+      "classes.csv": 622,
+      "orders.csv": 7401,
+      "tax.txt": 7426,
+      "zones.csv": 766
+    }
+  },
+  "x05": {
+    "needle": "MW-5532-QF",
+    "needle_turn": 3,
+    "turn_chars": 30000,
+    "needles": [
+      "MW-5532-QF"
+    ]
+  }
+}

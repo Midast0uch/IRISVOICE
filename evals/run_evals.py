@@ -183,9 +183,11 @@ _SHELL_SYNTAX_RE = re.compile(
 
 # ── one turn over the WebSocket ──────────────────────────────────────────────
 
-async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: float) -> dict:
+async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: float,
+                    client_id: str | None = None) -> dict:
     """Send one task and collect everything until the turn's final reply."""
-    client = f"eval-{task['id']}-{uuid.uuid4().hex[:6]}"
+    # client_id: a multi-turn task (prior_turns) keeps ONE session id for all its turns
+    client = client_id or f"eval-{task['id']}-{uuid.uuid4().hex[:6]}"
     url = f"{WS_BASE}/{client}?session_id={client}"
     record: dict = {
         "reply": "", "documents": [], "event_counts": {}, "tools": [],
@@ -769,11 +771,31 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                                               f"{seed_rec['reply'][:80]!r}")
                     except Exception as exc:
                         seed_note = f"seed failed: {type(exc).__name__}: {exc}"
+                # CLM T2.7: a task with `prior_turns` is multi-turn. Each earlier turn is a
+                # real turn in THIS conversation and THIS session (so the history exists
+                # when the ask comes); a turn is {"text": ...} or {"fixture": "<path under
+                # evals/fixtures>"} (long pasted text kept out of tasks.json). A prior turn
+                # that errors or times out fails the task: the ask would measure nothing.
+                _client = None
+                if task.get("prior_turns"):
+                    _client = f"eval-{task['id']}-{uuid.uuid4().hex[:6]}"
+                    for _k, _pt in enumerate(task["prior_turns"], 1):
+                        _txt = (_pt.get("text") if "text" in _pt else
+                                (FIXTURES_DIR / _pt["fixture"]).read_text(encoding="utf-8"))
+                        _prec = await _run_turn(
+                            {**task, "id": f"{task['id']}-t{_k}", "prompt": _txt}, conv_id, None,
+                            float(task.get("prior_timeout_s", 600)), client_id=_client)
+                        if (not _prec.get("reply") or _prec["timed_out"]
+                                or _is_error_reply(_prec["reply"])):
+                            seed_note = (f"prior turn {_k} failed: "
+                                         f"{_prec.get('ws_error') or _prec.get('reply', '')[:80] or 'no reply'}")
+                            break
                 # Time the ASK alone. `reply_s` includes the seed + setup, which
                 # made a 1.3 s recall look like 40 s. Keep both: the standard
                 # uses reply_s, the recall latency is reply_s_ask.
                 ask_started = time.monotonic()
-                rec = await _run_turn(task, conv_id, workdir, float(task.get("timeout_s", 900)))
+                rec = await _run_turn(task, conv_id, workdir, float(task.get("timeout_s", 900)),
+                                      client_id=_client)
             except Exception as exc:  # a broken socket is a failed task, not a crashed run
                 rec = {"reply": "", "documents": [], "event_counts": {}, "tools": [],
                        "permissions": 0, "questions": 0, "timed_out": False,
@@ -933,7 +955,7 @@ def _summary(results: list) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description="IRIS execution pass-rate harness")
     ap.add_argument("--group", action="append",
-                    choices=["coding", "research", "browser", "browser_goal", "memory", "calibration"], default=[])
+                    choices=["coding", "research", "browser", "browser_goal", "memory", "calibration", "context"], default=[])
     ap.add_argument("--task", action="append", default=[], help="task id (repeatable)")
     ap.add_argument("--record-baseline", action="store_true")
     ap.add_argument("--record-standard", action="store_true",

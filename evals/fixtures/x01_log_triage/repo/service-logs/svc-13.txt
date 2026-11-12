@@ -1,0 +1,94 @@
+2026-03-14 06:44:55 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=160 conns=45
+2026-03-14 06:45:02 svc-13 INFO  heartbeat ok uptime=82850s rss_mb=188
+2026-03-14 06:45:10 svc-13 INFO  connected to billing at 10.1.5.98 in 46ms
+2026-03-14 06:45:16 svc-13 WARN  retrying after E-2203 on 10.1.6.87 attempt=2 (recovered)
+2026-03-14 06:45:24 svc-13 INFO  connected to catalog at 10.3.2.82 in 75ms
+2026-03-14 06:45:31 svc-13 WARN  slow response from 10.2.5.85 after 1692ms (no error)
+2026-03-14 06:45:37 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=90 conns=34
+2026-03-14 06:45:45 svc-13 INFO  request id=75898814 path=/healthz status=200 ms=357
+2026-03-14 06:45:50 svc-13 INFO  connected to catalog at 10.1.2.92 in 64ms
+2026-03-14 06:45:52 svc-13 INFO  connected to edge at 10.2.2.18 in 56ms
+2026-03-14 06:45:57 svc-13 INFO  request id=19696659 path=/healthz status=200 ms=15
+2026-03-14 06:46:00 svc-13 INFO  connected to auth at 10.3.6.30 in 50ms
+2026-03-14 06:52:16 svc-13 ERROR [E-8810] lease expired before commit (host=10.1.1.21 attempt=5)
+2026-03-14 06:46:16 svc-13 INFO  request id=59983593 path=/api/v2/cart status=200 ms=64
+2026-03-14 06:46:21 svc-13 INFO  connected to mailer at 10.1.5.67 in 30ms
+2026-03-14 06:46:26 svc-13 INFO  request id=18538787 path=/api/v2/orders status=200 ms=138
+2026-03-14 06:46:29 svc-13 DEBUG cache hit key=user:2452 ttl=277s
+2026-03-14 06:46:33 svc-13 INFO  heartbeat ok uptime=11808s rss_mb=704
+2026-03-14 06:46:35 svc-13 WARN  retrying after E-9001 on 10.2.2.78 attempt=2 (recovered)
+2026-03-14 06:46:40 svc-13 WARN  slow response from 10.3.8.35 after 1993ms (no error)
+2026-03-14 06:46:46 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=44 conns=48
+2026-03-14 06:46:54 svc-13 INFO  connected to mailer at 10.3.1.93 in 23ms
+2026-03-14 06:47:01 svc-13 WARN  slow response from 10.2.4.49 after 905ms (no error)
+2026-03-14 06:47:02 svc-13 INFO  connected to ingest at 10.1.5.75 in 4ms
+2026-03-14 06:47:06 svc-13 WARN  retrying after E-9001 on 10.3.7.76 attempt=1 (recovered)
+2026-03-14 06:47:12 svc-13 DEBUG cache hit key=user:9961 ttl=204s
+2026-03-14 06:47:14 svc-13 INFO  heartbeat ok uptime=76016s rss_mb=449
+2026-03-14 06:47:16 svc-13 INFO  heartbeat ok uptime=64096s rss_mb=639
+2026-03-14 06:47:23 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=227 conns=56
+2026-03-14 06:47:30 svc-13 DEBUG cache hit key=user:4296 ttl=591s
+2026-03-14 06:47:35 svc-13 INFO  heartbeat ok uptime=56104s rss_mb=420
+2026-03-14 06:47:43 svc-13 INFO  request id=43892541 path=/api/v1/login status=200 ms=338
+2026-03-14 06:47:49 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=277 conns=27
+2026-03-14 06:47:54 svc-13 WARN  slow response from 10.1.1.20 after 1044ms (no error)
+2026-03-14 06:47:56 svc-13 WARN  retrying after E-4417 on 10.3.1.92 attempt=2 (recovered)
+2026-03-14 06:47:57 svc-13 INFO  heartbeat ok uptime=62719s rss_mb=875
+2026-03-14 06:48:02 svc-13 INFO  heartbeat ok uptime=4627s rss_mb=831
+2026-03-14 06:48:03 svc-13 INFO  request id=38909683 path=/static/app.js status=200 ms=26
+2026-03-14 06:48:11 svc-13 INFO  connected to billing at 10.3.2.51 in 39ms
+2026-03-14 06:48:14 svc-13 DEBUG cache hit key=user:1950 ttl=521s
+2026-03-14 06:48:18 svc-13 WARN  slow response from 10.1.4.45 after 1174ms (no error)
+2026-03-14 06:48:20 svc-13 DEBUG cache hit key=user:2152 ttl=312s
+2026-03-14 06:48:21 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=133 conns=28
+2026-03-14 06:48:24 svc-13 INFO  heartbeat ok uptime=64889s rss_mb=89
+2026-03-14 06:48:29 svc-13 WARN  retrying after E-4417 on 10.1.5.92 attempt=1 (recovered)
+2026-03-14 06:48:35 svc-13 INFO  connected to billing at 10.1.0.95 in 6ms
+2026-03-14 06:48:39 svc-13 INFO  connected to edge at 10.1.3.87 in 74ms
+2026-03-14 06:48:40 svc-13 INFO  heartbeat ok uptime=2629s rss_mb=288
+2026-03-14 06:48:46 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=55 conns=83
+2026-03-14 06:48:49 svc-13 WARN  slow response from 10.3.0.17 after 1967ms (no error)
+2026-03-14 06:48:53 svc-13 INFO  request id=33426839 path=/api/v1/login status=200 ms=302
+2026-03-14 06:48:56 svc-13 WARN  slow response from 10.1.2.6 after 2293ms (no error)
+2026-03-14 06:49:00 svc-13 INFO  request id=88285797 path=/api/v2/cart status=200 ms=272
+2026-03-14 06:49:01 svc-13 WARN  slow response from 10.2.2.79 after 1697ms (no error)
+2026-03-14 06:49:04 svc-13 WARN  retrying after E-4417 on 10.2.8.95 attempt=2 (recovered)
+2026-03-14 06:49:09 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=285 conns=75
+2026-03-14 06:49:16 svc-13 DEBUG cache hit key=user:8103 ttl=69s
+2026-03-14 06:49:18 svc-13 INFO  heartbeat ok uptime=1874s rss_mb=209
+2026-03-14 06:49:21 svc-13 WARN  retrying after E-9001 on 10.3.4.69 attempt=2 (recovered)
+2026-03-14 06:49:27 svc-13 INFO  connected to billing at 10.1.6.72 in 40ms
+2026-03-14 06:49:33 svc-13 INFO  heartbeat ok uptime=6924s rss_mb=497
+2026-03-14 06:49:40 svc-13 INFO  heartbeat ok uptime=80750s rss_mb=650
+2026-03-14 06:49:47 svc-13 WARN  retrying after E-2203 on 10.2.7.76 attempt=1 (recovered)
+2026-03-14 06:49:50 svc-13 INFO  connected to edge at 10.3.0.45 in 24ms
+2026-03-14 06:49:51 svc-13 DEBUG cache hit key=user:2330 ttl=541s
+2026-03-14 06:49:58 svc-13 INFO  heartbeat ok uptime=8555s rss_mb=857
+2026-03-14 06:50:01 svc-13 DEBUG cache hit key=user:6395 ttl=439s
+2026-03-14 06:50:04 svc-13 DEBUG cache hit key=user:5878 ttl=540s
+2026-03-14 06:50:12 svc-13 INFO  heartbeat ok uptime=4544s rss_mb=414
+2026-03-14 06:50:14 svc-13 INFO  heartbeat ok uptime=86914s rss_mb=443
+2026-03-14 06:50:22 svc-13 INFO  request id=31063069 path=/healthz status=200 ms=17
+2026-03-14 06:50:28 svc-13 DEBUG cache hit key=user:5497 ttl=571s
+2026-03-14 06:50:30 svc-13 WARN  retrying after E-2203 on 10.2.0.79 attempt=1 (recovered)
+2026-03-14 06:50:31 svc-13 WARN  slow response from 10.3.2.32 after 828ms (no error)
+2026-03-14 06:50:36 svc-13 INFO  heartbeat ok uptime=35079s rss_mb=838
+2026-03-14 06:50:39 svc-13 DEBUG cache hit key=user:3212 ttl=558s
+2026-03-14 06:50:46 svc-13 INFO  heartbeat ok uptime=84455s rss_mb=154
+2026-03-14 06:50:50 svc-13 INFO  request id=88386210 path=/api/v2/items status=200 ms=143
+2026-03-14 06:52:21 svc-13 ERROR [E-8810] lease expired before commit (host=10.1.6.53 attempt=4)
+2026-03-14 06:51:04 svc-13 DEBUG cache hit key=user:7544 ttl=538s
+2026-03-14 06:51:05 svc-13 INFO  connected to billing at 10.2.2.85 in 58ms
+2026-03-14 06:51:13 svc-13 WARN  slow response from 10.2.5.68 after 2146ms (no error)
+2026-03-14 06:51:17 svc-13 DEBUG cache hit key=user:7680 ttl=142s
+2026-03-14 06:51:24 svc-13 WARN  retrying after E-9001 on 10.2.5.24 attempt=2 (recovered)
+2026-03-14 06:51:26 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=60 conns=9
+2026-03-14 06:51:33 svc-13 DEBUG cache hit key=user:1848 ttl=376s
+2026-03-14 06:51:34 svc-13 WARN  retrying after E-2203 on 10.3.3.58 attempt=1 (recovered)
+2026-03-14 06:51:41 svc-13 INFO  connected to sync at 10.1.8.96 in 65ms
+2026-03-14 06:51:49 svc-13 INFO  connected to billing at 10.3.2.8 in 33ms
+2026-03-14 06:51:50 svc-13 INFO  heartbeat ok uptime=42538s rss_mb=488
+2026-03-14 06:51:56 svc-13 WARN  retrying after E-2203 on 10.3.1.58 attempt=1 (recovered)
+2026-03-14 06:51:58 svc-13 INFO  metrics errors=0 error_rate=0.00 p95_ms=146 conns=59
+2026-03-14 06:52:06 svc-13 DEBUG cache hit key=user:8221 ttl=78s
+2026-03-14 06:52:11 svc-13 WARN  slow response from 10.3.2.61 after 1620ms (no error)

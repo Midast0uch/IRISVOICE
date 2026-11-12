@@ -167,6 +167,17 @@ def _write_call(row: Dict[str, Any], messages: List[Dict[str, Any]], tools: Any,
         row["blocks"] = blocks
         row["blocks_unit"] = "router_3_5"
 
+        # The messages themselves, for "was the needed fact still in the model's
+        # input?" (evals/context_report.py --dumps). Off unless a dump dir is
+        # named; on this lane thread, never on the call path.
+        _dump = os.environ.get("IRIS_CLM_DUMP_DIR")
+        # Bounded: an eval-only capture. One file per call; stops at 4,000 files.
+        if _dump and int(row.get("seq") or 0) <= 4000:
+            from pathlib import Path as _P
+            _P(_dump).mkdir(parents=True, exist_ok=True)
+            (_P(_dump) / f"{row.get('conversation_id')}-{row['seq']}.json").write_text(
+                json.dumps({"messages": messages}, default=str), encoding="utf-8")
+
         est = {
             "chars4": _chars4_tokens(owner, messages),
             "router_3_5": {"tokens": _router_tokens(messages, tools)},

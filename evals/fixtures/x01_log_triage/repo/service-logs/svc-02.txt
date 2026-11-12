@@ -1,0 +1,91 @@
+2026-03-14 06:09:27 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=75 conns=63
+2026-03-14 06:09:32 svc-02 INFO  connected to ingest at 10.1.2.11 in 65ms
+2026-03-14 06:09:39 svc-02 INFO  request id=74367846 path=/api/v2/orders status=200 ms=202
+2026-03-14 06:09:40 svc-02 WARN  slow response from 10.2.7.58 after 1011ms (no error)
+2026-03-14 06:09:46 svc-02 INFO  request id=93576560 path=/healthz status=200 ms=177
+2026-03-14 06:09:48 svc-02 INFO  heartbeat ok uptime=36964s rss_mb=588
+2026-03-14 06:09:51 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=283 conns=35
+2026-03-14 06:09:59 svc-02 INFO  connected to catalog at 10.1.4.64 in 31ms
+2026-03-14 06:10:04 svc-02 WARN  slow response from 10.3.0.23 after 1202ms (no error)
+2026-03-14 06:10:07 svc-02 INFO  request id=83718352 path=/api/v2/cart status=200 ms=387
+2026-03-14 06:10:08 svc-02 INFO  request id=89777671 path=/api/v2/cart status=200 ms=44
+2026-03-14 06:10:15 svc-02 INFO  connected to auth at 10.3.2.37 in 43ms
+2026-03-14 06:10:22 svc-02 DEBUG cache hit key=user:1421 ttl=92s
+2026-03-14 06:10:23 svc-02 DEBUG cache hit key=user:7270 ttl=573s
+2026-03-14 06:10:26 svc-02 INFO  connected to sync at 10.2.8.71 in 7ms
+2026-03-14 06:10:30 svc-02 INFO  heartbeat ok uptime=92127s rss_mb=255
+2026-03-14 06:16:01 svc-02 ERROR [E-2203] checksum mismatch on shard (host=10.1.3.52 attempt=5)
+2026-03-14 06:10:40 svc-02 WARN  slow response from 10.3.4.30 after 871ms (no error)
+2026-03-14 06:10:46 svc-02 DEBUG cache hit key=user:2144 ttl=74s
+2026-03-14 06:10:47 svc-02 WARN  slow response from 10.3.7.63 after 2234ms (no error)
+2026-03-14 06:10:49 svc-02 INFO  connected to catalog at 10.3.8.90 in 19ms
+2026-03-14 06:10:54 svc-02 DEBUG cache hit key=user:2272 ttl=556s
+2026-03-14 06:10:59 svc-02 WARN  slow response from 10.2.7.85 after 2382ms (no error)
+2026-03-14 06:11:01 svc-02 INFO  request id=70086728 path=/api/v2/cart status=200 ms=112
+2026-03-14 06:11:04 svc-02 INFO  connected to search at 10.1.0.43 in 21ms
+2026-03-14 06:11:12 svc-02 WARN  retrying after E-9001 on 10.2.2.22 attempt=2 (recovered)
+2026-03-14 06:11:19 svc-02 WARN  slow response from 10.3.0.42 after 2358ms (no error)
+2026-03-14 06:11:23 svc-02 INFO  heartbeat ok uptime=56542s rss_mb=463
+2026-03-14 06:11:30 svc-02 INFO  connected to edge at 10.3.7.84 in 13ms
+2026-03-14 06:11:33 svc-02 WARN  slow response from 10.3.5.51 after 1386ms (no error)
+2026-03-14 06:11:41 svc-02 WARN  retrying after E-9001 on 10.1.2.20 attempt=1 (recovered)
+2026-03-14 06:11:43 svc-02 WARN  retrying after E-4417 on 10.2.8.47 attempt=2 (recovered)
+2026-03-14 06:11:48 svc-02 INFO  heartbeat ok uptime=37371s rss_mb=109
+2026-03-14 06:11:50 svc-02 WARN  retrying after E-9001 on 10.3.1.64 attempt=1 (recovered)
+2026-03-14 06:11:58 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=149 conns=86
+2026-03-14 06:12:04 svc-02 INFO  heartbeat ok uptime=61436s rss_mb=764
+2026-03-14 06:12:10 svc-02 DEBUG cache hit key=user:3826 ttl=429s
+2026-03-14 06:12:18 svc-02 INFO  request id=82904766 path=/api/v2/items status=200 ms=357
+2026-03-14 06:12:19 svc-02 INFO  request id=36224117 path=/api/v2/orders status=200 ms=80
+2026-03-14 06:12:20 svc-02 INFO  connected to mailer at 10.1.3.72 in 49ms
+2026-03-14 06:12:22 svc-02 INFO  connected to billing at 10.2.0.8 in 62ms
+2026-03-14 06:12:28 svc-02 INFO  connected to auth at 10.3.6.49 in 73ms
+2026-03-14 06:12:31 svc-02 INFO  request id=78009866 path=/api/v1/login status=200 ms=49
+2026-03-14 06:12:39 svc-02 INFO  connected to search at 10.1.8.27 in 52ms
+2026-03-14 06:12:41 svc-02 INFO  connected to catalog at 10.3.8.62 in 2ms
+2026-03-14 06:12:48 svc-02 INFO  request id=26356816 path=/healthz status=200 ms=231
+2026-03-14 06:12:49 svc-02 WARN  slow response from 10.2.2.22 after 1996ms (no error)
+2026-03-14 06:12:57 svc-02 INFO  connected to mailer at 10.3.1.90 in 77ms
+2026-03-14 06:12:59 svc-02 WARN  retrying after E-9001 on 10.1.4.48 attempt=1 (recovered)
+2026-03-14 06:13:06 svc-02 DEBUG cache hit key=user:2276 ttl=183s
+2026-03-14 06:16:09 svc-02 ERROR [E-2203] checksum mismatch on shard (host=10.1.2.74 attempt=2)
+2026-03-14 06:13:14 svc-02 INFO  heartbeat ok uptime=65520s rss_mb=405
+2026-03-14 06:13:15 svc-02 INFO  connected to edge at 10.3.1.18 in 23ms
+2026-03-14 06:13:19 svc-02 WARN  slow response from 10.1.4.43 after 2052ms (no error)
+2026-03-14 06:13:27 svc-02 INFO  request id=43572568 path=/healthz status=200 ms=4
+2026-03-14 06:13:33 svc-02 WARN  slow response from 10.1.2.81 after 1447ms (no error)
+2026-03-14 06:13:36 svc-02 WARN  slow response from 10.3.3.34 after 2248ms (no error)
+2026-03-14 06:13:43 svc-02 INFO  request id=31507816 path=/api/v2/cart status=200 ms=239
+2026-03-14 06:13:44 svc-02 INFO  request id=61132155 path=/api/v2/orders status=200 ms=227
+2026-03-14 06:13:47 svc-02 WARN  slow response from 10.3.0.10 after 971ms (no error)
+2026-03-14 06:13:54 svc-02 WARN  slow response from 10.1.0.13 after 1150ms (no error)
+2026-03-14 06:14:02 svc-02 INFO  request id=69742288 path=/api/v2/cart status=200 ms=230
+2026-03-14 06:14:04 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=113 conns=45
+2026-03-14 06:14:06 svc-02 WARN  retrying after E-4417 on 10.3.1.2 attempt=1 (recovered)
+2026-03-14 06:14:12 svc-02 WARN  retrying after E-9001 on 10.1.0.3 attempt=1 (recovered)
+2026-03-14 06:14:16 svc-02 WARN  retrying after E-4417 on 10.3.1.24 attempt=1 (recovered)
+2026-03-14 06:14:19 svc-02 INFO  request id=44859044 path=/api/v2/orders status=200 ms=253
+2026-03-14 06:14:20 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=252 conns=38
+2026-03-14 06:14:26 svc-02 INFO  heartbeat ok uptime=55349s rss_mb=840
+2026-03-14 06:14:32 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=294 conns=79
+2026-03-14 06:14:37 svc-02 INFO  heartbeat ok uptime=25410s rss_mb=634
+2026-03-14 06:14:44 svc-02 WARN  retrying after E-4417 on 10.2.1.77 attempt=2 (recovered)
+2026-03-14 06:14:45 svc-02 DEBUG cache hit key=user:1317 ttl=183s
+2026-03-14 06:14:49 svc-02 DEBUG cache hit key=user:7843 ttl=271s
+2026-03-14 06:14:51 svc-02 WARN  retrying after E-9001 on 10.1.3.66 attempt=2 (recovered)
+2026-03-14 06:14:52 svc-02 WARN  slow response from 10.3.4.3 after 1451ms (no error)
+2026-03-14 06:14:56 svc-02 INFO  connected to mailer at 10.1.8.9 in 3ms
+2026-03-14 06:16:10 svc-02 ERROR [E-2203] checksum mismatch on shard (host=10.1.1.44 attempt=4)
+2026-03-14 06:15:05 svc-02 INFO  heartbeat ok uptime=75190s rss_mb=444
+2026-03-14 06:15:07 svc-02 WARN  retrying after E-4417 on 10.2.4.98 attempt=1 (recovered)
+2026-03-14 06:15:09 svc-02 INFO  heartbeat ok uptime=59320s rss_mb=761
+2026-03-14 06:15:17 svc-02 INFO  request id=40259653 path=/api/v2/items status=200 ms=259
+2026-03-14 06:15:18 svc-02 INFO  connected to edge at 10.3.6.59 in 16ms
+2026-03-14 06:15:20 svc-02 DEBUG cache hit key=user:5825 ttl=91s
+2026-03-14 06:15:24 svc-02 DEBUG cache hit key=user:6686 ttl=401s
+2026-03-14 06:15:31 svc-02 INFO  connected to mailer at 10.2.8.57 in 53ms
+2026-03-14 06:15:37 svc-02 DEBUG cache hit key=user:4618 ttl=536s
+2026-03-14 06:15:43 svc-02 WARN  slow response from 10.2.3.28 after 1566ms (no error)
+2026-03-14 06:15:51 svc-02 INFO  heartbeat ok uptime=3807s rss_mb=565
+2026-03-14 06:15:52 svc-02 INFO  metrics errors=0 error_rate=0.00 p95_ms=31 conns=64
+2026-03-14 06:15:53 svc-02 WARN  slow response from 10.3.5.44 after 1634ms (no error)

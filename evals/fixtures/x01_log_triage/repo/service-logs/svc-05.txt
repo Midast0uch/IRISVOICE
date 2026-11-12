@@ -1,0 +1,91 @@
+2026-03-14 06:12:27 svc-05 INFO  request id=95893384 path=/api/v1/login status=200 ms=95
+2026-03-14 06:12:31 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=138 conns=49
+2026-03-14 06:12:36 svc-05 INFO  connected to edge at 10.3.4.67 in 74ms
+2026-03-14 06:12:39 svc-05 INFO  request id=80644893 path=/api/v2/cart status=200 ms=143
+2026-03-14 06:12:40 svc-05 INFO  heartbeat ok uptime=92148s rss_mb=810
+2026-03-14 06:12:43 svc-05 INFO  heartbeat ok uptime=43543s rss_mb=312
+2026-03-14 06:12:50 svc-05 WARN  retrying after E-2203 on 10.3.0.67 attempt=1 (recovered)
+2026-03-14 06:12:51 svc-05 DEBUG cache hit key=user:1618 ttl=106s
+2026-03-14 06:12:58 svc-05 WARN  slow response from 10.2.8.90 after 2249ms (no error)
+2026-03-14 06:13:04 svc-05 INFO  heartbeat ok uptime=88528s rss_mb=744
+2026-03-14 06:13:08 svc-05 INFO  heartbeat ok uptime=28879s rss_mb=602
+2026-03-14 06:13:11 svc-05 WARN  slow response from 10.3.1.98 after 2271ms (no error)
+2026-03-14 06:18:57 svc-05 ERROR [E-1096] schema version rejected (host=10.2.2.25 attempt=5)
+2026-03-14 06:13:22 svc-05 WARN  retrying after E-4417 on 10.1.0.80 attempt=2 (recovered)
+2026-03-14 06:13:24 svc-05 INFO  heartbeat ok uptime=5000s rss_mb=619
+2026-03-14 06:13:29 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=155 conns=27
+2026-03-14 06:13:35 svc-05 INFO  connected to edge at 10.2.5.71 in 58ms
+2026-03-14 06:13:40 svc-05 INFO  heartbeat ok uptime=53464s rss_mb=745
+2026-03-14 06:13:48 svc-05 WARN  slow response from 10.3.3.54 after 1121ms (no error)
+2026-03-14 06:13:51 svc-05 DEBUG cache hit key=user:1163 ttl=440s
+2026-03-14 06:13:57 svc-05 INFO  request id=64029717 path=/api/v2/orders status=200 ms=176
+2026-03-14 06:14:05 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=73 conns=66
+2026-03-14 06:14:08 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=146 conns=70
+2026-03-14 06:14:12 svc-05 WARN  retrying after E-9001 on 10.1.2.68 attempt=2 (recovered)
+2026-03-14 06:14:16 svc-05 DEBUG cache hit key=user:3775 ttl=105s
+2026-03-14 06:19:03 svc-05 ERROR [E-1096] schema version rejected (host=10.1.1.94 attempt=3)
+2026-03-14 06:14:28 svc-05 INFO  request id=45468241 path=/api/v2/orders status=200 ms=68
+2026-03-14 06:14:36 svc-05 DEBUG cache hit key=user:6423 ttl=447s
+2026-03-14 06:14:39 svc-05 INFO  connected to auth at 10.3.8.33 in 21ms
+2026-03-14 06:14:40 svc-05 INFO  request id=56746963 path=/api/v1/login status=200 ms=262
+2026-03-14 06:14:41 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=262 conns=31
+2026-03-14 06:14:45 svc-05 WARN  slow response from 10.3.4.96 after 1508ms (no error)
+2026-03-14 06:14:49 svc-05 INFO  heartbeat ok uptime=14474s rss_mb=314
+2026-03-14 06:14:56 svc-05 WARN  retrying after E-2203 on 10.2.2.56 attempt=1 (recovered)
+2026-03-14 06:14:57 svc-05 INFO  connected to ingest at 10.2.6.77 in 70ms
+2026-03-14 06:14:58 svc-05 INFO  request id=74280203 path=/api/v2/cart status=200 ms=118
+2026-03-14 06:15:04 svc-05 INFO  connected to catalog at 10.1.2.29 in 61ms
+2026-03-14 06:15:08 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=163 conns=9
+2026-03-14 06:15:10 svc-05 WARN  slow response from 10.3.2.63 after 1814ms (no error)
+2026-03-14 06:15:14 svc-05 INFO  heartbeat ok uptime=37557s rss_mb=361
+2026-03-14 06:15:16 svc-05 DEBUG cache hit key=user:4063 ttl=596s
+2026-03-14 06:15:19 svc-05 WARN  slow response from 10.3.0.26 after 2223ms (no error)
+2026-03-14 06:15:20 svc-05 INFO  request id=68364003 path=/healthz status=200 ms=243
+2026-03-14 06:15:25 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=95 conns=86
+2026-03-14 06:15:31 svc-05 WARN  retrying after E-2203 on 10.2.4.80 attempt=2 (recovered)
+2026-03-14 06:15:37 svc-05 DEBUG cache hit key=user:6469 ttl=412s
+2026-03-14 06:15:39 svc-05 INFO  connected to billing at 10.1.8.92 in 72ms
+2026-03-14 06:15:40 svc-05 WARN  retrying after E-9001 on 10.2.8.54 attempt=1 (recovered)
+2026-03-14 06:15:47 svc-05 DEBUG cache hit key=user:5801 ttl=35s
+2026-03-14 06:15:53 svc-05 WARN  retrying after E-4417 on 10.2.8.18 attempt=1 (recovered)
+2026-03-14 06:15:55 svc-05 DEBUG cache hit key=user:6602 ttl=77s
+2026-03-14 06:15:59 svc-05 INFO  request id=73424918 path=/static/app.js status=200 ms=378
+2026-03-14 06:16:02 svc-05 INFO  connected to ingest at 10.2.2.19 in 5ms
+2026-03-14 06:19:08 svc-05 ERROR [E-1096] schema version rejected (host=10.3.8.39 attempt=3)
+2026-03-14 06:16:11 svc-05 INFO  request id=28874422 path=/api/v2/cart status=200 ms=303
+2026-03-14 06:16:16 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=91 conns=28
+2026-03-14 06:19:11 svc-05 ERROR [E-1096] schema version rejected (host=10.2.3.66 attempt=5)
+2026-03-14 06:16:29 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=260 conns=75
+2026-03-14 06:16:35 svc-05 WARN  retrying after E-2203 on 10.2.1.72 attempt=1 (recovered)
+2026-03-14 06:16:40 svc-05 WARN  slow response from 10.2.8.11 after 1174ms (no error)
+2026-03-14 06:16:44 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=25 conns=18
+2026-03-14 06:16:51 svc-05 INFO  request id=93437022 path=/static/app.js status=200 ms=214
+2026-03-14 06:16:54 svc-05 INFO  heartbeat ok uptime=2140s rss_mb=313
+2026-03-14 06:16:59 svc-05 INFO  heartbeat ok uptime=22053s rss_mb=417
+2026-03-14 06:17:01 svc-05 INFO  heartbeat ok uptime=70024s rss_mb=105
+2026-03-14 06:17:08 svc-05 WARN  retrying after E-4417 on 10.1.4.4 attempt=2 (recovered)
+2026-03-14 06:17:10 svc-05 INFO  request id=94968124 path=/api/v2/orders status=200 ms=220
+2026-03-14 06:17:16 svc-05 INFO  heartbeat ok uptime=62586s rss_mb=281
+2026-03-14 06:17:20 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=174 conns=31
+2026-03-14 06:17:26 svc-05 WARN  slow response from 10.3.0.19 after 1382ms (no error)
+2026-03-14 06:17:31 svc-05 DEBUG cache hit key=user:3625 ttl=391s
+2026-03-14 06:17:35 svc-05 INFO  heartbeat ok uptime=51513s rss_mb=595
+2026-03-14 06:17:42 svc-05 WARN  retrying after E-2203 on 10.3.7.71 attempt=2 (recovered)
+2026-03-14 06:17:46 svc-05 INFO  connected to mailer at 10.2.4.59 in 64ms
+2026-03-14 06:17:47 svc-05 WARN  retrying after E-9001 on 10.2.1.34 attempt=1 (recovered)
+2026-03-14 06:17:52 svc-05 INFO  request id=48054471 path=/api/v2/cart status=200 ms=219
+2026-03-14 06:17:55 svc-05 WARN  retrying after E-4417 on 10.1.1.89 attempt=1 (recovered)
+2026-03-14 06:17:59 svc-05 DEBUG cache hit key=user:9070 ttl=114s
+2026-03-14 06:18:00 svc-05 INFO  metrics errors=0 error_rate=0.00 p95_ms=21 conns=70
+2026-03-14 06:18:03 svc-05 WARN  slow response from 10.3.1.46 after 1026ms (no error)
+2026-03-14 06:18:09 svc-05 INFO  heartbeat ok uptime=95214s rss_mb=411
+2026-03-14 06:18:17 svc-05 INFO  connected to search at 10.2.6.44 in 68ms
+2026-03-14 06:18:21 svc-05 WARN  slow response from 10.1.4.16 after 1202ms (no error)
+2026-03-14 06:18:27 svc-05 DEBUG cache hit key=user:1076 ttl=141s
+2026-03-14 06:18:28 svc-05 WARN  retrying after E-9001 on 10.1.3.31 attempt=2 (recovered)
+2026-03-14 06:18:32 svc-05 WARN  slow response from 10.2.6.23 after 2229ms (no error)
+2026-03-14 06:18:34 svc-05 INFO  request id=60726520 path=/api/v2/items status=200 ms=189
+2026-03-14 06:18:37 svc-05 WARN  retrying after E-2203 on 10.3.1.70 attempt=2 (recovered)
+2026-03-14 06:18:44 svc-05 WARN  slow response from 10.3.6.83 after 1621ms (no error)
+2026-03-14 06:18:47 svc-05 WARN  slow response from 10.2.6.68 after 1595ms (no error)
+2026-03-14 06:18:52 svc-05 WARN  retrying after E-2203 on 10.1.4.49 attempt=1 (recovered)
