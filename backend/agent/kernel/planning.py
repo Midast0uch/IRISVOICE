@@ -557,7 +557,7 @@ class PlanningMixin:
             return (
                 ErrorCode.PROVIDER_BILLING,
                 "[IRIS error] The AI provider refused the request "
-                "(402 Payment Required) â€” the planner never ran, so no "
+                "(402 Payment Required) — the planner never ran, so no "
                 "prompt reached a model. Switch provider in Models "
                 "(local / ClinePass) or check billing, then retry. "
                 "(code E_PROVIDER_BILLING)",
@@ -605,7 +605,7 @@ class PlanningMixin:
                 return (
                     ErrorCode.PROVIDER_QUOTA,
                     "[IRIS error] The AI provider is rate-limiting us (429) "
-                    "after 3 tries â€” wait a minute for the quota window, or "
+                    "after 3 tries — wait a minute for the quota window, or "
                     "switch provider. (code E_PROVIDER_QUOTA)",
                     False,
                 )
@@ -621,7 +621,7 @@ class PlanningMixin:
                 return (
                     ErrorCode.PROVIDER_TIMEOUT,
                     "[IRIS error] The AI provider request timed out or never "
-                    "connected after 3 tries â€” check network/VPN/firewall, or "
+                    "connected after 3 tries — check network/VPN/firewall, or "
                     "switch provider. (code E_PROVIDER_TIMEOUT)",
                     False,
                 )
@@ -855,7 +855,7 @@ class PlanningMixin:
         full_prompt = (
             f"{system_prompt}\n\n{planning_prompt}\n\n"
             + (f"{_tools_block}\n\n" if _tools_block else "")
-            + "Respond with JSON only â€” no prose, no markdown fences:\n"
+            + "Respond with JSON only — no prose, no markdown fences:\n"
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
@@ -872,7 +872,7 @@ class PlanningMixin:
         'it takes). NEVER narrate mechanics (subtask splitting, tool names, '
         'file-by-file). Omit entirely ([]) for single-step tasks.\n'
         "- Vary phrasing, never the same opening twice. Good: "
-        '"Checking current sources â€” usually about half a minute." / '
+        '"Checking current sources — usually about half a minute." / '
         '"Comparing the two options, then reporting back." Bad: '
         '"I will now split this into subtasks."\n'
         "- Findings near completion belong in the reply, not beats. Name "
@@ -1352,7 +1352,7 @@ class PlanningMixin:
             )
         if _searchy:
             return (
-                "I couldn't complete the web search for that â€” the search "
+                "I couldn't complete the web search for that — the search "
                 "returned nothing usable. Please try again, or ask me "
                 "without the web."
             )
@@ -1521,14 +1521,14 @@ class PlanningMixin:
                                 "error": (
                                     f"Local model '{_sel}' could not be loaded. "
                                     "Check that the model file exists in the models/ directory, "
-                                    "or switch to an Ollama or VPS model in Settings â†’ Configure."
+                                    "or switch to an Ollama or VPS model in Settings → Configure."
                                 )
                             }
                 else:
                     return {
                         "error": (
                             "No inference backend configured. "
-                            "Please go to Settings â†’ Configure and select a Local, VPS, or OpenAI model."
+                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
                         )
                     }
 
@@ -1693,12 +1693,12 @@ Respond with a JSON object:
                     elif _sel_err:
                         _err_msg = (
                             f"Model '{_sel_err}' could not be loaded. "
-                            "Check that the model file exists, or select a different model in Settings â†’ Configure."
+                            "Check that the model file exists, or select a different model in Settings → Configure."
                         )
                     else:
                         _err_msg = (
                             "No inference backend configured. "
-                            "Please go to Settings â†’ Configure and select a Local, VPS, or OpenAI model."
+                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
                         )
                     return {"error": _err_msg}
 
@@ -2178,7 +2178,7 @@ Respond with a JSON object:
             _lines = "\n".join(f"- {_f}" for _f in _blocked)
             _suffix = (
                 "\n\nParts of your request I could not cover "
-                "(blocked â€” not skipped):\n" + _lines
+                "(blocked — not skipped):\n" + _lines
             )
             logger.info(
                 "[goal-contract] named %d blocked fact(s) in final answer "

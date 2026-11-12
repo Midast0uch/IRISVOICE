@@ -320,7 +320,7 @@ class DerRecoveryMixin:
                     data={
                         "from_mode": "DER",
                         "to_mode": "DER_RECOVERY",
-                        "reason": "Topological violation â€” recovering",
+                        "reason": "Topological violation — recovering",
                     },
                     session_id=_session,
                 )
@@ -329,7 +329,7 @@ class DerRecoveryMixin:
                     data={
                         "from_mode": "DER",
                         "to_mode": "DER_RECOVERY",
-                        "reason": "Topological violation â€” recovering",
+                        "reason": "Topological violation — recovering",
                     },
                     session_id=_session,
                 )
@@ -678,7 +678,7 @@ class DerRecoveryMixin:
             _directive = (
                 f"Replan required: the run is stuck ({reason}). "
                 f"Triggering steps: {_audit}. Revise the remaining plan to "
-                "break the streak â€” do NOT repeat a completed step; read "
+                "break the streak — do NOT repeat a completed step; read "
                 "the already-gathered documents instead."
             )
             return self._der_apply_steering(

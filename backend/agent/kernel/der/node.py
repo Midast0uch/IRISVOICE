@@ -524,7 +524,7 @@ class DerNodeMixin:
                     ][:3]
                     _cbase = (
                         f"{len(_convs)} conversation(s) with documents "
-                        f"(index only â€” call get_rendered_documents("
+                        f"(index only — call get_rendered_documents("
                         f"conversation_id=...) to read one)"
                     )
                     return (
@@ -1613,7 +1613,7 @@ class DerNodeMixin:
                         raise
                     _timeout_text = (
                         f"[STEP TIMEOUT after {_dispatch_deadline:g}s "
-                        f"(deadline {_dispatch_deadline:g}s) â€” tool "
+                        f"(deadline {_dispatch_deadline:g}s) — tool "
                         f"{item.tool} did not settle; continuing without it. "
                         f"The worker was abandoned, not killed (threads "
                         f"cannot be aborted); tool-internal ceilings bound "

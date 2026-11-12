@@ -1840,12 +1840,12 @@ class DerRunMixin:
                 if _partial:
                     return (
                         _partial.strip()
-                        + "\n\nI couldn't fully complete the task â€” still open: "
+                        + "\n\nI couldn't fully complete the task — still open: "
                         + _open_facts_txt
                         + "\nWhat would you like me to do next?"
                     )
                 return (
-                    "I couldn't fully complete the task â€” required work is "
+                    "I couldn't fully complete the task — required work is "
                     f"still open: {_open_facts_txt}\n"
                     "What would you like me to do next?"
                 )
@@ -1890,7 +1890,7 @@ class DerRunMixin:
         self._der_stamp_session_exit(False)
         _emit_terminal_event()
         return (
-            f"[DER] {plan.strategy} â€” "
+            f"[DER] {plan.strategy} — "
             f"{len(completed_items)}/{len(plan.steps)} steps completed.  "
             f"error: no usable sources found for '{getattr(plan, 'title', '') or getattr(plan, 'plan_title', '') or plan.original_task[:40]}'.  "
             + self._build_crawl_failure_explanation(plan)

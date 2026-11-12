@@ -652,7 +652,7 @@ class TurnMixin:
         sel = self._selected_reasoning_model or "local-model"
         if sel in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
             raise RuntimeError(
-                "No reasoning model configured. Set a model in Settings â†’ "
+                "No reasoning model configured. Set a model in Settings → "
                 "Model Selection (e.g. Cerebras gemma-4-31b) before sending messages."
             )
 
@@ -1774,7 +1774,7 @@ class TurnMixin:
                     session_id=session_id,
                 )
             logger.info("[AgentKernel] DER active â€” deferring complex request")
-            return "Still working on your previous request â€” one moment."
+            return "Still working on your previous request — one moment."
 
         # â”€â”€ DER path: sanitize â†’ classify â†’ Mycelium â†’ plan â†’ execute â”€â”€â”€â”€â”€â”€
         # Runs BEFORE the ReAct loop. Falls through to ReAct on any failure.

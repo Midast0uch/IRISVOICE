@@ -257,8 +257,10 @@ class InferenceRouter:
         text, thinking, tools = router.generate("reasoning", messages, tools)
     """
 
-    # Per calling thread: parallel DER nodes share this router (PerThreadUsage).
+    # Per calling thread: parallel DER nodes share this router (PerThreadUsage;
+    # the descriptor holds any per-call value, not only usage).
     last_usage = PerThreadUsage()
+    last_num_ctx = PerThreadUsage()
 
     def __init__(self, config: Any) -> None:
         # Process-wide singletons (REQ-5): provider instances and role bindings
@@ -1224,20 +1226,29 @@ class InferenceRouter:
         # are sanitized for the wire and a sanitized->original map is kept so
         # tool_calls the model returns are remapped back to the ORIGINAL
         # registry names before any caller sees them. Callers unchanged.
-        self._tool_name_remap: Dict[str, str] = {}
+        # The map is a LOCAL and the renamed tool is a COPY (2026-11-12): as
+        # router state, a concurrent call replaced the map before this call
+        # remapped its reply; and an OpenAI-format tool passes through
+        # _normalize_tools as the caller's own dict, so renaming it in place
+        # left the caller's list sanitized - its next call (the next tool-loop
+        # round) found nothing to remap and handed back the wire name.
+        _tool_name_remap: Dict[str, str] = {}
         if normalized_tools:
+            _wire_tools: List[Dict[str, Any]] = []
             for _t in normalized_tools:
                 _fn = _t.get("function") or {}
                 _orig = _fn.get("name") or ""
                 _sane = self._sanitize_tool_name(_orig)
                 if _sane != _orig:
-                    if _sane in self._tool_name_remap and self._tool_name_remap[_sane] != _orig:
+                    if _sane in _tool_name_remap and _tool_name_remap[_sane] != _orig:
                         logger.warning(
                             "[InferenceRouter] tool-name sanitize collision: %r -> %r (already %r)",
-                            _orig, _sane, self._tool_name_remap[_sane],
+                            _orig, _sane, _tool_name_remap[_sane],
                         )
-                    self._tool_name_remap[_sane] = _orig
-                    _fn["name"] = _sane
+                    _tool_name_remap[_sane] = _orig
+                    _t = {**_t, "function": {**_fn, "name": _sane}}
+                _wire_tools.append(_t)
+            normalized_tools = _wire_tools
 
         # Phase gate: block until this oscillator is past its firing point
         # (T3.6 / REQ-13).  Fail-open: returns 0.0 if disabled or errored.
@@ -1383,11 +1394,11 @@ class InferenceRouter:
 
         # Remap sanitized tool names back to the originals (see above) so
         # dispatchers match against the registry exactly as before.
-        if self._tool_name_remap and isinstance(result, tuple) and len(result) == 3:
+        if _tool_name_remap and isinstance(result, tuple) and len(result) == 3:
             for _tc in result[2] or []:
                 _fn = (_tc or {}).get("function") if isinstance(_tc, dict) else None
-                if isinstance(_fn, dict) and _fn.get("name") in self._tool_name_remap:
-                    _fn["name"] = self._tool_name_remap[_fn["name"]]
+                if isinstance(_fn, dict) and _fn.get("name") in _tool_name_remap:
+                    _fn["name"] = _tool_name_remap[_fn["name"]]
 
         # D1: surface the transport's real usage (if any) for THIS call.
         # Deliberately does NOT change the return signature (8+ call sites

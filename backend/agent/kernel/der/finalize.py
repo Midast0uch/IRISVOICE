@@ -2301,7 +2301,7 @@ class DerFinalizeMixin:
             _gc_open_block = ""
             if _gc_open:
                 _gc_open_block = (
-                    "OPEN REQUIRED FACTS (uncovered, unblocked â€” the turn "
+                    "OPEN REQUIRED FACTS (uncovered, unblocked — the turn "
                     "must not end while any remains and work is admissible):\n"
                     + "\n".join(f"  - {_f[:200]}" for _f in _gc_open[:8])
                     + "\n\n"

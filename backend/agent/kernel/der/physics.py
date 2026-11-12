@@ -698,7 +698,7 @@ class DerPhysicsMixin:
             _prior_summary = (
                 f"{len(_prior_keys)} prior gather attempt(s) committed for "
                 f"this goal: {', '.join(_prior_keys[:5])}"
-                + ("â€¦" if len(_prior_keys) > 5 else "")
+                + ("…" if len(_prior_keys) > 5 else "")
             )
             _coordinate_ref = None
             try:

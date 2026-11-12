@@ -72,7 +72,7 @@ class SurfaceMixin:
         if text.count("```") >= 2:
             return True
         # Three or more bullet / numbered list items
-        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*â€¢]\s|^\s*\d+\.\s", ln))
+        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*•]\s|^\s*\d+\.\s", ln))
         if list_items >= 3:
             return True
         # Long, dense multi-paragraph text (>10 non-empty lines, avg >8 words/line)
@@ -263,7 +263,7 @@ class SurfaceMixin:
         # Strip bold/italic markers
         cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
         # Strip bullet dashes/asterisks at line start
-        cleaned = _re.sub(r"^\s*[-*â€¢]\s+", "", cleaned, flags=_re.MULTILINE)
+        cleaned = _re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=_re.MULTILINE)
         # Collapse whitespace
         cleaned = " ".join(cleaned.split())
 
@@ -2468,5 +2468,5 @@ class SurfaceMixin:
         if not _out:
             _out = _t[:max_chars]
         if len(_out) > max_chars:
-            _out = _out[:max_chars].rstrip() + "â€¦"
+            _out = _out[:max_chars].rstrip() + "…"
         return _out

@@ -101,6 +101,18 @@ same-conditions A/B, numbers named with their cohort.
 >   another call's `prompt_tokens`, which is noise in the "real" column. T1.4's live
 >   gate re-measures on clean data; the bar is then set from that measurement and
 >   written here. Do not add a second term before that.
+>   **RE-MEASURED 2026-11-12 on clean data** (228 calls recorded AFTER the per-call
+>   usage fix, same cohort + a second coding pass, opencodego / deepseek-v4.1-flash):
+>   raw rule signed median +7.1 %, |median| 7.7 %, |p95| 21.7 % (the old data's 32.8 %
+>   was partly the usage race); calibrated |median| 3.5 %, |p90| 12.0 %, |p95| 18.0 %,
+>   max 40.4 %. Calls without tools are worse (+11.2 % median) than calls with tools
+>   (+5.9 %). So a character rule with one ratio centres the estimate but cannot make
+>   single calls 5 % accurate; that needs a tokenizer, which CLM-4 excludes.
+>   **THE BAR (set from this measurement, replaces "p95 <= 5 %" in T1.4 and CLM-4):**
+>   calibrated |median| <= 5 % AND |p95| <= 20 % per calibrated (provider, model); and
+>   the harness shrink MARGIN (T2.3) is never smaller than the measured |p95| of that
+>   pair (default 20 %), so an under-estimate inside the p95 cannot overflow the
+>   window. The margin, not the estimate's precision, is what guarantees the window.
 > - Finding: `import backend.agent.context_view` runs `backend/agent/__init__.py`,
 >   which imports the whole kernel (~75 modules). The modules themselves import only
 >   the standard library. Fix = a lazy package `__init__` (own measured change).
@@ -133,7 +145,7 @@ same-conditions A/B, numbers named with their cohort.
 - [ ] **T1.4** (CLM-4 AC1, AC2, AC5; CT-9): `context_gauge.py`; move the router
   estimator into it; delete `_count_tokens` and `_DIRECT_CTX_BUDGET`; `observe()` from
   the router after each call.
-  DONE = CT-9 passes; live error p95 <= 5 % per calibrated (provider, model) on the
+  DONE = CT-9 passes; live error |median| <= 5 % and |p95| <= 20 % per calibrated (provider, model) (THE BAR above) on the
   cohort, reported beside the T0.1 "before".
   NOT THIS = loading a tokenizer; persisting calibration; a per-provider class.
   RIPPLE: ContextPill value source (CT-6; T29 / parity tests - state any input change).

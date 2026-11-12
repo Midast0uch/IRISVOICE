@@ -697,7 +697,7 @@ class ContextMixin:
                         },
                         {
                             "role": "assistant",
-                            "content": "Understood â€” I have that context.",
+                            "content": "Understood — I have that context.",
                         },
                     ]
         except Exception as _ep_exc:
@@ -971,7 +971,7 @@ class ContextMixin:
                         },
                         {
                             "role": "assistant",
-                            "content": "Understood â€” I have those context fragments.",
+                            "content": "Understood — I have those context fragments.",
                         },
                     ]
         except Exception as _ch_exc:
@@ -1038,6 +1038,17 @@ class ContextMixin:
             history_block = recent
         else:
             # No chunks yet (first message / empty DB): full rolling window fallback
+            # Same floor as the chunk branch: a large current turn (a pasted
+            # log) or system prompt can take the whole budget, and the trim
+            # then sent the turn with zero prior turns (reproduced 2026-11-12,
+            # budget_for_history=-2063).
+            _floor = (
+                history[-2:]
+                if len(history) >= 2
+                and history[-2].get("role") == "user"
+                and history[-1].get("role") == "assistant"
+                else []
+            )
             history_tokens = self._count_tokens(history)
             while history and history_tokens > max(budget_for_history, 0):
                 removed_item = history.pop(0)
@@ -1047,6 +1058,13 @@ class ContextMixin:
             _clm_n_budget = len(history)
             while history and history[0].get("role") != "user":
                 history.pop(0)
+            if (
+                not history
+                and _floor
+                and self._count_tokens(_floor) <= self._DIRECT_CTX_BUDGET
+            ):
+                history = list(_floor)
+                _clm_n_budget = len(history)
             history_block = history
 
         # â”€â”€ Assemble final message list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

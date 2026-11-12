@@ -152,7 +152,7 @@ _READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a 
   - `-` bullets for lists of findings
   - a markdown table for field/value pairs (specs, settings, counts)
   - `backticks` for paths, commands, filenames and code
-  - a blank line between blocks â€” never run sections together
+  - a blank line between blocks — never run sections together
 - Structure only where it aids reading. Do not pad a short answer to fill it.
 - Report what the tools actually returned. If something was not returned, say
   so plainly rather than filling the gap."""
@@ -212,7 +212,7 @@ class DerReportMixin:
             _ordered += sorted(_crawled - set(_stepmap))
             _ordered = _ordered[::-1][: _cap]
             _lines = [
-                "VISITED THIS TURN (do not re-fetch â€” known-only "
+                "VISITED THIS TURN (do not re-fetch — known-only "
                 "discovery = pivot: propose a different approach instead):"
             ]
             for _u in _ordered:
@@ -600,7 +600,7 @@ class DerReportMixin:
                 "Provide a friendly, user-facing summary of what was accomplished, "
                 "what failed, and what to do next.\n\n"
                 "Cover every part of the user's request. If the results lack "
-                "some asked part, say which part is missing in one line â€” "
+                "some asked part, say which part is missing in one line — "
                 "never skip it in silence.\n\n"
                 + _READABLE_FORMAT_RULES
             )
@@ -941,12 +941,12 @@ class DerReportMixin:
             return (
                 f"I couldn't complete that task. The following step(s) failed:\n{_failed_txt}\n\n"
                 f"If a search or source failed, try rephrasing the request or "
-                f"pasting the information directly â€” I can continue from where it stopped."
+                f"pasting the information directly — I can continue from where it stopped."
             )
         except Exception as _e:
             logger.warning("[DER] deterministic failure summary failed: %s", _e)
             return (
-                "I couldn't complete that task â€” one or more steps failed. "
+                "I couldn't complete that task — one or more steps failed. "
                 "Please try again or rephrase the request."
             )
 
@@ -990,7 +990,7 @@ class DerReportMixin:
                 if _grade == "capped":
                     _capped = True
                     _grade_line = (
-                        "\nRun grade: capped below full pass â€” "
+                        "\nRun grade: capped below full pass — "
                         + "; ".join(_reasons or [])
                         + "\n"
                     )
@@ -1454,7 +1454,7 @@ Tool execution results:
 
 Based on the tool results above, provide a natural response to the user's request.
 If any tools failed, address those issues in your response.
-Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line â€” never skip it in silence.
+Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line — never skip it in silence.
 If a CROSS-CHECK section is present, say which facts are confirmed since the earlier date and which changed.
 PRIOR RESEARCH lines are results of earlier searches: a fact found only there is NOT missing - give it with its date.
 
