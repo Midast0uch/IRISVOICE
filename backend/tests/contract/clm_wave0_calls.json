@@ -1,0 +1,908 @@
+{
+"source": "logs/clm_baseline.jsonl (Wave 0 / T0.1, flag IRIS_CLM_BASELINE=1), call rows written up to the report time 2026-11-12T01:57:34 that carry a server usage; est = router chars/3.5 estimate recorded at the call, real = usage.prompt_tokens; matches evals/results/clm-baseline-2026-11-12.json n=129",
+"calls": [
+{
+"seq": 1,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 218,
+"real": 185
+},
+{
+"seq": 2,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3195,
+"real": 2810
+},
+{
+"seq": 3,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2426,
+"real": 2316
+},
+{
+"seq": 4,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2421,
+"real": 2315
+},
+{
+"seq": 5,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2014,
+"real": 1991
+},
+{
+"seq": 6,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2150,
+"real": 2185
+},
+{
+"seq": 7,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1638,
+"real": 1672
+},
+{
+"seq": 8,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1103,
+"real": 978
+},
+{
+"seq": 9,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 227,
+"real": 182
+},
+{
+"seq": 10,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3391,
+"real": 2913
+},
+{
+"seq": 11,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2441,
+"real": 2308
+},
+{
+"seq": 12,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1913,
+"real": 1916
+},
+{
+"seq": 13,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2019,
+"real": 2033
+},
+{
+"seq": 14,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2278,
+"real": 2301
+},
+{
+"seq": 15,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1592,
+"real": 1666
+},
+{
+"seq": 16,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 864,
+"real": 729
+},
+{
+"seq": 17,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 225,
+"real": 187
+},
+{
+"seq": 18,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3415,
+"real": 2941
+},
+{
+"seq": 19,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2452,
+"real": 2329
+},
+{
+"seq": 20,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1866,
+"real": 1826
+},
+{
+"seq": 21,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2101,
+"real": 2091
+},
+{
+"seq": 22,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1463,
+"real": 1479
+},
+{
+"seq": 23,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1588,
+"real": 1625
+},
+{
+"seq": 24,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 982,
+"real": 841
+},
+{
+"seq": 25,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 239,
+"real": 200
+},
+{
+"seq": 26,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 16193,
+"real": 22992
+},
+{
+"seq": 27,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2481,
+"real": 2361
+},
+{
+"seq": 28,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2605,
+"real": 2523
+},
+{
+"seq": 29,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2078,
+"real": 2036
+},
+{
+"seq": 30,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3065,
+"real": 2944
+},
+{
+"seq": 31,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1725,
+"real": 1730
+},
+{
+"seq": 32,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1168,
+"real": 1012
+},
+{
+"seq": 33,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 260,
+"real": 214
+},
+{
+"seq": 34,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 9979,
+"real": 12817
+},
+{
+"seq": 35,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1696,
+"real": 1671
+},
+{
+"seq": 36,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2111,
+"real": 2066
+},
+{
+"seq": 37,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1842,
+"real": 1813
+},
+{
+"seq": 38,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2861,
+"real": 2768
+},
+{
+"seq": 39,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 845,
+"real": 722
+},
+{
+"seq": 40,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 226,
+"real": 185
+},
+{
+"seq": 41,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3453,
+"real": 3067
+},
+{
+"seq": 42,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1122,
+"real": 1161
+},
+{
+"seq": 43,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2680,
+"real": 2661
+},
+{
+"seq": 44,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2701,
+"real": 2602
+},
+{
+"seq": 45,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2936,
+"real": 2912
+},
+{
+"seq": 46,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3190,
+"real": 3195
+},
+{
+"seq": 47,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3191,
+"real": 3101
+},
+{
+"seq": 48,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2649,
+"real": 2698
+},
+{
+"seq": 49,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2875,
+"real": 2984
+},
+{
+"seq": 50,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2781,
+"real": 2830
+},
+{
+"seq": 51,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1095,
+"real": 1136
+},
+{
+"seq": 52,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2433,
+"real": 2542
+},
+{
+"seq": 53,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1965,
+"real": 1913
+},
+{
+"seq": 54,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 250,
+"real": 205
+},
+{
+"seq": 55,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 4840,
+"real": 4923
+},
+{
+"seq": 56,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2479,
+"real": 2347
+},
+{
+"seq": 57,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3976,
+"real": 3610
+},
+{
+"seq": 58,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 4228,
+"real": 3881
+},
+{
+"seq": 59,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 4224,
+"real": 3839
+},
+{
+"seq": 60,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 5212,
+"real": 4719
+},
+{
+"seq": 61,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 5317,
+"real": 4841
+},
+{
+"seq": 62,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3400,
+"real": 2873
+},
+{
+"seq": 63,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 221,
+"real": 181
+},
+{
+"seq": 64,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 3805,
+"real": 3385
+},
+{
+"seq": 65,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2440,
+"real": 2315
+},
+{
+"seq": 66,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2432,
+"real": 2307
+},
+{
+"seq": 67,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2572,
+"real": 2484
+},
+{
+"seq": 68,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2208,
+"real": 2248
+},
+{
+"seq": 69,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2538,
+"real": 2600
+},
+{
+"seq": 70,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2696,
+"real": 2728
+},
+{
+"seq": 71,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 1308,
+"real": 1272
+},
+{
+"seq": 72,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 195,
+"real": 144
+},
+{
+"seq": 73,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2723,
+"real": 2185
+},
+{
+"seq": 74,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2647,
+"real": 2454
+},
+{
+"seq": 75,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2886,
+"real": 2469
+},
+{
+"seq": 76,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 449,
+"real": 393
+},
+{
+"seq": 77,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 179,
+"real": 134
+},
+{
+"seq": 78,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2477,
+"real": 2001
+},
+{
+"seq": 79,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2624,
+"real": 2437
+},
+{
+"seq": 80,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2847,
+"real": 2245
+},
+{
+"seq": 81,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 409,
+"real": 352
+},
+{
+"seq": 82,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 185,
+"real": 141
+},
+{
+"seq": 83,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2885,
+"real": 2465
+},
+{
+"seq": 84,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2637,
+"real": 2463
+},
+{
+"seq": 85,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2256,
+"real": 1966
+},
+{
+"seq": 87,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 187,
+"real": 142
+},
+{
+"seq": 88,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 8275,
+"real": 7163
+},
+{
+"seq": 89,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 10571,
+"real": 9127
+},
+{
+"seq": 90,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 180,
+"real": 135
+},
+{
+"seq": 91,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2857,
+"real": 2380
+},
+{
+"seq": 92,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 4311,
+"real": 3913
+},
+{
+"seq": 93,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2546,
+"real": 2411
+},
+{
+"seq": 94,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 185,
+"real": 139
+},
+{
+"seq": 95,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2924,
+"real": 2434
+},
+{
+"seq": 96,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2608,
+"real": 2421
+},
+{
+"seq": 97,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 7320,
+"real": 10097
+},
+{
+"seq": 98,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 975,
+"real": 973
+},
+{
+"seq": 99,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 460,
+"real": 447
+},
+{
+"seq": 100,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 187,
+"real": 141
+},
+{
+"seq": 101,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2633,
+"real": 2106
+},
+{
+"seq": 102,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2606,
+"real": 2426
+},
+{
+"seq": 103,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2592,
+"real": 2176
+},
+{
+"seq": 105,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 175,
+"real": 135
+},
+{
+"seq": 106,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 8764,
+"real": 7963
+},
+{
+"seq": 107,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 435,
+"real": 379
+},
+{
+"seq": 108,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 217,
+"real": 164
+},
+{
+"seq": 109,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2999,
+"real": 2441
+},
+{
+"seq": 110,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2595,
+"real": 2418
+},
+{
+"seq": 111,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2585,
+"real": 2409
+},
+{
+"seq": 112,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2591,
+"real": 2412
+},
+{
+"seq": 113,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 7799,
+"real": 6540
+},
+{
+"seq": 114,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 194,
+"real": 142
+},
+{
+"seq": 115,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2993,
+"real": 2431
+},
+{
+"seq": 116,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2650,
+"real": 2436
+},
+{
+"seq": 117,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 2775,
+"real": 2357
+},
+{
+"seq": 118,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 190,
+"real": 144
+},
+{
+"seq": 120,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 8636,
+"real": 7459
+},
+{
+"seq": 122,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 180,
+"real": 136
+},
+{
+"seq": 123,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 8001,
+"real": 6862
+},
+{
+"seq": 124,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 185,
+"real": 140
+},
+{
+"seq": 126,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 8697,
+"real": 7985
+},
+{
+"seq": 127,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 8795,
+"real": 8107
+},
+{
+"seq": 128,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 178,
+"real": 134
+},
+{
+"seq": 130,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 7967,
+"real": 6839
+},
+{
+"seq": 132,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 192,
+"real": 144
+},
+{
+"seq": 133,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 7751,
+"real": 6599
+},
+{
+"seq": 134,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 7864,
+"real": 6734
+},
+{
+"seq": 136,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 182,
+"real": 136
+},
+{
+"seq": 137,
+"provider": "opencodego",
+"model": "deepseek-v4.1-flash",
+"est": 7724,
+"real": 6576
+}
+]
+}

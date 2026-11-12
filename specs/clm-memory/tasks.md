@@ -81,6 +81,32 @@ same-conditions A/B, numbers named with their cohort.
 
 ## Wave 1 - The view at parity + the one gauge (still no shrink change)
 
+> **Wave 1 part A done 2026-11-12 (modules only, nothing wired):**
+> `backend/agent/context_view.py` (Ref, Block, ContextView.admit/render),
+> `backend/agent/context_gauge.py` (estimate_tokens = the router rule; ContextGauge with
+> a per-(provider, model) EMA ratio), `contract/test_view_parity_contract.py` (CT-1, 9
+> tests; 4 fail on a reordered render), `contract/test_context_gauge_contract.py` (13
+> tests) with the 129 real Wave 0 calls as fixture.
+> **Decisions (Director, 2026-11-12):**
+> - Block kind names on the direct path are the Wave 0 instrument's names
+>   (`system_prompt`, `recall_episodic`, `recall_profile`, `recall_chunks`, `history`,
+>   `current_user`); node-path kinds are named in T1.3.
+> - CT-9 is two tests: CT-9a the gauge behavior (exists), CT-9b the source guard that
+>   the three old estimators are gone (written with the T1.4 wiring).
+> - The first observation seeds the ratio (not 1.0): the raw rule is ~10 % high.
+> - THE 5 % TARGET IS NOT YET PROVEN REACHABLE. Offline on the Wave 0 calls the one
+>   ratio gives signed median -0.5 %, |p95| 18.7 % (raw: +10.0 %, 32.8 %). More terms
+>   do not help (two-term and per-kind least squares are worse). BUT those calls were
+>   recorded BEFORE the per-call usage fix (0b88901c): a parallel call could carry
+>   another call's `prompt_tokens`, which is noise in the "real" column. T1.4's live
+>   gate re-measures on clean data; the bar is then set from that measurement and
+>   written here. Do not add a second term before that.
+> - Finding: `import backend.agent.context_view` runs `backend/agent/__init__.py`,
+>   which imports the whole kernel (~75 modules). The modules themselves import only
+>   the standard library. Fix = a lazy package `__init__` (own measured change).
+> - The view renders BEFORE `_mcm_orch.pre_call`; the wiring runs `pre_call` on
+>   `render()` (CLM-9 AC5).
+
 - [ ] **T1.1** (CLM-1 AC1-AC3, AC6): `context_view.py` with `Ref`, `Block`,
   `ContextView.admit/render`; route `_assemble_direct_context` through it.
   DONE = CT-1 passes on recorded inputs (byte-equal) and fails when one block is
