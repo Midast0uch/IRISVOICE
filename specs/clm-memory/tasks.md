@@ -34,11 +34,14 @@ same-conditions A/B, numbers named with their cohort.
   `design.md` "Open questions" and correct the Ripple-Effect Map.
   DONE = Q1-Q4 each have an answer with evidence, and the map has no "maybe".
   NOT THIS = starting the view.
+  STATUS 2026-11-12: Q1-Q4 answered in `design.md` "Open questions"; Q3 provider facts
+  stay OPEN (need one raw usage/timings capture per provider; T0.1/T5.3 instrument).
 - [ ] **T0.3** (CLM-0): re-measure the Inherited Ground counts on the live store
   (read-only, `.venv` python - only it has sqlcipher3) and replace the 2026-11-01
   numbers in `requirements.md`.
   DONE = the counts carry today's date.
   NOT THIS = any write to the store.
+  STATUS 2026-11-12: done, counts and findings are in `requirements.md` "Inherited Ground".
 - [ ] **TG-0**: owner answers Q-A, Q-B, Q-C (requirements "Open Questions"); the
   answers move to Decisions Locked.
 
@@ -49,17 +52,24 @@ same-conditions A/B, numbers named with their cohort.
   DONE = CT-1 passes on recorded inputs (byte-equal) and fails when one block is
   reordered.
   NOT THIS = zones, policy, placeholders, a base class, a plugin point.
-  RIPPLE: `_sanitize_messages` order; `_mcm_orch.pre_call` (`kernel/context.py:1084`) still runs after.
+  RIPPLE: `_sanitize_messages` order; `_mcm_orch.pre_call` (`_assemble_direct_context`, last lines) still runs
+  after AND mutates the list (`pre_call_flow.json`: `dcp_prune`, `mito_inject` at `[1]`, `pacman_recall` at
+  `[2]`): CT-1's "old builder" output is assemble + pre_call, recorded after pre_call (Q1).
 - [ ] **T1.2** (CLM-1 AC2): references on blocks. Chunk ids via T0.2/Q2; chain,
   episode, thread, pin ids from their rows; `ephemeral` for system and user turn.
   DONE = on the T0.1 cohort replay, 100 % of non-ephemeral blocks resolve to a row.
   NOT THIS = changing recall scoring or its return order.
+  Q2 answer: the `with_meta` dict lacks `id`; add `"id": cid` (`episodic.py:1616-1625`).
   RIPPLE: every caller of `retrieve_context_chunks` (kernel x6, `tool_bridge.py:552`,
-  `evidence.py:225`, `recall_decoder.py:436`) keeps its current return shape.
+  `evidence.py:225`, `recall_decoder.py:436`, `research_memory.py:482`) keeps its current return shape.
 - [ ] **T1.3** (CLM-1): the DER node list and synthesis through the view (points from Q1).
   DONE = CT-1 covers node and synthesis inputs; BT-W10-2 and the synthesis diet
   contract pass.
   NOT THIS = touching the planner prompt.
+  RIPPLE (Q1): the node list is built in `backend/agent/node_executor.py` `run_node` (`:648`), not in
+  the kernel, so this task edits that file (call sites only); `_der_bound_step_context` is not a
+  pressure site (it cuts a field no prompt reads) and is left alone; synthesis is one user message
+  (`kernel/der/report.py:1450`), not a list.
 - [ ] **T1.4** (CLM-4 AC1, AC2, AC5; CT-9): `context_gauge.py`; move the router
   estimator into it; delete `_count_tokens` and `_DIRECT_CTX_BUDGET`; `observe()` from
   the router after each call.
@@ -159,6 +169,8 @@ same-conditions A/B, numbers named with their cohort.
 
 - [ ] **T6.1** (CLM-9): migrate or remove the two DCP callers; delete `dcp.py` and its
   tests; state each removed test in the commit.
+  Also (Q1): remove the `dcp_prune` step from `mcm_protocol/workflows/pre_call_flow.json`; that
+  workflow runs on the live direct path, so DCP is not only a swarm path (requirements U1 is too narrow).
   DONE = `grep -r "dcp" backend --include=*.py` shows no import; CT-7 passes.
   NOT THIS = a compatibility shim.
 
@@ -166,7 +178,7 @@ same-conditions A/B, numbers named with their cohort.
 
 - Wave 0 blocks everything. Wave 1 blocks 2, 3, 4. Wave 3 may run beside Wave 2.
   Wave 4 needs Wave 2. Wave 5 needs 1-4. Wave 6 needs TG-2.
-- Only T1.1, T1.3, T1.4, T2.3, T2.6 touch kernel call sites; no two of them run at the
+- Only T1.1, T1.3, T1.4, T2.3, T2.6 touch kernel call sites (T1.3 also `node_executor.py`); no two of them run at the
   same time, and none runs during a kernel move commit (blueprint rule R9).
 - Do NOT touch: the chunk codec, the two planes, the decay law, recall scoring.
 - Multi-agent views are a later spec.

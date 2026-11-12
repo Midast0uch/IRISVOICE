@@ -12,7 +12,7 @@ Owner: Midas. Audience: the implementing agent.
 
 | # | Draft claim | Verdict | Evidence |
 |---|---|---|---|
-| U1 | DCP is called at `kernel/context.py:794` and hard-codes the shrink policy on the answer path | WRONG | The kernel never constructs `DCP` (`kernel/der/report.py:1205-1214`). Its only production callers are `swarm/context_control.py:83-90` (MCM:999) and `mcm_protocol/actions/dcp_prune.py:18-35`, both swarm/protocol paths. |
+| U1 | DCP is called at `kernel/context.py:794` and hard-codes the shrink policy on the answer path | WRONG PLACE, RIGHT WORRY (corrected 2026-11-12, T0.2) | The kernel never constructs `DCP` itself (`kernel/der/report.py:1205-1214`), but DCP IS on the live direct answer path: `_assemble_direct_context` calls `_mcm_orch.pre_call`, which runs `mcm_protocol/workflows/pre_call_flow.json` = `dcp_prune` (`actions/dcp_prune.py:18-35`), then `mito_inject` (a tag at index 1), then `pacman_recall` (a system message at index 2, up to 2,000 tokens). Measured in `logs/iris.log` 2026-11-11: 42 `dcp_prune` runs, all N -> N messages, 0 dedups, 0 purges - it runs on every direct call and changed nothing in that sample. The other caller is `swarm/context_control.py:83-90`. The 2026-11-11 revision of this row said "swarm/protocol paths only"; that was wrong. |
 | U2 | `DCP._emit_fan_traces` is the only writer of `der_fan_traces`; migrate it first | ALREADY FIXED | `AgentKernel._der_emit_fan_trace` (`kernel/der/report.py:1069`) writes one row per node at its terminal outcome, called at `:18980`. The DCP pass writes 0 rows in production (every caller passes no `traj`, `dcp.py:163-164`). |
 | U3 | (not in the draft) what shrinks the window today | REAL GAP | Two blind cuts: `InferenceRouter._cap_messages_to_window` (`inference/router.py:429-495`) drops the OLDEST non-system messages on every model call and only logs a count; `_assemble_direct_context` (`kernel/context.py:656`) trims history by a chars/4 estimate. Neither records WHAT left, neither leaves an address. |
 | U4 | "use the active backend's tokenizer" | REAL GAP, reframed | Three estimators, no authority: chars/4 (`kernel/context.py:651`), chars/3.5 + 16/message (`router.py:349-377`), tiktoken-or-chars/4 (`mcm.py:311-337`). The router path loads no tokenizer. The only true number is the server's `usage.prompt_tokens` (`inference/transport.py:436-481`). |
@@ -41,8 +41,8 @@ Owner: Midas. Audience: the implementing agent.
 - **Prepared ground is not re-litigated**: two planes (recall REQ-10), the codec (REQ-4),
   the Kyudo decay law (REQ-5), the three levels (REQ-11).
 - **DCP is removed, not adapted** (owner, 2026-10-28). Reframed by U1/U2: there is no
-  emitter to migrate. Removal is CLM-9: delete `dcp.py` and its two callers' use once
-  the view owns shrink on those paths.
+  emitter to migrate. Removal is CLM-9: delete `dcp.py`, its two callers' use and the
+  `dcp_prune` step of `pre_call_flow.json` once the view owns shrink on those paths.
 - **The harness guarantees; the model chooses** (new, 2026-11-11). The brief's own
   evidence (section 5 items 2 and 4): backups do not happen unless enforced, and small
   models edit about 1.4 times per task. So the harness ALWAYS enforces the offload gate
@@ -341,6 +341,12 @@ copies), `tests/unit/test_write_paths_proven.py`.
 - AC2: THE SYSTEM SHALL keep `der_fan_traces` receiving one row per executed node
   (unchanged writer `_der_emit_fan_trace`).
 - AC3: THE SYSTEM SHALL have no import of `dcp` in `backend/`.
+- AC4: THE SYSTEM SHALL remove the `dcp_prune` step from
+  `mcm_protocol/workflows/pre_call_flow.json` and its action module (it runs on every
+  direct-path call today, U1).
+- AC5: WHILE DCP is still present (Waves 1-5) THE SYSTEM SHALL treat the output of
+  `_mcm_orch.pre_call` (dcp_prune + mito_inject + pacman_recall) as part of the
+  "old builder" that CT-1 parity is measured against.
 
 **Edge Cases:**
 - The swarm path is flag-off: its caller is still migrated or removed, not left
@@ -406,9 +412,24 @@ edit 10.81e14 FLOPs on a 20k prompt.
 
 ## Inherited Ground (must not be rebuilt)
 
-Counts as measured 2026-11-01 (hand-off section 3); re-measure in CLM-0 before citing:
-`memory_chain` 13,382 | `context_chunks` 61,018 | `thread_context` 3,168 (19.3x smaller
-scan) | `episodes` 232 with `vec_i8` | `mycelium_landmarks` 4,136 | `mycelium_pins` 5.
+Counts re-measured 2026-11-12 on the live store (`D:\IRIS\store\memory.db`, SQLCipher,
+read-only, `.venv` python; the 2026-11-01 figure is in brackets, hand-off section 3):
+`memory_chain` 14,685 [13,382] | `context_chunks` 78,900 [61,018] | `thread_context` 3,168
+[3,168] (now 24.9x smaller scan than chunks; was 19.3x) | `episodes` 917 [232], of which
+211 have `vec_i8` (706 do not) | `mycelium_landmarks` 4,572 [4,136] (781 tier `landmark`,
+3,791 tier `candidate`; 3,691 of the candidates absorbed) | `mycelium_pins` 7 [5].
+Findings from the distributions: (1) `thread_context` did not grow in 11 days while chunks
+grew by 17,882: its newest `updated_at` is 2026-11-01 and its `n_chunks` sum is 61,019, so
+L1 is a stale snapshot with no live writer (only `levels.py` `backfill`, an offline
+step); CLM-5 AC7 would read stale rows. (2) `vec_i8` coverage: `context_chunks` 78,900 of
+78,900 (100 %), but `episodes` 211 of 917 (23 %, all `origin = local`). The 2026-11-01
+text said "232 with `vec_i8`" without saying whether 232 was all episodes or only those
+with the column; either way, 706 episodes now have no `vec_i8` and are a finding for any
+episode recall that reads the int8 plane. (3) Chunk ids are UUID text (`context_chunks.id`), usable as `Ref.id`.
+(4) Chunk mix: `trusted/document_data` 51,347, `tool/der_output` 11,739,
+`reference/document_data` 9,913, `trusted/context_fragment` 3,406,
+`reference/research_summary` 1,907. Pins: 7 rows, all `fact:*` notes tagged
+`["fact","remember"]`, no author column.
 Also: the chunk codec (int8 + 128 B fingerprint), incidence by `thread_id`, lanes +
 `app_write` as the one writer, the `recall_memory` tool, and the recall gate
 (memory 3/3, BT-W10-2). The recall@10_live bars are quoted differently in two places

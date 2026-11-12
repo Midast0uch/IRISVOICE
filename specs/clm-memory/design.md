@@ -183,9 +183,11 @@ The model's `set_aside` / `expand` are extra, never required.
    results; unused recalled chunks; old history), oldest first. Skip protected
    blocks, the newest unit, and blocks under break-even.
 3. KEEP WHAT IS USEFUL - before a block leaves, three things stay in the view:
-   - its DIGEST: the node's existing step digest (what the step found, its verified
-     label, the decisive call). The digest already exists per step; it is not written
-     for the offload.
+   - its DIGEST: the step's existing readable result (`NodeResult.as_step_result`,
+     `node_executor.py:263`: what the step found and its verified label) plus the
+     decisive call (`_step_decisive_call`, `kernel/base.py:121`). Both exist per
+     step; nothing is written for the offload. (Decided 2026-11-12. NOT
+     `_step_digest`, `kernel/der/finalize.py:119`: that is a repeat-detection hash.)
    - its OPEN ITEMS: unresolved errors, untried ideas, TODOs, dead ends -> moved to
      the ledger block.
    - its PLACEHOLDER: reference, time frame, domain, one-line reason.
@@ -225,25 +227,28 @@ counts per block kind are the signal that the order or the margin is wrong.
 |---|---|---|---|
 | `backend/agent/context_view.py`, `context_gauge.py` | New | CHANGE NEEDED | The view, policy, gauge |
 | `_assemble_direct_context` (`kernel/context.py:656`) | Yes | CHANGE NEEDED | Builds blocks instead of a bare list; parity test CT-1 |
-| `_der_run_node` (`kernel/der/node.py:1048`) message list, `_der_bound_step_context` | Yes | CHANGE NEEDED | The pressure site (tool results); CLM-0 AC4 Q1 pins the exact build points first |
+| `run_node` (`backend/agent/node_executor.py:636`, list built at `:648`, grown at `:786`/`:946`) | Yes | CHANGE NEEDED | The pressure site. The node message list is NOT built in the kernel: `_der_run_node` (`kernel/der/node.py:1048`) only passes `_generate` and a `NodeContext` (`:1463-1480`). The view call site is therefore in `node_executor.py`, a non-kernel module - T1.3 touches it (Q1) |
+| `_der_bound_step_context` (`kernel/context.py`, called `kernel/der/run.py:1250`) | No | NO CHANGE (nothing to wire) | It truncates `item.coordinate_signal`, a field no model prompt reads (Q1). It is not a pressure site; it leaves with the dead field, not with the view |
+| `mcm_protocol` `pre_call_flow.json` (`dcp_prune`, `mito_inject`, `pacman_recall`) via `_mcm_orch.pre_call` (`_assemble_direct_context`, last lines) | Yes | CHANGE NEEDED (new row, forced by Q1) | Runs on the direct path after assembly and mutates the list (prune, inserts at `[1]` and `[2]`). CT-1 parity must be defined against assemble + pre_call, and `dcp_prune` leaves the workflow in CLM-9 |
+| `mcm_protocol` `post_turn_flow.json` `mcm_check_compress` via `_mcm_orch.post_turn` (`kernel/turn.py:1691`) | No (record) / CHANGE NEEDED (CLM-9) | CONTRACT LOCK | Passed `self._conversation_memory.messages` and replaces it in place when it fires (`orchestrator.py:97-98`): the one path that can edit the record. Not seen to fire in `logs/iris.log*` (0 matches) |
 | `_synthesize_response` (`kernel/der/report.py:1524`) | Yes | CHANGE NEEDED | Step results enter as blocks; synthesis diet contract must hold (`test_der_t26_synthesis_diet_contract.py`) |
 | `_count_tokens` (`kernel/context.py:651`), `_DIRECT_CTX_BUDGET` (`agent_kernel.py:1219`) | Yes | CHANGE NEEDED | Replaced by the gauge; budget from `get_effective_token_budget` (`kernel/context.py:427`) |
 | `inference/router.py` `_estimate_prompt_tokens` (:349), `_cap_messages_to_window` (:429) | Yes | CHANGE NEEDED | Estimator moves to the gauge; cap reports drops (blind_drop) |
-| `inference/transport.py` usage (:436-481) | Read only | NO CHANGE (verified) | Already yields `usage.prompt_tokens`; the router passes it to `gauge.observe` |
+| `inference/transport.py` `_extract_usage` (:433) / `_extract_ollama_usage` (:459) | Wave 1: read only; T5.3: Yes | NO CHANGE for the gauge; CHANGE NEEDED for CLM-10 AC3 | Already yields `usage.prompt_tokens`; the router passes it to `gauge.observe`. Both extractors keep only prompt/completion/total, so a cached-token field is dropped at parse (Q3): T5.3 needs a small additive parse |
 | `agent/mcm.py` `count_tokens` (:311) | No | NO CHANGE (out of scope) | Swarm path, Q-A |
-| `memory/episodic.py` `retrieve_context_chunks` (:1225) | Maybe | CHANGE NEEDED if ids absent | `with_meta=True` returns a producer label (:1604-1611); row id presence NOT confirmed - Q2 |
+| `memory/episodic.py` `retrieve_context_chunks` (:1225) | Yes (one key) | CHANGE NEEDED | The `with_meta=True` dict (:1616-1625) has content, chunk_type, producer, score, timestamp and NO id, though `cid` is in scope in that comprehension (Q2). Add `"id": cid`; additive, no caller breaks |
 | `memory/event_alphabet.py` (:169-171) | No | NO CHANGE (verified) | Labels seeded |
 | `memory/memory_events.py` | Yes (emit helper use) | CONTRACT LOCK CT-4 | Row shape for the three labels |
 | `memory/surface_queries.py` (:1737-1738) | No | NO CHANGE (verified) | Already maps the three labels to display text; the memory dashboard starts showing them once emitted |
-| `memory/pin_store.py` | Small | CHANGE NEEDED | Author + source links on add; `LINK_VOCABULARY` (:61) may need a `summarises` relationship - check before adding |
+| `memory/pin_store.py` | Yes (small) | CHANGE NEEDED | `LINK_VOCABULARY` (:61) needs NO new word: `derives_from` is already in it and `link()` (:327) takes free `source_type`/`target_type`. `add()` (:198) has no author field and the table has no author column (`origin_id` or a tag carries it; T3.1 picks, no schema change) |
 | `memory/levels.py` / `thread_context` | Read | CHANGE NEEDED | First production reader (CLM-5 AC7); run S2 (`test_answer_path_standards`) if any index is touched |
 | `agent/tool_bridge.py` `recall_memory` | Yes | CHANGE NEEDED + CONTRACT LOCK CT-5 | Two operations; menu parity |
-| `_emit_context_usage` (`kernel/context.py:435`) / frontend ContextPill | Value source | CONTRACT LOCK CT-6 | Event shape unchanged; `used_tokens` now from the gauge. Pinned by `test_context_usage_emit` T29 and `test_context_usage_parity.py` - run both; a value-source change there is a stated test input change if needed |
+| `_emit_context_usage` (`kernel/context.py`, by name) / frontend ContextPill | Value source | CONTRACT LOCK CT-6 | Event shape unchanged. Today `used_tokens` = `_context_fill`, the largest single call's server `total_tokens` (`_accrue_tokens`), already real usage; the gauge becomes the pre-call estimate beside it. Pinned by `test_context_usage_emit` T29 and `test_context_usage_parity.py` - run both; a value-source change there is a stated test input change if needed |
 | `swarm/context_control.py` (:83-90), `mcm_protocol/actions/dcp_prune.py` | Yes | CHANGE NEEDED (CLM-9) | DCP callers |
 | `backend/agent/dcp.py`, `test_der_phase0.py` (x2), `test_write_paths_proven.py` DCP cases | Delete | CHANGE NEEDED (CLM-9) | Stated test removals |
 | `_der_emit_fan_trace` (`kernel/der/report.py:1069`) | No | CONTRACT LOCK CT-7 | One row per node keeps flowing |
 | Forget paths | No code | CONTRACT LOCK | `test_every_recall_path_leaves_a_forgotten_strand_out` must include expand-by-ref |
-| Oracle consumers (`tool_choice`, `web_intent`) | No | NO CHANGE | They read frames, not the view; verify their frame inputs do not include raw history length (Q4) |
+| Oracle consumers (`tool_choice`, `web_intent`) | No | NO CHANGE (verified, Q4) | No declared Oracle job field is a message count or history length (`decision_engine.py` `ORACLE_JOBS`); node frames read `NodeContext.history` / `last_result_text`, not `messages`. Keep those two out of the view |
 | Phase scheduler | No | NO CHANGE | The view never reads live u/xi |
 | Frontend | No | NO CHANGE (v1) | Placeholders are model-facing only; never in the reply (contract CT-8) |
 
@@ -308,14 +313,91 @@ arithmetic, placeholder formatting, gauge EMA and clamp.
 - Each wave's gate: baseline -> change -> same cohort, same model, same commit pair;
   read pass + `reply_s`; `evals/standards.json` no regression.
 
-## Open questions (answer from code in Wave 0; CLM-0 AC4)
+## Open questions - answered 2026-11-12 (Wave 0, T0.2; code as it is after the kernel split)
 
-- Q1: The exact points where a node's message list is created, grows (tool results),
-  and where earlier steps' outputs enter a later node (`_der_bound_step_context`,
-  step digests). List each with file:line and the block kind it maps to.
-- Q2: Does `retrieve_context_chunks(with_meta=True)` return the chunk row id? If not,
-  the smallest change that makes it do so.
-- Q3: Which providers in use report cached prompt tokens in `usage`, and what the
-  local llama.cpp server reports.
-- Q4: Does any Oracle frame or physics input depend on message count or history
-  length (so that offload would shift it)?
+Line numbers are for the files as read on 2026-11-12. `router.py` and
+`kernel/context.py` were being edited by another agent during this pass: those two
+are cited by function name.
+
+- **Q1 - ANSWERED. Where a node's message list is made, grows, and where earlier
+  steps enter.** The node list is built in `backend/agent/node_executor.py`
+  `run_node`, not in the kernel. `kernel/der/node.py:1048` `_der_run_node` builds a
+  `NodeContext` (`:1463-1480`) and calls `run_node(goal, _node_ctx)` (`:1480`).
+
+  | Point | file:line | Block kind |
+  |---|---|---|
+  | list created: system `_SYSTEM`, one user message (task, parent goal, STEP, DONE WHEN, reviewer note, RESULTS OF EARLIER STEPS, MEMORY facts) | `node_executor.py:648-655` (`_user_message` `:591`) | `system` (protected), `user_turn` (protected) |
+  | earlier steps enter: `_prior_results` built from `queue.items` results, each cut by `_step_evidence_cap` | `kernel/der/node.py:1532-1552`, `kernel/base.py:103`; passed `node.py:1559`; rendered `node_executor.py:608-612`, clip `limit*3` = 24,000 chars | `step_digest` (the step result text) |
+  | memory facts: `_mf(goal, ...)` max ~420 chars | `kernel/der/node.py:1455-1457`; rendered `node_executor.py:653-654` | `recall` |
+  | model answer with tool calls | `node_executor.py:786` | `tool_result` unit (call half) |
+  | tool result, clipped to `result_chars` 8,000 | `node_executor.py:946-949` (clip `:911`); repeat stub `:828` | `tool_result` |
+  | screenshot as a user message; older ones dropped by `_drop_old_screenshots` (`:149`) | `node_executor.py:971`, `:970` | `tool_result` (image) |
+  | harness notes (handover, malformed, empty, picture hint, closing stop) | `:750`, `:754`, `:773-779`, `:1029` | `header`-like, never offloaded |
+  | model calls | `node_executor.py:735` (loop), `:1033` (closing) through `_generate` (`node.py:1079`) to `InferenceRouter.generate` | |
+
+  Other builders: a direct node is one user message (`node.py` `_der_run_direct_node`,
+  `_msgs`); synthesis is ONE user message, an f-string over
+  `TaskContext.get_results_summary()` (`kernel/der/report.py:96`, prompt `:1450`, sent
+  `:1524`, `:1548`, `:1594`) - it has no history list. `_der_bound_step_context`
+  (`kernel/context.py`, called `kernel/der/run.py:1250`) truncates
+  `item.coordinate_signal`; no model prompt reads that field (grep: only writers in
+  `run.py:1064-1222` and one copy in `der_loop.py:1021`; `evidence.py:213` says so).
+  It does not shrink any model window. Also stale in the design text above: the
+  existing per-step "digest" (`kernel/der/finalize.py:119` `_step_digest`) is a
+  repeat-detection HASH, not readable text. The readable carrier today is the step
+  result (`NodeResult.as_step_result`, `node_executor.py:263`) and
+  `_step_decisive_call` (`kernel/base.py:121`); CLM-5 and the shrink algorithm must
+  name those. DECIDED 2026-11-12: the shrink algorithm uses those two carriers; no new
+  digest line is written (see "The shrink algorithm", step 3).
+  The direct chat path additionally passes through `_mcm_orch.pre_call` after
+  assembly (`pre_call_flow.json`: `dcp_prune`, `mito_inject` at `[1]`,
+  `pacman_recall` at `[2]`); that is a live list mutator (see Ripple map).
+
+- **Q2 - ANSWERED: No, the id is not returned.** The `with_meta=True` dict
+  (`memory/episodic.py:1616-1625`) carries `content`, `chunk_type`, `producer`,
+  `score`, `timestamp` only. The row id exists (`context_chunks.id`, a UUID text key,
+  verified in the live store schema) and `cid` is already in scope in that
+  comprehension (`:1626` `for score, content, cid in top`). Smallest change: add
+  `"id": cid` to the dict. Callers of `with_meta=True` (`kernel/context.py`
+  `_assemble_direct_context`, `kernel/der/run.py:1109`, `evidence.py:232`) read keys
+  by name, so an added key is safe. Two side facts: the `with_meta` branch returns at
+  `:1627`, before the `retrieval_count` update (`:1629-1639`), so a with_meta recall
+  never counts as a use (a decay-signal gap, not changed here); the reindex branch
+  (`:1272-1277`) returns `rm.search_chunks` and ignores `with_meta` (idle/complete
+  state skips it).
+
+- **Q3 - PARTLY ANSWERED; the provider facts are OPEN.** From code: IRIS reports NO
+  cached prompt tokens from any provider today. `_extract_usage`
+  (`inference/transport.py:433-456`) keeps only `prompt_tokens`, `completion_tokens`,
+  `total_tokens`; `_extract_ollama_usage` (`:459-486`) keeps only `prompt_eval_count`
+  and `eval_count`; no `cached` / `cache_n` / `timings` field is parsed anywhere in
+  `backend/agent/inference/`. Usage reaches `router.last_usage` after each call
+  (`router.py` `generate`, reading `transport.last_usage`). `InProcessTransport` sets
+  no `last_usage` (class at `:1726`): "no ground truth". `ApiHttxTransport` streaming
+  asks `stream_options.include_usage` (`:964`); `OpenAICompatTransport` (llama-server,
+  `:1282`) parses a usage chunk (`:1515`) but does not ask for it. MISSING
+  MEASUREMENT: one raw response (stream and non-stream) per provider in use, and one
+  from the local llama-server, with the raw `usage` and `timings` objects logged
+  before parsing, to see which carry a cached-token field. That is T0.1/T5.3
+  instrumentation, not decidable from code. (The provider list in use lives in
+  `data/iris_config.json`, which this task must not touch.)
+
+- **Q4 - ANSWERED: No input depends on message count or history length.**
+  Oracle jobs declare their fields in `agent/decision_engine.py` (`ORACLE_JOBS`,
+  `job_input` `:790`): goal, done_when, calls_this_step, step_facts, last_result,
+  task_class, previous_chosen/outcome, step_index, ruled_out, error_snippet,
+  proposed_tool, args, page fields, etc. None is a count of messages or history.
+  The node frames read `NodeContext.history` (the `calls` list, `node_executor.py:683`)
+  and `last_result_text` (`:950`), via `_step_so_far` (`kernel/der/node.py:1231`);
+  both are separate from `messages`. `route_v2` uses `chars=len(text)` of the user's
+  text (`kernel/planning.py` `_route_v2_frame`). Physics: `step_action`
+  (`physics_action.py`) is a function of tool names and success only. Other
+  length-like inputs, all independent of the view: the DER token budget counts
+  `len(_window_evidence)//4` per step (`kernel/der/finalize.py:969`, stop at `:987`);
+  `derive_work_units_0(resolve_context_window())` uses the window size, not the fill
+  (`kernel/der/recovery.py:283-284`); the outer loop's `tokens_total` is
+  `ConversationMemory.get_token_count()` over the stored turns (`agent/memory.py:346`,
+  `:396-408`), i.e. the record. `_context_fill` / `_tokens_used` feed only the pill and
+  the persisted snapshot (`kernel/context.py` `_accrue_tokens`, `:158`). Condition:
+  the view must never mutate `ConversationMemory.messages` (see the `post_turn`
+  Ripple row), and `calls` / `last_result_text` stay outside the view.
