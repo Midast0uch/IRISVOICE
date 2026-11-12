@@ -1,6 +1,6 @@
 # IRIS Changelog
 
-## 2026-11-11 — Agent kernel split into six parts, replies about two times faster, CLM spec revised
+## 2026-11-11 — Agent kernel split into six parts, slow-reply cause found, CLM spec revised
 
 Every item was measured on the live app (same 21 eval tasks: coding 8, research 10, memory 3)
 and has a guard that fails on the old state. Numbers: `docs/audits/2026-09-29/PROGRESS.md`
@@ -18,16 +18,18 @@ the engine `der/{run, finalize, node, physics, recovery, report}` (plus the leaf
 - **Guards:** `scripts/kernel_split_check.py` (`manifest --check`, `globals --check`)
 - **Tests read kernel text through one helper:** `backend/tests/_kernel_source.py`
 
-### perf: replies about two times faster on coding tasks (S168)
+### perf (WITHDRAWN 2026-11-12): skipping the model's hidden reasoning
 
-About 93% of a reply was the wait for the remote model, and the model spent 16-296 hidden
-reasoning tokens on every call. The transport now asks the provider to skip them for the
-measured provider and model pair (`opencodego`, `deepseek`); off switch `IRIS_KEEP_MODEL_THINKING=1`.
+About 93% of a reply is the wait for the remote model, and `deepseek-v4.1-flash` on
+`opencodego` spends 16-296 hidden reasoning tokens on every call. Asking the provider to skip
+them made calls about three times faster (coding median reply 88.7 s → 39.9 s), but repeated
+runs showed that it costs correctness on a multi-file task, so the rule was removed.
 
-- **median model call:** 6-7 s → 2.1 s
-- **coding median reply:** 88.7 s → 39.9 s; research 39.5 → 36.9 s; memory 55.1 → 43.3 s
-- **pass:** 21/21 before and after
-- **new log line:** `[ApiHttpx] hidden reasoning` shows the hidden tokens of each call
+- **eval c03 (rename across files), repeated runs:** default reasoning 9/10 pass; thinking
+  disabled 2/5; disabled on tool-call turns only 2-3/5; `reasoning_effort=low` 2/5
+- **kept:** the log line `[ApiHttpx] hidden reasoning` shows the hidden tokens of each call
+- **lesson:** the first gate ran each task once (21/21); a quality gate on a task with a
+  random result needs repeated runs
 
 ### fix: tests can no longer write the owner's app config
 

@@ -498,23 +498,13 @@ _REASONING_RESEND_FLOOR = 1024
 # 2026-10-05, mercury-2.5 planner prompt: low = ~250 hidden reasoning tokens
 # vs ~1,300-1,650 (default), 2.5-3.2 s vs ~4 s, 6/6 valid plans.
 _REASONING_EFFORT_PROVIDERS = frozenset({"inceptionlabs"})
-# (provider id, model-name part) pairs whose chat API takes DeepSeek's
-# `thinking: {"type": "disabled"}` (api-docs.deepseek.com/guides/thinking_mode;
-# thinking is ON by default there). Listed only where MEASURED: an unknown field
-# can be a 400 on another gateway. 2026-11-11, opencodego deepseek-v4.1-flash:
-# every call spent 16-296 hidden reasoning tokens (one answer: 205 of 206
-# completion tokens), median call 6-7 s. With thinking disabled: 0 hidden
-# tokens, median call 2.1 s over 23 calls, c01/c05/c10 pass, reply 67/56/91 s
-# -> 42/45/36 s. Off switch: IRIS_KEEP_MODEL_THINKING=1.
-_THINKING_OFF_MODELS = (("opencodego", "deepseek"),)
-
-
-def _thinking_off(provider_id: str, model: str) -> bool:
-    """True when this call must ask the provider to skip hidden reasoning."""
-    if __import__("os").environ.get("IRIS_KEEP_MODEL_THINKING") == "1":
-        return False
-    _m = (model or "").lower()
-    return any(provider_id == _p and _part in _m for _p, _part in _THINKING_OFF_MODELS)
+# WITHDRAWN 2026-11-12 (was S168): asking opencodego deepseek to skip or
+# lower its hidden reasoning made calls ~3x faster and cost correctness on a
+# multi-file task. Eval c03 (rename across files), repeated runs: default
+# reasoning 9/10 pass; thinking disabled 2/5; disabled on tool-call turns only
+# 2-3/5; reasoning_effort=low 2/5. The first gate ran each task ONCE and saw
+# 21/21. Do not re-add without a repeated-run gate (>= 5 runs per task).
+# The hidden reasoning stays visible in the log ("[ApiHttpx] hidden reasoning").
 
 
 def _tool_choice_field(name: Optional[str]) -> Any:
@@ -869,8 +859,10 @@ class ApiHttpxTransport:
             body["tool_choice"] = _tool_choice_field(tool_choice)
         if reasoning_effort and getattr(self, "_provider_id", "") in _REASONING_EFFORT_PROVIDERS:
             body["reasoning_effort"] = reasoning_effort
-        if _thinking_off(getattr(self, "_provider_id", ""), model):
-            body["thinking"] = {"type": "disabled"}
+        # Only a call that carries tools (a node's tool-call turn): the plan and
+        # the synthesis keep their reasoning. Measured 2026-11-12, eval c03
+        # (rename across files): thinking off on EVERY call passed 2 of 5 runs,
+        # thinking on passed 7 of 7 - the planner missed a file without it.
 
         # ── Telemetry ────────────────────────────────────────────────
         try:

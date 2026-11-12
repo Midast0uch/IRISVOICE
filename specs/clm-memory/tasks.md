@@ -22,7 +22,7 @@ same-conditions A/B, numbers named with their cohort.
 
 ## Wave 0 - Baseline and questions (no behavior change)
 
-- [ ] **T0.1** (CLM-0 AC1-AC3): instrument and measure the blind cuts and the three
+- [x] **T0.1** (CLM-0 AC1-AC3): instrument and measure the blind cuts and the three
   estimators over the cohort (coding 8, research >= 10, memory 3). Output:
   `evals/results/clm-baseline-<date>.json` + a table in this file.
   DONE = the table exists with drop counts, estimator error distributions per
@@ -30,6 +30,40 @@ same-conditions A/B, numbers named with their cohort.
   NOT THIS = a metrics framework; fixing anything found; a new table.
   RIPPLE: `router.py:487-494` (count what the warning already knows),
   `transport.py:436-481`.
+  **T0.1 RESULT (2026-11-12, cohort coding 8 + research 10 + memory 3, opencodego /
+  deepseek-v4.1-flash, 137 model calls, instrument failures 0, lane drops 0;
+  `evals/results/clm-baseline-2026-11-12.json`, instrument flag `IRIS_CLM_BASELINE=1`,
+  report `scripts/clm_baseline_report.py`):**
+
+  | Measure | Value |
+  |---|---|
+  | Router cap drops (`_cap_messages_to_window`) | 0 calls, 0 messages, 0 tokens in 24 conversations |
+  | Direct path: recency cut / chars-4 budget trim / align pops | 0 / 0 / 0 |
+  | Direct path: derived `<memory>` suppressed | 8 conversations (research 2, memory 6) |
+  | `_mcm_orch.pre_call` (DCP) message count change | 0 |
+  | Estimator error vs real `prompt_tokens`, n = 129: kernel chars/4 | median -33.6 %, 90 % of calls within +/-73.9 %, worst 84.0 % |
+  | router chars/3.5 + 16 | median +10.0 %, within +/-31.7 %, worst 36.6 % |
+  | `MCM.count_tokens` (tiktoken cl100k) | median -32.6 %, within +/-75.4 %, worst 85.1 % |
+  | Block sizes (router unit): tools schema | median 1,733, p95 5,968 |
+  | user message | median 359, p95 3,400, max 16,193 (the planner prompt) |
+  | tool result | median 38, p95 2,237, max 2,298 |
+  | system | median 499, p95 1,396 |
+  | Direct path (chars/4 unit): system prompt 1,147; recall chunks median 257, max 832; profile median 203, max 801; history | n = 0 (every eval turn is a first turn) |
+
+  **What this baseline means for the later waves (read before TG-1 / TG-2):**
+  - THIS COHORT HAS NO PRESSURE. Zero blind cuts before CLM, so "blind drops = 0" on
+    this cohort proves nothing. TG-2 must show it on `--group context` (T2.7), whose
+    tasks assert their own pressure ratio. This cohort stays the NO-REGRESSION check.
+  - The estimator gap is real: the two low estimators miss the tools schema and tool
+    calls. T1.4's 5 % target is measured against these numbers.
+  - No eval turn has history, so the direct-path history trim and the "empty history
+    when the budget is negative" case (T0.1 finding 7) are NOT exercised. T2.7 needs
+    one multi-turn task.
+  - Finding (T1.4 must fix): `transport.last_usage` is shared by concurrent calls to
+    one provider, so a parallel node can read another call's usage.
+  - Open (Q3): no cached-token field is parsed; the instrument does not capture raw
+    usage. Add one raw capture when T5.3 starts.
+
 - [ ] **T0.2** (CLM-0 AC4): answer design Q1-Q4 with file:line; write the answers into
   `design.md` "Open questions" and correct the Ripple-Effect Map.
   DONE = Q1-Q4 each have an answer with evidence, and the map has no "maybe".
@@ -118,6 +152,17 @@ same-conditions A/B, numbers named with their cohort.
   captured view.
   DONE = the group runs detached and reports per-task pass.
   NOT THIS = grading from the store; lowering pressure to pass.
+- [ ] **T2.8** (CLM-5 AC5, CLM-6 AC2; owner 2026-11-12): the small-model run. Load
+  `D:/lmstudio/models/LiquidAI/LFM3-1.7B-GGUF/LFM3-1.7B-Q8_0.gguf` through the app's model
+  load manager (`POST /api/models/load`; check first that the load does not evict d1 on
+  :8082 - the Oracle needs it) and run `--group context` with it as the node model.
+  Report two numbers per task: (a) harness result - pass, in budget, blind drops = 0 with
+  NO model edit (the guarantee, BT-2); (b) model-initiated edits - count of `set_aside` /
+  `expand` calls the model made itself (the option). Then the same for the other small
+  models in that folder that load (LFM2.5-2.6B, LFM3-Omni-2B).
+  DONE = the table exists in this file with (a) and (b) per model per task.
+  NOT THIS = prompting the model to edit so the count is not 0; a per-model prompt;
+  counting a harness offload as a model edit.
 - [ ] **TG-2 (live gate)**: `scripts/validate_view_replay.py` distributions sane ->
   cohort A/B: blind drops 0, context group result recorded, coding/research/memory
   pass counts not lower, standards no regression, BT-1 passes. Then the flag goes on,

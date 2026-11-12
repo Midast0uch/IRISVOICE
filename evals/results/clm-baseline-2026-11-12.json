@@ -1,0 +1,346 @@
+{
+ "generated_at": "2026-11-12T01:57:34",
+ "input": "C:\\dev\\IRISVOICE\\logs\\clm_baseline.jsonl",
+ "since": "2026-11-12T01:32",
+ "evals": "C:\\dev\\IRISVOICE\\evals\\results\\20261112-015715.json",
+ "integrity": {
+  "rows": 137,
+  "unparsable_lines": 0,
+  "process_starts": 1,
+  "seq_missing": 0,
+  "instrument_failures_max": 0,
+  "lane_dropped_max": 0,
+  "failed_calls": 0
+ },
+ "cuts": {
+  "conv-7492": {
+   "task": "c01_fix_off_by_one",
+   "group": "coding",
+   "calls": 8
+  },
+  "conv-7493": {
+   "task": "c03_rename_across_files",
+   "group": "coding",
+   "calls": 8
+  },
+  "conv-7494": {
+   "task": "c05_add_cli_flag",
+   "group": "coding",
+   "calls": 8
+  },
+  "conv-7495": {
+   "task": "c08_write_tests",
+   "group": "coding",
+   "calls": 8
+  },
+  "conv-7496": {
+   "task": "c10_create_module",
+   "group": "coding",
+   "calls": 7
+  },
+  "conv-7497": {
+   "task": "c11_two_bugs_two_files",
+   "group": "coding",
+   "calls": 14
+  },
+  "conv-7498": {
+   "task": "c12_add_method_long_class",
+   "group": "coding",
+   "calls": 9
+  },
+  "conv-7499": {
+   "task": "c15_iterate_until_green",
+   "group": "coding",
+   "calls": 9
+  },
+  "conv-7500": {
+   "task": "r01_python_origin",
+   "group": "research",
+   "calls": 5
+  },
+  "conv-7501": {
+   "task": "r02_websocket_rfc",
+   "group": "research",
+   "calls": 5
+  },
+  "conv-7502": {
+   "task": "r03_attention_paper",
+   "group": "research",
+   "calls": 4
+  },
+  "conv-7503": {
+   "task": "r04_kilimanjaro",
+   "group": "research",
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 146,
+   "direct_dcp_removed_messages": 0,
+   "calls": 3
+  },
+  "conv-7504": {
+   "task": "r05_fastapi_license",
+   "group": "research",
+   "calls": 4
+  },
+  "conv-7505": {
+   "task": "r06_tokyo_osaka",
+   "group": "research",
+   "calls": 6
+  },
+  "conv-7506": {
+   "task": "r07_first_iphone",
+   "group": "research",
+   "calls": 4
+  },
+  "conv-7507": {
+   "task": "r08_http_418",
+   "group": "research",
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 72,
+   "direct_dcp_removed_messages": 0,
+   "calls": 3
+  },
+  "conv-7508": {
+   "task": "r09_three_facts",
+   "group": "research",
+   "calls": 6
+  },
+  "conv-7509": {
+   "task": "r10_tungsten_melting",
+   "group": "research",
+   "calls": 4
+  },
+  "conv-7511": {
+   "task": null,
+   "group": null,
+   "calls": 2,
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 172,
+   "direct_dcp_removed_messages": 0
+  },
+  "conv-7510": {
+   "task": "m01_recall_taught_name",
+   "group": "memory",
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 275,
+   "direct_dcp_removed_messages": 0,
+   "calls": 2
+  },
+  "conv-7513": {
+   "task": null,
+   "group": null,
+   "calls": 3,
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 294,
+   "direct_dcp_removed_messages": 0
+  },
+  "conv-7512": {
+   "task": "m02_recall_taught_number",
+   "group": "memory",
+   "calls": 2,
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 294,
+   "direct_dcp_removed_messages": 0
+  },
+  "conv-7515": {
+   "task": null,
+   "group": null,
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 125,
+   "direct_dcp_removed_messages": 0,
+   "calls": 3
+  },
+  "conv-7514": {
+   "task": "m03_recall_taught_preference",
+   "group": "memory",
+   "direct_assemblies": 1,
+   "direct_budget_trim_messages": 0,
+   "direct_budget_trim_tokens": 0,
+   "direct_recency_cut_messages": 0,
+   "direct_recency_cut_tokens": 0,
+   "direct_align_pop_messages": 0,
+   "direct_align_pop_tokens": 0,
+   "direct_memory_suppressed_messages": 1,
+   "direct_memory_suppressed_tokens": 123,
+   "direct_dcp_removed_messages": 0,
+   "calls": 2
+  }
+ },
+ "estimators": {
+  "opencodego|deepseek-v4.1-flash": {
+   "n_calls": 129,
+   "n_with_usage": 129,
+   "mcm_method": [
+    "tiktoken_cl100k"
+   ],
+   "chars4": {
+    "n": 129,
+    "median": -0.3364,
+    "p90": 0.1181,
+    "max": 0.162,
+    "min": -0.8395,
+    "abs_median": 0.3364,
+    "abs_p90": 0.7386,
+    "abs_max": 0.8395
+   },
+   "router_3_5": {
+    "n": 129,
+    "median": 0.1003,
+    "p90": 0.3169,
+    "max": 0.3662,
+    "min": -0.2957,
+    "abs_median": 0.1017,
+    "abs_p90": 0.3169,
+    "abs_max": 0.3662
+   },
+   "mcm": {
+    "n": 129,
+    "median": -0.3264,
+    "p90": -0.0238,
+    "max": 0.0565,
+    "min": -0.8513,
+    "abs_median": 0.3264,
+    "abs_p90": 0.7543,
+    "abs_max": 0.8513
+   }
+  }
+ },
+ "blocks": {
+  "call:assistant_tool_calls|router_3_5": {
+   "n": 27,
+   "min": 54,
+   "median": 105,
+   "p95": 653,
+   "max": 956
+  },
+  "call:assistant|router_3_5": {
+   "n": 30,
+   "min": 15,
+   "median": 15,
+   "p95": 18,
+   "max": 18
+  },
+  "call:system|router_3_5": {
+   "n": 72,
+   "min": 91,
+   "median": 499,
+   "p95": 1396,
+   "max": 1396
+  },
+  "call:tools_schema|router_3_5": {
+   "n": 68,
+   "min": 403,
+   "median": 1733,
+   "p95": 5968,
+   "max": 5968
+  },
+  "call:tool|router_3_5": {
+   "n": 37,
+   "min": 13,
+   "median": 38,
+   "p95": 2237,
+   "max": 2298
+  },
+  "call:user|router_3_5": {
+   "n": 148,
+   "min": 20,
+   "median": 359,
+   "p95": 3400,
+   "max": 16193
+  },
+  "direct:current_user|chars4": {
+   "n": 8,
+   "min": 13,
+   "median": 21,
+   "p95": 27,
+   "max": 27
+  },
+  "direct:history|chars4": {
+   "n": 0,
+   "min": null,
+   "median": null,
+   "p95": null,
+   "max": null
+  },
+  "direct:recall_chunks|chars4": {
+   "n": 16,
+   "min": 11,
+   "median": 257,
+   "p95": 518,
+   "max": 832
+  },
+  "direct:recall_episodic|chars4": {
+   "n": 8,
+   "min": 8,
+   "median": 8,
+   "p95": 8,
+   "max": 8
+  },
+  "direct:recall_profile|chars4": {
+   "n": 12,
+   "min": 8,
+   "median": 203,
+   "p95": 663,
+   "max": 801
+  },
+  "direct:system_prompt|chars4": {
+   "n": 8,
+   "min": 1147,
+   "median": 1147,
+   "p95": 1147,
+   "max": 1147
+  }
+ },
+ "not_knowable_at_router": [
+  "recalled chunk vs user turn (both role=user at the router; sized per kind only on the direct path, event=direct)",
+  "step digest (enters node messages as user/system text; no marker at the router)"
+ ]
+}
