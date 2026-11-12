@@ -130,3 +130,26 @@ class ContextGauge:
 
 # The process-wide gauge the call sites share (the one count function).
 GAUGE = ContextGauge()
+
+
+# -- blind drops (CLM-2 AC6, CLM-8 AC3) ----------------------------------------
+# The router cap drops the oldest messages without a record. Until the view
+# owns shrink, each drop is COUNTED here so the alarm is proven live first:
+# calls that dropped, messages dropped, estimated tokens dropped. Three ints
+# under one lock; nothing is prevented by counting.
+_blind_lock = threading.Lock()
+_blind = {"calls": 0, "messages": 0, "tokens": 0}
+
+
+def record_blind_drop(messages: int, tokens: int) -> Dict[str, int]:
+    """One router-cap call that dropped ``messages`` (>0). Returns the totals."""
+    with _blind_lock:
+        _blind["calls"] += 1
+        _blind["messages"] += max(0, int(messages))
+        _blind["tokens"] += max(0, int(tokens))
+        return dict(_blind)
+
+
+def blind_drop_snapshot() -> Dict[str, int]:
+    with _blind_lock:
+        return dict(_blind)

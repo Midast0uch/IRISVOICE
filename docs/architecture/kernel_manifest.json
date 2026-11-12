@@ -74,7 +74,7 @@
   "method:_admit_planned_beats": "57813b18f7d944f4a6a7e44f20a2e973d42eeb80231b830389d40f2f56b9d688",
   "method:_apply_trust_ceiling": "de64ecdb94ef9835f558f13b7fd4d0edbc738c6dd1a7126dec44d5279261a40b",
   "method:_artifact_missing": "e0593f163c8f8273e97f1dfc11b5ffaf134a1a0382c3744bc0ba706936fd7ec4",
-  "method:_assemble_direct_context": "3da90b8d141074f62495028b8f2b5c60bc110d399bedf2a27509d4b6c0e7d25b",
+  "method:_assemble_direct_context": "2cb3efd46df8d155f60d718783a8033d784719b577efca241bdcf3b218643b47",
   "method:_bound_external_project": "a1c4a804dd6494538c97c87e5f8f5e1c1528fd38e75c89633056acc59cb9bee0",
   "method:_broadcast_inference_event": "d8e9e452c84cdaee01d081e2e216e636f0020a1240c573acb84d64d52c244cd6",
   "method:_build_crawl_failure_explanation": "10359eddbf1ba4691a5ee72f962d7611d44bb977265e0899d2471a2fdad6cc03",

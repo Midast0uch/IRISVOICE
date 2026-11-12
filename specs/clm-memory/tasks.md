@@ -154,6 +154,15 @@ same-conditions A/B, numbers named with their cohort.
   DONE = the cohort report shows blind drops per task equal to the T0.1 drop counts
   (nothing prevented yet - the alarm is proven live first).
   NOT THIS = preventing the drops in this task.
+> **TG-1, part B1 (direct path + router), PASSED 2026-11-12:** cohort 21/21 and the 8
+> coding tasks a second time 8/8 (default reasoning, opencodego / deepseek-v4.1-flash);
+> `view_fallback` = 0 over 8 direct rows; blind drops 0 (this cohort has no pressure);
+> instrument failures 0; gauge on 205 live calls: |median| 3.7 %, |p90| 12.0 %,
+> |p95| 17.8 % (inside THE BAR). Function-level parity: old vs new
+> `_assemble_direct_context` byte-equal on 11 inputs. Done in B1: T1.1 (direct path),
+> T1.4 (one estimator in the router, GAUGE.observe; the kernel's chars/4 trim STAYS
+> until T2.3 - replacing it changes which history messages are kept: 46 vs 40 on a
+> long history), T1.5. Open for B2: T1.2 (refs), T1.3 (node list, synthesis).
 - [ ] **TG-1 (live gate)**: same cohort, parity commit vs baseline: pass counts equal,
   `reply_s` within the standards' tolerance, `view_fallback` = 0.
 

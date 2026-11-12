@@ -10,12 +10,14 @@ never persisted. It never mutates what it is given (the lists, and so
 ``ConversationMemory.messages``, design Q4): it stores a copy of each list and
 renders fresh dict copies.
 
-Pure module: no I/O, no kernel import. Single-threaded by design (one view
-per turn or run, never shared between conversations), so it holds no lock.
+Pure module: no I/O, no kernel import. A view is single-threaded by design (one view
+per turn or run, never shared between conversations), so it holds no lock; the
+module-level fallback counter is shared and has one.
 """
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -109,3 +111,22 @@ class ContextView:
         are shared, as they are in the old builder's list.
         """
         return [dict(m) for block in self._blocks for m in block.messages]
+
+
+# -- view_fallback (design "Error Handling") -----------------------------------
+# A call site that cannot build or render the view falls back to the old list
+# and counts it here. Its expected value is 0; the CLM baseline row carries it
+# so the live gate can assert that.
+_fallback_lock = threading.Lock()
+_fallback = {"view_fallback": 0}
+
+
+def count_view_fallback() -> int:
+    with _fallback_lock:
+        _fallback["view_fallback"] += 1
+        return _fallback["view_fallback"]
+
+
+def view_fallback_count() -> int:
+    with _fallback_lock:
+        return _fallback["view_fallback"]

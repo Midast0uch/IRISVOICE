@@ -46,6 +46,12 @@ from ..call_context import call_class
 from ..phase_manager import acquire
 from ..exceptions import ProviderNotReadyError
 from . import clm_baseline as _clm_baseline
+from ..context_gauge import (
+    GAUGE as _GAUGE,
+    blind_drop_snapshot as _blind_drop_snapshot,
+    estimate_tokens as _estimate_tokens,
+    record_blind_drop as _record_blind_drop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -359,29 +365,11 @@ class InferenceRouter:
     ) -> int:
         """Cheap, deliberately CONSERVATIVE token estimate.
 
-        No tokenizer is loaded here. This runs on every call, and loading a
-        real tokenizer costs more than the check is worth. 3.5 characters per
-        token is used instead of the usual 4 because the dangerous direction is
-        UNDER-estimating: we would skip the trim and overrun the window.
-        Over-estimating only trims marginally early.
+        The one rule lives in ``context_gauge.estimate_tokens`` (CLM-4 AC1);
+        this stays as the router's name for it so the cap and its callers
+        keep their call shape.
         """
-        chars = 0
-        for message in messages or []:
-            content = message.get("content")
-            if isinstance(content, str):
-                chars += len(content)
-            elif isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict) and isinstance(part.get("text"), str):
-                        chars += len(part["text"])
-                    elif isinstance(part, dict) and part.get("type") == "image_url":
-                        chars += 3500  # ~1k tokens per image on common VLMs (V8)
-            chars += 16  # role, name and JSON scaffolding per message
-            if message.get("tool_calls"):
-                chars += len(str(message["tool_calls"]))
-        if tools:
-            chars += len(str(tools))
-        return int(chars / 3.5) + 1
+        return _estimate_tokens(messages, tools)
 
     @staticmethod
     def _local_http_endpoint() -> Optional[str]:
@@ -509,13 +497,24 @@ class InferenceRouter:
         est_now = cls._estimate_prompt_tokens(kept, tools)
         if report is not None:
             report.update(est_after=est_now, dropped_messages=dropped)
+        # CLM-2 AC6 / T1.5: a drop the view did not make is a blind drop. Count
+        # it (calls, messages, estimated tokens); nothing is prevented here.
+        blind = _blind_drop_snapshot()
+        if dropped:
+            blind = _record_blind_drop(dropped, max(0, est_before - est_now))
+        if report is not None:
+            report["blind_drop"] = blind
         logger.warning(
             "[InferenceRouter] prompt over the window: window=%d budget=%d "
-            "dropped_messages=%d estimated_now=%d",
+            "dropped_messages=%d estimated_now=%d blind_drop_calls=%d "
+            "blind_drop_messages=%d blind_drop_tokens=%d",
             window,
             budget,
             dropped,
             est_now,
+            blind["calls"],
+            blind["messages"],
+            blind["tokens"],
         )
         return kept
 
@@ -1414,6 +1413,19 @@ class InferenceRouter:
                 self.last_usage.get("completion_tokens", 0),
                 self.last_usage.get("total_tokens", 0),
             )
+            # CLM-4 AC2: learn the (provider, model) ratio from the server's
+            # prompt_tokens against the estimate of what was actually SENT
+            # (`messages` is the list after the cap).
+            try:
+                _GAUGE.observe(
+                    inst.id, effective_model,
+                    _estimate_tokens(messages, normalized_tools),
+                    self.last_usage.get("prompt_tokens", 0),
+                )
+            except Exception as _g_exc:  # noqa: BLE001 - counted by the log line
+                logger.warning(
+                    "[InferenceRouter] gauge observe failed role=%s provider=%s: %r",
+                    role, inst.id, _g_exc)
         else:
             logger.debug(
                 "[InferenceRouter] no real usage reported role=%s provider=%s "

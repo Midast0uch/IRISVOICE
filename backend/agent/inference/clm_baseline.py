@@ -37,6 +37,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from backend.agent.context_gauge import blind_drop_snapshot as _blind_drop_snapshot
+from backend.agent.context_view import view_fallback_count as _view_fallback_count
+
 logger = logging.getLogger(__name__)
 
 ENV = "IRIS_CLM_BASELINE"
@@ -228,6 +231,8 @@ def record_call(
             "max_tokens": max_tokens,
             "n_messages": len(messages or []),
             "usage": dict(usage) if usage else None,
+            # T1.5: running totals of router-cap drops (calls, messages, tokens).
+            "blind_drop": _blind_drop_snapshot(),
         }
         _submit("call", _write_call, row, list(messages or []), tools, owner,
                 dict(cap) if cap is not None else None)
@@ -280,6 +285,9 @@ def record_direct(
             "budget_for_history": int(budget_for_history),
             "dcp_before": dcp_before,
             "dcp_after": dcp_after,
+            # T1.1: direct-path assemblies that fell back to the old list; the
+            # live gate asserts 0.
+            "view_fallback": _view_fallback_count(),
         }
         _submit(
             "direct", _write_direct, row,

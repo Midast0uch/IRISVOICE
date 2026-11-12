@@ -17,6 +17,16 @@ from backend.agent.kernel.base import (
     logger,
 )
 from backend.agent.inference import clm_baseline as _clm_baseline
+from backend.agent.context_view import (
+    CURRENT_USER as _CURRENT_USER,
+    HISTORY as _HISTORY,
+    RECALL_CHUNKS as _RECALL_CHUNKS,
+    RECALL_EPISODIC as _RECALL_EPISODIC,
+    RECALL_PROFILE as _RECALL_PROFILE,
+    SYSTEM_PROMPT as _SYSTEM_PROMPT,
+    ContextView as _ContextView,
+    count_view_fallback as _count_view_fallback,
+)
 
 
 def _fact_line(text: str) -> str:
@@ -708,7 +718,8 @@ class ContextMixin:
         _clm_ep0 = list(episodic_prefix) if _clm_on else []
 
         # ── Layer 1b: the gated Mycelium profile (REQ-13 AC4) ──────────────
-        episodic_prefix.extend(self._mycelium_profile_messages(text, session_id))
+        _profile_msgs = self._mycelium_profile_messages(text, session_id)
+        episodic_prefix.extend(_profile_msgs)
         _clm_pre0 = list(episodic_prefix) if _clm_on else []
 
         # â”€â”€ Layer 3: Option B â€” DB-backed semantic context (Pacman retrieval) â”€â”€
@@ -1090,18 +1101,65 @@ class ContextMixin:
         except Exception:  # noqa: BLE001 - observability never blocks a reply
             pass
 
-        messages: List[Dict] = [{"role": "system", "content": system_prompt}]
-        messages.extend(episodic_prefix)  # Layer 2: episodic summaries
-        messages.extend(chunk_prefix)  # Layer 3a: semantic DB chunks
-        messages.extend(history_block)  # Layer 3b: recency anchor
+        # CLM-1: the list is rendered from a ContextView, block by block in
+        # today's order (parity: CT-1, and the function-level harness). The old
+        # assembly below stays as the fallback for this wave: a view failure
+        # is counted (`view_fallback`, expected 0) and the old list is used.
+        messages: Optional[List[Dict]] = None
+        try:
+            _prof_ids = {id(m) for m in _profile_msgs}
+            _view = _ContextView()
+            _view.admit(
+                _SYSTEM_PROMPT,
+                [{"role": "system", "content": system_prompt}],
+                protected=True,
+            )
+            _view.admit(
+                _RECALL_EPISODIC,
+                [m for m in episodic_prefix if id(m) not in _prof_ids],
+            )
+            _view.admit(
+                _RECALL_PROFILE,
+                [m for m in episodic_prefix if id(m) in _prof_ids],
+            )
+            _view.admit(_RECALL_CHUNKS, chunk_prefix)
+            _view.admit(_HISTORY, history_block)
+            messages = _view.render()
+            # Ensure the list ends on the current user turn
+            if (
+                not messages
+                or messages[-1].get("content") != text
+                or messages[-1].get("role") != "user"
+            ):
+                _view.admit(
+                    _CURRENT_USER,
+                    [{"role": "user", "content": text}],
+                    protected=True,
+                )
+                messages = _view.render()
+        except Exception as _view_exc:  # noqa: BLE001 - counted, never blocks a turn
+            messages = None
+            logger.warning(
+                "[AgentKernel] context view failed, old list used "
+                "(view_fallback=%d) conversation=%s session=%s: %r",
+                _count_view_fallback(),
+                getattr(self, "conversation_id", None),
+                session_id or getattr(self, "session_id", None),
+                _view_exc,
+            )
+        if messages is None:
+            messages = [{"role": "system", "content": system_prompt}]
+            messages.extend(episodic_prefix)  # Layer 2: episodic summaries
+            messages.extend(chunk_prefix)  # Layer 3a: semantic DB chunks
+            messages.extend(history_block)  # Layer 3b: recency anchor
 
-        # Ensure the list ends on the current user turn
-        if (
-            not messages
-            or messages[-1].get("content") != text
-            or messages[-1].get("role") != "user"
-        ):
-            messages.append({"role": "user", "content": text})
+            # Ensure the list ends on the current user turn
+            if (
+                not messages
+                or messages[-1].get("content") != text
+                or messages[-1].get("role") != "user"
+            ):
+                messages.append({"role": "user", "content": text})
 
         # â”€â”€ Telemetry: log context assembly metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
