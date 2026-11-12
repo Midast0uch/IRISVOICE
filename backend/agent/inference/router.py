@@ -44,6 +44,7 @@ from ..rate_meter import get_rate_meter, metered, quota_key
 from ..call_context import call_class
 from ..phase_manager import acquire
 from ..exceptions import ProviderNotReadyError
+from . import clm_baseline as _clm_baseline
 
 logger = logging.getLogger(__name__)
 
@@ -432,6 +433,7 @@ class InferenceRouter:
         tools: Optional[List[Dict[str, Any]]],
         window: int,
         max_tokens: int,
+        report: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Drop the OLDEST non-system messages until the prompt fits *window*.
 
@@ -445,6 +447,11 @@ class InferenceRouter:
         carries the instructions, the second is the request itself. If even
         those two do not fit, the prompt goes as-is and the caller sees the
         provider's own error, rather than a silently emptied request.
+
+        *report* (CLM-0 baseline, ``clm_baseline``): when a dict is passed it
+        receives what the warning below knows - window, budget, the estimate
+        before and after, and the dropped messages themselves. Measurement
+        only: what is dropped does not depend on it.
         """
         if not messages:
             return messages
@@ -456,11 +463,16 @@ class InferenceRouter:
         # A longer answer stops at the window (finish_reason=length) instead.
         reserve = min(max(256, int(max_tokens or 0)), int(window) // 2) + 256
         budget = max(256, int(window) - reserve)
-        if cls._estimate_prompt_tokens(messages, tools) <= budget:
+        est_before = cls._estimate_prompt_tokens(messages, tools)
+        if report is not None:
+            report.update(budget=budget, est_before=est_before, est_after=est_before,
+                          dropped_messages=0, dropped_messages_list=[])
+        if est_before <= budget:
             return messages
 
         kept = list(messages)
         dropped = 0
+        lost = report["dropped_messages_list"] if report is not None else None
         while len(kept) > 2:
             # Keep a leading system/developer message; otherwise drop from the
             # front. The newest turn is never dropped: the last message, and
@@ -476,21 +488,28 @@ class InferenceRouter:
             # result is rejected by the provider ("Message has tool role, but
             # there was no previous assistant message with a tool call" -
             # live browser task, 2026-10-02).
-            kept.pop(index)
+            gone = kept.pop(index)
             dropped += 1
+            if lost is not None:
+                lost.append(gone)
             while index < tail - 1 and kept[index].get("role") == "tool":
-                kept.pop(index)
+                gone = kept.pop(index)
                 dropped += 1
+                if lost is not None:
+                    lost.append(gone)
                 tail -= 1
             if cls._estimate_prompt_tokens(kept, tools) <= budget:
                 break
+        est_now = cls._estimate_prompt_tokens(kept, tools)
+        if report is not None:
+            report.update(est_after=est_now, dropped_messages=dropped)
         logger.warning(
             "[InferenceRouter] prompt over the window: window=%d budget=%d "
             "dropped_messages=%d estimated_now=%d",
             window,
             budget,
             dropped,
-            cls._estimate_prompt_tokens(kept, tools),
+            est_now,
         )
         return kept
 
@@ -1246,10 +1265,20 @@ class InferenceRouter:
         # call exactly as it was before this seam existed.
         _window = self._window_for_role(role)
         self.last_num_ctx = _window
+        # CLM-0 baseline (T0.1): one env check; rows go out on a lane. Flag
+        # off, the cap is called exactly as before (stand-ins that replace it
+        # need not take `report`).
+        _clm_on = _clm_baseline.enabled()
+        _clm_cap: Optional[Dict[str, Any]] = {} if (_clm_on and _window) else None
         if _window:
-            messages = self._cap_messages_to_window(
-                messages, normalized_tools, _window, max_tokens
-            )
+            if _clm_cap is not None:
+                messages = self._cap_messages_to_window(
+                    messages, normalized_tools, _window, max_tokens, report=_clm_cap
+                )
+            else:
+                messages = self._cap_messages_to_window(
+                    messages, normalized_tools, _window, max_tokens
+                )
 
         _gen_kwargs: Dict[str, Any] = {
             "max_tokens": max_tokens,
@@ -1339,6 +1368,14 @@ class InferenceRouter:
         finally:
             logger.info("[InferenceRouter] call done role=%s model=%s %.2fs ok=%s",
                         role, effective_model, _time.monotonic() - _t0, _ok)
+            if _clm_on and not _ok:
+                # A failed call still had its prompt cut: record the cut.
+                _clm_baseline.record_call(
+                    role=role, provider=inst.id, provider_kind=inst.kind.value,
+                    model=effective_model, messages=messages, tools=normalized_tools,
+                    usage=None, ok=False, window=_window, max_tokens=max_tokens,
+                    cap=_clm_cap, resolver=getattr(self, "_window_resolver", None),
+                )
 
         # Remap sanitized tool names back to the originals (see above) so
         # dispatchers match against the registry exactly as before.
@@ -1367,6 +1404,13 @@ class InferenceRouter:
                 "[InferenceRouter] no real usage reported role=%s provider=%s "
                 "-- caller falls back to char/4 estimate",
                 role, inst.id,
+            )
+        if _clm_on:
+            _clm_baseline.record_call(
+                role=role, provider=inst.id, provider_kind=inst.kind.value,
+                model=effective_model, messages=messages, tools=normalized_tools,
+                usage=self.last_usage, ok=True, window=_window, max_tokens=max_tokens,
+                cap=_clm_cap, resolver=getattr(self, "_window_resolver", None),
             )
 
         return result

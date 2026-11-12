@@ -16,6 +16,7 @@ from backend.agent.kernel.base import (
     _FILL_NO_TURN,
     logger,
 )
+from backend.agent.inference import clm_baseline as _clm_baseline
 
 
 def _fact_line(text: str) -> str:
@@ -702,8 +703,13 @@ class ContextMixin:
         except Exception as _ep_exc:
             loud_error(_ep_exc, "episodic.assemble_episodic_context")
 
+        # CLM-0 baseline (T0.1): measure the trims below; never changes them.
+        _clm_on = _clm_baseline.enabled()
+        _clm_ep0 = list(episodic_prefix) if _clm_on else []
+
         # ── Layer 1b: the gated Mycelium profile (REQ-13 AC4) ──────────────
         episodic_prefix.extend(self._mycelium_profile_messages(text, session_id))
+        _clm_pre0 = list(episodic_prefix) if _clm_on else []
 
         # â”€â”€ Layer 3: Option B â€” DB-backed semantic context (Pacman retrieval) â”€â”€
         # Instead of a blind rolling-window crop, we retrieve the most relevant
@@ -989,6 +995,10 @@ class ContextMixin:
             and history[-1].get("content") == text
         ):
             history = history[:-1]
+        # Both trims pop from the FRONT, so a copy and two lengths name
+        # exactly what left (CLM-0 baseline only).
+        _clm_hist0 = list(history) if _clm_on else None
+        _clm_n_budget = 0
 
         if chunk_prefix:
             # DB has relevant chunks: only keep a small recency window
@@ -1003,6 +1013,7 @@ class ContextMixin:
                 recent_tokens -= (
                     len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
                 )
+            _clm_n_budget = len(recent)
             while recent and recent[0].get("role") != "user":
                 recent.pop(0)
             history_block = recent
@@ -1014,6 +1025,7 @@ class ContextMixin:
                 history_tokens -= (
                     len(removed_item.get("content") or "") // self._CHARS_PER_TOKEN
                 )
+            _clm_n_budget = len(history)
             while history and history[0].get("role") != "user":
                 history.pop(0)
             history_block = history
@@ -1081,11 +1093,48 @@ class ContextMixin:
             pass
 
         # â”€â”€ MCM Protocol: MITO tag injection + DCP prune â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        _clm_n_pre = len(messages)
         if self._mcm_orch is not None:
             try:
                 messages = self._mcm_orch.pre_call(messages, text)
             except Exception:
                 pass  # MCM failure never blocks the response
+
+        if _clm_on:
+            _src = _clm_hist0 or []
+            if chunk_prefix:
+                _cut = _src[:-_RECENCY_TURNS] if len(_src) > _RECENCY_TURNS else []
+                _src = _src[-_RECENCY_TURNS:] if len(_src) > _RECENCY_TURNS else _src
+            else:
+                _cut = []
+            _n_budget_gone = len(_src) - _clm_n_budget
+            # Identity, not position: the derived-memory suppression above
+            # filters episodic_prefix in place.
+            _kept = {id(m) for m in episodic_prefix}
+            _ep_ids = {id(m) for m in _clm_ep0}
+            _clm_baseline.record_direct(
+                conversation_id=getattr(self, "conversation_id", None),
+                session_id=session_id or getattr(self, "session_id", None),
+                branch="chunks" if chunk_prefix else "rolling",
+                budget_for_history=budget_for_history,
+                chars_per_token=self._CHARS_PER_TOKEN,
+                parts={
+                    "system_prompt": [{"content": system_prompt}],
+                    "recall_episodic": [m for m in episodic_prefix if id(m) in _ep_ids],
+                    "recall_profile": [m for m in episodic_prefix if id(m) not in _ep_ids],
+                    "recall_chunks": chunk_prefix,
+                    "history": history_block,
+                    "current_user": [{"content": text}],
+                },
+                cuts={
+                    "recency_cut": _cut,
+                    "budget_trim": _src[:_n_budget_gone],
+                    "align_pop": _src[_n_budget_gone:len(_src) - len(history_block)],
+                    "memory_suppressed": [m for m in _clm_pre0 if id(m) not in _kept],
+                },
+                dcp_before=_clm_n_pre,
+                dcp_after=len(messages) if isinstance(messages, list) else -1,
+            )
 
         return messages
 
