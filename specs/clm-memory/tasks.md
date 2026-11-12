@@ -18,7 +18,7 @@ same-conditions A/B, numbers named with their cohort.
 > `context_gauge.py` and the extracted context module, never in the `agent_kernel.py`
 > facade. If the owner wants CLM first, Waves 0-1 may run before the split ONLY IF
 > they add nothing but call sites to the kernel; say so in the commit.
-> **Record here:** [ ] PASSED date: ___ evidence: ___
+> **Record here:** [x] PASSED date: 2026-11-11 evidence: move M3 commit 4b52c867 (`backend/agent/kernel/context.py`); all twelve moves done (a6061534); live cohort 21/21 before and after
 
 ## Wave 0 - Baseline and questions (no behavior change)
 
