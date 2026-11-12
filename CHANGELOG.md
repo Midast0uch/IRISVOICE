@@ -1,5 +1,49 @@
 # IRIS Changelog
 
+## 2026-11-11 — Agent kernel split into six parts, replies about two times faster, CLM spec revised
+
+Every item was measured on the live app (same 21 eval tasks: coding 8, research 10, memory 3)
+and has a guard that fails on the old state. Numbers: `docs/audits/2026-09-29/PROGRESS.md`
+(Standard S168) and `docs/architecture/KERNEL_DECOMPOSITION.md` (status table).
+
+### refactor: `agent_kernel.py` is a facade; the code lives in `backend/agent/kernel/`
+
+The 23,132-line kernel file is now a 2,275-line facade. Twelve move-only commits copied the
+code, byte for byte, into six parts: `models`, `surface`, `context`, `turn`, `planning`, and
+the engine `der/{run, finalize, node, physics, recovery, report}` (plus the leaf `base`).
+
+- **No behavior change, proven:** 303 function hashes equal (3 import lines changed), the
+  class keeps its 300 names, every old import and patch target still works
+- **Live cohort:** 21/21 before the split, after 4 moves and after all 12 moves
+- **Guards:** `scripts/kernel_split_check.py` (`manifest --check`, `globals --check`)
+- **Tests read kernel text through one helper:** `backend/tests/_kernel_source.py`
+
+### perf: replies about two times faster on coding tasks (S168)
+
+About 93% of a reply was the wait for the remote model, and the model spent 16-296 hidden
+reasoning tokens on every call. The transport now asks the provider to skip them for the
+measured provider and model pair (`opencodego`, `deepseek`); off switch `IRIS_KEEP_MODEL_THINKING=1`.
+
+- **median model call:** 6-7 s → 2.1 s
+- **coding median reply:** 88.7 s → 39.9 s; research 39.5 → 36.9 s; memory 55.1 → 43.3 s
+- **pass:** 21/21 before and after
+- **new log line:** `[ApiHttpx] hidden reasoning` shows the hidden tokens of each call
+
+### fix: tests can no longer write the owner's app config
+
+A test run saved onto the real `data/iris_config.json` (providers lost, every eval call 401).
+Under pytest the config path is now a private copy, for both writers (`iris_config.py`, `main.py`).
+
+### fix: the "Bad file descriptor" test abort
+
+A mock store path reached `open()`, which read it as file descriptor 1 and closed the
+process's stdout. `memory/db.lane_connection` now takes a str path only (1 of 4 runs → 8 of 8).
+
+### docs: CLM memory spec revised (`specs/clm-memory/`)
+
+Requirements, design and tasks rewritten against the code as built: the live view, the
+offload gate with placeholders, one calibrated token gauge, and DCP removal.
+
 ## 2026-10-27 — Memory surface final, recall reach, faster coding turns, start-up crash fix
 
 Every item below was measured on the live app and has a guard test that fails on the old

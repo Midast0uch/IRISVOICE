@@ -49,7 +49,7 @@ same-conditions A/B, numbers named with their cohort.
   DONE = CT-1 passes on recorded inputs (byte-equal) and fails when one block is
   reordered.
   NOT THIS = zones, policy, placeholders, a base class, a plugin point.
-  RIPPLE: `_sanitize_messages` order; `_mcm_orch.pre_call` (:4559) still runs after.
+  RIPPLE: `_sanitize_messages` order; `_mcm_orch.pre_call` (`kernel/context.py:1084`) still runs after.
 - [ ] **T1.2** (CLM-1 AC2): references on blocks. Chunk ids via T0.2/Q2; chain,
   episode, thread, pin ids from their rows; `ephemeral` for system and user turn.
   DONE = on the T0.1 cohort replay, 100 % of non-ephemeral blocks resolve to a row.

@@ -460,6 +460,16 @@ IRIS is not a request/response harness. Read changes through these rules
     >= 0.90, ECE <= 0.05 on the ACTIVE engine; scripts/consumer_enforcement_report.py).
     Move a decision to the Oracle/physics only when it measurably pays; never starve its
     calibration rows (keep the Brain reference label).
+  - THE KERNEL IS SIX PARTS (2026-11-11): `backend/agent/agent_kernel.py` is a ~2,300-line
+    facade that builds `AgentKernel` from mixins and keeps every old import name valid. The
+    code lives in `backend/agent/kernel/`: `base`, `models`, `surface`, `context`, `turn`,
+    `planning`, and the engine `der/{run, finalize, node, physics, recovery, report}`. New
+    kernel code goes in the part that owns it, never in the facade. A test reads kernel
+    text only through `backend/tests/_kernel_source.py` (`kernel_source`, `kernel_tree`,
+    `kernel_function_source`). After a kernel edit run
+    `python scripts/kernel_split_check.py globals --check`; a deliberate body change
+    re-records the manifest (`manifest --write`). Blueprint, rules R1-R10 and the Stage C
+    seams: `docs/architecture/KERNEL_DECOMPOSITION.md`.
   - STAND-INS: many tests bind only some kernel methods — put barriers/helpers that guard a
     read at module level, or the stand-in silently skips the guarded read.
   - A COMPUTED SIGNAL MUST CHANGE BEHAVIOR (CADUCEAN_ARCHITECTURE §10) AND HAVE A SANE

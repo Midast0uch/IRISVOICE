@@ -224,10 +224,10 @@ counts per block kind are the signal that the order or the margin is wrong.
 | Area / File | Change? | Classification | Why / Evidence |
 |---|---|---|---|
 | `backend/agent/context_view.py`, `context_gauge.py` | New | CHANGE NEEDED | The view, policy, gauge |
-| `agent_kernel.py` `_assemble_direct_context` (:4131) | Yes | CHANGE NEEDED | Builds blocks instead of a bare list; parity test CT-1 |
-| `agent_kernel.py` `_der_run_node` (:17948) message list, `_der_bound_step_context` | Yes | CHANGE NEEDED | The pressure site (tool results); CLM-0 AC4 Q1 pins the exact build points first |
-| `agent_kernel.py` `_synthesize_response` (:21900) | Yes | CHANGE NEEDED | Step results enter as blocks; synthesis diet contract must hold (`test_der_t26_synthesis_diet_contract.py`) |
-| `agent_kernel.py` `_count_tokens` (:4126), `_DIRECT_CTX_BUDGET` (:4122) | Yes | CHANGE NEEDED | Replaced by the gauge; budget from `get_effective_token_budget` (:3100) |
+| `_assemble_direct_context` (`kernel/context.py:656`) | Yes | CHANGE NEEDED | Builds blocks instead of a bare list; parity test CT-1 |
+| `_der_run_node` (`kernel/der/node.py:1048`) message list, `_der_bound_step_context` | Yes | CHANGE NEEDED | The pressure site (tool results); CLM-0 AC4 Q1 pins the exact build points first |
+| `_synthesize_response` (`kernel/der/report.py:1524`) | Yes | CHANGE NEEDED | Step results enter as blocks; synthesis diet contract must hold (`test_der_t26_synthesis_diet_contract.py`) |
+| `_count_tokens` (`kernel/context.py:651`), `_DIRECT_CTX_BUDGET` (`agent_kernel.py:1219`) | Yes | CHANGE NEEDED | Replaced by the gauge; budget from `get_effective_token_budget` (`kernel/context.py:427`) |
 | `inference/router.py` `_estimate_prompt_tokens` (:349), `_cap_messages_to_window` (:429) | Yes | CHANGE NEEDED | Estimator moves to the gauge; cap reports drops (blind_drop) |
 | `inference/transport.py` usage (:436-481) | Read only | NO CHANGE (verified) | Already yields `usage.prompt_tokens`; the router passes it to `gauge.observe` |
 | `agent/mcm.py` `count_tokens` (:311) | No | NO CHANGE (out of scope) | Swarm path, Q-A |
@@ -238,10 +238,10 @@ counts per block kind are the signal that the order or the margin is wrong.
 | `memory/pin_store.py` | Small | CHANGE NEEDED | Author + source links on add; `LINK_VOCABULARY` (:61) may need a `summarises` relationship - check before adding |
 | `memory/levels.py` / `thread_context` | Read | CHANGE NEEDED | First production reader (CLM-5 AC7); run S2 (`test_answer_path_standards`) if any index is touched |
 | `agent/tool_bridge.py` `recall_memory` | Yes | CHANGE NEEDED + CONTRACT LOCK CT-5 | Two operations; menu parity |
-| `_emit_context_usage` (:3108) / frontend ContextPill | Value source | CONTRACT LOCK CT-6 | Event shape unchanged; `used_tokens` now from the gauge. Pinned by `test_context_usage_emit` T29 and `test_context_usage_parity.py` - run both; a value-source change there is a stated test input change if needed |
+| `_emit_context_usage` (`kernel/context.py:435`) / frontend ContextPill | Value source | CONTRACT LOCK CT-6 | Event shape unchanged; `used_tokens` now from the gauge. Pinned by `test_context_usage_emit` T29 and `test_context_usage_parity.py` - run both; a value-source change there is a stated test input change if needed |
 | `swarm/context_control.py` (:83-90), `mcm_protocol/actions/dcp_prune.py` | Yes | CHANGE NEEDED (CLM-9) | DCP callers |
 | `backend/agent/dcp.py`, `test_der_phase0.py` (x2), `test_write_paths_proven.py` DCP cases | Delete | CHANGE NEEDED (CLM-9) | Stated test removals |
-| `_der_emit_fan_trace` (:18834) | No | CONTRACT LOCK CT-7 | One row per node keeps flowing |
+| `_der_emit_fan_trace` (`kernel/der/report.py:1069`) | No | CONTRACT LOCK CT-7 | One row per node keeps flowing |
 | Forget paths | No code | CONTRACT LOCK | `test_every_recall_path_leaves_a_forgotten_strand_out` must include expand-by-ref |
 | Oracle consumers (`tool_choice`, `web_intent`) | No | NO CHANGE | They read frames, not the view; verify their frame inputs do not include raw history length (Q4) |
 | Phase scheduler | No | NO CHANGE | The view never reads live u/xi |

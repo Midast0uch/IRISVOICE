@@ -12,16 +12,16 @@ Owner: Midas. Audience: the implementing agent.
 
 | # | Draft claim | Verdict | Evidence |
 |---|---|---|---|
-| U1 | DCP is called at `agent_kernel.py:4269` and hard-codes the shrink policy on the answer path | WRONG | The kernel never constructs `DCP` (`agent_kernel.py:18970-18979`). Its only production callers are `swarm/context_control.py:83-90` (MCM:999) and `mcm_protocol/actions/dcp_prune.py:18-35`, both swarm/protocol paths. |
-| U2 | `DCP._emit_fan_traces` is the only writer of `der_fan_traces`; migrate it first | ALREADY FIXED | `AgentKernel._der_emit_fan_trace` (`agent_kernel.py:18834`) writes one row per node at its terminal outcome, called at `:18980`. The DCP pass writes 0 rows in production (every caller passes no `traj`, `dcp.py:163-164`). |
-| U3 | (not in the draft) what shrinks the window today | REAL GAP | Two blind cuts: `InferenceRouter._cap_messages_to_window` (`inference/router.py:429-495`) drops the OLDEST non-system messages on every model call and only logs a count; `_assemble_direct_context` (`agent_kernel.py:4131`) trims history by a chars/4 estimate. Neither records WHAT left, neither leaves an address. |
-| U4 | "use the active backend's tokenizer" | REAL GAP, reframed | Three estimators, no authority: chars/4 (`agent_kernel.py:4126`), chars/3.5 + 16/message (`router.py:349-377`), tiktoken-or-chars/4 (`mcm.py:311-337`). The router path loads no tokenizer. The only true number is the server's `usage.prompt_tokens` (`inference/transport.py:436-481`). |
-| U5 | every injected block can carry an id | REAL GAP | Recalled chunks are plain strings joined with `\n---\n` (`agent_kernel.py:4313-4314`); `retrieve_context_chunks` returns content strings by default (`episodic.py:1603`). |
+| U1 | DCP is called at `kernel/context.py:794` and hard-codes the shrink policy on the answer path | WRONG | The kernel never constructs `DCP` (`kernel/der/report.py:1205-1214`). Its only production callers are `swarm/context_control.py:83-90` (MCM:999) and `mcm_protocol/actions/dcp_prune.py:18-35`, both swarm/protocol paths. |
+| U2 | `DCP._emit_fan_traces` is the only writer of `der_fan_traces`; migrate it first | ALREADY FIXED | `AgentKernel._der_emit_fan_trace` (`kernel/der/report.py:1069`) writes one row per node at its terminal outcome, called at `:18980`. The DCP pass writes 0 rows in production (every caller passes no `traj`, `dcp.py:163-164`). |
+| U3 | (not in the draft) what shrinks the window today | REAL GAP | Two blind cuts: `InferenceRouter._cap_messages_to_window` (`inference/router.py:429-495`) drops the OLDEST non-system messages on every model call and only logs a count; `_assemble_direct_context` (`kernel/context.py:656`) trims history by a chars/4 estimate. Neither records WHAT left, neither leaves an address. |
+| U4 | "use the active backend's tokenizer" | REAL GAP, reframed | Three estimators, no authority: chars/4 (`kernel/context.py:651`), chars/3.5 + 16/message (`router.py:349-377`), tiktoken-or-chars/4 (`mcm.py:311-337`). The router path loads no tokenizer. The only true number is the server's `usage.prompt_tokens` (`inference/transport.py:436-481`). |
+| U5 | every injected block can carry an id | REAL GAP | Recalled chunks are plain strings joined with `\n---\n` (`kernel/context.py:838-839`); `retrieve_context_chunks` returns content strings by default (`episodic.py:1603`). |
 | U6 | need new chain labels `VIEW_EDITED` / `VIEW_ASSEMBLED` | NOT NEEDED | `OFFLOADED`, `RESTRETCHED`, `PREMATURE_EVICTION` are already seeded (`memory/event_alphabet.py:169-171`) with NO emitter; the dashboard already names them (`surface_queries.py:1737-1738`). The alphabet is ready; the signal has no producer. |
 | U7 | `mycelium_pins` has 0 rows; pick a pin surface | SETTLED | `PinStore` (`memory/pin_store.py:167`, table `mycelium_pins`) is the app surface with production writers (`tool_bridge.py:612`, `corrections.py:56`). 5 rows at 2026-11-01. Do not add a second surface. |
 | U8 | (not in the draft) level 1 is ready to use | REAL GAP | `thread_context` (L1) has NO production reader; only `memory/levels.py` touches it. |
 | U9 | "brief section 5.2" | WRONG REFERENCE | The backup finding is brief section 5 item 2 (line 139). |
-| U10 | `dcp.py` derives its protection from the context window | SILENT FALLBACK | `dcp.py:51` imports `resolve_context_window` as a module function; it is a method (`agent_kernel.py:3054`). The `except` at `:53` always fires; `turn_protection` is always 6. Goes away with CLM-9. |
+| U10 | `dcp.py` derives its protection from the context window | SILENT FALLBACK | `dcp.py:51` imports `resolve_context_window` as a module function; it is a method (`kernel/context.py:381`). The `except` at `:53` always fires; `turn_protection` is always 6. Goes away with CLM-9. |
 
 ## Decisions Locked
 
@@ -120,8 +120,8 @@ later number has a "before".
 matters for this task and set aside what does not.
 
 **Verified:** NEW. Assembly sites today: `_assemble_direct_context`
-(`agent_kernel.py:4131-4565`); the node message list (`_der_run_node`,
-`agent_kernel.py:17948`); synthesis (`_synthesize_response`, `:21900`). Block ids:
+(`kernel/context.py:656-1090`); the node message list (`_der_run_node`,
+`kernel/der/node.py:1048`); synthesis (`_synthesize_response`, `kernel/der/report.py:1524`). Block ids:
 absent (U5).
 
 **Acceptance Criteria:**
@@ -210,7 +210,7 @@ can never replace or outrank what it summarises.
 estimate it myself (brief Appendix G finding).
 
 **Verified:** window authority exists (`resolve_context_window_with_source`,
-`agent_kernel.py:2932`); count authority does not (U4). Pill fullness uses
+`kernel/context.py:259`); count authority does not (U4). Pill fullness uses
 `_context_fill` (PROGRESS 2026-10-25).
 
 **Acceptance Criteria:**
