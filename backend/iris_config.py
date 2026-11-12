@@ -112,6 +112,31 @@ _DATA_DIR = Path(__file__).parent.parent / "data"
 _IRIS_CONFIG_PATH = _DATA_DIR / "iris_config.json"
 
 
+def _test_run_config_path(real: Path) -> Path:
+    """Under pytest, work on a private copy of the config.
+
+    A test that saves the config wrote the owner's real file (2026-11-11 17:35:
+    eight providers lost, active provider switched to one with no key; every
+    live eval answered 401). Reads see the same content; writes stay in temp.
+    """
+    import shutil
+    import sys
+    import tempfile
+    if "pytest" not in sys.modules:
+        return real
+    copy = Path(tempfile.mkdtemp(prefix="iris-test-config-")) / real.name
+    try:
+        if real.exists():
+            shutil.copyfile(real, copy)
+    except OSError as exc:
+        logging.getLogger(__name__).warning(
+            "[Config] test copy of %s failed (%s); tests start from defaults", real, exc)
+    return copy
+
+
+_IRIS_CONFIG_PATH = _test_run_config_path(_IRIS_CONFIG_PATH)
+
+
 def _ensure_data_dir() -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
