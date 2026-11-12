@@ -452,10 +452,10 @@ state, a Standards row.
 | F2 | `dcp.py` silent fallback (method imported as function) | `dcp.py:51-54` | CLM-9 |
 | F3 | `AgentKernel._VERIFIER` assigned at runtime on the class | `agent_kernel.py:18631` | C6 |
 | F4 | Three token estimators, no authority | CLM requirements U4 | CLM-4 |
-| F5 | `behavioral/test_envelope_loop_behavior.py` is flaky on the unsplit code (`OSError: Bad file descriptor`, about half the runs) - shared state, not the split | K2 runs 2026-11-11 | own fix; never re-run to green |
+| F5 | `behavioral/test_envelope_loop_behavior.py` is flaky on the unsplit code (`OSError: Bad file descriptor`, about half the runs) - shared state, not the split | K2 runs 2026-11-11 | FIXED 2026-11-11: `open(MagicMock)` is `open(fd 1)`; `memory/db.lane_connection` got a mock store path and its header probe closed stdout. Guard: a str path only. 8/8 runs pass (was 1/4) |
 | F6 | The two `test_lmstudio_integration.py` alias fixtures parse the class-level `_MODEL_ALIASES`; valid only while class-level statements stay in the facade (RES-6) | K2b | switch to `kernel_tree()` if Stage C moves them |
-| F7 | No test isolation of `data/iris_config.json`: a test that saves the config wrote the real file (17:35, eight providers lost, provider without key, every eval 401) | K3 first run 0/21 | FIXED: `iris_config._test_run_config_path` (private copy under pytest). Residual: `main.py:1640` has its own writer |
-| F8 | On the unsplit code six coding tasks are 2-7x slower than `evals/standards.json` (for example c10 100 s vs 15.9 s) with the present provider | K3 | not the split; own investigation (provider speed or a fixed ~30 s offset) |
+| F7 | No test isolation of `data/iris_config.json`: a test that saves the config wrote the real file (17:35, eight providers lost, provider without key, every eval 401) | K3 first run 0/21 | FIXED: `iris_config._test_run_config_path` (private copy under pytest); `main.py` takes its path from it too |
+| F8 | On the unsplit code six coding tasks are 2-7x slower than `evals/standards.json` (for example c10 100 s vs 15.9 s) with the present provider | K3 | FIXED 2026-11-11 (PROGRESS S168): hidden reasoning on every call; thinking disabled for the measured pair. The old standards were recorded on mercury-3 (0.7 s/call; now 402 free tier limit) |
 
 ## 9. STATUS TABLE (the resume point)
 

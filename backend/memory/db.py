@@ -254,7 +254,11 @@ def lane_connection(conn):
     2026-10-04); WAL readers on separate connections never wait on each other. Writes still go through app_write (the native one writer). A
     connection without a store path (tests, other files) is returned as is."""
     path = getattr(conn, "store_path", "")
-    if not path:
+    # A str only (2026-11-11): a MagicMock stand-in answers every attribute, and
+    # open(MagicMock) is open(fd 1) (its __index__ is 1) - the header probe then
+    # CLOSED the process's stdout (pytest died with "Bad file descriptor" in
+    # about half the runs of test_envelope_loop_behavior, finding F5).
+    if not isinstance(path, str) or not path:
         return conn
     conns = getattr(_LANE_CONNS, "by_path", None)
     if conns is None:
