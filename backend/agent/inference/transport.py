@@ -498,6 +498,23 @@ _REASONING_RESEND_FLOOR = 1024
 # 2026-10-05, mercury-2.5 planner prompt: low = ~250 hidden reasoning tokens
 # vs ~1,300-1,650 (default), 2.5-3.2 s vs ~4 s, 6/6 valid plans.
 _REASONING_EFFORT_PROVIDERS = frozenset({"inceptionlabs"})
+# (provider id, model-name part) pairs whose chat API takes DeepSeek's
+# `thinking: {"type": "disabled"}` (api-docs.deepseek.com/guides/thinking_mode;
+# thinking is ON by default there). Listed only where MEASURED: an unknown field
+# can be a 400 on another gateway. 2026-11-11, opencodego deepseek-v4.1-flash:
+# every call spent 16-296 hidden reasoning tokens (one answer: 205 of 206
+# completion tokens), median call 6-7 s. With thinking disabled: 0 hidden
+# tokens, median call 2.1 s over 23 calls, c01/c05/c10 pass, reply 67/56/91 s
+# -> 42/45/36 s. Off switch: IRIS_KEEP_MODEL_THINKING=1.
+_THINKING_OFF_MODELS = (("opencodego", "deepseek"),)
+
+
+def _thinking_off(provider_id: str, model: str) -> bool:
+    """True when this call must ask the provider to skip hidden reasoning."""
+    if __import__("os").environ.get("IRIS_KEEP_MODEL_THINKING") == "1":
+        return False
+    _m = (model or "").lower()
+    return any(provider_id == _p and _part in _m for _p, _part in _THINKING_OFF_MODELS)
 
 
 def _tool_choice_field(name: Optional[str]) -> Any:
@@ -736,6 +753,12 @@ class ApiHttpxTransport:
                       .get("reasoning_tokens") or 0)
         except (TypeError, ValueError, AttributeError):
             return 0
+        if _rt:
+            # The value nobody looked at (2026-11-11): hidden reasoning is paid
+            # in wall time on every call and showed in no log line.
+            logger.info("[ApiHttpx] hidden reasoning model=%s reasoning_tokens=%d "
+                        "completion_tokens=%s", model, _rt,
+                        (result.get("usage") or {}).get("completion_tokens"))
         if _rt > self._reasoning_headroom.get(model, 0):
             self._reasoning_headroom[model] = min(_rt, _REASONING_HEADROOM_MAX)
         return _rt
@@ -846,6 +869,8 @@ class ApiHttpxTransport:
             body["tool_choice"] = _tool_choice_field(tool_choice)
         if reasoning_effort and getattr(self, "_provider_id", "") in _REASONING_EFFORT_PROVIDERS:
             body["reasoning_effort"] = reasoning_effort
+        if _thinking_off(getattr(self, "_provider_id", ""), model):
+            body["thinking"] = {"type": "disabled"}
 
         # ── Telemetry ────────────────────────────────────────────────
         try:

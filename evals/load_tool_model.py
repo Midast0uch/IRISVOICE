@@ -30,10 +30,23 @@ def _get(url: str, timeout: float = 5.0):
 
 
 def main() -> int:
-    try:
-        models = _get(f"http://127.0.0.1:{D1_PORT}/v1/models")
-        served = str((models.get("data") or [{}])[0].get("id", ""))
-    except Exception as exc:
+    # d1 loads AFTER /health turns 200: a check right after boot met a 503 and a
+    # run started on an unverified model (2026-11-11). Wait for the load, bounded.
+    import time
+    _deadline = time.monotonic() + float(
+        __import__("os").environ.get("IRIS_D1_WAIT_S", "120"))
+    while True:
+        try:
+            models = _get(f"http://127.0.0.1:{D1_PORT}/v1/models")
+            served = str((models.get("data") or [{}])[0].get("id", ""))
+            exc = None
+            break
+        except Exception as _exc:
+            exc = _exc
+            if time.monotonic() >= _deadline:
+                break
+            time.sleep(3)
+    if exc is not None:
         print(f"FAIL: no server on :{D1_PORT} ({exc!r}) — start the backend; "
               f"d1 loads at boot")
         return 1

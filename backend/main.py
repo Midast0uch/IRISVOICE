@@ -1615,11 +1615,11 @@ async def first_run_check():
 # Launcher Mode API — integration with iris-launcher
 # ============================================================================
 
-_IRIS_CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "iris_config.json",
-)
+# One path authority (backend.iris_config): under pytest it is a private copy,
+# so this second writer cannot reach the owner's real file either (2026-11-11).
+from backend.iris_config import _IRIS_CONFIG_PATH as _iris_config_path_obj
+
+_IRIS_CONFIG_PATH = str(_iris_config_path_obj)
 
 
 def _load_iris_config() -> dict:
