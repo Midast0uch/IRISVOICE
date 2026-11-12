@@ -310,8 +310,12 @@ class ReindexManager:
         chunk_types: Optional[List[str]] = None,
         zones: Optional[List[str]] = None,
         max_context_tokens: Optional[int] = None,
+        ids_out: Optional[list] = None,
     ) -> List[str]:
-        """Dual-read search over context chunks across both vector spaces."""
+        """Dual-read search over context chunks across both vector spaces.
+
+        ``ids_out``: when a list is passed it receives the row ids of the
+        returned items, in the returned order (CLM T1.2)."""
         with self._lock:
             backends = [b for b in (self._from_backend, self._to_backend) if b]
 
@@ -383,6 +387,8 @@ class ReindexManager:
                     used += tokens
                 top = kept
 
+            if ids_out is not None:
+                ids_out.extend(cid for _, _, cid in top)
             return [content for _, content, _ in top]
         finally:
             db.close()

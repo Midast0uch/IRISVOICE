@@ -119,7 +119,7 @@ same-conditions A/B, numbers named with their cohort.
 > - The view renders BEFORE `_mcm_orch.pre_call`; the wiring runs `pre_call` on
 >   `render()` (CLM-9 AC5).
 
-- [ ] **T1.1** (CLM-1 AC1-AC3, AC6): `context_view.py` with `Ref`, `Block`,
+- [x] **T1.1** (CLM-1 AC1-AC3, AC6): `context_view.py` with `Ref`, `Block`,
   `ContextView.admit/render`; route `_assemble_direct_context` through it.
   DONE = CT-1 passes on recorded inputs (byte-equal) and fails when one block is
   reordered.
@@ -127,14 +127,14 @@ same-conditions A/B, numbers named with their cohort.
   RIPPLE: `_sanitize_messages` order; `_mcm_orch.pre_call` (`_assemble_direct_context`, last lines) still runs
   after AND mutates the list (`pre_call_flow.json`: `dcp_prune`, `mito_inject` at `[1]`, `pacman_recall` at
   `[2]`): CT-1's "old builder" output is assemble + pre_call, recorded after pre_call (Q1).
-- [ ] **T1.2** (CLM-1 AC2): references on blocks. Chunk ids via T0.2/Q2; chain,
+- [x] **T1.2** (CLM-1 AC2): references on blocks. Chunk ids via T0.2/Q2; chain,
   episode, thread, pin ids from their rows; `ephemeral` for system and user turn.
   DONE = on the T0.1 cohort replay, 100 % of non-ephemeral blocks resolve to a row.
   NOT THIS = changing recall scoring or its return order.
   Q2 answer: the `with_meta` dict lacks `id`; add `"id": cid` (`episodic.py:1616-1625`).
   RIPPLE: every caller of `retrieve_context_chunks` (kernel x6, `tool_bridge.py:552`,
   `evidence.py:225`, `recall_decoder.py:436`, `research_memory.py:482`) keeps its current return shape.
-- [ ] **T1.3** (CLM-1): the DER node list and synthesis through the view (points from Q1).
+- [x] **T1.3** (CLM-1): the DER node list and synthesis through the view (points from Q1).
   DONE = CT-1 covers node and synthesis inputs; BT-W10-2 and the synthesis diet
   contract pass.
   NOT THIS = touching the planner prompt.
@@ -142,14 +142,14 @@ same-conditions A/B, numbers named with their cohort.
   the kernel, so this task edits that file (call sites only); `_der_bound_step_context` is not a
   pressure site (it cuts a field no prompt reads) and is left alone; synthesis is one user message
   (`kernel/der/report.py:1450`), not a list.
-- [ ] **T1.4** (CLM-4 AC1, AC2, AC5; CT-9): `context_gauge.py`; move the router
+- [x] **T1.4** (CLM-4 AC1, AC2, AC5; CT-9): `context_gauge.py`; move the router
   estimator into it; delete `_count_tokens` and `_DIRECT_CTX_BUDGET`; `observe()` from
   the router after each call.
   DONE = CT-9 passes; live error |median| <= 5 % and |p95| <= 20 % per calibrated (provider, model) (THE BAR above) on the
   cohort, reported beside the T0.1 "before".
   NOT THIS = loading a tokenizer; persisting calibration; a per-provider class.
   RIPPLE: ContextPill value source (CT-6; T29 / parity tests - state any input change).
-- [ ] **T1.5** (CLM-2 AC6, CLM-8 AC3): the router cap reports each drop to the view
+- [x] **T1.5** (CLM-2 AC6, CLM-8 AC3): the router cap reports each drop to the view
   counter; the per-call structured line.
   DONE = the cohort report shows blind drops per task equal to the T0.1 drop counts
   (nothing prevented yet - the alarm is proven live first).
@@ -163,7 +163,30 @@ same-conditions A/B, numbers named with their cohort.
 > T1.4 (one estimator in the router, GAUGE.observe; the kernel's chars/4 trim STAYS
 > until T2.3 - replacing it changes which history messages are kept: 46 vs 40 on a
 > long history), T1.5. Open for B2: T1.2 (refs), T1.3 (node list, synthesis).
-- [ ] **TG-1 (live gate)**: same cohort, parity commit vs baseline: pass counts equal,
+> **TG-1 FULL, PASSED 2026-11-12 (Wave 1 complete):** cohort 21/21 and the 8 coding
+> tasks a second time 8/8; `view_fallback` = 0 on the direct path, the node path and
+> synthesis (219 calls, 10 direct rows, 0 fallback log lines); blind drops 0; instrument
+> failures 0; S2 `test_answer_path_standards` 13 pass. Parity proofs: direct path 11
+> inputs, node path 11 cases at EVERY model call, synthesis 6 cases - all byte-equal;
+> each harness fails on a 1-character change. Refs: 745 of 745 recall rows carry a row
+> id (chain 387/387 and chunk 358/358 resolve on the live store, read-only).
+> **Carried into Wave 2 (from the T1.2 / T1.3 reports):**
+> - Earlier step results and memory facts are TEXT inside the one `step_goal` message
+>   (`node_executor._user_message`), not blocks. Splitting them is a behavior change;
+>   if Wave 2 wants them offloadable, that split is its own task with its own parity
+>   exception stated.
+> - A tool call and its results are separate blocks today (`assistant_tool_calls` +
+>   the `tool_result`s that follow). The offload gate MUST treat them as one unit.
+> - `Block.tokens` of a live block goes stale after an in-place edit (a replaced
+>   screenshot keeps the image count). T2.3 recounts before it decides.
+> - The merged recall block is offloaded/expanded as ONE unit with its ordered refs.
+> - Node-path kinds for the instrument: a ContextVar `RENDER_KINDS` in `context_view`
+>   set by the node loop's send, read (pre-cap) by `clm_baseline.record_call`.
+> - `generate` now receives a fresh list per call (not the loop's live list). No
+>   consumer keeps it today (router, cap, transports checked).
+> - Node blocks are `ephemeral` (no row yet): a tool result's row id must come from
+>   where the result is stored (`der_fan_traces` / tool-event rows) - T2.2 names it.
+- [x] **TG-1 (live gate)**: same cohort, parity commit vs baseline: pass counts equal,
   `reply_s` within the standards' tolerance, `view_fallback` = 0.
 
 ## Wave 2 - Offload, placeholder, re-expand (the first behavior change)

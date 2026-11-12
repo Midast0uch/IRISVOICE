@@ -33,6 +33,20 @@ RECALL_CHUNKS = "recall_chunks"
 HISTORY = "history"
 CURRENT_USER = "current_user"
 
+# Block kinds on the DER node path (T1.3), one per message the node loop
+# (node_executor.run_node) creates. The step-goal message carries the earlier
+# step results and the memory facts INSIDE its text, so they are not blocks of
+# their own while the message stays byte-equal.
+SYSTEM = "system"                              # the node's _SYSTEM
+STEP_GOAL = "step_goal"                        # task, step, done-when, prior results, memory
+ASSISTANT_TOOL_CALLS = "assistant_tool_calls"  # a model answer that calls tools
+ASSISTANT_ANSWER = "assistant_answer"          # a model answer kept before a harness note
+TOOL_RESULT = "tool_result"                    # a tool message (result, repeat or unchanged stub)
+SCREENSHOT = "screenshot"                      # the marked page picture (user turn)
+HARNESS_NOTE = "harness_note"                  # hint, hand-over, picture hint, closing stop
+# Synthesis (kernel/der/report.py _synthesize_response) sends one user message.
+SYNTHESIS_REQUEST = "synthesis_request"
+
 
 @dataclass(frozen=True)
 class Ref:
@@ -58,6 +72,12 @@ class Block:
     domain: str = ""
     open_items: Tuple[Any, ...] = ()
     protected: bool = False
+    # Ordered refs of the rows a MERGED block was built from (e.g. the recalled
+    # chunk ids inside one <context_memory> message). ``ref`` is the first of
+    # them, or ephemeral. Refs live on blocks only, never in message dicts.
+    refs: Tuple[Ref, ...] = ()
+    # Why part or all of the block has no row address (empty when fully addressed).
+    ref_reason: str = ""
 
 
 class ContextView:
@@ -81,6 +101,8 @@ class ContextView:
         domain: str = "",
         open_items: Tuple[Any, ...] = (),
         protected: bool = False,
+        refs: Tuple[Ref, ...] = (),
+        ref_reason: str = "",
     ) -> Block:
         """Append one block, in the order the old builder appended its messages.
 
@@ -90,7 +112,7 @@ class ContextView:
         held = [dict(m) for m in messages]
         block = Block(
             block_id=f"b{len(self._blocks) + 1}",
-            ref=ref if ref is not None else EPHEMERAL,
+            ref=ref if ref is not None else (refs[0] if refs else EPHEMERAL),
             kind=kind,
             messages=held,
             tokens=estimate_tokens(held),
@@ -99,6 +121,8 @@ class ContextView:
             domain=domain,
             open_items=open_items,
             protected=protected,
+            refs=tuple(refs),
+            ref_reason=ref_reason,
         )
         self._blocks.append(block)
         return block
@@ -111,6 +135,30 @@ class ContextView:
         are shared, as they are in the old builder's list.
         """
         return [dict(m) for block in self._blocks for m in block.messages]
+
+    def admit_live(
+        self, kind: str, message: Dict[str, Any], *, protected: bool = False
+    ) -> Block:
+        """Append one block that HOLDS the caller's message dict (no copy).
+
+        For a loop that owns its list and edits a message in place after it
+        was sent: the DER node turns an old screenshot into a one-line note
+        (``node_executor._drop_old_screenshots``). A copy would keep the old
+        picture and drift from the loop's list; holding the same dict keeps
+        the two equal. ``render()`` still hands out fresh shallow copies.
+        ``tokens`` is the count at admit; an in-place edit does not recount
+        it (nothing in Wave 1 reads it).
+        """
+        block = Block(
+            block_id=f"b{len(self._blocks) + 1}",
+            ref=EPHEMERAL,
+            kind=kind,
+            messages=[message],
+            tokens=estimate_tokens([message]),
+            protected=protected,
+        )
+        self._blocks.append(block)
+        return block
 
 
 # -- view_fallback (design "Error Handling") -----------------------------------

@@ -17,6 +17,28 @@ from backend.agent.kernel.base import (
     _step_evidence_cap,
     logger,
 )
+from backend.agent.context_view import (
+    SYNTHESIS_REQUEST as _SYNTHESIS_REQUEST,
+    ContextView as _ContextView,
+    count_view_fallback as _count_view_fallback,
+)
+
+
+def _synthesis_messages(prompt: str, conversation_id: Any) -> List[Dict[str, Any]]:
+    """CLM-1 (T1.3): the synthesis request through a ContextView - one block,
+    rendered fresh per call (byte-equal to the old one-message list). A view
+    failure is counted (view_fallback) and the old list is used."""
+    try:
+        _view = _ContextView()
+        _view.admit(_SYNTHESIS_REQUEST, [{"role": "user", "content": prompt}], protected=True)
+        return _view.render()
+    except Exception as _view_exc:  # noqa: BLE001 - counted, never blocks a reply
+        logger.warning(
+            "[AgentKernel] synthesis view failed, old list used "
+            "(view_fallback=%d) conversation=%s: %r",
+            _count_view_fallback(), conversation_id, _view_exc,
+        )
+        return [{"role": "user", "content": prompt}]
 
 
 _CLAIMS_MISSING_RE = re.compile(
@@ -1523,7 +1545,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     _syn_deadline_s = 120.0
                 _syn_text, _syn_think, _syn_tools = self._router.generate(
                     "reasoning",
-                    [{"role": "user", "content": synthesis_prompt}],
+                    _synthesis_messages(synthesis_prompt, getattr(self, "conversation_id", None)),
                     max_tokens=self.response_max_tokens(),
                     temperature=0.6,
                     timeout_s=_syn_deadline_s,
@@ -1547,7 +1569,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     )
                     _syn_text, _syn_think, _syn_tools = self._router.generate(
                         "reasoning",
-                        [{"role": "user", "content": synthesis_prompt}],
+                        _synthesis_messages(synthesis_prompt, getattr(self, "conversation_id", None)),
                         max_tokens=self.response_max_tokens(),
                         temperature=0.6,
                         timeout_s=_syn_deadline_s,
@@ -1591,7 +1613,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                         _syn_retry, _syn_retry_think, _syn_retry_tools = (
                             self._router.generate(
                                 "reasoning",
-                                [{"role": "user", "content": synthesis_prompt}],
+                                _synthesis_messages(synthesis_prompt, getattr(self, "conversation_id", None)),
                                 max_tokens=self.response_max_tokens(),
                                 temperature=0.6,
                                 timeout_s=_syn_deadline_s,
@@ -1628,7 +1650,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     _lms_synth = self._get_lmstudio_client()
                     _lms_synth_resp = _lms_synth.chat.completions.create(
                         model=_sel_synth or "local-model",
-                        messages=[{"role": "user", "content": synthesis_prompt}],
+                        messages=_synthesis_messages(synthesis_prompt, getattr(self, "conversation_id", None)),
                         max_tokens=-1,
                         temperature=0.7,
                         extra_body={"chat_template_kwargs": {"enable_thinking": False}},
@@ -1651,7 +1673,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                         f"{self._ollama_endpoint}/api/chat",
                         json={
                             "model": _sel_synth,
-                            "messages": [{"role": "user", "content": synthesis_prompt}],
+                            "messages": _synthesis_messages(synthesis_prompt, getattr(self, "conversation_id", None)),
                             "stream": False,
                         },
                         timeout=60,

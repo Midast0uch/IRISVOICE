@@ -36,6 +36,17 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from backend.agent.context_view import (
+    ASSISTANT_ANSWER,
+    ASSISTANT_TOOL_CALLS,
+    HARNESS_NOTE,
+    SCREENSHOT,
+    STEP_GOAL,
+    SYSTEM,
+    TOOL_RESULT,
+    ContextView,
+    count_view_fallback,
+)
 from backend.agent.inference.errors import EmptyModelResponseError, MalformedToolCallError
 
 logger = logging.getLogger(__name__)
@@ -653,6 +664,44 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             + (("\n\nMEMORY (earlier statements, with their source):\n"
                 + ctx.memory_facts) if ctx.memory_facts else ""), ctx.workdir)},
     ]
+    # CLM-1 (T1.3): the model reads this list through a per-node ContextView.
+    # `messages` stays the loop's list; the view HOLDS the same dicts
+    # (admit_live), so the one in-place edit (_drop_old_screenshots) shows in
+    # both, and every append goes through _add, so they cannot differ in
+    # length (checked at each send). A view failure is counted
+    # (view_fallback) and the node sends `messages` for the rest of its run.
+    view: Optional[ContextView] = ContextView()
+
+    def _view_failed(exc: BaseException) -> None:
+        nonlocal view
+        view = None
+        logger.warning("[run_node] conv=%s context view failed, old list used "
+                       "(view_fallback=%d): %r", ctx.conv_id, count_view_fallback(), exc)
+
+    def _add(kind: str, message: Dict[str, Any]) -> None:
+        messages.append(message)
+        if view is not None:
+            try:
+                view.admit_live(kind, message)
+            except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
+                _view_failed(exc)
+
+    def _outgoing() -> List[Dict[str, Any]]:
+        if view is not None:
+            try:
+                out = view.render()
+                if len(out) != len(messages):
+                    raise RuntimeError(f"view has {len(out)} messages, list has {len(messages)}")
+                return out
+            except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
+                _view_failed(exc)
+        return messages
+
+    try:
+        view.admit_live(SYSTEM, messages[0], protected=True)
+        view.admit_live(STEP_GOAL, messages[1], protected=True)
+    except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
+        _view_failed(exc)
     tools = _with_close_args(ctx.tools)
     malformed = 0
     # Stuck detector (2026-10-01): a small local model called read_file on the
@@ -733,7 +782,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     gen_extra["tool_choice"] = forced
             try:
                 text, _think, tool_calls = ctx.generate(
-                    role, messages, tools=gen_tools, max_tokens=ctx.max_tokens,
+                    role, _outgoing(), tools=gen_tools, max_tokens=ctx.max_tokens,
                     temperature=0.2, timeout_s=min(remaining, 300.0), thinking=False,
                     **gen_extra,
                 )
@@ -747,11 +796,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.conv_id, type(slip).__name__, malformed)
                 if malformed > _MAX_MALFORMED:
                     if _hand_over(f"{malformed} model slips in a row"):
-                        messages.append({"role": "user", "content": _HANDOVER_NOTE.format(
+                        _add(HARNESS_NOTE, {"role": "user", "content": _HANDOVER_NOTE.format(
                             why="the previous model's answers were empty or invalid")})
                         continue
                     raise
-                messages.append({"role": "user", "content": (
+                _add(HARNESS_NOTE, {"role": "user", "content": (
                     _MALFORMED_HINT if isinstance(slip, MalformedToolCallError) else _EMPTY_HINT)})
                 continue
             malformed = 0
@@ -770,20 +819,20 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         c.get("ok") and c.get("tool") in _PICTURE_TOOLS for c in calls):
                     if not picture_nudged:
                         picture_nudged = True
-                        messages.append({"role": "assistant", "content": text or ""})
-                        messages.append({"role": "user", "content": _PICTURE_HINT})
+                        _add(ASSISTANT_ANSWER, {"role": "assistant", "content": text or ""})
+                        _add(HARNESS_NOTE, {"role": "user", "content": _PICTURE_HINT})
                         continue
                     ok, reason = False, "no screenshot was taken"
                 if not ok and _hand_over(f"step reported failure: {reason}"[:120]):
-                    messages.append({"role": "assistant", "content": text or ""})
-                    messages.append({"role": "user", "content": _HANDOVER_NOTE.format(
+                    _add(ASSISTANT_ANSWER, {"role": "assistant", "content": text or ""})
+                    _add(HARNESS_NOTE, {"role": "user", "content": _HANDOVER_NOTE.format(
                         why=f"the step reported failure ({reason or 'no reason'})")})
                     continue
                 logger.info("[run_node] conv=%s done: %d call(s), success=%s, last_cmd_failed=%s",
                             ctx.conv_id, len(calls), ok, bool(last_command_failed))
                 return NodeResult(ok, summary, calls, reason if not ok else "",
                                   last_command_failed=bool(last_command_failed), helped=helped)
-            messages.append({"role": "assistant", "content": text or None, "tool_calls": tool_calls})
+            _add(ASSISTANT_TOOL_CALLS, {"role": "assistant", "content": text or None, "tool_calls": tool_calls})
             # A new batch executing means every still-pending claim was NOT
             # the closing call (AC14.2: "another loop iteration follows").
             _resolve_claims("premature")
@@ -825,7 +874,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                           f"stuck repeating {name} {_target(params or {})}".strip(),
                                           last_command_failed=bool(last_command_failed),
                                           helped=helped)
-                    messages.append({"role": "tool", "tool_call_id": tc.get("id") or name,
+                    _add(TOOL_RESULT, {"role": "tool", "tool_call_id": tc.get("id") or name,
                                      "name": name, "content": _REPEAT_HINT})
                     continue
                 last_key = key
@@ -943,7 +992,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                 content += ("\n\nWhat the vision model sees on the "
                                             "screenshot:\n" + reading)
                 batch_results.append(f"[{name} {_target(params or {})}]\n{content}")
-                messages.append({
+                _add(TOOL_RESULT, {
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
                     "content": content,
                 })
@@ -968,7 +1017,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 # After the tool messages (a tool message carries text only on
                 # most APIs), as the user turn the model reads next.
                 _drop_old_screenshots(messages)
-                messages.append({"role": "user", "content": [
+                _add(SCREENSHOT, {"role": "user", "content": [
                     {"type": "text", "text": _SCREENSHOT_NOTE},
                     {"type": "image_url",
                      "image_url": {"url": f"data:image/jpeg;base64,{pending_shot}"}},
@@ -1026,11 +1075,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         # `STATUS: done` counts; the DER verifies and decides what is next.
         why = (f"step call limit reached ({len(calls)} calls)" if len(calls) >= ctx.max_calls
                else "node time budget used up")
-        messages.append({"role": "user", "content": (
+        _add(HARNESS_NOTE, {"role": "user", "content": (
             f"Stop here: {why}. Say in a few lines what you did and what you found. End "
             "with `STATUS: done` if this step's goal is met, or `STATUS: failed: <what is "
             "missing>`.")})
-        text, _think, _ = ctx.generate(role, messages, tools=None, max_tokens=1024,
+        text, _think, _ = ctx.generate(role, _outgoing(), tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
         # AC14.2: a call-limit or time-budget break never adjudicated a claim
         # (the forced STATUS is the same model grading itself with no fresh

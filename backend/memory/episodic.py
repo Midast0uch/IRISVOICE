@@ -1235,9 +1235,15 @@ class EpisodicStore:
         until: Optional[Any] = None,
         tool_name: Optional[str] = None,
         with_meta: bool = False,
+        ids_out: Optional[list] = None,
     ) -> List[Any]:
         """
         Retrieve the most semantically relevant context chunks for a query.
+
+        ``ids_out`` (CLM T1.2): when a list is passed it receives the row ids
+        (``context_chunks.id``) of the returned items, in the returned order,
+        in the plain and the ``with_meta`` shapes and on the reindex branch.
+        It adds no statement; None (the default) changes nothing.
 
         Implements PACMAN.md metabolism:
           - Semantic match (cosine similarity) — the dominant term
@@ -1262,6 +1268,8 @@ class EpisodicStore:
         Returns:
             List of chunk content strings ranked by descending combined score.
         """
+        if ids_out is not None:
+            ids_out.clear()
         if not query:
             return []
 
@@ -1270,10 +1278,14 @@ class EpisodicStore:
         # dead backend on every search — treat "complete" like "idle".
         rm = get_reindex_manager()
         if rm is not None and rm.progress().get("state", "idle") not in ("idle", "complete"):
+            _rm_kw: Dict[str, Any] = {}
+            if ids_out is not None:
+                _rm_kw["ids_out"] = ids_out
             return rm.search_chunks(
                 query=query, session_id=session_id, limit=limit,
                 min_similarity=min_similarity, chunk_types=chunk_types,
                 zones=zones, max_context_tokens=max_context_tokens,
+                **_rm_kw,
             )
 
         # Get query embedding with provenance
@@ -1601,6 +1613,8 @@ class EpisodicStore:
             top = _kept
 
         results = [content for _, content, _ in top]
+        if ids_out is not None:
+            ids_out.extend(cid for _, _, cid in top)
         if with_meta:
             # The consumer decides what to trust: the producer taxonomy is
             # returned with the text, so the prompt can say "your earlier
@@ -1622,6 +1636,8 @@ class EpisodicStore:
                     # When the row was written: a caller that must choose between
                     # two statements of one fact keeps the newest (BT-W10-2).
                     "timestamp": str((_rank_info.get(cid) or {}).get("timestamp") or ""),
+                    # The row id (context_chunks.id): a view block's address (CLM T1.2).
+                    "id": cid,
                 }
                 for score, content, cid in top
             ]

@@ -25,6 +25,7 @@ from backend.agent.context_view import (
     RECALL_PROFILE as _RECALL_PROFILE,
     SYSTEM_PROMPT as _SYSTEM_PROMPT,
     ContextView as _ContextView,
+    Ref as _Ref,
     count_view_fallback as _count_view_fallback,
 )
 
@@ -36,7 +37,7 @@ def _fact_line(text: str) -> str:
         t = t[len("User:"):]
     return t.split("\nAssistant:")[0].strip().replace("\n", " ")
 
-def _recent_user_turn_texts(db, current_text: str = "", limit: int = 8):
+def _recent_user_turn_texts(db, current_text: str = "", limit: int = 8, ids_out=None):
     """The newest user statements from the Immortus chain, newest first.
 
     Source is ``memory_chain.node_type='user_turn'`` (REQ-12 AC1): the chain
@@ -45,15 +46,32 @@ def _recent_user_turn_texts(db, current_text: str = "", limit: int = 8):
     2026-10-30: 158 chain rows vs 1 chunk row after a 33-turn probe run).
     The current turn's own row is written at turn entry, so it is skipped here —
     it is not a prior fact.
+
+    ``ids_out`` (CLM T1.2): a list that receives ``memory_chain.chain_id`` of
+    each returned text, in the returned order. The return value is the same
+    with or without it; without it the statement is the one it always was.
     """
-    try:
-        rows = db.execute(
-            "SELECT COALESCE(insight, content, '') FROM memory_chain "
-            "WHERE node_type='user_turn' AND (stale IS NULL OR stale = 0) "
-            "ORDER BY rowid DESC LIMIT ?",
-            (limit + 1,),
-        ).fetchall()
-    except Exception:  # noqa: BLE001 - a missing table is no facts, not a crash
+    _sql = (
+        "SELECT COALESCE(insight, content, '') {cols} FROM memory_chain "
+        "WHERE node_type='user_turn' AND (stale IS NULL OR stale = 0) "
+        "ORDER BY rowid DESC LIMIT ?"
+    )
+    if ids_out is not None:
+        ids_out.clear()
+    rows = None
+    have_ids = False
+    # With ids requested the id column is tried first; a table without it
+    # (a stand-in or an old store) falls back to the text-only statement.
+    for _want_ids in ((True, False) if ids_out is not None else (False,)):
+        try:
+            rows = db.execute(
+                _sql.format(cols=", chain_id" if _want_ids else ""), (limit + 1,)
+            ).fetchall()
+            have_ids = _want_ids
+            break
+        except Exception:  # noqa: BLE001 - a missing table is no facts, not a crash
+            continue
+    if rows is None:
         return []
     out = []
     for row in rows:
@@ -64,6 +82,8 @@ def _recent_user_turn_texts(db, current_text: str = "", limit: int = 8):
         if not text or text == str(current_text or "").strip():
             continue
         out.append(text[:240])
+        if have_ids:
+            ids_out.append(str(row[1] or ""))
         if len(out) >= limit:
             break
     return out
@@ -737,6 +757,13 @@ class ContextMixin:
 
         # â”€â”€ 3a: semantic chunk retrieval from DB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         chunk_prefix: List[Dict] = []
+        # CLM T1.2: the row ids the merged <context_memory> message is built
+        # from, in section order, and the legs that arrive as text only.
+        _chunk_refs: List[Any] = []
+        _chunk_gaps: List[str] = []
+        _chunk_ids: List[str] = []
+        _refmem_ids: List[str] = []
+        _file_ids: List[str] = []
         try:
             if (
                 self._memory_interface is not None
@@ -757,6 +784,7 @@ class ContextMixin:
                     # context window (reserve ~40% for prompt + response so the
                     # agent's own reasoning space isn't crowded out by memory).
                     max_context_tokens=_ctx_budget323,
+                    ids_out=_chunk_ids,
                 )
                 # Session-323 (PACMAN membrane): reference-zone chunks carry
                 # external web text â€” pulled separately and wrapped in an
@@ -773,6 +801,7 @@ class ContextMixin:
                         min_similarity=0.25,
                         zones=["reference"],
                         max_context_tokens=max(1, _ctx_budget323 // 3),
+                        ids_out=_refmem_ids,
                     ) or []
                 except Exception:
                     _ref_chunks323 = []
@@ -785,18 +814,29 @@ class ContextMixin:
                 # on the Immortus chain (pins live in recall_memory, not here).
                 try:
                     _rf: List[str] = []
+                    _rf_ref_of: Dict[str, Any] = {}
                     try:
-                        _rf = _dedupe_fact_lines(
-                            _recent_user_turn_texts(
-                                self._memory_interface.episodic.db, str(text or "")
-                            )
+                        _rf_ids: List[str] = []
+                        _rf_texts = _recent_user_turn_texts(
+                            self._memory_interface.episodic.db, str(text or ""),
+                            ids_out=_rf_ids,
                         )
+                        if len(_rf_ids) == len(_rf_texts):
+                            for _t, _i in zip(_rf_texts, _rf_ids):
+                                if _i and _t not in _rf_ref_of:
+                                    _rf_ref_of[_t] = _Ref("chain", _i)
+                        _rf = _dedupe_fact_lines(_rf_texts)
                     except Exception:
                         pass
                     # Newest-first, and one value per fact: the pins stay in
                     # recall_memory, not in the automatic block (a pin can be an
                     # older duplicate and compete with the newest user turn).
                     if _rf:
+                        for _rf_l in dict.fromkeys(_rf):
+                            if _rf_l in _rf_ref_of:
+                                _chunk_refs.append(_rf_ref_of[_rf_l])
+                            else:
+                                _chunk_gaps.append("recent_facts row without chain_id")
                         _blocks323.insert(
                             0,
                             "<recent_facts>\n- "
@@ -828,6 +868,7 @@ class ContextMixin:
                         session_id or getattr(self, "session_id", None),
                     )
                     _pm_lines: List[str] = []
+                    _pm_ref_of: Dict[str, Any] = {}
                     _pm_used = 0
                     for _pm_r in _pm_rows:
                         _pm_line = (
@@ -840,11 +881,18 @@ class ContextMixin:
                         if _pm_used + len(_pm_line) > TURN_START_MAX_CHARS:
                             break
                         _pm_lines.append(_pm_line)
+                        if _pm_r.get("chain_id") and _pm_line not in _pm_ref_of:
+                            _pm_ref_of[_pm_line] = _Ref("chain", str(_pm_r["chain_id"]))
                         _pm_used += len(_pm_line)
                     # A query-gated chain row can be the OLD value of a fact the
                     # recent-facts leg already has; keep only the newest.
                     _pm_lines = _dedupe_fact_lines(_pm_lines, against=_rf)
                     if _pm_lines:
+                        for _pm_l in _pm_lines:
+                            if _pm_l in _pm_ref_of:
+                                _chunk_refs.append(_pm_ref_of[_pm_l])
+                            else:
+                                _chunk_gaps.append("prior_memory row without chain_id")
                         _blocks323.append(
                             "<prior_memory>\n- "
                             + "\n- ".join(_pm_lines)
@@ -853,6 +901,10 @@ class ContextMixin:
                 except Exception as _pm_exc:  # noqa: BLE001 - never blocks a turn
                     logger.debug("[AgentKernel] turn-start prior memory skipped: %s", _pm_exc)
                 if _chunks:
+                    if len(_chunk_ids) == len(_chunks):
+                        _chunk_refs.extend(_Ref("chunk", str(_i)) for _i in _chunk_ids)
+                    else:
+                        _chunk_gaps.append("chunks (retrieve_context_chunks returns text; ids not returned)")
                     _blocks323.append("\n---\n".join(_chunks))
                 # REQ-12 AC5 (T43): a fact taught in ANOTHER conversation must
                 # reach this one. Bounded to trusted user chunks; the session
@@ -872,6 +924,11 @@ class ContextMixin:
                     )
                     # Newest statement of one fact only (BT-W10-2): the leg is
                     # score-ordered, and both values of a restated fact match.
+                    _x_ref_of = {
+                        str(_r.get("content") or ""): _Ref("chunk", str(_r["id"]))
+                        for _r in reversed(_x_rows323)
+                        if isinstance(_r, dict) and _r.get("id")
+                    }
                     _x_chunks323 = _dedupe_fact_rows([
                         (str(_r.get("content") or ""), str(_r.get("timestamp") or ""))
                         if isinstance(_r, dict) else (str(_r), "")
@@ -880,18 +937,28 @@ class ContextMixin:
                 except Exception as _x_exc:  # noqa: BLE001 - never blocks a turn
                     logger.debug("[AgentKernel] cross-session memory skipped: %s", _x_exc)
                     _x_chunks323 = []
+                    _x_ref_of = {}
                 _seen323 = set(_chunks)
                 _x_new323 = [c for c in _x_chunks323 if c not in _seen323]
                 # The cross-session leg is score-ordered, not newest-ordered;
                 # drop an older value of a fact the recent-facts leg has.
                 _x_new323 = _dedupe_fact_lines(_x_new323, against=_rf)
                 if _x_new323:
+                    for _x_c in _x_new323:
+                        if _x_c in _x_ref_of:
+                            _chunk_refs.append(_x_ref_of[_x_c])
+                        else:
+                            _chunk_gaps.append("cross_session chunk without id")
                     _blocks323.append(
                         "<cross_session_memory>\n"
                         + "\n---\n".join(_x_new323)
                         + "\n</cross_session_memory>"
                     )
                 if _ref_chunks323:
+                    if len(_refmem_ids) == len(_ref_chunks323):
+                        _chunk_refs.extend(_Ref("chunk", str(_i)) for _i in _refmem_ids)
+                    else:
+                        _chunk_gaps.append("reference_memory (ids not returned)")
                     _blocks323.append(
                         "<reference_memory>\n"
                         + "\n---\n".join(_ref_chunks323)
@@ -927,12 +994,17 @@ class ContextMixin:
                                 zones=["trusted"],
                                 chunk_types=["file"],
                                 max_context_tokens=max(1, _ctx_budget323 // 4),
+                                ids_out=_file_ids,
                             )
                             or []
                         )
                     except Exception as _f_exc:  # noqa: BLE001 - never blocks a turn
                         logger.debug("[AgentKernel] file memory skipped: %s", _f_exc)
                     if _file_chunks:
+                        if len(_file_ids) == len(_file_chunks):
+                            _chunk_refs.extend(_Ref("chunk", str(_i)) for _i in _file_ids)
+                        else:
+                            _chunk_gaps.append("file_memory (ids not returned)")
                         _blocks323.append(
                             "<file_memory>\n"
                             + "\n---\n".join(_file_chunks)
@@ -1113,17 +1185,38 @@ class ContextMixin:
                 _SYSTEM_PROMPT,
                 [{"role": "system", "content": system_prompt}],
                 protected=True,
+                ref_reason="ephemeral by design: the system prompt has no row",
             )
             _view.admit(
                 _RECALL_EPISODIC,
                 [m for m in episodic_prefix if id(m) not in _prof_ids],
+                ref_reason=(
+                    "assemble_episodic_context returns formatted text; the"
+                    " episode ids are not returned"
+                ),
             )
             _view.admit(
                 _RECALL_PROFILE,
                 [m for m in episodic_prefix if id(m) in _prof_ids],
+                ref_reason=(
+                    "rendered from several mycelium nodes by"
+                    " get_task_context_package; no single row"
+                ),
             )
-            _view.admit(_RECALL_CHUNKS, chunk_prefix)
-            _view.admit(_HISTORY, history_block)
+            _view.admit(
+                _RECALL_CHUNKS,
+                chunk_prefix,
+                refs=tuple(_chunk_refs),
+                ref_reason="; ".join(dict.fromkeys(_chunk_gaps)),
+            )
+            _view.admit(
+                _HISTORY,
+                history_block,
+                ref_reason=(
+                    "ConversationMemory messages carry role and content only;"
+                    " no row id"
+                ),
+            )
             messages = _view.render()
             # Ensure the list ends on the current user turn
             if (
@@ -1135,6 +1228,7 @@ class ContextMixin:
                     _CURRENT_USER,
                     [{"role": "user", "content": text}],
                     protected=True,
+                    ref_reason="ephemeral by design: the current user turn",
                 )
                 messages = _view.render()
         except Exception as _view_exc:  # noqa: BLE001 - counted, never blocks a turn
