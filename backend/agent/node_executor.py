@@ -445,6 +445,24 @@ def clm_node_stats() -> Dict[str, int]:
 
 _LEDGER_MAX = 8
 
+# CLM T7.6: on a known window the step message's two fixed clips (the whole
+# task at result_chars = 8,000 chars, earlier results at 3x = 24,000 chars)
+# scale with the window, so the protected step message cannot overflow a small
+# model (measured 2026-11-15: on 8,192 tokens it alone took ~6.8k of a 3,072
+# limit). Shares of the window in characters (3.5 chars per token, the gauge
+# rule): the task 12 %, earlier results 25 % - on 8,192 tokens that is 3,440
+# and 7,168 chars (~980 + ~2,050 tokens). Never larger than today's clips.
+_TASK_SHARE, _PRIOR_SHARE = 0.12, 0.25
+
+
+def _step_clip(ctx: "NodeContext") -> tuple:
+    """(task clip, earlier-results clip) in chars; today's values when no window."""
+    if not ctx.window:
+        return ctx.result_chars, ctx.result_chars * 3
+    chars = ctx.window * 3.5
+    return (min(ctx.result_chars, max(1500, int(chars * _TASK_SHARE))),
+            min(ctx.result_chars * 3, max(3000, int(chars * _PRIOR_SHARE))))
+
 
 def _ledger_section(dead_ends: List[str]) -> str:
     """CLM-5 AC3: the bounded dead-end ledger ('' when empty - never padded)."""
@@ -686,7 +704,8 @@ def _relative(text: str, workdir: str) -> str:
 
 
 def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int,
-                  expected: str = "", parent_goal: str = "", review_note: str = "") -> str:
+                  expected: str = "", parent_goal: str = "", review_note: str = "",
+                  prior_limit: int = 0) -> str:
     parts = []
     if task.strip() and task.strip() != goal.strip():
         parts.append("THE WHOLE TASK (the user's request, word for word — every rule in it "
@@ -702,7 +721,7 @@ def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int,
         done = "\n\n".join(
             f"[step {r.get('step')}] {r.get('description', '')}\n{r.get('result', '')}" for r in prior
         )
-        parts.append("RESULTS OF EARLIER STEPS:\n" + _clip(done, limit * 3))
+        parts.append("RESULTS OF EARLIER STEPS:\n" + _clip(done, prior_limit or limit * 3))
     return "\n\n".join(parts)
 
 
@@ -745,8 +764,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": _relative(
-            _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars,
-                          ctx.expected, ctx.parent_goal, ctx.review_note)
+            _user_message(goal, ctx.task, ctx.prior_results, _step_clip(ctx)[0],
+                          ctx.expected, ctx.parent_goal, ctx.review_note,
+                          prior_limit=_step_clip(ctx)[1])
             + (("\n\nMEMORY (earlier statements, with their source):\n"
                 + ctx.memory_facts) if ctx.memory_facts else "")
             + _ledger_section(ctx.dead_ends), ctx.workdir)},

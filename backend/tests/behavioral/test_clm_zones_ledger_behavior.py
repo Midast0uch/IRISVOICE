@@ -172,3 +172,31 @@ def test_edge_a_restretch_that_cannot_fit_is_refused_counted_and_the_view_stays_
 
     reserve = min(max(256, 8192), WINDOW // 2) + 256
     assert all(estimate_tokens(m, TOOLS) <= WINDOW - reserve for m in seen)   # never over the router budget
+
+
+def test_t76_the_step_message_clips_scale_with_the_window():
+    """T7.6: on 8,192 tokens the protected step message stays far below the shrink
+    limit (3,072 tokens) even with a long task and long earlier results; with no
+    window (flag off) the clips are today's 8,000 / 24,000 chars."""
+    from backend.agent.context_gauge import estimate_tokens
+
+    big_task = "Fix the parser. " * 2000                       # 32,000 chars
+    prior = [{"step": i, "description": f"read part {i}", "result": "r" * 9000} for i in range(4)]
+    seen = []
+
+    def generate(role, messages, tools=None, **kw):
+        seen.append(copy.deepcopy(messages))
+        return "Done.\nSTATUS: done", "", []
+
+    for window in (8192, 0):
+        seen.clear()
+        ctx = ne.NodeContext(generate=generate, execute=lambda n, p: {"success": True},
+                             format_result=lambda n, r: "", tools=TOOLS, task=big_task,
+                             prior_results=prior, conv_id="t76", window=window)
+        ne.run_node("Fix it", ctx)
+        step = seen[0][1]
+        tokens = estimate_tokens([step])
+        if window:
+            assert tokens <= 3500, tokens          # ~980 + ~2,050 + the frame
+        else:
+            assert tokens > 8000                   # today's clips: 8,000 + 24,000 chars
