@@ -106,8 +106,8 @@
   },
   "x05": {
     "needle": "MW-5532-QF",
-    "needle_turn": 3,
-    "turn_chars": 30000,
+    "needle_turn": 4,
+    "turn_chars": 28000,
     "needles": [
       "MW-5532-QF"
     ]

@@ -6881,8 +6881,8 @@
       "group": "context",
       "mode": "personal",
       "path": "text_message",
-      "timeout_s": 900,
-      "prior_timeout_s": 600,
+      "timeout_s": 300,
+      "prior_timeout_s": 240,
       "prior_turns": [
         {
           "fixture": "x05_history_needle/turns/t1.txt"
@@ -6906,14 +6906,14 @@
           "fixture": "x05_history_needle/turns/t7.txt"
         }
       ],
-      "prompt": "In the third chunk of the deploy log I pasted, which maintenance window id did tonight's deploy run in? Reply with the id only.",
+      "prompt": "Which maintenance window id was tonight's deploy using, according to the fourth note I sent? Reply with the id only.",
       "reply_patterns": [
         "MW\\-5532\\-QF"
       ],
       "pressure": {
         "reads": 0,
-        "read_chars": 210000,
-        "needs": "fact in turn 3 of 7 pasted turns; the last 5 turns are 150,000 chars"
+        "read_chars": 196000,
+        "needs": "fact in turn 4 of 7 pasted turns; the record keeps turns 4-7 (112,000 chars = 28,000 tokens chars/4) against ~22.8k tokens of history budget: the oldest user message is trimmed"
       }
     }
   ]

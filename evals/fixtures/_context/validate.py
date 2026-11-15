@@ -80,6 +80,24 @@ x5 = ANS["x05"]
 check("x05 passes the needle", grade("x05_history_needle", f"{x5['needle']}") == [])
 check("x05 fails on a decoy window id", grade("x05_history_needle", "MW-2210-AB") != [])
 
+# 3b -- x05 turns must take the DIRECT path: tier0_classify -> QUESTION (no planning) for every prior turn and the ask
+code = (
+    "import json,sys;from backend.agent.semantic_gate import tier0_classify,is_web_search_request;"
+    "ctx=[{'role':'assistant','content':'ok'}];out=[]\n"
+    "for a in sys.argv[1:]:\n"
+    "    t=open(a,encoding='utf-8').read() if a.endswith('.txt') else a\n"
+    "    out.append([tier0_classify(t,ctx).intent.name,is_web_search_request(t)])\n"
+    "print(json.dumps(out))")
+turn_files = sorted(str(p) for p in (R.FIXTURES_DIR / "x05_history_needle" / "turns").glob("t*.txt"))
+rc = subprocess.run([sys.executable, "-c", code, *turn_files, by_id["x05_history_needle"]["prompt"]],
+                    capture_output=True, text=True, cwd=str(EVALS.parent))
+try:
+    verdicts = json.loads(rc.stdout.strip().splitlines()[-1])
+except (ValueError, IndexError):
+    verdicts = []
+check("x05: the 7 prior turns and the ask all route direct (Tier0 QUESTION, no web trigger)",
+      len(verdicts) == 8 and all(v[0] == "QUESTION" and not v[1] for v in verdicts))
+
 # 4 -- pressure arithmetic (gauge rule: chars / 3.5)
 MAX_CALLS, RESULT_CHARS, PRIOR_CLIP = 12, 8000, 24000      # node_executor.py :199 :201 :619 (limit * 3)
 BLOCK_HEAD = 2500                                           # node_executor.py :140
@@ -102,9 +120,10 @@ for t in tasks:
           f"read tok / 128k = {tok(p['read_chars']) / 128000:4.2f}, / 32k = {tok(p['read_chars']) / 32000:4.2f}, "
           f"/ 16k = {tok(p['read_chars']) / 16000:4.2f}; "
           f"heads a later step can keep <= {kept} chars of {p['read_chars']}")
-print("\nx05: history = last 10 messages (agent_kernel.py:615 max_messages=10) = 5 pasted turns x 30,000 chars "
-      f"= {5 * 30000 // 4} tokens (chars/4) vs _DIRECT_CTX_BUDGET 24,000 = {5 * 30000 // 4 / 24000:.2f}; "
-      f"with recalled chunks the recency window keeps 8 messages = 4 turns = {4 * 30000 // 4} tokens = {4 * 30000 // 4 / 24000:.2f}")
+print("\nx05: ConversationMemory keeps 10 messages (agent_kernel.py:615) and the ask is added before the context is read "
+      "(kernel/turn.py:1539 vs :1580): the record at the ask = [turn 3 reply, turns 4-7, the ask]. Turns 4-7 = 4 x 28,000 chars = "
+      f"{4 * 28000 // 4} tokens (chars/4) vs about 22.8k tokens left of _DIRECT_CTX_BUDGET 24,000 for history "
+      f"(system ~1.1k, current turn ~0) = {4 * 28000 // 4 / 22800:.2f}; the oldest user message (the needle, turn 4) is trimmed.")
 
 print("\n" + ("ALL OK" if not failures else f"{len(failures)} FAILED: {failures}"))
 sys.exit(1 if failures else 0)

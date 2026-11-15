@@ -285,13 +285,26 @@ def gen_sketch(out: Path, rng: random.Random, ans: dict) -> None:
 
 
 # -- x05 history needle ------------------------------------------------------------------
+# 7 prior turns of ~28,000 chars, the needle in turn 4. A turn adds its user message to
+# ConversationMemory BEFORE the context is read (kernel/turn.py:1539 vs :1580) and the memory keeps 10
+# messages (agent_kernel.py:615), so at the ask the record is [turn 3 reply, turns 4-7, the ask]: the
+# needle turn is the OLDEST user message in the record. The direct path keeps 8 messages when recalled
+# chunks exist, all of them otherwise, and trims from the front by the 24,000-token chars/4 budget:
+# 4 turns x 28,000 chars / 4 = 28,000 tokens > ~22.8k left for history, so the oldest user message -
+# the needle - is cut by the budget trim in both branches.
+TURN_CHARS = 28000
+NEEDLE_TURN = 4
+
 
 def gen_history(out: Path, rng: random.Random, ans: dict) -> None:
     needle = "MW-5532-QF"
     decoys = ["MW-2210-AB", "MW-9047-ZN", "MW-3381-HC", "MW-7765-DR"]
     for t in range(1, 8):
-        head = (f"Chunk {t} of 7 of the staging deploy log. Do not analyze it, just reply with the "
-                f"single word ok.\n\n")
+        # The turn must take the DIRECT path (a wh-word first: semantic_gate.tier0_classify checks
+        # is_wh_question before has_action_verb, and a log is full of action verbs such as pull,
+        # start, deploy). Started with "Chunk n ..." the 30,000-char version routed to the planner.
+        head = (f"What follows is note {t} of 7 from my staging deploy log. Please just reply with "
+                f"the single word ok.\n\n")
 
         def line():
             k = rng.randrange(5)
@@ -307,15 +320,15 @@ def gen_history(out: Path, rng: random.Random, ans: dict) -> None:
             return f"{ts} gate INFO  health check {rng.randrange(1, 50)} passed in {rng.randrange(40, 700)}ms"
 
         lines: list = []
-        _fill(rng, lines, 30000, line)
-        if t == 3:
+        _fill(rng, lines, TURN_CHARS, line)
+        if t == NEEDLE_TURN:
             pos = len(lines) * 2 // 3
             lines.insert(pos, f"2026-03-14 22:41:07 change-board NOTICE tonight's deploy runs in maintenance window id {needle} (approved by ops)")
         else:
             d = decoys[t % len(decoys)]
             lines.insert(len(lines) // 2, f"2026-03-14 09:12:31 change-board NOTICE maintenance window id {d} is the quarterly freeze slot (NOT tonight)")
         _w(out / "x05_history_needle" / "turns" / f"t{t}.txt", head + "\n".join(lines) + "\n")
-    ans["x05"] = {"needle": needle, "needle_turn": 3, "turn_chars": 30000, "needles": [needle]}
+    ans["x05"] = {"needle": needle, "needle_turn": NEEDLE_TURN, "turn_chars": TURN_CHARS, "needles": [needle]}
 
 
 # -- tasks -----------------------------------------------------------------------------------
@@ -364,13 +377,14 @@ def build_tasks(ans: dict) -> list:
          "pressure": {"reads": 4, "read_chars": sum(x04["file_chars"].values()),
                       "needs": "intermediates per order (zone, weight, rates, multiplier, tax) kept until the total"}},
         {"id": "x05_history_needle", "group": "context", "mode": "personal", "path": "text_message",
-         "timeout_s": 900, "prior_timeout_s": 600,
+         "timeout_s": 300, "prior_timeout_s": 240,
          "prior_turns": [{"fixture": f"x05_history_needle/turns/t{t}.txt"} for t in range(1, 8)],
-         "prompt": ("In the third chunk of the deploy log I pasted, which maintenance window id did tonight's deploy "
-                    "run in? Reply with the id only."),
+         "prompt": ("Which maintenance window id was tonight's deploy using, according to the fourth note I sent? "
+                    "Reply with the id only."),
          "reply_patterns": [re.escape(ans["x05"]["needle"])],
-         "pressure": {"reads": 0, "read_chars": 7 * 30000,
-                      "needs": "fact in turn 3 of 7 pasted turns; the last 5 turns are 150,000 chars"}},
+         "pressure": {"reads": 0, "read_chars": 7 * TURN_CHARS,
+                      "needs": "fact in turn 4 of 7 pasted turns; the record keeps turns 4-7 (112,000 chars = 28,000 "
+                               "tokens chars/4) against ~22.8k tokens of history budget: the oldest user message is trimmed"}},
     ]
 
 
