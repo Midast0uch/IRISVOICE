@@ -350,7 +350,14 @@ same-conditions A/B, numbers named with their cohort.
 Flag `IRIS_WORKBENCH` (off = the fine-grained node path byte-equal, proven by the
 parity harnesses). Order is the priority; T7.0 decides whether to proceed.
 
-- [ ] **T7.0 baseline (measure first).** From the recorded runs (cohort coding 8,
+- [x] **T7.0 baseline - PASSED 2026-11-15, proceed.** The cloud gate's node calls
+  (both arms, logs/iris.log 11:58-13:44; 108 nodes, 219 node tool calls): READ-class
+  146 (67 %), run_command 34 (16 %) -> READ+RUN 82 % (bar >= ~30 %); 61 % of all node
+  calls sit in runs of >= 3 consecutive READ/RUN calls (what one script absorbs);
+  calls per node median 1, p90 4, max 11. Interpreter start, warm: system python
+  111-122 ms, .venv python 101-103 ms -> lazy start (no pre-warm); cold start (after a
+  reboot, hard disk C:) not measured yet - measure at TG-7.
+  Original task text: From the recorded runs (cohort coding 8,
   context x01-x04): share of node model calls that follow READ-class or run_command
   calls; calls per node; steps per plan; interpreter spawn time cold and warm.
   DONE = the table here; proceed only if the share is >= ~30 %.
