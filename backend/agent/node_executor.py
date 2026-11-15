@@ -282,6 +282,8 @@ class NodeContext:
     # CLM-5 AC3 (Wave 4): the task's dead ends ("tool:target" actions that
     # already failed in an earlier step), shown as a bounded ledger section.
     dead_ends: List[str] = field(default_factory=list)
+    # CLM-11 (Workbench code mode): the node's system prompt; "" = _SYSTEM.
+    system: str = ""
 
 
 @dataclass
@@ -762,7 +764,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         except Exception:  # noqa: BLE001 - observability never blocks a step
             pass
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": ctx.system or _SYSTEM},
         {"role": "user", "content": _relative(
             _user_message(goal, ctx.task, ctx.prior_results, _step_clip(ctx)[0],
                           ctx.expected, ctx.parent_goal, ctx.review_note,

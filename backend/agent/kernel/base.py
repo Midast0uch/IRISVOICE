@@ -68,6 +68,8 @@ _STEP_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
 # runs side by side. This is the lane rule (one writer per resource), not the
 # phase model - two drivers on one page break the page.
 _NODE_CLAIMS = {
+    # CLM-11: one conversation's Workbench namespace, one code node at a time.
+    "workbench": frozenset({"run_python"}),
     "browser": frozenset({"browser_open", "browser_observe", "browser_act", "browser_explore"}),
     "screen": frozenset({"take_screenshot", "vision_analyze_screen", "gui_click", "gui_type",
                          "gui_press_key", "launch_app", "open_file", "open_url"}),

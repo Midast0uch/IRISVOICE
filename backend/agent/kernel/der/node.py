@@ -125,6 +125,102 @@ def _clm_menu_budget(tools: list, window: int) -> list:
     return sorted(kept, key=lambda t: order[id(t)])
 
 
+# -- CLM-11 Workbench code mode (IRIS_WORKBENCH; unset = today's node, byte for byte)
+_WB_SYSTEM = (
+    "You are doing ONE step of a larger task in a persistent Python workbench. Write "
+    "Python and run it with run_python: one script may read, search, transform and "
+    "check many files. The working folder is the project (written `.`). Variables, "
+    "imports and functions persist across your run_python calls in this conversation. "
+    "Ready variables: task (the user's request), goal (this step), steps (earlier "
+    "steps: list of dicts with step, description, result), memory (what was said "
+    "before). Large values stay in variables - print only the slices you need. "
+    "keep(name, note) marks a small value to remember. When the step is done, answer "
+    "with a short plain summary of what you did and found, with no tool call, and end "
+    "with `STATUS: done`, or `STATUS: failed: <reason>`."
+)
+_WB_PRIOR_HEAD = 300   # earlier results ride in `steps`; the message keeps a head
+_wb_stats = {"code_nodes": 0, "fallback": 0, "unavailable": 0, "seed_failed": 0}
+
+
+def _wb_on() -> bool:
+    return os.environ.get("IRIS_WORKBENCH") == "1"
+
+
+def wb_stats() -> dict:
+    return dict(_wb_stats)
+
+
+def _wb_code_mode(goal: str, tools: list, workdir: str) -> bool:
+    """The stated entry rule (design "Code mode and fallback"): developer mode
+    (run_python offered), a READ or RUN step, no external / screen reference,
+    and an interpreter that can run the worker."""
+    if not _wb_on():
+        return False
+    if not any((t.get("function") or {}).get("name") == "run_python" for t in tools):
+        return False
+    try:
+        from backend.agent import external_reference as _xr
+        from backend.agent.tool_choice_action_class import READ, RUN, required_class
+        from backend.agent.tool_decision import _vision_relevant
+
+        if required_class(goal) not in (READ, RUN):
+            return False
+        if _vision_relevant(goal) or _xr.is_external(_xr.classify(goal)):
+            return False
+        from backend.agent.workbench.client import resolve_interpreter
+
+        if not resolve_interpreter(workdir or "."):
+            _wb_stats["unavailable"] += 1
+            return False
+    except Exception as exc:  # noqa: BLE001 - the fine-grained node runs, logged
+        logger.warning("[workbench] entry rule failed (%r): fine-grained node", exc)
+        return False
+    return True
+
+
+def _wb_seed(conversation_id: str, workdir: str, task: str, goal: str,
+             prior: list, memory: str) -> bool:
+    """What ENTERS the workbench (design "Enter/leave policy"): task, goal,
+    steps (full results of finished steps), memory - through the policy."""
+    try:
+        from backend.agent.workbench.manager import get_manager
+        from backend.agent.workbench.policy import admit_put
+
+        client = get_manager().workbench_for(conversation_id, workdir)
+        if client is None:
+            return False
+        for name, value in (("task", task), ("goal", goal), ("steps", list(prior or [])),
+                            ("memory", memory or "")):
+            ok, value_or_reason = admit_put(name, value)
+            if ok:
+                client.put(name, value_or_reason)
+        return True
+    except Exception as exc:  # noqa: BLE001 - counted; the node falls back
+        _wb_stats["seed_failed"] += 1
+        logger.warning("[workbench] conv=%s seed failed: %r", conversation_id, exc)
+        return False
+
+
+def _wb_needs_fallback(result) -> str:
+    """CLM-11 AC4: why a code node re-runs on the fine-grained path ('' = it
+    does not): the workbench was unavailable, the sandbox refused, or two
+    run_python calls in a row failed with the same exception type."""
+    outs = [(bool(c.get("ok")), str(c.get("out") or ""))
+            for c in (getattr(result, "calls", None) or []) if c.get("tool") == "run_python"]
+    if any("workbench_unavailable" in o or "WorkbenchUnavailable" in o for _ok, o in outs):
+        return "unavailable"
+    if any("PermissionError" in o and "workbench" in o.lower() for ok, o in outs if not ok):
+        return "sandbox_refused"
+    kinds = [o.split(":", 1)[0].strip() for ok, o in outs if not ok]
+    fails = [ok for ok, _o in outs]
+    if len(fails) >= 2 and not fails[-1] and not fails[-2] and len(kinds) >= 2 \
+            and kinds[-1] == kinds[-2]:
+        return f"twice {kinds[-1] or 'error'}"
+    if not outs and not getattr(result, "success", False):
+        return "no_execution"
+    return ""
+
+
 def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session: str = "") -> dict:
     """record_result / ref_readable / on_clm_event / window for one node."""
     from backend import conversation_store as _cs
@@ -1644,7 +1740,32 @@ class DerNodeMixin:
             **(_clm_node_hooks(self, item, _turn_id, session=_session) if _clm_offload_on() else {}),
             )
             _node_state["ctx"] = _node_ctx
-            result = run_node(goal, _node_ctx)
+            _full_tools = self._get_openai_tools() if _wb_on() else []
+            if _wb_on() and _wb_code_mode(goal, _full_tools, workdir) and _wb_seed(
+                    self.conversation_id or "", workdir, task, goal, _prior_results, _step_facts):
+                import dataclasses as _dc
+
+                _wb_ctx = _dc.replace(
+                    _node_ctx,
+                    tools=[t for t in _full_tools
+                           if (t.get("function") or {}).get("name") == "run_python"],
+                    role="reasoning", helper_role=None, max_tokens=2048, max_calls=6,
+                    system=_WB_SYSTEM, choose_tool=None, on_call=None, on_result=None,
+                    prior_results=[dict(r, result=str(r.get("result") or "")[:_WB_PRIOR_HEAD]
+                                        + " [full text: steps]") for r in _prior_results],
+                )
+                _wb_stats["code_nodes"] += 1
+                logger.info("[workbench] conv=%s step=%s code node", self.conversation_id,
+                            getattr(item, "step_id", ""))
+                result = run_node(goal, _wb_ctx)
+                _why = _wb_needs_fallback(result)
+                if _why:
+                    _wb_stats["fallback"] += 1
+                    logger.info("[workbench] conv=%s step=%s falls back to tools (%s)",
+                                self.conversation_id, getattr(item, "step_id", ""), _why)
+                    result = run_node(goal, _node_ctx)
+            else:
+                result = run_node(goal, _node_ctx)
             _flush_decided()  # a last pick the step finished without calling
         finally:
             for _c in _held:
