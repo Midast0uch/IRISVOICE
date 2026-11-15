@@ -770,6 +770,22 @@ def _verify_fixed(conn, task_id: str, evidence: str, pending: List[tuple],
 
 # ── surfacing (only at a failure; relevance by construction) ────────────────
 
+def dead_ends_for(conn, task_id: str, limit: int = 8) -> List[str]:
+    """The open case's dead-end action signatures for ``task_id`` ("tool:target",
+    newest last, at most ``limit``) - CLM-5 AC3's ledger, read from the existing
+    bounded list (memory_cases.dead_ends, written by record_step). [] on any
+    failure or when the task has no open case. One indexed read (open_task)."""
+    try:
+        ensure_schema(conn)
+        case = _open_case(conn, task_id)
+        if case is None:
+            return []
+        return [str(d) for d in json.loads(case["dead_ends"] or "[]")][-max(1, limit):]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[memory_events] dead_ends_for failed task=%s: %s", task_id, exc)
+        return []
+
+
 def case_trail(conn, tool: Optional[str], error_text: str) -> str:
     """One bounded block when a live failure matches a known case, else ''."""
     try:

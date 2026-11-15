@@ -628,6 +628,15 @@ TOOL_RESULT_MAX_CHARS = 128_000
 #     i.e. about 11 stored rows in the largest run. 200 rows = 18 such maximum runs; past it the
 #     OLDEST rows go in the same write job (counted as `evicted`).
 TOOL_RESULTS_PER_CONVERSATION = 200
+# Store-wide budget (2026-11-15). Rows leave with their conversation - but an
+# eval or dev_cli turn runs in an id with NO conversations row, which
+# delete_conversation never reaches, so per-conversation caps alone let the
+# table grow without bound (the first live gate wrote 27 such rows). The
+# oldest rows go first once the table passes either bound. Measured live
+# rows: median ~7k chars, max 22k; 4,000 x 7k ~ 28 MB typical; the char bound
+# caps the worst case at ~64 MB.
+TOOL_RESULTS_MAX_ROWS = 4000
+TOOL_RESULTS_MAX_CHARS = 64_000_000
 #   * Worst case per conversation: 200 x 128,000 = 25.6 M chars (about 25.6 MB of ASCII text; up
 #     to 3x for non-ASCII). Typical: 200 x ~7k = 1.4 MB. The whole store is bounded by the number
 #     of conversations x that, and rows leave with their conversation, so no store-wide budget.
@@ -695,6 +704,15 @@ def _write_tool_result(
                         "WHERE conversation_id = ? ORDER BY rowid ASC LIMIT ?)",
                         (conversation_id, over),
                     ).rowcount
+                n_rows, n_chars = conn.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(chars), 0) FROM tool_results").fetchone()
+                while n_rows > TOOL_RESULTS_MAX_ROWS or n_chars > TOOL_RESULTS_MAX_CHARS:
+                    old = conn.execute(
+                        "SELECT rowid, chars FROM tool_results ORDER BY rowid ASC LIMIT 1").fetchone()
+                    if old is None:
+                        break
+                    conn.execute("DELETE FROM tool_results WHERE rowid = ?", (old[0],))
+                    n_rows, n_chars, evicted = n_rows - 1, n_chars - int(old[1] or 0), evicted + 1
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")

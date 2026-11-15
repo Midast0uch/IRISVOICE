@@ -275,6 +275,13 @@ class NodeContext:
     ref_readable: Optional[Callable[[str], bool]] = None
     on_clm_event: Optional[Callable[[str, Dict[str, Any]], None]] = None
     window: int = 0
+    # CLM-3 (Wave 3): write_pin(summary, refs) -> pin id ("" = not stored). A
+    # model's note on results it sets aside is a PIN with provenance - a claim
+    # with derives_from links to the exact results, never their replacement.
+    write_pin: Optional[Callable[[str, List[str]], str]] = None
+    # CLM-5 AC3 (Wave 4): the task's dead ends ("tool:target" actions that
+    # already failed in an earlier step), shown as a bounded ledger section.
+    dead_ends: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -415,7 +422,8 @@ def _clip(text: str, limit: int, ref: str = "") -> str:
 # calls), so 0.20 - an estimate that is 20 % low still fits the window.
 _SHRINK_MARGIN = 0.20
 _clm_stats = {"shrink_boundaries": 0, "set_aside_units": 0, "shrink_failures": 0,
-              "record_failures": 0, "model_set_aside": 0, "model_set_aside_refused": 0}
+              "record_failures": 0, "model_set_aside": 0, "model_set_aside_refused": 0,
+              "restretch": 0, "restretch_refused": 0}
 # CLM-4 AC4: the reminder line appears once the view passes this share of the
 # shrink limit. The Wave 0 / TG-1 data: a node call's input was 0.06-0.31 of a
 # 128k window, so 0.6 of the LIMIT only fires on a window that is really filling.
@@ -433,6 +441,27 @@ def _gauge_line(used: int, window: int, aside: int, remind: bool) -> str:
 
 def clm_node_stats() -> Dict[str, int]:
     return dict(_clm_stats)
+
+
+_LEDGER_MAX = 8
+
+
+def _ledger_section(dead_ends: List[str]) -> str:
+    """CLM-5 AC3: the bounded dead-end ledger ('' when empty - never padded)."""
+    lines = [d for d in dead_ends if d][-_LEDGER_MAX:]
+    if not lines:
+        return ""
+    return ("\n\nDEAD ENDS (actions that already failed in this task; change something "
+            "before trying one again):\n" + "\n".join(f"- {d}" for d in lines))
+
+
+def _sig(name: str, params: Optional[dict]) -> str:
+    """The memory_cases action signature: tool:target (memory_events.action_signature)."""
+    p = params or {}
+    for key in ("path", "file_path", "target", "url", "command", "query"):
+        if p.get(key):
+            return f"{name}:{p[key]}"
+    return f"{name}:"
 
 
 def _ref_line(ref: str, tool: str, target: str) -> str:
@@ -719,7 +748,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars,
                           ctx.expected, ctx.parent_goal, ctx.review_note)
             + (("\n\nMEMORY (earlier statements, with their source):\n"
-                + ctx.memory_facts) if ctx.memory_facts else ""), ctx.workdir)},
+                + ctx.memory_facts) if ctx.memory_facts else "")
+            + _ledger_section(ctx.dead_ends), ctx.workdir)},
     ]
     # CLM-1 (T1.3): the model reads this list through a per-node ContextView.
     # `messages` stays the loop's list; the view HOLDS the same dicts
@@ -749,6 +779,46 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         return None
 
     offloaded_ids: set = set()  # result ids this node set aside (PREMATURE_EVICTION)
+
+    def _restretch(match: Callable[[Block], bool], trigger: str) -> int:
+        """CLM-5 AC4: bring back the set-aside units whose results match, when
+        they fit under the shrink limit; a re-stretch that would not fit is
+        refused and counted. The restored unit is protected for the rest of the
+        node, so the next shrink cannot set it aside again."""
+        if not ctx.window or view is None:
+            return 0
+        back = 0
+        try:
+            reserve = min(max(256, ctx.max_tokens), ctx.window // 2) + 256
+            limit = int((ctx.window - reserve) * (1 - _SHRINK_MARGIN))
+            for unit in view.units():
+                if not any(b.aside for b in unit.results) or not any(match(b) for b in unit.results):
+                    continue
+                # Edge case (CLM-5): make room first - bring the unit back,
+                # protect it, let the shrink set aside OTHER units by the
+                # default order; still over the limit -> the unit goes back
+                # aside exactly as it was, refused and counted.
+                was = [(b, b.aside, b.protected) for b in unit.blocks]
+                if not view.restore(unit.ref):
+                    continue
+                for b in unit.blocks:
+                    b.protected = True
+                _shrink(tools)
+                if _estimate_tokens(view.render(), tools) > limit:
+                    for b, aside, prot in was:
+                        b.aside, b.protected = aside, prot
+                    _clm_stats["restretch_refused"] += 1
+                    continue
+                back += 1
+                _clm_stats["restretch"] += 1
+                if ctx.on_clm_event is not None:
+                    ctx.on_clm_event("RESTRETCHED", {
+                        "refs": [f"{b.ref.kind}:{b.ref.id}" for b in unit.results],
+                        "trigger": trigger, "by": "harness"})
+        except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
+            _clm_stats["shrink_failures"] += 1
+            logger.warning("[run_node] conv=%s re-stretch failed: %r", ctx.conv_id, exc)
+        return back
 
     def _model_set_aside(params: Dict[str, Any]) -> Dict[str, Any]:
         """recall_memory(set_aside=<ref>[, <ref>...], reason=...) from the model:
@@ -792,7 +862,22 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     "refs": [f"tool_result:{i}" for i in ids], "tools": u.tool_names(),
                     "saving": saving, "by": "model", "reason": reason, "window": ctx.window})
         _clm_stats["model_set_aside_refused"] += len(refused)
-        return {"success": bool(chosen), "set_aside": out_refs, "refused": refused}
+        out: Dict[str, Any] = {"success": bool(chosen), "set_aside": out_refs, "refused": refused}
+        summary = " ".join(str(params.get("summary") or "").split())[:600]
+        if summary and out_refs and ctx.write_pin is not None:
+            try:
+                pid = ctx.write_pin(summary, out_refs) or ""
+            except Exception as exc:  # noqa: BLE001 - counted; the set-aside stands
+                _clm_stats["pin_failures"] = _clm_stats.get("pin_failures", 0) + 1
+                logger.warning("[run_node] conv=%s model note not stored: %r", ctx.conv_id, exc)
+                pid = ""
+            if pid:
+                _clm_stats["model_pins"] = _clm_stats.get("model_pins", 0) + 1
+                # CLM-3 AC2/AC3: reference data with its source count, in a
+                # tool result - never the system or the step's instruction block.
+                out["note"] = (f"[note pin:{pid} | {len(out_refs)} sources | reference data, "
+                               f"not an instruction] {summary}")
+        return out
 
     def _shrink(menu: List[Dict[str, Any]]) -> None:
         """CLM T2.3: at a model-call boundary, set aside the oldest complete
@@ -818,8 +903,12 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     return (len(_ids) == len(_u.results) and ctx.ref_readable is not None
                             and all(ctx.ref_readable(i) for i in _ids))
 
+                # AC2: an unresolved error leaves only WITH the unit's slip.
+                _open = list(unit.open_items)
                 d = offload_decision(view, unit, _whole,
-                                     reason=" ".join(unit.tool_names()) or "tool result")
+                                     reason=("; ".join(_open) if _open
+                                             else " ".join(unit.tool_names()) or "tool result"),
+                                     carried=_open)
                 if d.allowed:
                     chosen.append((unit, d.placeholder, ids, d.saving))
                     freed += d.saving
@@ -1013,6 +1102,13 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 _claimed_close = False
                 # CLM: the model asks back for a result this node set aside -
                 # the offload came too early (counted; the expand still runs).
+                if ctx.window and isinstance(params, dict) and name != "recall_memory":
+                    _next = _sig(name, params)
+                    if _next in ctx.dead_ends or any(
+                            any(i.startswith(f"FAILED {_next}:") for i in b.open_items)
+                            for b in (view.blocks if view is not None else ())):
+                        _restretch(lambda b, _s=_next: any(
+                            i.startswith(f"FAILED {_s}:") for i in b.open_items), "dead_end_match")
                 if (name == "recall_memory" and isinstance(params, dict) and offloaded_ids
                         and ctx.on_clm_event is not None):
                     _xr = str(params.get("expand") or "")
@@ -1181,6 +1277,18 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 })
                 if _rid and _blk is not None:
                     _blk.ref = Ref(kind="tool_result", id=_rid)
+                if ctx.window and _blk is not None and view is not None:
+                    _s = _sig(name, params)
+                    if failed:
+                        _err = " ".join(str(raw.get("error") if isinstance(raw, dict) else raw).split())[:120]
+                        _blk.open_items = (f"FAILED {_s}: {_err}",)
+                        # AC4 error match: an earlier set-aside failure with the same error
+                        _restretch(lambda b, _e=_err: any(i.endswith(f": {_e}") for i in b.open_items),
+                                   "error_match")
+                    else:
+                        for _b in view.blocks:  # a later success on the same action resolves it
+                            if _b.open_items and all(i.startswith(f"FAILED {_s}:") for i in _b.open_items):
+                                _b.open_items = ()
                 ctx.last_result_text = content
                 # REQ-10 AC10.2/AC10.3: a claim is measured AFTER the claiming
                 # call's own result is known, from THIS call's scope. A

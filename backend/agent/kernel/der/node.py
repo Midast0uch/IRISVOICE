@@ -49,6 +49,12 @@ _CLM_EXPAND_PARAMS = {
         "One or more references (tool_result:<id>, separated by spaces) of results "
         "to replace with a one-line slip that keeps their reference.")},
     "reason": {"type": "string", "description": "With set_aside: why, in a few words."},
+    "summary": {"type": "string", "description": (
+        "With set_aside: optional note on what the set-aside results showed; it is kept "
+        "as a note that links to them.")},
+    "audit_pin": {"type": "string", "description": (
+        "A note's pin id: returns the results it was written from and whether each "
+        "still resolves.")},
 }
 _CLM_RECALL_FACTS = (
     " Tool results carry [ref tool_result:<id>]; a long result's cut mark names its ref."
@@ -75,7 +81,20 @@ def _clm_recall_menu(tools: list, full: list) -> list:
     return out + [spec]
 
 
-def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution") -> dict:
+def _clm_dead_ends(kernel, session: str, turn_id) -> list:
+    """The task's dead ends (memory_cases, the key finalize's record_step uses)."""
+    try:
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+        from backend.memory.memory_events import dead_ends_for
+
+        conn = resolve_mycelium_conn(getattr(kernel, "_memory_interface", None))
+        return dead_ends_for(conn, f"{session}:{turn_id or ''}") if conn is not None else []
+    except Exception as exc:  # noqa: BLE001 - no ledger, logged
+        logger.warning("[clm] dead ends unreadable (%r): ledger empty", exc)
+        return []
+
+
+def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session: str = "") -> dict:
     """record_result / ref_readable / on_clm_event / window for one node."""
     from backend import conversation_store as _cs
     from backend.agent.kernel.base import _emit_event
@@ -100,13 +119,39 @@ def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution") -> dict
     def on_clm_event(label, payload):
         _emit_event(kernel, label, payload=dict(payload, step=step, turn=turn_id or ""))
 
+    def write_pin(summary, refs):
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+        from backend.memory.pin_store import PinStore
+        from backend.utils.durability_queue import lane
+
+        conn = resolve_mycelium_conn(getattr(kernel, "_memory_interface", None))
+        if conn is None:
+            return ""
+        store = PinStore(conn=conn)
+        pid = store.add(title="model note: " + " ".join(summary.split())[:60],
+                        content=summary, pin_type="model_summary",
+                        tags=["model_summary", "author:model", "clm", f"conv:{conv}"])
+
+        def _links():
+            for ref in refs:
+                kind, _, rid = str(ref).partition(":")
+                store.link(pid, rid, relationship="derives_from",
+                           source_type="pin", target_type=kind)
+
+        # the links off the node thread (finalize.py precedent: a link write
+        # waited inline on "database is locked")
+        if not lane("memory_events").submit("clm_pin_links", _links):
+            logger.warning("[clm] conv=%s pin %s links refused by the lane", conv, pid)
+        return pid
+
     try:
         window = int(kernel.resolve_context_window_with_source(role).tokens)
     except Exception as exc:  # noqa: BLE001 - no window = no in-node shrink, logged
         logger.warning("[clm] conv=%s window for %s unknown (%r): in-node shrink off", conv, role, exc)
         window = 0
     return {"record_result": record_result, "ref_readable": ref_readable,
-            "on_clm_event": on_clm_event, "window": window}
+            "on_clm_event": on_clm_event, "window": window, "write_pin": write_pin,
+            "dead_ends": _clm_dead_ends(kernel, session, turn_id)}
 
 
 from backend.agent.kernel.planning import (
@@ -1560,7 +1605,7 @@ class DerNodeMixin:
             review_note=str(getattr(item, "review_feedback", "") or ""),
             parallel_ok=_node_call_parallel_ok if _DER_PARALLEL else None,  # one off switch
             close_probe=_close_probe,
-            **(_clm_node_hooks(self, item, _turn_id) if _clm_offload_on() else {}),
+            **(_clm_node_hooks(self, item, _turn_id, session=_session) if _clm_offload_on() else {}),
             )
             _node_state["ctx"] = _node_ctx
             result = run_node(goal, _node_ctx)

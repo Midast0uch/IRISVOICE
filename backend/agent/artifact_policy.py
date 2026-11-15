@@ -181,6 +181,7 @@ _CLM_MARK_RES = (
     re.compile(r"\[view \d+(?:\.\d+)?k / \d+(?:\.\d+)?k tokens \| \d+ set aside\]"),
     re.compile(r"\[the view is filling:[^\]\n]*\]"),
     re.compile(r"\[ref tool_result:[0-9a-fA-F]+\]"),
+    re.compile(r"\[note pin:[^\]\n]*\]"),
     re.compile(r"; full text: recall_memory expand=tool_result:[0-9a-fA-F]+"),
 )
 _clm_mark_strips = {"replies": 0}

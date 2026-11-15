@@ -336,6 +336,59 @@ def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
     return out
 
 
+def _pin_sources(conn, pin_id: str) -> list:
+    """The derives_from targets of a pin, in link order: [(kind, id), ...]."""
+    rows = conn.execute(
+        "SELECT target_type, target_id FROM mycelium_pin_links WHERE source_type = 'pin' "
+        "AND source_id = ? AND relationship = 'derives_from' ORDER BY link_id",
+        (pin_id,)).fetchall()
+    return [(str(r[0]), str(r[1])) for r in rows]
+
+
+def _source_resolves(conn, kind: str, rid: str) -> bool:
+    if kind == "tool_result":
+        from backend import conversation_store as _cs
+
+        row = _cs.get_tool_result(rid, wait_s=0.0)
+        return bool(row) and not row.get("cut")
+    if kind == "chunk":
+        return conn.execute("SELECT 1 FROM context_chunks WHERE id = ?", (rid,)).fetchone() is not None
+    if kind == "chain":
+        return conn.execute("SELECT 1 FROM memory_chain WHERE chain_id = ?", (rid,)).fetchone() is not None
+    return False
+
+
+def _audit_pin(bridge, pin_id: str) -> dict:
+    """CLM-3 AC5 / CLM-6 AC3: a note's source set and whether each source still
+    resolves. A note whose every source is gone is `unsourced` - still only a
+    candidate claim. Never raises."""
+    try:
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+        from backend.memory.pin_store import PinStore
+
+        _mi = getattr(bridge, "_memory_interface", None)
+        if _mi is None:
+            from backend.memory import get_memory_interface
+
+            _mi = get_memory_interface()
+        conn = resolve_mycelium_conn(_mi)
+        if conn is None:
+            return {"success": False, "case": "unreadable", "error": "memory is not available"}
+        pin = PinStore(conn=conn).get(pin_id)
+        if pin is None:
+            return {"success": False, "case": "not_found", "error": f"no pin {pin_id}"}
+        sources = [{"ref": f"{k}:{i}", "resolves": _source_resolves(conn, k, i)}
+                   for k, i in _pin_sources(conn, pin_id)]
+        live = sum(1 for s in sources if s["resolves"])
+        return {"success": True, "pin": pin_id, "type": pin.pin_type, "claim": pin.content,
+                "sources": sources,
+                "status": "sourced" if live else "unsourced",
+                "authority": "candidate - a note is never evidence; only outside evidence promotes"}
+    except Exception as exc:  # noqa: BLE001 - a named failure, not an empty block
+        logger.warning("[recall_memory] audit_pin %s failed: %r", pin_id, exc)
+        return {"success": False, "case": "unreadable", "error": str(exc)[:200]}
+
+
 def _emit_permission_denied(bridge, tool_name: str, session_id: str, reason: str,
                             evidence: str = "verifier") -> None:
     """Taxonomy SAFETY: the consent / capability gate refused a tool call. Tool name and
@@ -624,10 +677,15 @@ def _recall_memory_payload(episodic, query: str, since=None, until=None,
     try:
         from backend.memory.pin_store import PinStore
 
-        pins = [
-            {"pin": pin.to_dict(), "score": round(float(score), 2)}
-            for pin, score in PinStore(conn=episodic.db).search(query, limit=limit)
-        ]
+        pins = []
+        for pin, score in PinStore(conn=episodic.db).search(query, limit=limit):
+            entry = {"pin": pin.to_dict(), "score": round(float(score), 2)}
+            if pin.pin_type == "model_summary":
+                # CLM-3 AC2/AC4: a model's note is a candidate claim, shown as
+                # reference data with its source count - never as an instruction.
+                entry["reference_data"] = True
+                entry["sources"] = len(_pin_sources(episodic.db, pin.pin_id))
+            pins.append(entry)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[ToolBridge] recall_memory pins failed: %s", exc)
     return {"success": True, "chunks": chunks, "chain": chain,
@@ -2922,6 +2980,8 @@ class AgentToolBridge:
                 # CLM T2.4/T2.6: expand a reference to the exact text it names.
                 if str(params.get("expand") or "").strip():
                     return _expand_tool_result(self, session_id, params)
+                if str(params.get("audit_pin") or "").strip():
+                    return _audit_pin(self, str(params.get("audit_pin")).strip())
                 if str(params.get("set_aside") or "").strip():
                     # Only a DER node holds a view to set aside from; the node
                     # loop handles it before dispatch (node_executor).
