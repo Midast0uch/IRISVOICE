@@ -30,6 +30,54 @@ from backend.agent.context_view import (
 )
 
 
+# The n_ctx a local OpenAI-compatible server (llama-server) really serves, read
+# from its own /props. 2026-11-12: the tool model on :8091 (its own process and
+# -c) was sized with the SHARED manager's n_ctx (d1 on :8082) - every local tool
+# model got 8,192 whatever its server held, so a -c 4096 server overflowed while
+# the cap believed 8,192. A slot's n_ctx (with --parallel N the server splits -c
+# across N slots) is what one request can use, so it is the number returned.
+# Cached per base URL for _SERVER_CTX_TTL_S; a failed probe is cached too, so a
+# dead server costs one short timeout per TTL, never one per call.
+_SERVER_CTX: Dict[str, Tuple[int, float]] = {}
+_SERVER_CTX_TTL_S = 120.0
+_SERVER_CTX_LOCK = __import__("threading").Lock()
+_SERVER_CTX_STATS = {"failures": 0}
+
+
+def _server_n_ctx(base_url: str) -> int:
+    """The per-request n_ctx of the llama-server at *base_url*, or 0."""
+    base = (base_url or "").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    if not base:
+        return 0
+    now = time.monotonic()
+    with _SERVER_CTX_LOCK:
+        hit = _SERVER_CTX.get(base)
+        if hit is not None and now - hit[1] < _SERVER_CTX_TTL_S:
+            return hit[0]
+    n = 0
+    try:
+        import json as _json
+        import urllib.request as _ur
+
+        with _ur.urlopen(base + "/props", timeout=1.0) as r:
+            props = _json.loads(r.read() or b"{}")
+        n = int(((props.get("default_generation_settings") or {}).get("n_ctx"))
+                or props.get("n_ctx") or 0)
+    except Exception as exc:  # noqa: BLE001 - the caller falls back, counted
+        with _SERVER_CTX_LOCK:
+            _SERVER_CTX_STATS["failures"] += 1
+        __import__("logging").getLogger(__name__).info(
+            "[context window] %s/props unreadable (%s); failures=%d",
+            base, exc, _SERVER_CTX_STATS["failures"])
+    with _SERVER_CTX_LOCK:
+        if len(_SERVER_CTX) > 32:
+            _SERVER_CTX.clear()
+        _SERVER_CTX[base] = (n, now)
+    return n
+
+
 def _fact_line(text: str) -> str:
     """The USER half of a stored turn pair, for fact-identity comparison."""
     t = str(text or "").replace("\r", "")
@@ -347,6 +395,18 @@ class ContextMixin:
         #    loaded at 32768 then fell past the substring table to the 8192
         #    default â€” the same silent truncation the gpt-oss entry below was
         #    added to fix, reintroduced by REQ-4's id namespacing.
+        # 2a. A local OpenAI-compatible server answers for itself: the role may
+        #     sit on its OWN server (the tool model on :8091), not on the shared
+        #     manager's. Its /props n_ctx is what this role's requests can use.
+        if provider == "lmstudio":
+            _ri = getattr(self, "_router", None)
+            if _ri is not None:
+                try:
+                    _n_srv = _server_n_ctx(getattr(_ri.resolve(role), "api_base_url", "") or "")
+                except Exception:  # noqa: BLE001 - falls to the manager branch
+                    _n_srv = 0
+                if _n_srv > 0:
+                    return ResolvedWindow(_n_srv, "authoritative")
         if provider in ("local", "lmstudio", "iris_local"):
             try:
                 from backend.agent.local_model_manager import get_local_model_manager
