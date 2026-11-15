@@ -26,6 +26,78 @@ from backend.agent.kernel.base import (
     _step_evidence_cap,
     logger,
 )
+# -- CLM Wave 2 (specs/clm-memory): the node's record / window / event hooks --
+# One flag. Unset = NodeContext gets None/0 and the node runs byte for byte as
+# before (proven by the parity harnesses). Module level so a stand-in kernel
+# that binds only _der_run_node still reaches them (CLAUDE.md STAND-INS).
+_CLM_KEEP_CHARS = 2500   # what a later step keeps of one read (NODE_BLOCK_HEAD)
+_CLM_NO_RECORD = frozenset({"recall_memory"})  # an expand result is never recorded again
+
+
+def _clm_offload_on() -> bool:
+    return os.environ.get("IRIS_CLM_OFFLOAD") == "1"
+
+
+_CLM_EXPAND_PARAMS = {
+    "expand": {"type": "string", "description": (
+        "A reference from a set-aside or cut result, e.g. tool_result:<id>. "
+        "Returns that result's exact text; query is then not needed.")},
+    "offset": {"type": "integer", "description": (
+        "With expand: the character to start from (default 0); the reply gives "
+        "next_offset when more text follows.")},
+}
+
+
+def _clm_recall_menu(tools: list, full: list) -> list:
+    """The node menu with recall_memory present and able to expand a reference."""
+    import copy
+
+    base = next((t for t in tools if (t.get("function") or {}).get("name") == "recall_memory"), None)
+    base = base or next((t for t in full if (t.get("function") or {}).get("name") == "recall_memory"), None)
+    if base is None:
+        return tools
+    spec = copy.deepcopy(base)
+    params = spec.setdefault("function", {}).setdefault("parameters", {"type": "object"})
+    params.setdefault("properties", {}).update(copy.deepcopy(_CLM_EXPAND_PARAMS))
+    params["required"] = [r for r in params.get("required") or [] if r != "query"]
+    out = [t for t in tools if (t.get("function") or {}).get("name") != "recall_memory"]
+    return out + [spec]
+
+
+def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution") -> dict:
+    """record_result / ref_readable / on_clm_event / window for one node."""
+    from backend import conversation_store as _cs
+    from backend.agent.kernel.base import _emit_event
+    from backend.agent.node_executor import _target
+
+    conv = getattr(kernel, "conversation_id", "") or ""
+    step = str(getattr(item, "step_id", "") or "")
+    read_tools = set(getattr(kernel, "_DER_READ_TOOLS", ()) or ())
+
+    def record_result(name, params, text, call_ord):
+        if name in read_tools or name in _CLM_NO_RECORD or len(text or "") <= _CLM_KEEP_CHARS:
+            return ""
+        rid = _cs.new_tool_result_id()
+        ok = _cs.add_tool_result(rid, conv, turn_id or "", step, int(call_ord), name,
+                                 _target(params or {}), text)
+        return rid if ok else ""
+
+    def ref_readable(rid):
+        row = _cs.get_tool_result(rid, wait_s=2.0)
+        return bool(row) and not row.get("cut")
+
+    def on_clm_event(label, payload):
+        _emit_event(kernel, label, payload=dict(payload, step=step, turn=turn_id or ""))
+
+    try:
+        window = int(kernel.resolve_context_window_with_source(role).tokens)
+    except Exception as exc:  # noqa: BLE001 - no window = no in-node shrink, logged
+        logger.warning("[clm] conv=%s window for %s unknown (%r): in-node shrink off", conv, role, exc)
+        window = 0
+    return {"record_result": record_result, "ref_readable": ref_readable,
+            "on_clm_event": on_clm_event, "window": window}
+
+
 from backend.agent.kernel.planning import (
     _voice_turn_note,
 )
@@ -1192,6 +1264,8 @@ class DerNodeMixin:
         # picks, so a call does not carry the whole 17-tool menu. Full menu on
         # any failure; IRIS_NODE_TOOL_MENU_K=0 disables it.
         tools = _narrow_node_tools(tools, goal)
+        if _clm_offload_on():
+            tools = _clm_recall_menu(tools, self._get_openai_tools())
         # The shadow scores the menu the node's model was OFFERED, not the
         # registry's first names (which are vision tools).
         _offered = [t["function"]["name"] for t in tools]
@@ -1475,6 +1549,7 @@ class DerNodeMixin:
             review_note=str(getattr(item, "review_feedback", "") or ""),
             parallel_ok=_node_call_parallel_ok if _DER_PARALLEL else None,  # one off switch
             close_probe=_close_probe,
+            **(_clm_node_hooks(self, item, _turn_id) if _clm_offload_on() else {}),
             )
             _node_state["ctx"] = _node_ctx
             result = run_node(goal, _node_ctx)

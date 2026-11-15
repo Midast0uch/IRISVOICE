@@ -286,6 +286,56 @@ DESKTOP_CONTROL_TOOLS = frozenset({
 })
 
 
+# CLM T2.4/T2.6: one expand returns at most this many characters; the node
+# clips a tool result at 8,000 (node_executor NodeContext.result_chars), so a
+# page this size plus its header is never cut again by the node it serves.
+_EXPAND_PAGE_CHARS = 6000
+
+
+def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
+    """recall_memory(expand=<ref>[, offset]) -> the exact text by reference
+    (CLM-2 AC3), one page at a time, or a NAMED failure (AC4) - never an empty
+    block. Emits RESTRETCHED for a successful expand. Never raises."""
+    ref = str(params.get("expand") or "").strip()
+    kind, _, rid = ref.partition(":")
+    if kind != "tool_result" or not rid:
+        return {"success": False, "ref": ref, "case": "malformed_ref",
+                "error": "expand takes a reference such as tool_result:<id>"}
+    try:
+        offset = max(0, int(params.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        from backend import conversation_store as _cs
+
+        row = _cs.get_tool_result(rid, wait_s=2.0)
+    except Exception as exc:  # noqa: BLE001 - a named failure, not an empty block
+        logger.warning("[recall_memory] expand %s failed: %r", ref, exc)
+        return {"success": False, "ref": ref, "case": "unreadable", "error": str(exc)[:200]}
+    if not row:
+        return {"success": False, "ref": ref, "case": "not_found",
+                "error": "no stored result under this reference (deleted with its "
+                         "conversation, evicted, or never written)"}
+    content = row.get("content") or ""
+    page = content[offset:offset + _EXPAND_PAGE_CHARS]
+    nxt = offset + len(page)
+    try:
+        from backend.agent.event_emit import emit
+
+        conv = getattr(bridge, "_active_conversation_id", {}).get(session_id)
+        emit(None, "RESTRETCHED", thread_id=session_id or None, conversation_id=conv or None,
+             payload={"ref": ref, "tool": row.get("tool"), "offset": offset, "chars": len(page)})
+    except Exception:  # noqa: BLE001 - an event never changes the result
+        pass
+    out = {"success": True, "ref": ref, "tool": row.get("tool"), "target": row.get("target"),
+           "chars": int(row.get("chars") or len(content)), "offset": offset, "content": page}
+    if nxt < len(content):
+        out["next_offset"] = nxt
+    if row.get("cut"):
+        out["note"] = "the stored text was cut at the record's size limit"
+    return out
+
+
 def _emit_permission_denied(bridge, tool_name: str, session_id: str, reason: str,
                             evidence: str = "verifier") -> None:
     """Taxonomy SAFETY: the consent / capability gate refused a tool call. Tool name and
@@ -1144,11 +1194,11 @@ class AgentToolBridge:
                 ),
                 "parameters": {
                     "query": {"type": "string", "description": "What to search for"},
-                    "since": {"type": "string", "description": (
+                    "since": {"type": "string", "optional": True, "description": (
                         "Optional lower time bound: ISO date/time or epoch seconds.")},
-                    "until": {"type": "string", "description": (
+                    "until": {"type": "string", "optional": True, "description": (
                         "Optional upper time bound: ISO date/time or epoch seconds.")},
-                    "tool_name": {"type": "string", "description": (
+                    "tool_name": {"type": "string", "optional": True, "description": (
                         "Optional: only chunks produced by this tool.")},
                 },
                 "category": "memory",
@@ -2869,6 +2919,9 @@ class AgentToolBridge:
                 return result
 
             if tool_name == "recall_memory":
+                # CLM T2.4/T2.6: expand a reference to the exact text it names.
+                if str(params.get("expand") or "").strip():
+                    return _expand_tool_result(self, session_id, params)
                 query = str(params.get("query") or "").strip()
                 if not query:
                     return {"success": False, "error": "query is required"}

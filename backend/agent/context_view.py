@@ -231,7 +231,7 @@ class ContextView:
                 raise ValueError(f"placeholder does not name {unit.ref}: {placeholder!r}")
         for unit, placeholder in items:
             for b in unit.results:
-                b.aside = placeholder
+                b.aside = _result_placeholder(b, placeholder)
 
     def restore(self, ref: Ref, blocks: Optional[Sequence["Block"]] = None) -> bool:
         """Bring a set-aside unit back, byte-for-byte (CLM-2 AC3).
@@ -384,6 +384,19 @@ def render_placeholder(block: Block, reason: str, *, ref: Optional[Ref] = None,
     if room < 1:
         raise ValueError(f"ref {ref} leaves no room for a reason")
     return f"{head}{dom} | {_field(reason, room) or 'set aside'}]]"
+
+
+def _result_placeholder(block: Block, unit_placeholder: str) -> str:
+    """The line a set-aside RESULT block shows. A result with its own durable
+    address (a node tool result in the chat record: ``tool_result:<id>``)
+    names THAT address, so the model can expand exactly this result after the
+    node is gone; any other result shows the unit's placeholder (``held``)."""
+    if block.ref.kind in ("", EPHEMERAL.kind, HELD):
+        return unit_placeholder
+    parts = unit_placeholder[2:-2].split(" | ")
+    domain = parts[2] if len(parts) == 4 else ""
+    reason = parts[3] if len(parts) == 4 else "set aside"
+    return render_placeholder(block, reason, ref=block.ref, domain=domain)
 
 
 def parse_placeholder(text: str) -> Optional[Ref]:

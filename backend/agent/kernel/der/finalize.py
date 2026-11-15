@@ -968,22 +968,14 @@ class DerFinalizeMixin:
         # overhead per step.
         _tokens_used += max(200, len(_window_evidence) // 4)
         # â”€â”€ EventBus: emit context:usage (token budget progress) â”€â”€â”€â”€â”€â”€
+        # One emitter, one meaning (2026-11-15): this site sent the turn's
+        # running BUDGET spend as used_tokens, while _emit_context_usage sends
+        # the window FILL there and the spend as spent_tokens - the pill flipped
+        # between the two numbers within one turn.
         try:
-            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-            get_event_bus().emit(
-                IRISStreamEvent.CONTEXT_USAGE,
-                data={
-                    "used_tokens": int(_tokens_used),
-                    "max_tokens": int(self.resolve_context_window()),
-                    "step_number": item.step_number,
-                    "total_steps": len(queue.items),
-                },
-                turn_id=_turn_id,
-                conversation_id=self.conversation_id,
-                session_id=_session,
-            )
-        except Exception:
-            pass  # EventBus is optional â€” no crash if it fails
+            self._emit_context_usage(item.step_number, len(queue.items))
+        except Exception as exc:  # noqa: BLE001 - the pill never blocks a step
+            logger.debug("[DER] context usage emit failed: %r", exc)  # EventBus is optional â€” no crash if it fails
         if _tokens_used >= _token_budget:
             logger.info(
                 f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "

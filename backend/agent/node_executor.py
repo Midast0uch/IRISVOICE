@@ -44,9 +44,14 @@ from backend.agent.context_view import (
     STEP_GOAL,
     SYSTEM,
     TOOL_RESULT,
+    Block,
     ContextView,
+    Ref,
     count_view_fallback,
+    offload_decision,
+    render_placeholder,
 )
+from backend.agent.context_gauge import estimate_tokens as _estimate_tokens
 from backend.agent.inference.errors import EmptyModelResponseError, MalformedToolCallError
 
 logger = logging.getLogger(__name__)
@@ -260,6 +265,16 @@ class NodeContext:
     # still writes the arguments), or None for the full menu. The kernel
     # answers it through the enforcement chokepoint (enforced / sampled).
     choose_tool: Optional[Callable[[], Optional[str]]] = None
+    # CLM Wave 2 (IRIS_CLM_OFFLOAD; all None/0 = today's behavior, byte for
+    # byte). record_result(tool, params, full_text, call_ord) -> id of the
+    # result's row in the chat record ("" = not recorded); ref_readable(id) ->
+    # the row is there whole (bounded wait on a queued write); on_clm_event(
+    # label, payload) emits OFFLOADED on the memory-events lane; window = the
+    # tokens this role's model can take (0 = no in-node shrink).
+    record_result: Optional[Callable[[str, dict, str, int], str]] = None
+    ref_readable: Optional[Callable[[str], bool]] = None
+    on_clm_event: Optional[Callable[[str, Dict[str, Any]], None]] = None
+    window: int = 0
 
 
 @dataclass
@@ -304,6 +319,13 @@ class NodeResult:
                 _kept.append(f"[{_t}]\n{_take}" if _ran else f"[{_t} error]\n{_take}")
                 _budget -= len(_take)
             lines += list(reversed(_kept))
+        # CLM Wave 2: where each long result lives whole. A later step sees only
+        # the head of a read; these lines say that more exists and its address.
+        _refs = [(c.get("tool", ""), c.get("target", ""), c["ref"])
+                 for c in self.calls if c.get("ref")]
+        if _refs:
+            lines.append("\nFull results (recall_memory with expand=<ref> returns the exact text):")
+            lines += [" ".join(f"- {t} {g}: {r}".split()) for t, g, r in _refs]
         if self.last_command_failed:
             lines.append("\nThe last command in this step exited non-zero.")
         if self.error:
@@ -379,11 +401,33 @@ def _prefetch_siblings(ctx: "NodeContext", tool_calls: List[Dict[str, Any]],
     return out
 
 
-def _clip(text: str, limit: int) -> str:
+def _clip(text: str, limit: int, ref: str = "") -> str:
     if len(text) <= limit:
         return text
     head = limit * 2 // 3
-    return text[:head] + f"\n... [{len(text) - limit} chars cut] ...\n" + text[-(limit - head):]
+    where = f"; full text: recall_memory expand={ref}" if ref else ""
+    return text[:head] + f"\n... [{len(text) - limit} chars cut{where}] ...\n" + text[-(limit - head):]
+
+
+# CLM Wave 2 in-node shrink: the share of the window kept free below the
+# router's reserve. THE BAR (specs/clm-memory/tasks.md Wave 1): the margin is
+# never smaller than the gauge's measured |p95| error (17.8-18.0 % on 433 live
+# calls), so 0.20 - an estimate that is 20 % low still fits the window.
+_SHRINK_MARGIN = 0.20
+_clm_stats = {"shrink_boundaries": 0, "set_aside_units": 0, "shrink_failures": 0,
+              "record_failures": 0}
+
+
+def clm_node_stats() -> Dict[str, int]:
+    return dict(_clm_stats)
+
+
+def _ref_line(ref: str, tool: str, target: str) -> str:
+    """The placeholder line for a node tool result kept in the chat record."""
+    kind, _, rid = ref.partition(":")
+    return render_placeholder(Block(block_id="", ref=Ref(kind=kind, id=rid), kind=TOOL_RESULT,
+                                    messages=[], tokens=0),
+                              " ".join(f"{tool} {target}".split()) or "tool result", domain=tool)
 
 
 _ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url", "handle")
@@ -678,13 +722,63 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         logger.warning("[run_node] conv=%s context view failed, old list used "
                        "(view_fallback=%d): %r", ctx.conv_id, count_view_fallback(), exc)
 
-    def _add(kind: str, message: Dict[str, Any]) -> None:
+    def _add(kind: str, message: Dict[str, Any]) -> Optional[Block]:
         messages.append(message)
         if view is not None:
             try:
-                view.admit_live(kind, message)
+                return view.admit_live(kind, message)
             except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
                 _view_failed(exc)
+        return None
+
+    offloaded_ids: set = set()  # result ids this node set aside (PREMATURE_EVICTION)
+
+    def _shrink(menu: List[Dict[str, Any]]) -> None:
+        """CLM T2.3: at a model-call boundary, set aside the oldest complete
+        units whose results are whole in the chat record, in ONE batch, until
+        the call fits (window - reserve) * (1 - margin). Off when ctx.window is
+        0. Never raises; a failure is counted and the call goes out as is."""
+        if not ctx.window or view is None:
+            return
+        try:
+            reserve = min(max(256, ctx.max_tokens), ctx.window // 2) + 256
+            limit = int((ctx.window - reserve) * (1 - _SHRINK_MARGIN))
+            need = _estimate_tokens(view.render(), menu) - limit
+            if need <= 0:
+                return
+            _clm_stats["shrink_boundaries"] += 1
+            chosen, freed = [], 0
+            for unit in view.units():
+                if freed >= need:
+                    break
+                ids = [b.ref.id for b in unit.results if b.ref.kind == "tool_result"]
+
+                def _whole(_ref, _u=unit, _ids=ids):
+                    return (len(_ids) == len(_u.results) and ctx.ref_readable is not None
+                            and all(ctx.ref_readable(i) for i in _ids))
+
+                d = offload_decision(view, unit, _whole,
+                                     reason=" ".join(unit.tool_names()) or "tool result")
+                if d.allowed:
+                    chosen.append((unit, d.placeholder, ids, d.saving))
+                    freed += d.saving
+            if not chosen:
+                logger.info("[run_node] conv=%s over budget by ~%d tokens, nothing may leave",
+                            ctx.conv_id, need)
+                return
+            view.set_aside_batch([(u, ph) for u, ph, _i, _s in chosen])
+            for u, ph, ids, saving in chosen:
+                _clm_stats["set_aside_units"] += 1
+                offloaded_ids.update(ids)
+                if ctx.on_clm_event is not None:
+                    ctx.on_clm_event("OFFLOADED", {
+                        "refs": [f"tool_result:{i}" for i in ids], "tools": u.tool_names(),
+                        "saving": saving, "need": need, "window": ctx.window})
+            logger.info("[run_node] conv=%s set aside %d unit(s), ~%d tokens (needed %d, window %d)",
+                        ctx.conv_id, len(chosen), freed, need, ctx.window)
+        except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
+            _clm_stats["shrink_failures"] += 1
+            logger.warning("[run_node] conv=%s in-node shrink failed: %r", ctx.conv_id, exc)
 
     def _outgoing() -> List[Dict[str, Any]]:
         if view is not None:
@@ -780,6 +874,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     gen_tools = [t for t in tools
                                  if (t.get("function") or {}).get("name") == forced] or tools
                     gen_extra["tool_choice"] = forced
+            _shrink(gen_tools)
             try:
                 text, _think, tool_calls = ctx.generate(
                     role, _outgoing(), tools=gen_tools, max_tokens=ctx.max_tokens,
@@ -838,6 +933,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             _resolve_claims("premature")
             batch_failed = False
             batch_results: List[str] = []
+            batch_refs: List[tuple] = []
             batch_done = False
             batch_changed = False
             batch_summaries: List[str] = []
@@ -854,6 +950,18 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 except (ValueError, TypeError):
                     params = None
                 _claimed_close = False
+                # CLM: the model asks back for a result this node set aside -
+                # the offload came too early (counted; the expand still runs).
+                if (name == "recall_memory" and isinstance(params, dict) and offloaded_ids
+                        and ctx.on_clm_event is not None):
+                    _xr = str(params.get("expand") or "")
+                    if _xr.startswith("tool_result:") and _xr[len("tool_result:"):] in offloaded_ids:
+                        _clm_stats["premature_evictions"] = _clm_stats.get("premature_evictions", 0) + 1
+                        try:
+                            ctx.on_clm_event("PREMATURE_EVICTION", {"ref": _xr, "calls": len(calls)})
+                        except Exception as exc:  # noqa: BLE001 - an event never blocks a step
+                            logger.warning("[run_node] conv=%s premature-eviction event failed: %r",
+                                           ctx.conv_id, exc)
                 if isinstance(params, dict):
                     _claimed_close = params.get("step_done") is True
                     if params.pop("step_done", False) is True:
@@ -957,8 +1065,17 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             _target(params or {}),
                             ("FAILED: " + str(raw.get("error") if isinstance(raw, dict) else raw)[:160])
                             if failed else "ok")
-                content = _clip(_relative(ctx.format_result(name, raw) or "", ctx.workdir),
-                                ctx.result_chars)
+                _full = _relative(ctx.format_result(name, raw) or "", ctx.workdir)
+                _rid = ""
+                if ctx.record_result is not None:
+                    try:
+                        _rid = ctx.record_result(name, params or {}, _full, len(calls) - 1) or ""
+                    except Exception as exc:  # noqa: BLE001 - counted; the result still goes in
+                        _clm_stats["record_failures"] += 1
+                        logger.warning("[run_node] conv=%s record_result failed: %r", ctx.conv_id, exc)
+                    if _rid:
+                        calls[-1]["ref"] = f"tool_result:{_rid}"
+                content = _clip(_full, ctx.result_chars, f"tool_result:{_rid}" if _rid else "")
                 # No progress also shows as the SAME result for the same tool and
                 # target right after itself, even when the arguments jitter
                 # (2026-10-02: read_file start_line 51 of a 6-line file, 224x).
@@ -992,10 +1109,14 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                 content += ("\n\nWhat the vision model sees on the "
                                             "screenshot:\n" + reading)
                 batch_results.append(f"[{name} {_target(params or {})}]\n{content}")
-                _add(TOOL_RESULT, {
+                batch_refs.append((f"tool_result:{_rid}", name, _target(params or {}))
+                                  if _rid else ("", "", ""))
+                _blk = _add(TOOL_RESULT, {
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
                     "content": content,
                 })
+                if _rid and _blk is not None:
+                    _blk.ref = Ref(kind="tool_result", id=_rid)
                 ctx.last_result_text = content
                 # REQ-10 AC10.2/AC10.3: a claim is measured AFTER the claiming
                 # call's own result is known, from THIS call's scope. A
@@ -1061,8 +1182,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     _share = max(ctx.result_chars // max(1, len(batch_results)),
                                  NODE_BLOCK_HEAD)
                     _blocks = [_b if len(_b) <= _share
-                               else _b[:_share] + "\n[...rest of this result cut...]"
-                               for _b in batch_results]
+                               else _b[:_share] + (
+                                   "\n[...rest of this result cut; full text: "
+                                   + _ref_line(*_r) + "]"
+                                   if _r[0] else "\n[...rest of this result cut...]")
+                               for _b, _r in zip(batch_results, batch_refs)]
                     return NodeResult(True, (summary + "\n\nTool results:\n"
                                              + "\n\n".join(_blocks)).strip(),
                                       calls, last_command_failed=bool(last_command_failed),

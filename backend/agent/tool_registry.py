@@ -1023,11 +1023,11 @@ def register_builtin_tools() -> None:
             ),
             parameters={
                 "query": {"type": "string", "description": "What to search for"},
-                "since": {"type": "string", "description": (
+                "since": {"type": "string", "optional": True, "description": (
                     "Optional lower time bound: ISO date/time or epoch seconds.")},
-                "until": {"type": "string", "description": (
+                "until": {"type": "string", "optional": True, "description": (
                     "Optional upper time bound: ISO date/time or epoch seconds.")},
-                "tool_name": {"type": "string", "description": (
+                "tool_name": {"type": "string", "optional": True, "description": (
                     "Optional: only chunks produced by this tool.")},
             },
             category="memory", executor="memory", permission_tier="read_only",

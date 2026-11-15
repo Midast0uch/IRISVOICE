@@ -150,6 +150,31 @@ def _create_tables(conn: sqlite3.Connection) -> None:
     for _col in ("sources", "source"):
         if _col not in _msg_cols:
             conn.execute(f"ALTER TABLE messages ADD COLUMN {_col} TEXT")
+    # Tool results (CLM Wave 2, owner decision 2026-11-12): the EXACT text of a node tool result
+    # too long to stay in the model's window, so a placeholder can be expanded to the real bytes.
+    # Deliberately NO foreign key to conversations: a dev_cli / eval turn can run in a conversation
+    # id that has no row here (add_message returns None for such an id), and its results must still
+    # be recorded. delete_conversation / truncate_conversation delete the rows explicitly instead.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tool_results (
+            id              TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            turn_id         TEXT,
+            step_id         TEXT,
+            call_ord        INTEGER,
+            tool            TEXT,
+            target          TEXT,
+            chars           INTEGER NOT NULL,
+            cut             INTEGER NOT NULL DEFAULT 0,
+            content         TEXT NOT NULL,
+            created_at      TEXT NOT NULL
+        )
+    """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tool_results_conv ON tool_results(conversation_id, turn_id)"
+    )
 
 
 def _parse_sources(raw: Any) -> list[str]:
@@ -450,10 +475,24 @@ def delete_conversation(conversation_id: str) -> bool:
         )]
         for cid in children:
             _conversations.pop(cid, None)
-        conn.execute(
-            "DELETE FROM conversations WHERE id = ? OR parent_id = ?",
-            (conversation_id, conversation_id),
-        )
+        # The tool results of the conversation (and of its strands) go in the SAME transaction as
+        # the conversation row: tool_results has no foreign key (see _create_tables), so nothing
+        # else would ever remove them.
+        conn.execute("BEGIN")
+        try:
+            marks = ",".join("?" * (1 + len(children)))
+            conn.execute(
+                f"DELETE FROM tool_results WHERE conversation_id IN ({marks})",
+                (conversation_id, *children),
+            )
+            conn.execute(
+                "DELETE FROM conversations WHERE id = ? OR parent_id = ?",
+                (conversation_id, conversation_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         # CASCADE in the schema deletes messages too
     at = time.time()
     for cid, title, parent_id, tags, reports_to, message_count in gone:
@@ -533,6 +572,13 @@ def truncate_conversation(
         if keep_idx >= len(messages) - 1:
             return {"truncated": True, "kept_messages": len(messages)}
 
+        # A turn is removed only when NONE of its messages is kept: a turn cut in the middle keeps
+        # its tool results. Messages without a turn_id match nothing.
+        _kept_turns = {m.get("turn_id") for m in messages[: keep_idx + 1] if m.get("turn_id")}
+        _gone_turns = sorted(
+            {m.get("turn_id") for m in messages[keep_idx + 1 :] if m.get("turn_id")} - _kept_turns
+        )
+
         # Remove from in-memory cache
         del messages[keep_idx + 1 :]
         conv["updated_at"] = _now()
@@ -549,9 +595,233 @@ def truncate_conversation(
             "UPDATE conversations SET updated_at = ? WHERE id = ?",
             (conv["updated_at"], conversation_id),
         )
+        if _gone_turns:
+            conn.execute(
+                "DELETE FROM tool_results WHERE conversation_id = ? AND turn_id IN (%s)"
+                % ",".join("?" * len(_gone_turns)),
+                (conversation_id, *_gone_turns),
+            )
 
         return {"truncated": True, "kept_messages": len(messages)}
 
+
+
+# ── Tool results: the exact text behind a placeholder (CLM Wave 2) ───────────────────────────────
+# A node tool result longer than what later steps keep (NODE_BLOCK_HEAD = 2,500 chars) is recorded
+# here in full, so a "set aside" placeholder can carry this id and the real bytes come back by id.
+#
+# The write is QUEUED on the ordered lane "tool_results" (utils/durability_queue.lane): the node loop
+# never waits on SQLite. The caller mints the id first (new_tool_result_id) so the placeholder can
+# carry it before the row exists; get_tool_result waits for THAT id's write, bounded.
+#
+# Growth budget (measured 2026-11-15; arithmetic in the report that introduced this block):
+#   * Row size. logs/clm_dumps_before holds 157 distinct node tool messages from 8 conversations -
+#     already clipped to the model's 8,000 chars (p50 1,805, p90 7,108, p99 8,026, max 8,027; 2.5%
+#     hit the clip). The record keeps the text BEFORE that clip, so the real tail is longer: the
+#     nearest measurable proxy for a read_file in developer mode is the size of the backend's own
+#     source files (447 files: p50 9.6k, p90 45k, 93.1% <= 64k, 96.4% <= 100k, 97.8% <= 128k,
+#     99.3% <= 200k, max 607k). 128,000 keeps every measured model-visible result and 97.8% of
+#     source files whole; a longer text is stored cut (cut=1, chars = the original length).
+TOOL_RESULT_MAX_CHARS = 128_000
+#   * Rows per conversation. A whole DER run is one turn; the cohort makes a median 18.5 and a
+#     maximum 38 node tool calls per run (8 conversations), and 28.7% of results exceed 2,500 chars,
+#     i.e. about 11 stored rows in the largest run. 200 rows = 18 such maximum runs; past it the
+#     OLDEST rows go in the same write job (counted as `evicted`).
+TOOL_RESULTS_PER_CONVERSATION = 200
+#   * Worst case per conversation: 200 x 128,000 = 25.6 M chars (about 25.6 MB of ASCII text; up
+#     to 3x for non-ASCII). Typical: 200 x ~7k = 1.4 MB. The whole store is bounded by the number
+#     of conversations x that, and rows leave with their conversation, so no store-wide budget.
+#   * Only a result longer than this is recorded (shorter ones stay whole in the step result).
+TOOL_RESULT_MIN_CHARS = 2_500
+
+_TR_LANE = "tool_results"
+_tr_lock = threading.Lock()
+_tr_pending: dict[str, threading.Event] = {}   # id -> set when its write job ends (written or not)
+_tr_stats = {
+    "queued": 0, "written": 0, "refused": 0, "write_failed": 0,
+    "cut": 0, "evicted": 0, "skipped_small": 0,
+}
+
+
+def _tr_lane():
+    from backend.utils import durability_queue
+
+    return durability_queue.lane(_TR_LANE)
+
+
+def _tr_count(key: str, n: int = 1) -> None:
+    with _tr_lock:
+        _tr_stats[key] += n
+
+
+def new_tool_result_id() -> str:
+    """A fresh tool-result id (uuid4 hex). No I/O."""
+    return uuid.uuid4().hex
+
+
+def tool_result_stats() -> dict[str, int]:
+    """Counters since import (reload resets them) plus the jobs still queued."""
+    with _tr_lock:
+        out = dict(_tr_stats)
+        out["pending"] = len(_tr_pending)
+    return out
+
+
+def _write_tool_result(
+    done: threading.Event, row: tuple, conversation_id: str, was_cut: bool
+) -> None:
+    """The lane job: insert one row, then trim the conversation to its row cap. Runs on the lane
+    thread under the module's connection lock; every failure is logged with the conversation id
+    and counted, and the waiter is always released."""
+    try:
+        with _lock:
+            conn = _get_conn()
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO tool_results (id, conversation_id, turn_id, step_id, "
+                    "call_ord, tool, target, chars, cut, content, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    row,
+                )
+                over = conn.execute(
+                    "SELECT COUNT(*) FROM tool_results WHERE conversation_id = ?",
+                    (conversation_id,),
+                ).fetchone()[0] - TOOL_RESULTS_PER_CONVERSATION
+                evicted = 0
+                if over > 0:
+                    evicted = conn.execute(
+                        "DELETE FROM tool_results WHERE rowid IN (SELECT rowid FROM tool_results "
+                        "WHERE conversation_id = ? ORDER BY rowid ASC LIMIT ?)",
+                        (conversation_id, over),
+                    ).rowcount
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        _tr_count("written")
+        if was_cut:
+            _tr_count("cut")
+        if evicted:
+            _tr_count("evicted", evicted)
+    except Exception as exc:  # noqa: BLE001 - a record write never fails the task that made it
+        _tr_count("write_failed")
+        logger.warning("[conversation_store] tool result write failed conv=%s id=%s: %s",
+                       conversation_id, row[0], exc)
+    finally:
+        with _tr_lock:
+            _tr_pending.pop(row[0], None)
+        done.set()
+
+
+def add_tool_result(
+    result_id: str,
+    conversation_id: str,
+    turn_id: str | None,
+    step_id: str | None,
+    call_ord: int | None,
+    tool: str | None,
+    target: str | None,
+    content: str,
+) -> bool:
+    """QUEUE the write of one tool result and return at once.
+
+    True = queued (it will be readable by get_tool_result shortly). False = not recorded: the text
+    is not longer than TOOL_RESULT_MIN_CHARS (counted `skipped_small`), the ids are missing, or the
+    lane refused it because its queue is full (counted `refused`, logged). Never raises, never
+    blocks, never touches SQLite on the calling thread."""
+    try:
+        text = content if isinstance(content, str) else ("" if content is None else str(content))
+        if not result_id or not conversation_id:
+            _tr_count("refused")
+            logger.warning("[conversation_store] tool result refused: missing id conv=%s id=%s",
+                           conversation_id, result_id)
+            return False
+        if len(text) <= TOOL_RESULT_MIN_CHARS:
+            _tr_count("skipped_small")
+            return False
+        was_cut = len(text) > TOOL_RESULT_MAX_CHARS
+        row = (
+            result_id, conversation_id, turn_id, step_id,
+            None if call_ord is None else int(call_ord), tool, target,
+            len(text), 1 if was_cut else 0, text[:TOOL_RESULT_MAX_CHARS], _now(),
+        )
+        done = threading.Event()
+        with _tr_lock:
+            _tr_pending[result_id] = done
+        if not _tr_lane().submit("tool_result", _write_tool_result, done, row, conversation_id, was_cut):
+            with _tr_lock:
+                _tr_pending.pop(result_id, None)
+                _tr_stats["refused"] += 1
+            logger.warning("[conversation_store] tool result refused (lane queue full) conv=%s id=%s",
+                           conversation_id, result_id)
+            return False
+        _tr_count("queued")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        with _tr_lock:
+            _tr_pending.pop(result_id, None)
+        _tr_count("refused")
+        logger.warning("[conversation_store] add_tool_result failed conv=%s id=%s: %s",
+                       conversation_id, result_id, exc)
+        return False
+
+
+_TR_COLS = ("id", "conversation_id", "turn_id", "step_id", "call_ord", "tool", "target",
+            "chars", "cut", "content", "created_at")
+
+
+def _read_tool_result(result_id: str) -> dict[str, Any] | None:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT " + ", ".join(_TR_COLS) + " FROM tool_results WHERE id = ?", (result_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    out = dict(zip(_TR_COLS, row))
+    out["cut"] = int(out["cut"])
+    return out
+
+
+def get_tool_result(result_id: str, wait_s: float = 2.0) -> dict[str, Any] | None:
+    """One recorded tool result (all columns, content included), or None.
+
+    If the row is not there yet and ITS write is still queued, wait for that write - at most
+    wait_s - and read again. The wait is on the id's own completion event, not on lane.flush()
+    (flush waits for the whole queue and takes a queue slot, and is documented for tests and
+    shutdown only). The connection lock is never held while waiting: the write job needs it.
+    Never raises; None when absent, or when the bound ran out."""
+    try:
+        with _tr_lock:
+            done = _tr_pending.get(result_id)
+        row = _read_tool_result(result_id)
+        if row is not None:
+            return row
+        if done is not None and not _tr_lane().in_worker():
+            done.wait(max(0.0, wait_s))
+            return _read_tool_result(result_id)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[conversation_store] get_tool_result failed id=%s: %s", result_id, exc)
+        return None
+
+
+def tool_results_for_turn(conversation_id: str, turn_id: str | None) -> list[dict[str, Any]]:
+    """The recorded results of one turn, WITHOUT their content, ordered by step_id then call_ord.
+    Only rows already committed are listed. Never raises."""
+    cols = [c for c in _TR_COLS if c != "content"]
+    try:
+        with _lock:
+            rows = _get_conn().execute(
+                "SELECT " + ", ".join(cols) + " FROM tool_results "
+                "WHERE conversation_id = ? AND turn_id IS ? ORDER BY step_id, call_ord, rowid",
+                (conversation_id, turn_id),
+            ).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[conversation_store] tool_results_for_turn failed conv=%s turn=%s: %s",
+                       conversation_id, turn_id, exc)
+        return []
 
 # ── Threads and strands ────────────────────────────────────────────────────
 # A thread = a root conversation (parent_id NULL) + the rows whose parent_id is
