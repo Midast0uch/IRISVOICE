@@ -345,6 +345,50 @@ same-conditions A/B, numbers named with their cohort.
   DONE = `grep -r "dcp" backend --include=*.py` shows no import; CT-7 passes.
   NOT THIS = a compatibility shim.
 
+## Wave 7 - The Workbench (CLM-11; owner direction 2026-11-15, advisor design)
+
+Flag `IRIS_WORKBENCH` (off = the fine-grained node path byte-equal, proven by the
+parity harnesses). Order is the priority; T7.0 decides whether to proceed.
+
+- [ ] **T7.0 baseline (measure first).** From the recorded runs (cohort coding 8,
+  context x01-x04): share of node model calls that follow READ-class or run_command
+  calls; calls per node; steps per plan; interpreter spawn time cold and warm.
+  DONE = the table here; proceed only if the share is >= ~30 %.
+  NOT THIS = any code in backend/.
+- [ ] **T7.1** `protocol.py` + `worker.py` + `client.py`.
+  DONE = contract tests pass and fail on a seeded frame change; soft stop keeps state;
+  hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
+  from inside Python.
+- [ ] **T7.2** `manager.py` + `run_python` registration + the bridge handler.
+  DONE = a live developer turn runs one script; personal mode does not list the tool;
+  no orphan process after close. NOT THIS = a pool, a config surface.
+- [ ] **T7.3** `digest.py` + `wb` refs + expand/inspect.
+  DONE = offload-gate tests pass with a `wb` ref; `workbench_gone` test passes; code
+  records keep the code (calls[].args keeps only _ID_KEYS today - check).
+  NOT THIS = snapshots, pickling.
+- [ ] **T7.4** code mode in `_der_run_node` + the node claim + fallback.
+  DONE = flag-off parity byte-equal; flag-on x01-x04 run code nodes; wb_fallback counted.
+  NOT THIS = a planner prompt change; run_python in the fine-grained menu.
+- [ ] **T7.5** `policy.py` + `keep()`. DONE = one live pin with a resolving link;
+  refusals counted. NOT THIS = automatic promotion.
+- [ ] **T7.6** the step-message clips (task 8,000, prior 24,000 chars) scale with
+  `ctx.window`. DONE = no protected-block overflow on 8k in a replay.
+- [ ] **T7.7** Oracle `exec_mode` shadow rows. DONE = rows written with labels.
+  NOT THIS = enforcement.
+- [ ] **TG-7 (live gate)**, flag off vs on, same conditions: cloud cohort 21/21 and
+  context 5/5 with model calls per code node, prompt tokens per call, reply_s medians;
+  small model (LFM3 as tool_execution): `--group context` pass count against 0/5,
+  router blind drops against 24 calls, max prompt tokens within the window; plus
+  wb_fallback, tool_results rows per conversation, orphan processes = 0. Note: code
+  nodes run on the Brain, so a small-model pass shows the harness works WITH a small
+  tool model, not that the small model writes code - report its call counts beside it.
+
+Owner questions (asked 2026-11-15; working answers = the advisor's recommendations
+until the owner says otherwise): (1) interpreter in the installed app = the project's
+or PATH python, unavailable when none (alternative: bundle an embeddable Python);
+(2) lifetime = the conversation with a 10-minute idle end (alternative: the turn);
+(3) code nodes always on the Brain this wave (revisit with exec_mode data).
+
 ## Dependency / parallelization notes
 
 - Wave 0 blocks everything. Wave 1 blocks 2, 3, 4. Wave 3 may run beside Wave 2.

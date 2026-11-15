@@ -205,6 +205,72 @@ model-written summary (a pin, CLM-3) is optional and can never replace its sourc
 What "useful" means is learned from data, not from a prompt: `PREMATURE_EVICTION`
 counts per block kind are the signal that the order or the margin is wrong.
 
+## The Workbench (CLM-11; advisor design 2026-11-15)
+
+**Boundary.** Package `backend/agent/workbench/` (a sibling of `kernel/`; "kernel" and
+"workspace" are taken names). It owns one Python child process per conversation, its
+namespace, the request/reply protocol, the output digest and the enter/leave policy.
+It never plans, routes, recalls, writes a store, calls a model, consults the Oracle or
+approves: it is reached only as the registered tool `run_python` through the normal
+dispatch (box.dispatch -> tool_bridge), so ledger rows, deadlines, `_der_after_call`,
+`calls[]` and `as_step_result` apply without new code.
+
+**Process and protocol v1.** Stdlib only (no jupyter_client: a one-file PyInstaller
+backend, no pyzmq, no ZMQ ports on Windows). Interpreter: the project venv, then PATH
+python, then sys.executable when not frozen; none -> unavailable (counted fallback).
+Launch `python -I -X utf8 -u worker.py`, binary pipes, CREATE_NO_WINDOW; the worker
+keeps a private copy of fd 1 for frames and points fd 1/2 at capture buffers. JSON
+lines, five ops: `hello` (version, incarnation), `exec`, `inspect` (expression,
+offset, limit), `put` (name, JSON value), `shutdown`. `exec` reply: ok, stdout,
+stderr, value, error{type,message,trace_tail}, vars[] (name, type, size, 80-char
+preview of changed names), kept[], wall_ms, truncated. Owner: conversation_id, lazy
+start at the first run_python; ends on 10 min idle, conversation delete, workdir or
+mode change, backend exit (stdin EOF). Bounds per AC8. Sandbox = the same trust
+boundary as run_command (cwd = the session workdir / self-edit worktree; env as
+run_isolated; one audit hook refuses write-opens outside cwd and temp; no network).
+
+**Code mode and fallback.** Chosen once at node entry in `_der_run_node` (next to
+`mode_for_goal`) by a stated rule: developer mode, an interpreter resolved, the step's
+action class READ or RUN, no browser/screen/web reference. It reuses `run_node`
+unchanged with a different NodeContext: tools=[run_python], role="reasoning" (the
+Brain writes the scripts; tool_execution keeps fine-grained nodes), max_tokens 2048, a
+short code-mode system prompt, max_calls 6. `run_python` is NOT added to NODE_TOOLS,
+so the fine-grained menu and its tool_choice candidates do not move. Parallel
+branches: a `workbench` node claim. Fallback per AC4 re-runs the same item once on
+the fine-grained path.
+
+**Digest and `wb` refs.** The tool message is the digest: stdout head+tail <= 1,200
+chars, value <= 400, error tail, <= 12 changed-variable lines with
+`wb:<incarnation>/<name>`. `Ref(kind="wb", ...)`; `ref_readable` = incarnation alive
+and name present, so the offload gate and placeholders work unchanged;
+`recall_memory(expand="wb:...")` routes to `inspect`. Code nodes write about zero
+`tool_results` rows (digests are below the 2,500-char record threshold); code longer
+than that is recorded once. Estimated code-mode call on 8k: limit (8,192 - 2,304) x
+0.8 = 4,710; protected ~1,200 typical / ~2,100 worst; >= 2,600 tokens for digests.
+
+**Enter/leave policy.** Enters at start via `put`: task, goal, steps (full results of
+finished steps), memory (the node's `_memory_facts`). Leaves only through `keep()`
+(AC6) into the step result ("Kept:") and the existing `write_pin` hook.
+
+**Parts and contracts.**
+
+| File | One responsibility | Contract test |
+|---|---|---|
+| `protocol.py` | frame shapes, PROTOCOL_VERSION, encode/decode | golden frames; a version mismatch refuses |
+| `worker.py` | the child: exec, capture, manifest, keep, audit hook | stdlib-only import guard; runs on the oldest supported Python |
+| `client.py` | spawn, send/receive, timeout, kill | real worker: soft stop keeps state; hard kill changes incarnation |
+| `manager.py` | per-conversation ownership, idle end, cap | no orphan process after close; the cap holds |
+| `digest.py` | reply -> model text and `wb` refs | size bounds; a ref parses with parse_placeholder |
+| `policy.py` | what enters, what `keep` may leave | refusal cases named and counted |
+
+Import rule (a contract test): only `tool_bridge.py` and `kernel/der/node.py` import
+the package; `node_executor.py` never does.
+
+**Oracle `exec_mode`.** Code nodes ask no tool_choice question (one tool) - one d1
+call saved per model call; tool_choice row volume must be watched after switch-on.
+A new shadow consumer `exec_mode` (labels CODE / TOOLS, one question at node entry)
+learns from structured outcomes; the stated rule decides until the bar.
+
 ## Key Decisions
 
 | Decision | Rationale | Rejected |

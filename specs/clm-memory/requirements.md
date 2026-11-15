@@ -375,6 +375,58 @@ edit 10.81e14 FLOPs on a 20k prompt.
 - A volatile value in the prefix (a clock, a counter) is a finding: it is moved to the
   tail or removed.
 
+### CLM-11: The Workbench - a persistent Python execution layer for DER nodes
+**User Story:** As the owner I want a computational step to run as a few rich Python
+executions in a persistent namespace instead of a long chain of narrow tool calls, so
+large intermediate values stay OUT of the model's window and out of the chat record,
+fewer model calls are made, and the decision model is asked fewer, cleaner questions -
+while the DAG stays the control and memory plane.
+
+**Verified:** owner direction 2026-11-15 (MCM `pin_b17a0497b192`); design by the Fable
+5.2 advisor (design.md "The Workbench"). Measured need: the small-model gate (T2.8)
+failed 0/5 with and without offload because the PROTECTED blocks (tools schema p95
+5,968 tokens, system ~570, step message up to ~9,000) exceed the 8k shrink limit; the
+cloud reply is ~93 % model wait (fewer calls = faster). No jupyter_client / ipykernel /
+pyzmq is installed; the backend ships as a PyInstaller one-file exe.
+
+**Acceptance Criteria:**
+- AC1: WHEN a node is in code mode THE SYSTEM SHALL offer exactly one tool
+  (`run_python`) and execute its code in the conversation's Workbench.
+- AC2: WHEN an execution ends THE SYSTEM SHALL return stdout, stderr, the value of a
+  final expression, the error and the changed variables as that node's tool result,
+  bounded to the digest size; each changed variable carries a `wb:<incarnation>/<name>`
+  reference.
+- AC3: WHILE a Workbench lives, a value named by a `wb` reference SHALL be readable
+  by expand; IF it has ended THEN expand SHALL return the named case `workbench_gone`
+  with the step and purpose that produced the value - never an empty block.
+- AC4: IF no interpreter is available, OR code mode fails twice with the same
+  exception type, OR the sandbox refuses THEN the node SHALL re-run on the
+  fine-grained tool path, counted (`wb_fallback`).
+- AC5: WHERE the mode is personal THE SYSTEM SHALL NOT offer `run_python`
+  (registered like run_command: developer mode, side-effect tier, approval applies).
+- AC6: THE SYSTEM SHALL promote to memory only values passed to `keep()` that pass the
+  policy (JSON scalars/lists/dicts <= 2,000 chars from an execution with no error),
+  through the existing step result and `write_pin` path; raw tool output, oversized
+  or non-JSON values, environment values and anything from a failed execution are
+  never promoted, and nothing from the Workbench becomes a landmark.
+- AC7: WHEN the conversation ends, is idle 10 minutes, changes workdir or mode, or
+  the backend exits THE SYSTEM SHALL end its process and leave no child process.
+- AC8: THE SYSTEM SHALL bound every execution (60 s soft stop that keeps state, hard
+  kill 3 s later that restarts the incarnation; 1 GB RSS; 256k chars of output) and at
+  most 2 live Workbenches process-wide.
+- AC9: THE SYSTEM SHALL keep the Workbench in parts with one responsibility each
+  (protocol, worker, client, manager, digest, policy), a versioned protocol, and a
+  contract test per boundary, so any part can be replaced without regression; the
+  fine-grained node path SHALL stay byte-equal with the flag off.
+
+**Edge Cases:**
+- The frozen app has no python.exe: resolve the project venv, then PATH python; none
+  -> the Workbench is unavailable and the node runs fine-grained (counted).
+- A child `print` must never corrupt a protocol frame (frames on a private fd).
+- Two parallel DAG branches never interleave in one namespace (a node claim).
+- A hung C call: the soft stop fails, the hard kill restarts the incarnation and the
+  reply says the variables are lost; old `wb` refs then answer `workbench_gone`.
+
 ## Non-Requirements (Out of Scope)
 
 - Reinforcement learning and prompt evolution (brief section 12: reference only).
