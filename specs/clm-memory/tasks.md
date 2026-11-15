@@ -271,6 +271,24 @@ same-conditions A/B, numbers named with their cohort.
   DONE = the table exists in this file with (a) and (b) per model per task.
   NOT THIS = prompting the model to edit so the count is not 0; a per-model prompt;
   counting a harness offload as a model edit.
+> **Wave 2-4 live results (2026-11-15).**
+> CLOUD (opencodego deepseek-v4.1-flash, 128k): flag OFF cohort 21/21 + context 5/5;
+> flag ON cohort 21/21 + context 5/5 (evals/results/20261115-123853, -125311 off;
+> -132735, -134339 on). Flag on: 27 tool results recorded, step ref lists reached
+> 29 of 217 later calls, gauge line in 58; nothing set aside (128k never fills).
+> SMALL MODEL T2.8 (LFM3-1.7B-Q8_0 on :8091 as tool_execution, 8,192 tokens per
+> request, reasoning on the cloud model): context 0/5 with the flag OFF and 0/5 ON
+> (-142445 off, -144640 on). The model returns structured tool calls (probe: ALL
+> STRUCTURED AND CORRECT; 158 node calls). Flag on: 4 set-asides, 38 boundaries
+> where nothing could leave, router blind drops 24 calls / 117 messages / ~83k
+> tokens. CAUSE: on 8k the PROTECTED blocks alone exceed the shrink limit (3,072
+> tokens) - the tools schema (p95 5,968 tokens), the system prompt, and the step
+> message's RESULTS OF EARLIER STEPS (24,000-char clip). Offloading tool results
+> cannot fix that. (b) model-initiated edits: 0 set_aside, 0 expand by the model.
+> -> OWNER DIRECTION 2026-11-15 (MCM pin_b17a0497b192): a Jupyter-style persistent
+> Python workspace as the DAG's main execution backend, folded into this spec
+> (fewer, richer calls; large values stay in the workspace namespace). Design by
+> the Fable 5.2 advisor, then a new requirement + wave below.
 - [ ] **TG-2 (live gate)**: `scripts/validate_view_replay.py` distributions sane ->
   cohort A/B: blind drops 0, context group result recorded, coding/research/memory
   pass counts not lower, standards no regression, BT-1 passes. Then the flag goes on,
