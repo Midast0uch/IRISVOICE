@@ -164,3 +164,23 @@ def test_ct8_no_view_mark_reaches_a_displayed_or_spoken_reply():
     assert "The answer is 32." in out and "Codes: E1, E2" in out
     plain = "A [view] of the 3k / 8k problem, set aside for now."
     assert strip_context_marks(plain) == plain           # prose is never touched
+
+
+def test_the_node_menu_fits_its_share_of_a_small_window_and_keeps_the_core_tools():
+    from backend.agent.context_gauge import estimate_tokens
+    from backend.agent.kernel.der import node
+
+    def tool(name, words):
+        return {"type": "function", "function": {"name": name, "description": "d " * words,
+                "parameters": {"type": "object", "properties": {}}}}
+
+    core = [tool(n, 40) for n in ("read_file", "edit_file", "run_command")]
+    extra = [tool(f"x{i}", 400) for i in range(12)]
+    menu = extra[:6] + core + [tool("recall_memory", 60)] + extra[6:]
+    small = node._clm_menu_budget(menu, 8192)
+    names = [t["function"]["name"] for t in small]
+    assert {"read_file", "edit_file", "run_command", "recall_memory"} <= set(names)
+    assert estimate_tokens([], small) <= int(8192 * node._MENU_SHARE) + 64
+    assert names == [t["function"]["name"] for t in menu if t in small]   # menu order kept
+    assert node._clm_menu_budget(menu, 128000) == menu                    # a big window keeps all
+    assert node._clm_menu_budget(menu, 0) == menu                         # no window = no change

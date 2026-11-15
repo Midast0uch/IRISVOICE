@@ -94,6 +94,37 @@ def _clm_dead_ends(kernel, session: str, turn_id) -> list:
         return []
 
 
+# CLM (small-model gate 2026-11-15): on a small window the tool menu is a
+# protected block that alone overflowed the shrink limit (Wave 0: p50 1,733,
+# p95 5,968 tokens per call). The menu gets 15 % of the window; the core
+# coding tools and recall_memory are kept first, the rest in menu order while
+# they fit. A 128k window keeps the whole menu (15 % = 19,200 tokens).
+_MENU_SHARE = 0.15
+
+
+def _clm_menu_budget(tools: list, window: int) -> list:
+    if not window:
+        return tools
+    from backend.agent.context_gauge import estimate_tokens
+
+    room = int(window * _MENU_SHARE)
+    first = [t for t in tools if (t.get("function") or {}).get("name") in _NODE_CORE_TOOLS
+             or (t.get("function") or {}).get("name") == "recall_memory"]
+    rest = [t for t in tools if t not in first]
+    kept, used = [], 0
+    for t in first + rest:
+        cost = estimate_tokens([], [t])
+        if kept and used + cost > room:
+            continue
+        kept.append(t)
+        used += cost
+    if len(kept) < len(tools):
+        logger.info("[clm] node menu %d -> %d tools (~%d tokens, window %d)",
+                    len(tools), len(kept), used, window)
+    order = {id(t): i for i, t in enumerate(tools)}
+    return sorted(kept, key=lambda t: order[id(t)])
+
+
 def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session: str = "") -> dict:
     """record_result / ref_readable / on_clm_event / window for one node."""
     from backend import conversation_store as _cs
@@ -1322,6 +1353,11 @@ class DerNodeMixin:
         tools = _narrow_node_tools(tools, goal)
         if _clm_offload_on():
             tools = _clm_recall_menu(tools, self._get_openai_tools())
+            try:
+                tools = _clm_menu_budget(
+                    tools, int(self.resolve_context_window_with_source("tool_execution").tokens))
+            except Exception as exc:  # noqa: BLE001 - the full menu stays, logged
+                logger.warning("[clm] menu budget skipped: %r", exc)
         # The shadow scores the menu the node's model was OFFERED, not the
         # registry's first names (which are vision tools).
         _offered = [t["function"]["name"] for t in tools]

@@ -3,13 +3,14 @@
  "note": "sha256(ast.dump(node, include_attributes=False)); key = kind:name; methods of AgentKernel and *Mixin classes are one namespace",
  "counts": {
   "method": 242,
-  "function": 66,
+  "function": 67,
   "class": 1
  },
  "entries": {
   "class:TaskContext": "4d4bcc0c0c5172a4b93f197a31c2e6ac0cba668279c998838bf4d80617077d4f",
   "function:_claims_missing": "aa5ef04a50ad91f89580a71147425f57715863bd5e2abc88cca52309530411f0",
   "function:_clm_dead_ends": "a248922a625df3d9615e2c8253b371722acab76151598ce3791bfd5f6bb3558c",
+  "function:_clm_menu_budget": "81c974599df820ea0720b1783c26ac9c652845e7b65e66ba93e5bbbae915a25f",
   "function:_clm_node_hooks": "38c7e32b8f4dc505f9d72bed365ecd905faf0644ee87bc27bcadb8561b3658f6",
   "function:_clm_offload_on": "b19f8af4b14cc08e1da7862a57d29dc543617ee15bade5446d4eb59611843b15",
   "function:_clm_recall_menu": "884f4a1d8b686575f2f883666fc497195ac4d1748a973c3f6cabc6f089f3dd6b",
@@ -135,7 +136,7 @@
   "method:_der_route_step_failure": "cac2e68eb2f76f5f4b40ec68b9dffa615db017f7e58a1bb3583d61a1d389131d",
   "method:_der_route_subloop_children": "850360b39962b3bbbb757e14146d60d5b38367b5031279a0656f7df546dcad19",
   "method:_der_run_direct_node": "6dc728e593315653515a5366be3bb4e567455bd154b469e55b4f5dd7150d097c",
-  "method:_der_run_node": "1e3a8e4cb07350310f414ed87918c26a7a0a667befaee3ecd11c21ac355f81db",
+  "method:_der_run_node": "1dda526703c23fda1e11a51c75082e1f91114f9f7aa774e33ec330fc4f40f9c2",
   "method:_der_run_step_execution": "d5f076c7a63c5cf6c449d9f42be963df6d3cd37ed51240caa92262a51ae1aeca",
   "method:_der_score_step_outcome": "00e722b0d6dfad5babc5fa1f62c3109a3e1a211af6a06b1ad8946f8a534bb0cb",
   "method:_der_split_blocker": "4e9f119fb7f7fc015c670c178f10d9bf92e7a395be114a4cd1e0de3054315000",
