@@ -45,7 +45,16 @@ _CLM_EXPAND_PARAMS = {
     "offset": {"type": "integer", "description": (
         "With expand: the character to start from (default 0); the reply gives "
         "next_offset when more text follows.")},
+    "set_aside": {"type": "string", "description": (
+        "One or more references (tool_result:<id>, separated by spaces) of results "
+        "to replace with a one-line slip that keeps their reference.")},
+    "reason": {"type": "string", "description": "With set_aside: why, in a few words."},
 }
+_CLM_RECALL_FACTS = (
+    " Tool results carry [ref tool_result:<id>]; a long result's cut mark names its ref."
+    " set_aside=<ref> replaces a result with a one-line slip that keeps the ref;"
+    " expand=<ref> returns the exact text."
+)
 
 
 def _clm_recall_menu(tools: list, full: list) -> list:
@@ -60,6 +69,8 @@ def _clm_recall_menu(tools: list, full: list) -> list:
     params = spec.setdefault("function", {}).setdefault("parameters", {"type": "object"})
     params.setdefault("properties", {}).update(copy.deepcopy(_CLM_EXPAND_PARAMS))
     params["required"] = [r for r in params.get("required") or [] if r != "query"]
+    fn = spec["function"]
+    fn["description"] = (fn.get("description") or "") + _CLM_RECALL_FACTS
     out = [t for t in tools if (t.get("function") or {}).get("name") != "recall_memory"]
     return out + [spec]
 

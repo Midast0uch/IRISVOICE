@@ -415,7 +415,20 @@ def _clip(text: str, limit: int, ref: str = "") -> str:
 # calls), so 0.20 - an estimate that is 20 % low still fits the window.
 _SHRINK_MARGIN = 0.20
 _clm_stats = {"shrink_boundaries": 0, "set_aside_units": 0, "shrink_failures": 0,
-              "record_failures": 0}
+              "record_failures": 0, "model_set_aside": 0, "model_set_aside_refused": 0}
+# CLM-4 AC4: the reminder line appears once the view passes this share of the
+# shrink limit. The Wave 0 / TG-1 data: a node call's input was 0.06-0.31 of a
+# 128k window, so 0.6 of the LIMIT only fires on a window that is really filling.
+_REMINDER_SHARE = 0.6
+
+
+def _gauge_line(used: int, window: int, aside: int, remind: bool) -> str:
+    """CLM-4 AC3/AC4: the view size against the window, one short line."""
+    line = f"[view {used / 1000:.1f}k / {window / 1000:.1f}k tokens | {aside} set aside]"
+    if remind:
+        line += ("\n[the view is filling: recall_memory set_aside=<ref> leaves a one-line "
+                 "slip for a result you no longer need; expand=<ref> brings it back]")
+    return line
 
 
 def clm_node_stats() -> Dict[str, int]:
@@ -722,8 +735,12 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         logger.warning("[run_node] conv=%s context view failed, old list used "
                        "(view_fallback=%d): %r", ctx.conv_id, count_view_fallback(), exc)
 
+    last_tool: Dict[str, Any] = {}
+
     def _add(kind: str, message: Dict[str, Any]) -> Optional[Block]:
         messages.append(message)
+        if kind == TOOL_RESULT:
+            last_tool["m"] = message
         if view is not None:
             try:
                 return view.admit_live(kind, message)
@@ -732,6 +749,50 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         return None
 
     offloaded_ids: set = set()  # result ids this node set aside (PREMATURE_EVICTION)
+
+    def _model_set_aside(params: Dict[str, Any]) -> Dict[str, Any]:
+        """recall_memory(set_aside=<ref>[, <ref>...], reason=...) from the model:
+        the same gate as the harness shrink, one batch. The model chooses; the
+        gate still refuses what may not leave (named, counted)."""
+        want = {r.strip()[len("tool_result:"):] for r in
+                str(params.get("set_aside") or "").replace(",", " ").split()
+                if r.strip().startswith("tool_result:")}
+        if not want:
+            return {"success": False, "case": "malformed_ref",
+                    "error": "set_aside takes one or more references such as tool_result:<id>"}
+        reason = " ".join(str(params.get("reason") or "set aside by the model").split())[:120]
+        chosen, refused, found = [], {}, set()
+        for unit in view.units() if view is not None else []:
+            ids = [b.ref.id for b in unit.results if b.ref.kind == "tool_result"]
+            if not want.intersection(ids):
+                continue
+            found.update(want.intersection(ids))
+
+            def _whole(_ref, _u=unit, _ids=ids):
+                return (len(_ids) == len(_u.results) and ctx.ref_readable is not None
+                        and all(ctx.ref_readable(i) for i in _ids))
+
+            d = offload_decision(view, unit, _whole, reason=reason)
+            if d.allowed:
+                chosen.append((unit, d.placeholder, ids, d.saving))
+            else:
+                for i in want.intersection(ids):
+                    refused[f"tool_result:{i}"] = d.reason
+        for i in want - found:
+            refused[f"tool_result:{i}"] = "not_in_view"
+        if chosen:
+            view.set_aside_batch([(u, ph) for u, ph, _i, _s in chosen])
+        out_refs = []
+        for u, ph, ids, saving in chosen:
+            _clm_stats["model_set_aside"] += 1
+            offloaded_ids.update(ids)
+            out_refs += [f"tool_result:{i}" for i in ids]
+            if ctx.on_clm_event is not None:
+                ctx.on_clm_event("OFFLOADED", {
+                    "refs": [f"tool_result:{i}" for i in ids], "tools": u.tool_names(),
+                    "saving": saving, "by": "model", "reason": reason, "window": ctx.window})
+        _clm_stats["model_set_aside_refused"] += len(refused)
+        return {"success": bool(chosen), "set_aside": out_refs, "refused": refused}
 
     def _shrink(menu: List[Dict[str, Any]]) -> None:
         """CLM T2.3: at a model-call boundary, set aside the oldest complete
@@ -996,7 +1057,10 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.on_call(name, params)
                         except Exception as exc:  # noqa: BLE001 — advisory only
                             logger.debug("[run_node] shadow hook failed: %r", exc)
-                    if key in prefetched:  # a sibling that already ran side by side
+                    if (name == "recall_memory" and params.get("set_aside")
+                            and ctx.window and view is not None):
+                        raw = _model_set_aside(params)
+                    elif key in prefetched:  # a sibling that already ran side by side
                         raw = prefetched[key]
                     else:
                         try:
@@ -1113,7 +1177,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                   if _rid else ("", "", ""))
                 _blk = _add(TOOL_RESULT, {
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
-                    "content": content,
+                    "content": (f"[ref tool_result:{_rid}]\n" if _rid else "") + content,
                 })
                 if _rid and _blk is not None:
                     _blk.ref = Ref(kind="tool_result", id=_rid)
@@ -1134,6 +1198,19 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     )
                 elif not _claimed_close and _probe is not None:
                     _batch_last = (len(calls) - 1, name, _target(params or {}), content)
+            if ctx.window and view is not None and last_tool.get("m") is not None:
+                try:
+                    _used = _estimate_tokens(view.render(), tools)
+                    _reserve = min(max(256, ctx.max_tokens), ctx.window // 2) + 256
+                    _limit = int((ctx.window - _reserve) * (1 - _SHRINK_MARGIN))
+                    _aside = sum(1 for b in view.blocks if b.aside)
+                    _m = last_tool.pop("m")
+                    _m["content"] = (str(_m.get("content") or "") + "\n"
+                                     + _gauge_line(_used, ctx.window, _aside,
+                                                   _used > _REMINDER_SHARE * _limit))
+                except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
+                    _clm_stats["shrink_failures"] += 1
+                    logger.warning("[run_node] conv=%s gauge line failed: %r", ctx.conv_id, exc)
             if pending_shot:
                 # After the tool messages (a tool message carries text only on
                 # most APIs), as the user turn the model reads next.

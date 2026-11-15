@@ -2922,6 +2922,11 @@ class AgentToolBridge:
                 # CLM T2.4/T2.6: expand a reference to the exact text it names.
                 if str(params.get("expand") or "").strip():
                     return _expand_tool_result(self, session_id, params)
+                if str(params.get("set_aside") or "").strip():
+                    # Only a DER node holds a view to set aside from; the node
+                    # loop handles it before dispatch (node_executor).
+                    return {"success": False, "case": "not_in_a_node",
+                            "error": "set_aside works inside a task step, where results are kept"}
                 query = str(params.get("query") or "").strip()
                 if not query:
                     return {"success": False, "error": "query is required"}

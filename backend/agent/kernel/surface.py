@@ -322,10 +322,14 @@ class SurfaceMixin:
         # the user: one leading label is dropped from the display text and the
         # spoken line here â€” the single exit every reply path goes through
         # (recorded live 2026-10-06, test_answer_marker_strip_contract).
-        from backend.agent.artifact_policy import strip_leading_answer_marker
+        from backend.agent.artifact_policy import (
+            strip_context_marks,
+            strip_leading_answer_marker,
+        )
 
-        display = strip_leading_answer_marker(display or "")
-        self._last_spoken_text = strip_leading_answer_marker((spoken or "").strip())
+        display = strip_context_marks(strip_leading_answer_marker(display or ""))
+        self._last_spoken_text = strip_context_marks(
+            strip_leading_answer_marker((spoken or "").strip()))
         # D3 (2026-10-31): a memory deletion is only true when a tool performed
         # it this turn. The measured failure: "Done - I've wiped your locker
         # code from memory" with the pin still in the store and no tool event.

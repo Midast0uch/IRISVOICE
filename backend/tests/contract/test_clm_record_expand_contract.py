@@ -149,3 +149,18 @@ def test_the_recall_menu_offers_expand_and_does_not_require_query():
     assert "expand" in rm["function"]["parameters"]["properties"]
     assert "query" not in rm["function"]["parameters"]["required"]
     assert full[0]["function"]["parameters"]["required"] == ["query"]   # the source is not mutated
+
+
+def test_ct8_no_view_mark_reaches_a_displayed_or_spoken_reply():
+    from backend.agent.artifact_policy import strip_context_marks
+
+    reply = ("The answer is 32.\n[[SET ASIDE tool_result:abc123 | this run | read_file | read_file]]\n"
+             "Codes: E1, E2 [ref tool_result:00ff]\n[view 6.1k / 8.0k tokens | 2 set aside]\n"
+             "[the view is filling: recall_memory set_aside=<ref> leaves a one-line slip]\n"
+             "... [400 chars cut; full text: recall_memory expand=tool_result:beef] ...")
+    out = strip_context_marks(reply)
+    for mark in ("SET ASIDE", "[ref tool_result", "tokens |", "view is filling", "expand=tool_result"):
+        assert mark not in out
+    assert "The answer is 32." in out and "Codes: E1, E2" in out
+    plain = "A [view] of the 3k / 8k problem, set aside for now."
+    assert strip_context_marks(plain) == plain           # prose is never touched

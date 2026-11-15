@@ -172,6 +172,32 @@ _ANSWER_MARKER_RE = re.compile(
 )
 
 
+# CLM CT-8 (specs/clm-memory): the view's own marks - a set-aside slip, the
+# gauge line and its reminder, a result's [ref ...] head, the "full text:"
+# note in a cut mark - are for the model. A reply that copies one never shows
+# or speaks it.
+_CLM_MARK_RES = (
+    re.compile(r"\[\[SET ASIDE [^\]\n]*\]\]"),
+    re.compile(r"\[view \d+(?:\.\d+)?k / \d+(?:\.\d+)?k tokens \| \d+ set aside\]"),
+    re.compile(r"\[the view is filling:[^\]\n]*\]"),
+    re.compile(r"\[ref tool_result:[0-9a-fA-F]+\]"),
+    re.compile(r"; full text: recall_memory expand=tool_result:[0-9a-fA-F]+"),
+)
+_clm_mark_strips = {"replies": 0}
+
+
+def strip_context_marks(text: str) -> str:
+    """Remove the CLM view marks from a reply (display and spoken alike)."""
+    out = text or ""
+    for rx in _CLM_MARK_RES:
+        out = rx.sub("", out)
+    if out != (text or ""):
+        _clm_mark_strips["replies"] += 1
+        out = re.sub(r"[ \t]+\n", "\n", out)
+        out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
+
+
 def strip_leading_answer_marker(text: str) -> str:
     """Drop ONE leading "ANSWER:" label the model copied from the prompt.
 

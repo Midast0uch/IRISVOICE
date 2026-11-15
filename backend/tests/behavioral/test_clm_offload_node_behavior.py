@@ -178,3 +178,58 @@ def test_asking_back_for_a_set_aside_result_counts_a_premature_eviction():
     ne.run_node("Read parts", ctx)
     assert state["asked"]
     assert [p for label, p in events if label == "PREMATURE_EVICTION"]
+
+
+def test_the_gauge_line_shows_only_with_the_hooks():
+    seen_on, _s, _e, _r = _run(with_clm=True)
+    seen_off, _s2, _e2, _r2 = _run(with_clm=False)
+    tool_text_on = [m["content"] for m in seen_on[-1] if m.get("role") == "tool"]
+    assert any("tokens |" in t and "set aside]" in t for t in tool_text_on)
+    assert all("set aside]" not in str(m.get("content", "")) and "[ref tool_result:" not in str(m.get("content", ""))
+               for msgs in seen_off for m in msgs)
+
+
+def test_the_model_can_set_aside_a_result_by_its_ref_through_the_same_gate():
+    store: Dict[str, str] = {}
+    events: List[tuple] = []
+    script = [("", [_call(1, "a.txt")]), ("", [_call(2, "b.txt")])]
+    state = {"asked": False, "reply": None}
+
+    def generate(role, messages, tools=None, **kw):
+        if script:
+            text, calls = script.pop(0)
+            return text, "", copy.deepcopy(calls)
+        if not state["asked"]:
+            state["asked"] = True
+            first = next(m["content"] for m in messages if m.get("role") == "tool")
+            ref = first.split("\n", 1)[0][len("[ref "):-1]       # "[ref tool_result:<id>]"
+            call = {"id": "aside", "type": "function", "function": {
+                "name": "recall_memory",
+                "arguments": json.dumps({"set_aside": ref + " tool_result:nope", "reason": "done with a"})}}
+            return "", "", [call]
+        state["reply"] = next(m["content"] for m in reversed(messages) if m.get("role") == "tool")
+        state["final"] = copy.deepcopy(messages)
+        return "Done.\nSTATUS: done", "", []
+
+    def record_result(name, params, text, call_ord):
+        rid = f"{len(store) + 1:032x}"
+        store[rid] = text
+        return rid
+
+    ctx = ne.NodeContext(
+        generate=generate,
+        execute=lambda name, params: {"success": True, "content": "x"},
+        format_result=lambda name, raw: json.dumps(raw) if name == "recall_memory" else "w" * READ_CHARS,
+        tools=TOOLS + [_tool("recall_memory")], conv_id="bt2-model", max_calls=8,
+        record_result=record_result, ref_readable=lambda rid: rid in store,
+        on_clm_event=lambda label, payload: events.append((label, payload)), window=128000)
+    ne.run_node("Read a and b", ctx)
+    body = state["reply"]
+    if body.startswith("[ref "):                     # the result's own ref head
+        body = body.split("\n", 1)[1]
+    reply = json.loads(body.split("\n[view")[0]) if body.startswith("{") else None
+    assert reply is not None and reply["success"] is True
+    assert reply["refused"] == {"tool_result:nope": "not_in_view"}
+    assert [p.get("by") for label, p in events if label == "OFFLOADED"] == ["model"]
+    first_tool = next(m for m in state["final"] if m.get("role") == "tool")
+    assert first_tool["content"].startswith("[[SET ASIDE tool_result:")
