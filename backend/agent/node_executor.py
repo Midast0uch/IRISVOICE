@@ -291,6 +291,11 @@ class NodeContext:
     brief: str = ""
     check: str = ""
     on_check_failed: Optional[Callable[[int, str, str], Optional[str]]] = None
+    # T7.15: an OBSERVER of every run_python check result - on_check(attempt, ok,
+    # error_type, check_error) - for the repair_route shadow rows. It runs BEFORE
+    # on_check_failed, its return is ignored and an exception in it is logged: it
+    # can never change what the node does.
+    on_check: Optional[Callable[[int, bool, str, str], None]] = None
 
 
 @dataclass
@@ -686,6 +691,19 @@ def step_facts(goal: str, done_when: str, calls: List[Dict[str, Any]],
         return line[:limit]
     except Exception:  # noqa: BLE001 - a fact line never blocks a node
         return ""
+
+
+def _observe_check(ctx: "NodeContext", attempt: int, ok: bool, raw: Any) -> None:
+    """T7.15: tell the check observer (repair_route shadow) one run_python check result.
+    Never changes the node: an observer that raises is logged and the node goes on."""
+    if ctx.on_check is None:
+        return
+    try:
+        raw = raw if isinstance(raw, dict) else {}
+        ctx.on_check(attempt, ok, str(raw.get("error_type") or ""),
+                     str(raw.get("check_error") or ""))
+    except Exception as exc:  # noqa: BLE001 - an observer never blocks a node
+        logger.warning("[run_node] conv=%s check observer failed: %r", ctx.conv_id, exc)
 
 
 def _failed(raw: Any) -> bool:
@@ -1316,6 +1334,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     _blk.ref = Ref(kind="tool_result", id=_rid)
                 if name == "run_python" and ctx.check and isinstance(raw, dict):
                     if raw.get("check_ok") is True:
+                        _observe_check(ctx, check_failures + 1, True, raw)
                         # R3: the harness ran the check and it passed - the step is
                         # done in this answer, no further model call.
                         batch_done = True
@@ -1323,6 +1342,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             str((params or {}).get("purpose") or "the step's check passed"))
                     else:
                         check_failures += 1
+                        _observe_check(ctx, check_failures, False, raw)
                         if check_failures == 2 and ctx.on_check_failed is not None:
                             try:
                                 _note = ctx.on_check_failed(

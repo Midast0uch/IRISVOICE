@@ -240,9 +240,30 @@ def _wb_brief(item) -> tuple:
     return ("\n".join(parts)[:2400], check)
 
 
-def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: str):
+def _wb_repair_tracker(kernel, session: str):
+    """T7.15: the node's repair_route shadow tracker (rows for the failed checks), with the
+    kernel's ledger sink installed. None if it cannot be built - the node never needs it."""
+    try:
+        from backend.agent import repair_route_shadow as _rr
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+
+        sink = getattr(kernel, "_shadow_row_sink", None)
+        if callable(sink):
+            _rr.set_row_sink(sink)
+        return _rr.RepairTracker(
+            thread_id=session,
+            conn=resolve_mycelium_conn(getattr(kernel, "_memory_interface", None)))
+    except Exception as exc:  # noqa: BLE001 - a shadow never blocks a node
+        logger.warning("[workbench] conv=%s repair_route tracker unavailable: %r",
+                       getattr(kernel, "conversation_id", ""), exc)
+        return None
+
+
+def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: str,
+                 tracker=None):
     """R4: on the second failed check, ONE Brain call writes a repair brief with a
-    skeleton; the skeleton is put into the namespace as `skeleton`."""
+    skeleton; the skeleton is put into the namespace as `skeleton`. `tracker` (T7.15) is
+    told when a brief is going to the next attempt - it only labels the shadow rows."""
     def _hook(attempt: int, code: str, digest: str):
         import re as _re
 
@@ -269,6 +290,8 @@ def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: 
                 logger.warning("[workbench] conv=%s skeleton put failed: %r", conversation_id, exc)
         logger.info("[workbench] conv=%s escalated to the Brain after %d failed checks",
                     conversation_id, attempt)
+        if note and tracker is not None:
+            tracker.briefed()
         return ("REPAIR BRIEF (from the planner):\n" + note) if note else None
     return _hook
 
@@ -1872,6 +1895,7 @@ class DerNodeMixin:
 
                 _wb_allowed = frozenset(n for n in _menu if n != "run_python")
                 _wb_cb_calls: list = []
+                _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item)[1] else None
                 _wb_ctx = _dc.replace(
                     _node_ctx,
                     tools=[t for t in _full_tools
@@ -1886,8 +1910,12 @@ class DerNodeMixin:
                     on_result=lambda name, params, ok, approval_ok=None: self._der_count_tool_call(item),
                     brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
-                                                  *_wb_brief(item))
+                                                  *_wb_brief(item), tracker=_wb_rr)
                                      if _wb_brief(item)[1] else None),
+                    # T7.15: shadow rows only - the rule above still decides
+                    on_check=((lambda a, ok, et, ce: _wb_rr.passed() if ok
+                               else _wb_rr.failed(a, et or "CheckFailed", ce))
+                              if _wb_rr is not None else None),
                     prior_results=[dict(r, result=str(r.get("result") or "")[:_WB_PRIOR_HEAD]
                                         + " [full text: steps]") for r in _prior_results],
                 )
@@ -1905,6 +1933,8 @@ class DerNodeMixin:
                     result = run_node(goal, _wb_ctx)
                 finally:
                     clear_workbench_dispatch(_wb_conv, _wb_handler)
+                    if _wb_rr is not None:
+                        _wb_rr.end()
                 _why = _wb_needs_fallback(result)
                 if _why:
                     _wb_stats["fallback"] += 1

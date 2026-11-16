@@ -408,14 +408,14 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   - [x] **T7.13 planner brief fields** - BUILT 61415764 (8 contract tests; flag-off planner prompt byte-equal). Live part (cohort 21/21 with the fields) runs at TG-7. (inputs, outputs, check, approach, tools) in
     the existing planner call. DONE = cloud cohort 21/21 with the fields present; a
     step without them still runs. NOT THIS = a second planner call.
-  - [ ] **T7.14 escalation hook** `on_check_failed` -> one Brain repair brief with a
+  - [x] **T7.14 escalation hook** - PROVEN (test drives the real _der_run_node: roles tool_execution, tool_execution, reasoning x1, tool_execution; skeleton in the namespace; log line "escalated to the Brain after 2 failed checks"; 10 failing scripts -> still one Brain call, the node ends at max_calls and goes to DER recovery; _hand_over cannot fire in a code node, helper_role None). `on_check_failed` -> one Brain repair brief with a
     skeleton. DONE = a seeded failing step shows two attempts, one Brain call, a third
     attempt, in the log. NOT THIS = role hand-over; an unbounded loop.
   - [ ] **T7.0b probe** (needs T7.12): ten brief-to-script tasks with checks on each
     small model, level 0 and level 1. DONE = a pass-rate table here; the default start
     level written from it. NOT THIS = a per-model prompt.
-  - [ ] **T7.10 fresh / close / spill** (as Round 2).
-  - [ ] **T7.15 `repair_route`** Oracle shadow rows. DONE = rows with labels. NOT THIS
+  - [x] **T7.10 fresh / close / spill** - BUILT (16 contract tests: a wb: ref expands to its spilled text after fresh, close, idle end and cap eviction; hard kill -> workbench_gone; spill rows wbspill-<inc>-<name>, 32,000 chars each, newest 24 named values; spill and close run OUTSIDE the manager lock). T7.8 with it: keep()/kept removed; one code row per run_python execution on the tool_results lane. Live part at TG-7.
+  - [x] **T7.15 `repair_route`** - BUILT, shadow (14 contract tests with T7.14; pattern = page_shadow.py; job judge_repair; label REPAIR = the next check passed with no Brain brief between, ESCALATE = passed after a brief, unlabelled = no pass; read the bar PER ATTEMPT - the rule escalates at attempt 2, so REPAIR labels come only from attempt-1 rows). Rows on a live task at TG-7. Oracle shadow rows. DONE = rows with labels. NOT THIS
     = enforcement.
   - [ ] **TG-7 (Round 3), four arms, same conditions:** small tool model (LFM3-1.7B,
     then LFM2.5-2.6B) ReAct vs the loop; cloud model on both roles ReAct vs the loop.

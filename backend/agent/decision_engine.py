@@ -161,6 +161,12 @@ CONSUMERS: Tuple[str, ...] = (
     # in NO_DECISION_SITE: nothing reads their answer until they earn the bar.
     "page_relevance",
     "page_blocked",
+    # repair_route (2026-11-16, T7.15): ONE shadow question at each failed check of
+    # a Workbench code node - REPAIR (the tool model tries again) or ESCALATE (the
+    # Brain writes a repair brief). Label: whether a check passed next, and whether
+    # a brief came first (backend/agent/repair_route_shadow.py). In NO_DECISION_SITE:
+    # the stated rule (escalate on the 2nd failure) still decides.
+    "repair_route",
 )
 
 
@@ -355,6 +361,12 @@ ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
     # 256 ids = 1024 chars: url 200 + title 150 + status + head 600.
     OracleJob("inspect_page", "is this page blocked from being read?",
               ("url", "title", "status", "page_head"), 256),
+    # repair_route's job (2026-11-16): the failed check as the harness saw it. No goal
+    # and no script/digest/brief: the evidence is the attempt number, the error type,
+    # the check's own message and the typed failure counts for the thread (BUG /
+    # OBSTACLE / DEAD_END). 192 ids = 768 chars: 4 short fields + the labels.
+    OracleJob("judge_repair", "after this failed check, repair alone or escalate?",
+              ("attempt", "error_type", "check_error", "failure_rows"), 192),
     OracleJob("general", "a consumer not yet assigned to a job",
               ("goal",), 128),
 )}
@@ -381,6 +393,8 @@ CONSUMER_JOBS: Dict[str, str] = {
     "event_family": "classify_event",
     # 2026-11-10: the research-path page questions (page_shadow.py)
     "page_relevance": "judge_page", "page_blocked": "inspect_page",
+    # 2026-11-16 (repair_route_shadow.py): the failed-check route question
+    "repair_route": "judge_repair",
 }
 
 
@@ -489,6 +503,11 @@ CONSUMER_DECLARATIONS: Dict[str, ConsumerDeclaration] = {
         "true": ("Blocked: a cookie or consent wall, a login wall, a captcha, "
                  "a paywall or an error page hides the content"),
         "false": "The page content can be read",
+    }),
+    # 2026-11-16 (repair_route_shadow.py): two fixed labels, one question per failed check.
+    "repair_route": ConsumerDeclaration("choice", {
+        "REPAIR": "The tool model can fix it alone: it tries again without the Brain",
+        "ESCALATE": "The tool model needs help: the Brain writes a repair brief first",
     }),
     # tool_approval (2026-10-10, pin_1fb3ce63bb3b): the binary
     # outcome-referenced approval consumer. The reference is the call's OUTCOME
@@ -1204,7 +1223,9 @@ NO_DECISION_SITE = frozenset({
     "tool_approval",
     # 2026-11-10: shadow questions, no site yet
     # (page_shadow.py; they must earn the bar first)
-    "page_relevance", "page_blocked"})
+    "page_relevance", "page_blocked",
+    # 2026-11-16: the stated rule decides (repair_route_shadow.py)
+    "repair_route"})
 
 
 def _log_enforcement_once() -> None:

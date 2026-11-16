@@ -68,6 +68,8 @@ class TestConsumerSetIsPinned:
             "route_v2",
             # 2026-11-10: research-path shadow questions (page_shadow.py)
             "page_relevance", "page_blocked",
+            # 2026-11-16: the failed-check shadow question (repair_route_shadow.py)
+            "repair_route",
         }, (
             "the consumer set changed — cross-spec lock with "
             "specs/tool-decision-engine REQ-11/13/14/15/17/29"
