@@ -266,7 +266,48 @@ finished steps), memory (the node's `_memory_facts`). Leaves only through `keep(
 Import rule (a contract test): only `tool_bridge.py` and `kernel/der/node.py` import
 the package; `node_executor.py` never does.
 
-**Oracle `exec_mode`.** Code nodes ask no tool_choice question (one tool) - one d1
+### Round 2 (2026-11-16): every step a code step, tools callable from Python
+
+- **Boundary.** The Workbench is the default execution surface of every DER node in
+  both modes; the menu path (run_node + NODE_TOOLS on tool_execution) is the
+  fallback only. The Workbench never dispatches a tool itself.
+- **Protocol v2.** hello adds `profile`, `roots`; exec adds `tools` (names) and
+  `call_budget`; a worker-to-parent frame `{"v":2,"ev":"call","id","seq","tool",
+  "args"}` mid-exec and the parent's `{"v":2,"op":"result","id","seq","ok","value",
+  "error"}`; `kept` leaves the exec reply. The client keeps its one-request lock for
+  the whole exec and answers only `call` frames of the current exec; the worker is
+  single-threaded (tools.x() writes the frame and blocks on the reply).
+- **Not a second path.** `client.exec(code, timeout_s, on_call=handler)`; the handler
+  is the node's existing `_execute` closure (turn-live check, domain guard, claims,
+  `_der_before_call`, box.dispatch, `_der_after_call`, the on_call/on_result hooks),
+  registered per conversation for the node's duration. Each callback becomes one
+  `calls[]` entry (`via: run_python`), so node_call_log, as_step_result, the ledger
+  and the UI see it. While a callback is pending the watchdog and the exec deadline
+  pause; the callback is bounded by `_der_tool_deadline(tool)`. `tools.x()` returns
+  the result dict or raises ToolError (failure or denial) so a script stops before
+  later side effects. Budget: 24 callbacks per execution, 48 per node; the
+  dispatch duplicate guard still applies.
+- **Lifetime by the Brain.** `run_python(fresh=True)` spills, starts a new
+  incarnation and runs; `run_python(close=True)` runs, spills and ends. The step
+  message carries the manifest (live variables, sizes, producing step).
+- **CLM hand in hand.** The namespace is the live store; the view holds `wb:` refs;
+  the offload gate is unchanged; callback results become variables (not
+  `tool_results` rows). `tool_results` keeps three jobs: code rows (every
+  submission), spills (on fresh/close/idle/eviction, the values a step result or a
+  live placeholder names), and the fallback path. Crash or hard kill: no spill,
+  `workbench_gone` plus the code row.
+- **Safety per mode.** `run_python` leaves `_TERMINAL_TOOLS`; the profile is fixed at
+  spawn from the mode (a mode change ends the workbench); `tools` holds only what the
+  mode's menu offers. Developer profile = today's. Personal profile = R4.
+- **Oracle.** `exec_mode` dropped (no mode choice remains). `tool_choice` cannot act
+  inside a script: its rows stay alive in shadow - one sampled question per callback
+  on the hook lane, label = the tool the code called; it enforces only on the
+  fallback path. tool_approval and browser_next continue through the same hooks.
+- **Expected effect (est., TG-7 measures):** a step from several model calls to 1-2;
+  prompt per call ~700 tokens of tool surface (one schema + one-line signatures)
+  against JSON schemas p50 1,733 / p95 5,968.
+
+**Oracle `exec_mode` (first version; dropped in Round 2).** Code nodes ask no tool_choice question (one tool) - one d1
 call saved per model call; tool_choice row volume must be watched after switch-on.
 A new shadow consumer `exec_mode` (labels CODE / TOOLS, one question at node entry)
 learns from structured outcomes; the stated rule decides until the bar.

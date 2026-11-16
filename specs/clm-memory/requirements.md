@@ -389,7 +389,42 @@ failed 0/5 with and without offload because the PROTECTED blocks (tools schema p
 cloud reply is ~93 % model wait (fewer calls = faster). No jupyter_client / ipykernel /
 pyzmq is installed; the backend ships as a PyInstaller one-file exe.
 
-**Acceptance Criteria:**
+> **REVISED 2026-11-16 (owner answers + advisor round 2; supersedes AC1-AC9 below
+> where they differ).** Owner: the project's own python; the Brain controls the
+> lifetime; ALL steps written by the Brain; all tool calls runnable from the
+> workbench; not siloed to developer mode; no keep() (node outputs are recorded);
+> CLM and the workbench work hand in hand; no memory spike (measured: the app
+> process 74.3 -> 74.5 MB, the worker lives outside it, 32 MB idle).
+> - R1: WHEN a node starts and a Workbench is available THE SYSTEM SHALL run it as a
+>   code node on the `reasoning` role with `run_python` as its only tool.
+> - R2: WHEN code calls `tools.<name>(...)` THE SYSTEM SHALL execute it through the
+>   node's own dispatch path (turn-live check, domain guard, claims, box.dispatch,
+>   permissions, approvals, the ledger, the Oracle hooks) and list it as a call of
+>   that node - never a second dispatch path.
+> - R3: THE SYSTEM SHALL offer in `tools` only the tools the current mode offers.
+> - R4: WHERE the mode is personal THE SYSTEM SHALL start the worker with the personal
+>   profile (app-owned scratch cwd; no subprocess, raw network, ctypes or registry
+>   by audit hook; a Windows Job Object with one process, the memory cap and
+>   kill-on-close; env stripped of keys). The audit hook is NOT a security boundary
+>   against a hostile script; the Job Object limits are OS-enforced.
+> - R5: WHEN the Brain sets `fresh` or `close` THE SYSTEM SHALL spill the values a step
+>   result or a live placeholder names (<= 128k chars each, <= 1M per close) to the
+>   chat record, then start or end the namespace; the harness bounds (10 min idle,
+>   512 MB per workbench, 768 MB process-wide, hard kill, delete, mode change) are a
+>   safety net only.
+> - R6: IF a `wb` ref's incarnation has ended THEN expand SHALL return the spilled
+>   text, or `workbench_gone` naming the code row.
+> - R7: THE SYSTEM SHALL record the code of every submission (a `tool_results` row).
+> - R8: IF the Workbench is unavailable or a node fails twice with the same error THEN
+>   the node SHALL run on the menu path (the tool_execution model), counted.
+> - R9: THE SYSTEM SHALL bound callbacks (24 per execution, 48 per node), memory per
+>   workbench and process-wide, and keep the parts and contracts of AC9.
+> - Interpreter: developer mode with a workdir venv -> that venv's base interpreter
+>   plus its site folder; otherwise IRIS's own Python (the .venv base in development;
+>   a bundled embeddable Python in the installed app - packaging decision); PATH
+>   python dropped.
+
+**Acceptance Criteria (first version, 2026-11-15):**
 - AC1: WHEN a node is in code mode THE SYSTEM SHALL offer exactly one tool
   (`run_python`) and execute its code in the conversation's Workbench.
 - AC2: WHEN an execution ends THE SYSTEM SHALL return stdout, stderr, the value of a

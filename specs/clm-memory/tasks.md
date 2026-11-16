@@ -392,6 +392,30 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   DONE = contract tests pass and fail on a seeded frame change; soft stop keeps state;
   hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
   from inside Python.
+- **Wave 7, Round 2 tasks (2026-11-16; the order is the priority):**
+  - [ ] **T7.8** remove keep(); record a code row per submission. DONE = no `kept`
+    in a frame; one code row per execution live. NOT THIS = a new table.
+  - [ ] **T7.9** protocol v2 callbacks. DONE = contract tests: a callback reaches
+    box.dispatch, appears in calls[], holds the browser claim, the budget error keeps
+    state; no-op callback overhead measured (target < 5 ms). NOT THIS = an async
+    worker, nested exec, a second dispatcher.
+  - [ ] **T7.10** `fresh` / `close` and the spill. DONE = a dead ref expands to its
+    spilled text. NOT THIS = pickle snapshots.
+  - [ ] **T7.11** profiles + Job Object; run_python out of `_TERMINAL_TOOLS`. DONE =
+    personal-profile tests refuse each listed event and a child process. NOT THIS =
+    AppContainer.
+  - [ ] **T7.12** every node a code node; interpreter order (bundled Python for the
+    installed app). DONE = flag-off parity byte-equal; flag-on cohort uses code
+    nodes. NOT THIS = a planner prompt change.
+  - [ ] **T7.13** tool_choice shadow rows from callbacks. DONE = rows written with
+    labels. NOT THIS = enforcement in code nodes.
+  - [ ] **TG-7 (Round 2)**, flag off vs on, same conditions: cohort 21/21 and context
+    5/5; model calls per step and per reply; prompt tokens per call; reply_s medians;
+    wb_fallback rate; app process RSS flat and the tree peak under the caps;
+    tool_results rows per conversation; orphan processes 0; one personal-mode run.
+  - Superseded by Round 2: T7.5 keep()/promotable, T7.7 exec_mode, the code-mode entry
+    rule of T7.4 (every node becomes a code node; the rule's tests stay as the
+    fallback guard until T7.12).
 - [ ] **T7.2** `manager.py` + `run_python` registration + the bridge handler.
   DONE = a live developer turn runs one script; personal mode does not list the tool;
   no orphan process after close. NOT THIS = a pool, a config surface.
