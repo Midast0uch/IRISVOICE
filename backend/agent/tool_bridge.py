@@ -336,6 +336,87 @@ def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
     return out
 
 
+# ── CLM-11 Workbench: run_python and the `wb:` expand ─────────────────────────
+# Only this module (and kernel/der/node.py) imports backend.agent.workbench; the
+# import is lazy so a process that never runs Python never loads the package.
+_WB_TIMEOUT_DEFAULT_S = 60
+_WB_TIMEOUT_MAX_S = 300
+_WB_INFRA_ERRORS = ("WorkbenchRestarted", "WorkbenchMemoryLimit", "WorkbenchCrashed",
+                    "WorkbenchUnavailable", "WorkbenchErrorReply")
+
+
+def _expand_workbench(params: dict) -> dict:
+    """recall_memory(expand="wb:<incarnation>/<name>"[, offset]) -> one page, or a NAMED
+    failure (`workbench_gone` with the purpose that made the value, `malformed_ref`).
+    Blocking: the read goes to the child process, so callers run it in a thread."""
+    from backend.agent.workbench.manager import EXPAND_PAGE_CHARS, expand
+
+    try:
+        offset = max(0, int(params.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    return expand(str(params.get("expand") or "").strip(), offset, EXPAND_PAGE_CHARS)
+
+
+async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> dict:
+    """run_python(code, purpose, timeout_s) -> the digest as `text`, plus structured
+    fields. A Python exception is a RESULT (success True, ok False), like a non-zero
+    exit of run_command; only a Workbench-level failure is success False."""
+    code = params.get("code")
+    if not isinstance(code, str) or not code.strip():
+        return {"success": False, "error": "code is required"}
+    try:
+        timeout_s = min(_WB_TIMEOUT_MAX_S, max(1, int(params.get("timeout_s") or _WB_TIMEOUT_DEFAULT_S)))
+    except (TypeError, ValueError):
+        timeout_s = _WB_TIMEOUT_DEFAULT_S
+    purpose = " ".join(str(params.get("purpose") or "").split())[:200]
+    conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
+    try:
+        from backend.agent.workbench import digest as wbd
+        from backend.agent.workbench.manager import WorkbenchCapReached, get_manager
+
+        mgr = get_manager()
+        try:
+            client = await asyncio.to_thread(mgr.workbench_for, conv, cwd)
+        except WorkbenchCapReached as exc:
+            return {"success": False, "case": getattr(exc, "case", "workbench_cap"), "error": str(exc)}
+        if client is None:
+            return {"success": False, "case": "workbench_unavailable",
+                    "error": "no Python interpreter is available for the workbench"}
+        rep = await asyncio.to_thread(client.exec, code, timeout_s)
+        mgr.touch(conv)
+        wbd.remember_origin(rep, purpose)
+        err = rep.get("error") or None
+        out = {
+            "success": not (err and err.get("type") in _WB_INFRA_ERRORS),
+            "text": wbd.digest(rep, await asyncio.to_thread(client.rss_mb)), "ok": bool(rep.get("ok")),
+            "incarnation": rep.get("incarnation", ""), "vars": rep.get("vars") or [],
+            "wb_refs": wbd.refs(rep), "returncode": 0 if rep.get("ok") else 1,
+        }
+        if err:
+            out["error"] = f"{err.get('type')}: {err.get('message')}"
+            out["error_type"] = err.get("type")
+        return out
+    except Exception as exc:  # noqa: BLE001 - a named result, never an exception into the turn
+        logger.warning("[ToolBridge][%s] run_python failed: %r", session_id, exc)
+        return {"success": False, "case": "workbench_error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _close_workbench(conversation_id: str) -> None:
+    """Conversation deleted: end its Workbench process (AC7)."""
+    from backend.agent.workbench.manager import get_manager
+
+    get_manager().close(conversation_id)
+
+
+try:
+    from backend import conversation_store as _wb_cs
+
+    _wb_cs.add_delete_hook(_close_workbench)
+except Exception as _wb_exc:  # noqa: BLE001 - the delete path never depends on this
+    logger.warning("[ToolBridge] workbench delete hook not registered: %r", _wb_exc)
+
+
 def _pin_sources(conn, pin_id: str) -> list:
     """The derives_from targets of a pin, in link order: [(kind, id), ...]."""
     rows = conn.execute(
@@ -1224,6 +1305,14 @@ class AgentToolBridge:
                 "type": "string", "description": "The handle run_command returned"}}, "category": "shell"},
             {"name": "run_command", "description": _run_command_description(), "parameters": {"command": {
                 "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Leave it out: the command runs in the project folder. Only for a subfolder of the project, as a relative path"}}, "category": "shell"},
+            {"name": "run_python", "description": (
+                "Run Python in this conversation's persistent namespace: variables stay between calls. "
+                "Values you name by wb: reference can be read again later. "
+                "Large values stay in variables: print slices of them, not the whole value."),
+             "parameters": {
+                "code": {"type": "string", "description": "Python code; the value of a final expression is returned"},
+                "purpose": {"type": "string", "description": "One line: why this code runs"},
+                "timeout_s": {"type": "integer", "description": "Seconds to allow, default 60, max 300"}}, "category": "shell"},
 
             {
                 "name": "read_shell_output",
@@ -2927,6 +3016,7 @@ class AgentToolBridge:
                 "git_status", "git_diff", "git_log",
                 "git_commit", "git_create_branch", "git_checkout",
                 "git_push", "run_command", "read_command_output", "stop_command",
+                "run_python",
             }
             if tool_name in git_tools:
                 result = await self._execute_dev_tool(tool_name, params, session_id)
@@ -2979,6 +3069,9 @@ class AgentToolBridge:
             if tool_name == "recall_memory":
                 # CLM T2.4/T2.6: expand a reference to the exact text it names.
                 if str(params.get("expand") or "").strip():
+                    if str(params.get("expand")).strip().startswith("wb:"):
+                        # CLM-11: a Workbench value; the read blocks on the child process.
+                        return await asyncio.to_thread(_expand_workbench, params)
                     return _expand_tool_result(self, session_id, params)
                 if str(params.get("audit_pin") or "").strip():
                     return _audit_pin(self, str(params.get("audit_pin")).strip())
@@ -4015,6 +4108,10 @@ class AgentToolBridge:
             # REQ-19 AC2: non-zero exit is a result (success:True + returncode),
             # never a tool failure.
             return await _run(raw, timeout=_command_timeout(params.get("timeout")))
+
+        # ── run_python (CLM-11): the conversation's persistent Workbench ──
+        if tool_name == "run_python":
+            return await _run_python_tool(self, params, session_id, cwd)
 
         return {"error": f"Unknown dev tool: {tool_name}"}
 

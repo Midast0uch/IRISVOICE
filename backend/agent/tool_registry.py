@@ -993,6 +993,20 @@ def register_builtin_tools() -> None:
             },
             category="shell", executor="dev", permission_tier="side_effect", parallel_safe=False,
         ),
+        ToolSpec(
+            name="run_python",
+            description=(
+                "Run Python in this conversation's persistent namespace: variables stay between calls. "
+                "Values you name by wb: reference can be read again later. "
+                "Large values stay in variables: print slices of them, not the whole value."
+            ),
+            parameters={
+                "code": {"type": "string", "description": "Python code; the value of a final expression is returned"},
+                "purpose": {"type": "string", "description": "One line: why this code runs"},
+                "timeout_s": {"type": "integer", "description": "Seconds to allow, default 60, max 300", "optional": True},
+            },
+            category="shell", executor="dev", permission_tier="side_effect", parallel_safe=False,
+        ),
     ]
 
     # ── Memory / Research / Internal ─────────────────────────────────────────

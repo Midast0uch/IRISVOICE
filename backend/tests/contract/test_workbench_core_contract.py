@@ -28,6 +28,8 @@ client_mod = importlib.import_module(_PKG + ".client")
 WorkbenchClient = client_mod.WorkbenchClient
 ProtocolError = protocol.ProtocolError
 
+from backend.tests.contract._wb_common import drop as _drop
+
 HERE = Path(__file__).resolve().parent
 # Tests need a workdir OUTSIDE the system temp folder, or the "write outside" case
 # could not be told apart from the temp allowance.
@@ -43,7 +45,7 @@ def wb():
         yield c
     finally:
         c.close()
-        shutil.rmtree(workdir, ignore_errors=True)
+        _drop(workdir)
 
 
 # --- golden frames ------------------------------------------------------------
@@ -170,13 +172,6 @@ def test_inspect_and_put(wb):
     assert wb.put("__x", 1)["ok"] is False
 
 
-def test_keep_appears_in_kept(wb):
-    rep = wb.exec("x = 1\nkeep('x', 'the answer')")
-    assert rep["kept"] == [{"name": "x", "note": "the answer"}]
-    assert "keep" not in {v["name"] for v in rep["vars"]}
-    assert wb.exec("1")["kept"] == []
-
-
 # --- soft stop / hard kill ----------------------------------------------------
 def test_soft_stop_keeps_state_and_incarnation(wb):
     inc = wb.incarnation
@@ -234,7 +229,7 @@ def test_close_ends_process():
         c.close()
         assert not c.alive and not psutil.pid_exists(pid)
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        _drop(workdir)
 
 
 def test_stdin_eof_alone_ends_worker(wb):
@@ -249,3 +244,90 @@ def test_resolve_interpreter_prefers_project_venv(tmp_path):
     exe.write_text("")
     assert client_mod.resolve_interpreter(str(tmp_path)) == str(exe)
     assert client_mod.resolve_interpreter(str(tmp_path / "none")) is not None
+
+
+# --- T7.2 additions: error reply frame, remove/rename audit events -------------
+def test_golden_error_reply_round_trip():
+    raw = b'{"v":1,"re":"error","ok":false,"error":{"type":"ValueError","message":"m","trace_tail":""}}\n'
+    frame = protocol.decode(raw)
+    assert frame["re"] == "error" and frame["ok"] is False
+    assert protocol.encode(frame) == raw
+    with pytest.raises(ProtocolError):
+        protocol.decode(b'{"v":1,"re":"error","ok":false}\n')      # error key missing
+
+
+def test_client_names_an_error_reply_and_the_worker_survives(wb):
+    wb.exec("held = 7")
+    inc = wb.incarnation
+    rep = wb._request({"v": 1, "op": "exec"}, 5)                   # no code/timeout_s: the worker refuses it
+    assert rep["ok"] is False and rep["error"]["type"] == "WorkbenchErrorReply"
+    assert wb.counts["error_replies"] == 1
+    assert wb.incarnation == inc and wb.exec("held")["value"] == "7"
+
+
+@pytest.fixture
+def victim():
+    """A file and a folder OUTSIDE the workdir and the temp folder."""
+    f, d = HERE / "_wb_victim.txt", HERE / "_wb_victim_dir"
+    f.write_text("v")
+    d.mkdir(exist_ok=True)
+    (d / "inner.txt").write_text("v")
+    try:
+        yield f, d
+    finally:
+        f.unlink(missing_ok=True)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.mark.parametrize("kind", ["os.remove", "os.unlink", "os.rename", "os.replace", "os.rmdir",
+                                  "shutil.rmtree", "shutil.move", "rename_into_outside"])
+def test_audit_hook_refuses_changes_outside_workdir(wb, victim, kind):
+    f, d = victim
+    code = {
+        "os.remove": f"import os\nos.remove({str(f)!r})",
+        "os.unlink": f"import os\nos.unlink({str(f)!r})",
+        "os.rename": f"import os\nos.rename({str(f)!r}, {str(f) + '.x'!r})",
+        "os.replace": f"import os\nos.replace({str(f)!r}, {str(f) + '.x'!r})",
+        "os.rmdir": f"import os\nos.rmdir({str(d / 'nope')!r})",
+        "shutil.rmtree": f"import shutil\nshutil.rmtree({str(d)!r})",
+        "shutil.move": f"import shutil\nshutil.move({str(f)!r}, 'moved.txt')",
+        # source inside the workdir, target outside: still refused
+        "rename_into_outside": f"import os\nopen('mine.txt', 'w').write('x')\nos.rename('mine.txt', {str(f) + '.y'!r})",
+    }[kind]
+    rep = wb.exec(code)
+    assert rep["ok"] is False and rep["error"]["type"] == "PermissionError", rep
+    assert f.exists() and d.exists() and (d / "inner.txt").exists()
+    assert not Path(str(f) + ".x").exists() and not Path(str(f) + ".y").exists()
+
+
+def test_audit_hook_allows_remove_and_rename_inside_workdir(wb):
+    code = ("import os, shutil\nopen('a.txt', 'w').write('1')\nos.rename('a.txt', 'b.txt')\n"
+            "os.replace('b.txt', 'c.txt')\nos.remove('c.txt')\nos.mkdir('sub')\n"
+            "open('sub/x', 'w').write('1')\nshutil.move('sub', 'sub2')\nshutil.rmtree('sub2')\n'ok'")
+    rep = wb.exec(code)
+    assert rep["ok"], rep["error"]
+
+
+# --- T7.2 additions: memory cap and the base interpreter ------------------------
+def test_memory_cap_512mb_restarts_with_a_named_error(wb):
+    old_inc, old_pid = wb.incarnation, wb.pid
+    assert client_mod.RSS_LIMIT_BYTES == 512 << 20
+    rep = wb.exec("big = b'x' * (700 * 1024 * 1024)\nimport time\ntime.sleep(30)", timeout_s=60)
+    assert rep["ok"] is False and rep["error"]["type"] == "WorkbenchMemoryLimit", rep
+    assert wb.incarnation != old_inc and wb.alive and not psutil.pid_exists(old_pid)
+    assert wb.exec("1")["value"] == "1"
+
+
+def test_worker_runs_on_the_base_interpreter_with_the_venv_packages(wb):
+    """A venv python.exe is a launcher with a child; the worker must be ONE process on the
+    base interpreter that still imports a package only the venv has (psutil)."""
+    exe, site = client_mod.base_launch(PYTHON)
+    if site is None:
+        pytest.skip("the test interpreter is not a venv")
+    assert os.path.normcase(exe) != os.path.normcase(PYTHON)
+    proc = psutil.Process(wb.pid)
+    assert os.path.normcase(proc.exe()) == os.path.normcase(exe)
+    assert [c.name() for c in proc.children(recursive=True) if c.name().lower() != "conhost.exe"] == []   # conhost is the hidden console, not a python child
+    rep = wb.exec("import psutil\npsutil.__version__")
+    assert rep["ok"], rep["error"]
+    assert wb.exec("import sys\nsys.executable")["value"].lower().strip("'").replace("\\\\", "\\") == exe.lower()

@@ -7,9 +7,11 @@ sys.stdout/sys.stderr point at capture buffers, so user prints never corrupt a f
 """
 import ast
 import builtins
+import collections
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -29,16 +31,13 @@ TRACE_TAIL_CHARS = 1_500
 INCARNATION = uuid.uuid4().hex
 WORKDIR = os.path.realpath(os.getcwd())
 
-_kept = []
+_OUT_RING = collections.deque(maxlen=50)   # (n, stdout) of the last 50 execs, <= 256k chars each
+_out_n = 0
+_OUT_REF = re.compile(r"^out(\d+)$")
 
 
-def keep(name, note=""):
-    """Mark a variable as worth remembering. Only records {name, note}."""
-    _kept.append({"name": str(name), "note": str(note)})
-
-
-_HELPERS = frozenset({"keep"})
-NS = {"__name__": "__main__", "__builtins__": builtins, "keep": keep}
+_HELPERS = frozenset()
+NS = {"__name__": "__main__", "__builtins__": builtins}
 
 
 class _Cap(io.TextIOBase):
@@ -105,7 +104,31 @@ def _install_audit_hook():
                 continue
         return False
 
+    # Events that remove, move or replace a path: every path argument must be
+    # inside the allowed roots (a rename checks its source AND its target).
+    path_events = {
+        "os.remove": (0,), "os.rmdir": (0,), "shutil.rmtree": (0,),
+        "os.rename": (0, 1), "shutil.move": (0, 1),
+    }
+
+    def refuse(path, what):
+        raise PermissionError(
+            f"workbench: {what} {os.fsdecode(path)!r} is refused; "
+            f"changes are allowed only under {WORKDIR!r} and the temp folder")
+
     def hook(event, args):
+        if event in path_events:
+            for i in path_events[event]:
+                path = args[i]
+                if isinstance(path, int):
+                    continue
+                try:
+                    ok = inside(os.fsdecode(path))
+                except Exception:
+                    ok = False
+                if not ok:
+                    refuse(path, event)
+            return
         if event != "open":
             return
         path, mode, flags = args[0], args[1], args[2]
@@ -121,9 +144,7 @@ def _install_audit_hook():
         except Exception:
             ok = False
         if not ok:
-            raise PermissionError(
-                f"workbench: writing {os.fsdecode(path)!r} is refused; "
-                f"writes are allowed only under {WORKDIR!r} and the temp folder")
+            refuse(path, "writing")
 
     sys.addaudithook(hook)
 
@@ -213,7 +234,6 @@ def op_exec(req, cap):
     global _wd_deadline, _wd_fired
     code, timeout_s = req["code"], float(req["timeout_s"])
     start = time.monotonic()
-    del _kept[:]
     before = _fingerprint()
     value, error = None, None
     try:
@@ -251,16 +271,27 @@ def op_exec(req, cap):
         except KeyboardInterrupt:
             pass
     stdout, stderr, truncated = cap.drain()
+    global _out_n
+    _out_n += 1
+    if stdout:
+        _OUT_RING.append((_out_n, stdout))
     return {"v": PROTOCOL_VERSION, "re": "exec", "id": req["id"], "ok": error is None,
             "stdout": stdout, "stderr": stderr, "value": value, "error": error,
-            "vars": _changed_vars(before), "kept": list(_kept),
+            "vars": _changed_vars(before), "kept": [],
             "wall_ms": int((time.monotonic() - start) * 1000),
-            "truncated": truncated, "incarnation": INCARNATION}
+            "truncated": truncated, "out_n": _out_n, "incarnation": INCARNATION}
 
 
 def op_inspect(req):
     try:
-        res = eval(compile(req["expr"], "<inspect>", "eval"), NS)
+        m = _OUT_REF.match(req["expr"].strip())
+        if m:                                  # out<n>: the full stdout of execution n
+            hit = [t for n, t in _OUT_RING if n == int(m.group(1))]
+            if not hit:
+                raise KeyError(f"{req['expr'].strip()} is not kept (only the last {_OUT_RING.maxlen} outputs with text)")
+            res = hit[0]
+        else:
+            res = eval(compile(req["expr"], "<inspect>", "eval"), NS)
         text = res if isinstance(res, str) else repr(res)
     except BaseException as exc:
         return {"v": PROTOCOL_VERSION, "re": "inspect", "id": req["id"], "ok": False,
@@ -295,6 +326,9 @@ def _validate(req):
 
 
 def main():
+    if "--site" in sys.argv:             # the project venv's site-packages (see client.py)
+        import site
+        site.addsitedir(sys.argv[sys.argv.index("--site") + 1])
     rd = os.fdopen(os.dup(0), "rb")
     wr = os.fdopen(os.dup(1), "wb")
     devnull = os.open(os.devnull, os.O_RDWR)

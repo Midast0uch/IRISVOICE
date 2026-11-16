@@ -452,6 +452,17 @@ FROM conversations c WHERE c.id = ? OR c.parent_id = ?
 """
 
 
+# Callables run with each deleted conversation id (a root's strands included), after the
+# delete committed. A hook that raises is logged and never fails the delete. The tool
+# bridge registers one that ends the conversation's Workbench process (CLM-11).
+_delete_hooks: list = []
+
+
+def add_delete_hook(fn) -> None:
+    if fn not in _delete_hooks:
+        _delete_hooks.append(fn)
+
+
 def delete_conversation(conversation_id: str) -> bool:
     """Delete a conversation by ID (from both dict and SQLite). One STRAND_DELETED
     tombstone per deleted conversation (a root's strands included) keeps the titles."""
@@ -501,6 +512,12 @@ def delete_conversation(conversation_id: str) -> bool:
             "tags": _load_tags(tags), "reports_to": reports_to,
             "message_count": message_count, "at": at,
         })
+    for hook in tuple(_delete_hooks):
+        for cid in {conversation_id, *(g[0] for g in gone)}:
+            try:
+                hook(cid)
+            except Exception as exc:  # noqa: BLE001 - the delete already happened
+                logger.warning("[conversation_store] delete hook failed conv=%s: %r", cid, exc)
     return True
 
 

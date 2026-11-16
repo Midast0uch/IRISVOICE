@@ -16,10 +16,12 @@ Request frames carry `op`; reply frames carry `re` (the op they answer).
   exec reply     {"v":1,"re":"exec","id","ok","stdout","stderr","value",
                   "error":null|{"type","message","trace_tail"},
                   "vars":[{"name","type","size","preview"}],"kept":[{"name","note"}],
-                  "wall_ms","truncated","incarnation"}
+                  "wall_ms","truncated","out_n","incarnation"}
   inspect reply  {"v":1,"re":"inspect","id","ok","text","total","error","incarnation"}
   put reply      {"v":1,"re":"put","id","ok","error","incarnation"}
   shutdown reply {"v":1,"re":"shutdown","ok":true}
+  error reply    {"v":1,"re":"error","ok":false,"error":{"type","message","trace_tail"}}
+                 (the worker could not read or run a request frame; it keeps running)
 """
 import json
 
@@ -38,10 +40,11 @@ REQUEST_KEYS = {
 REPLY_KEYS = {
     "hello": ("ok", "version", "incarnation"),
     "exec": ("id", "ok", "stdout", "stderr", "value", "error", "vars", "kept",
-             "wall_ms", "truncated", "incarnation"),
+             "wall_ms", "truncated", "out_n", "incarnation"),
     "inspect": ("id", "ok", "text", "total", "error", "incarnation"),
     "put": ("id", "ok", "error", "incarnation"),
     "shutdown": ("ok",),
+    "error": ("ok", "error"),
 }
 
 

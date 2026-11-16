@@ -66,6 +66,9 @@ class CapabilitySet:
     # Tools that require TERMINAL in developer mode
     _TERMINAL_TOOLS: Set[str] = {
         "run_command",
+        # CLM-11: Python in the conversation's Workbench; same trust boundary as
+        # run_command, so the same gate (developer mode only).
+        "run_python",
         # Gate 3 T4b: reads back retained shell output, so it is gated exactly
         # like the tool that produced it. Personal mode has no terminal, so the
         # retention history is empty there anyway — the gate states the rule
