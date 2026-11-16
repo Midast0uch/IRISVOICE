@@ -177,20 +177,29 @@ def wb_stats() -> dict:
     return dict(_wb_stats)
 
 
-def _wb_code_mode(goal: str, tools: list, workdir: str) -> bool:
-    """The stated entry rule (design "Code mode and fallback"): developer mode
-    (run_python offered), a READ or RUN step, no external / screen reference,
-    and an interpreter that can run the worker."""
+def _wb_code_mode(goal: str, tools: list, workdir: str, item=None) -> bool:
+    """The stated entry rule (design "Code mode and fallback", D4): developer mode
+    (run_python offered), a step with a brief that has outputs AND a check, or a READ / RUN
+    step, no external / screen reference, an interpreter that can run the worker - and NEVER a
+    WRITE-class step (file-changing steps stay on the menu path until the read/run gain is
+    proven, owner 2026-11-16). `item` (the planner step, optional) carries the brief."""
     if not _wb_on():
         return False
     if not any((t.get("function") or {}).get("name") == "run_python" for t in tools):
         return False
     try:
         from backend.agent import external_reference as _xr
-        from backend.agent.tool_choice_action_class import READ, RUN, required_class
+        from backend.agent.tool_choice_action_class import (
+            READ, RUN, WRITE, required_class, required_classes)
         from backend.agent.tool_decision import _vision_relevant
 
-        if required_class(goal) not in (READ, RUN):
+        # required_class() reads a fix-verb goal ("Edit config.yaml") as READ; the plural form
+        # lists WRITE for it, and for create/write/add/...
+        if WRITE in (required_classes(goal) or ()):
+            return False
+        briefed = bool(getattr(item, "outputs", None)) and bool(
+            str(getattr(item, "check", "") or "").strip())
+        if not briefed and required_class(goal) not in (READ, RUN):
             return False
         if _vision_relevant(goal) or _xr.is_external(_xr.classify(goal)):
             return False
@@ -208,8 +217,10 @@ def _wb_code_mode(goal: str, tools: list, workdir: str) -> bool:
 def _wb_seed(conversation_id: str, workdir: str, task: str, goal: str,
              prior: list, memory: str) -> bool:
     """What ENTERS the workbench (design "Enter/leave policy"): task, goal,
-    steps (full results of finished steps), memory - through the policy."""
+    steps (full results of finished steps), memory - through the policy - and
+    `files` (D3: the folder's relative file paths, bounded; [] with no folder)."""
     try:
+        from backend.agent.workbench.ground import ground_files
         from backend.agent.workbench.manager import get_manager
         from backend.agent.workbench.policy import admit_put
 
@@ -217,15 +228,28 @@ def _wb_seed(conversation_id: str, workdir: str, task: str, goal: str,
         if client is None:
             return False
         for name, value in (("task", task), ("goal", goal), ("steps", list(prior or [])),
-                            ("memory", memory or "")):
-            ok, value_or_reason = admit_put(name, value)
-            if ok:
-                client.put(name, value_or_reason)
+                            ("memory", memory or ""),
+                            ("files", ground_files(workdir) if workdir else [])):
+            # admit_put returns (True, "ok") or (False, reason): the VALUE is `value`. The old
+            # code put the second item, so every seeded name read the text "ok" (Round 4 W3).
+            if admit_put(name, value)[0]:
+                client.put(name, value)
         return True
     except Exception as exc:  # noqa: BLE001 - counted; the node falls back
         _wb_stats["seed_failed"] += 1
         logger.warning("[workbench] conv=%s seed failed: %r", conversation_id, exc)
         return False
+
+
+def _wb_ground_text(workdir: str, text: str = "") -> str:
+    """D3: the PROJECT FILES text of a folder ("" for none). The one place outside the
+    workbench package that reaches `ground` - the code node and the planner (kernel/planning.py)
+    both call it, so the package keeps its allowed importers (registration contract)."""
+    if not workdir:
+        return ""
+    from backend.agent.workbench.ground import ground
+
+    return ground(workdir, text=text)
 
 
 def _wb_brief(item) -> tuple:
@@ -1944,7 +1968,7 @@ class DerNodeMixin:
             _node_state["ctx"] = _node_ctx
             _full_tools = self._get_openai_tools() if _wb_on() else []
             _wb_go = False
-            if _wb_on() and _wb_code_mode(goal, _full_tools, workdir):
+            if _wb_on() and _wb_code_mode(goal, _full_tools, workdir, item):
                 # D7: ONE code node at a time owns the conversation's namespace. Take that
                 # claim BEFORE run_node starts its 300 s clock (parallel code nodes waited
                 # 880 s on it INSIDE their budget, measured). It is released in the finally
@@ -1969,8 +1993,12 @@ class DerNodeMixin:
                 _wb_cb_calls: list = []
                 _wb_node = uuid.uuid4().hex   # F2: this node's own callback slot
                 _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item)[1] else None
+                # D3: the ground, ONCE per node - in the first message, and in the repair prompt
+                _wb_ground = _wb_ground_text(workdir, f"{task}\n{goal}")
                 _wb_ctx = _dc.replace(
                     _node_ctx,
+                    ground=_wb_ground,
+                    memory_facts="",      # D3: in code mode the MEMORY text is the `memory` variable only
                     tools=_wb_slim_run_python(_full_tools),
                     # the tagged generate: a code node's model calls read "code_node" in the
                     # baseline rows (the closure tags every other node call "node")
@@ -1988,7 +2016,8 @@ class DerNodeMixin:
                     brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
                     wb_outputs=_wb_output_names(item), wb_node=_wb_node,
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
-                                                  *_wb_brief(item), tracker=_wb_rr)
+                                                  *_wb_brief(item), tracker=_wb_rr,
+                                                  ground=_wb_ground)
                                      if _wb_brief(item)[1] else None),
                     # T7.15: shadow rows only - the rule above still decides
                     on_check=((lambda a, ok, et, ce: _wb_rr.passed() if ok

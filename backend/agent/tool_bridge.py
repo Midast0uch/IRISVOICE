@@ -392,24 +392,23 @@ def clear_workbench_dispatch(conversation_id: str, handler=None, node: str = "")
 
 
 _WB_OUTPUTS_MAX = 8
-_WB_OUTPUT_CAP = 4000
-_WB_OUTPUTS_TOTAL_CAP = 8000
+_WB_OUTPUT_SHOW = 600       # D5: an output <= this many chars is shown whole; longer = this head + a ref
 
 
 def _wb_outputs_text(client, names) -> str:
-    """F1: "name = <value text>" per brief output name, read from the namespace. Blocking
-    (call in a thread). A name that is not set -> "(not set)"; a cut says so."""
+    """D5: the outputs manifest, one "name = <value text>" per brief output name, read from
+    the namespace. A value of <= 600 chars is shown whole; a longer one is its first 600 chars +
+    "  [type, N chars, wb:<incarnation>/<name>]" (the ref reads it whole later). A name that is
+    not set -> "(not set)". Blocking (call in a thread)."""
     import keyword
 
-    lines, used = [], 0
+    from backend.agent.workbench.digest import make_ref
+
+    lines = []
     for name in [n for n in names if isinstance(n, str) and n.isidentifier()
                  and not keyword.iskeyword(n)][:_WB_OUTPUTS_MAX]:
-        room = min(_WB_OUTPUT_CAP, _WB_OUTPUTS_TOTAL_CAP - used)
-        if room <= 0:
-            lines.append(f"{name} = (omitted: the outputs size limit was reached)")
-            continue
         try:
-            rep = client.inspect(name, 0, room)
+            rep = client.inspect(name, 0, _WB_OUTPUT_SHOW)
         except Exception as exc:  # noqa: BLE001 - a read never fails the step
             lines.append(f"{name} = (could not be read: {type(exc).__name__})")
             continue
@@ -418,8 +417,11 @@ def _wb_outputs_text(client, names) -> str:
             continue
         text, total = str(rep.get("text") or ""), int(rep.get("total") or 0)
         if total > len(text):
-            text += f" [cut: {len(text)} of {total} chars]"
-        used += len(text)
+            try:
+                kind = str(client.inspect(f"type({name}).__name__", 0, 60).get("text") or "value")
+            except Exception:  # noqa: BLE001 - the type is a label; the ref still goes
+                kind = "value"
+            text += f"  [{kind}, {total} chars, {make_ref(rep.get('incarnation') or '', name)}]"
         lines.append(f"{name} = {text}")
     return "\n".join(lines)
 

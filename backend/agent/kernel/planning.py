@@ -27,6 +27,7 @@ def _plan_step_deps(raw_step: dict, earlier: list) -> list:
 # BRIEF in the SAME call - no second planner call. The prompt asks for it only with
 # IRIS_WORKBENCH=1 (read at call time); flag off, the prompt is byte-identical.
 # Module level on purpose: stand-in kernels bind only some methods.
+_PLANNER_EXAMPLE_AT = "Example step with a brief: "
 _PLANNER_BRIEF_RULES = (
     "- Each step also carries a BRIEF for the program that will run it. The "
     "brief fields are: 'inputs' (list of the variable names or sources the "
@@ -39,8 +40,22 @@ _PLANNER_BRIEF_RULES = (
     # D2 (Round 4): the planner's brief strings failed to parse in 5 of 12 runs. Before
     # the example, which the flag-on test reads as the last thing in the added text.
     "Inside 'check', 'inputs' and 'outputs' use single quotes only and no "
-    "backslashes; write paths relative with forward slashes. "
-    "Example step with a brief: "
+    "backslashes; write paths relative with forward slashes." + chr(10) +
+    # D4 (Round 4): the plan shape. Measured: one data question split into a step per file, a
+    # check that passed on empty placeholders. The PROJECT FILES text (D3) goes in just before
+    # the example when a folder is bound (_planner_ground).
+    "- CODE STEPS. A step with a brief runs as ONE Python program that reads, parses, joins and "
+    "computes over any number of files in milliseconds. Plan ONE step per data product - the "
+    "values the reply needs - not one step per file, table or stage. A task that reads files and "
+    "answers a question is ONE step whose outputs are the answer's values. Add another step only "
+    "for a different kind of work: changing a file, a web page, or a command whose output "
+    "decides what comes next. Never plan parallel steps that each read one file." + chr(10) +
+    "- PROJECT FILES shows the real names and first lines: write 'approach' against them (the "
+    "separator, the field that holds the value, the exact pattern)." + chr(10) +
+    "- 'outputs' are the values the reply will quote, small and final (a number, a short list, a "
+    "dict of at most about 20 items), never raw file text. 'check' must test completeness, not "
+    "only the type (the expected number of items or keys)." + chr(10) +
+    _PLANNER_EXAMPLE_AT +
     '{"step_id":"s1","step_number":1,"description":"Count the errors per type in the log",'
     '"expected_output":"a count of each error type","depends_on":["start"],'
     '"critical":true,"criticality":"load-bearing",'
@@ -56,6 +71,26 @@ _BRIEF_CHECK_MAX, _BRIEF_APPROACH_MAX = 300, 400
 def _planner_brief_on() -> bool:
     import os
     return os.environ.get("IRIS_WORKBENCH") == "1"
+
+
+def _planner_rules(kernel, session_id: str, request: str) -> str:
+    """The flag-on planner rules. D3: with a bound project folder, its PROJECT FILES text goes
+    in BEFORE the brief example (the example stays last: a test parses it to the end of the
+    prompt). No folder, or an empty / unreadable one -> the rules alone."""
+    rules = _PLANNER_BRIEF_RULES
+    try:
+        folder = (getattr(getattr(kernel, "_tool_bridge", None), "_session_workdirs", None)
+                  or {}).get(session_id) or ""
+        if folder:
+            from backend.agent.kernel.der.node import _wb_ground_text
+
+            text = _wb_ground_text(folder, request or "")
+            if text:
+                at = rules.index(_PLANNER_EXAMPLE_AT)
+                rules = rules[:at] + text + chr(10) + rules[at:]
+    except Exception as exc:  # noqa: BLE001 - the plan never waits on a listing; the rules stand
+        logger.warning("[planner] conv=%s ground skipped: %r", session_id, exc)
+    return rules
 
 
 def _brief_list(v: Any) -> list:
@@ -1000,7 +1035,7 @@ class PlanningMixin:
         "and reads the output; do not work the value out by reading.\n"
     )
         if _planner_brief_on():
-            full_prompt += _PLANNER_BRIEF_RULES
+            full_prompt += _planner_rules(self, session_id, text)
 
         plan_raw: Optional[str] = None
         try:

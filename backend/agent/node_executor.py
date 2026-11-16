@@ -301,6 +301,9 @@ class NodeContext:
     # node's token (F2: its own callback slot). Both are injected into run_python params.
     wb_outputs: tuple = ()
     wb_node: str = ""
+    # D3 (Round 4): the PROJECT FILES text (workbench.ground) a code node gets in its FIRST user
+    # message, right after the BRIEF. "" = nothing (the fine-grained path is byte-equal).
+    ground: str = ""
     # W0 (Round 4): counters run_node keeps for the node's owner: "scripts" (run_python calls)
     # and "exploring" (checks _is_exploration did not count). Read after run_node returns.
     stats: Dict[str, int] = field(default_factory=dict)
@@ -819,7 +822,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             + (("\n\nMEMORY (earlier statements, with their source):\n"
                 + ctx.memory_facts) if ctx.memory_facts else "")
             + _ledger_section(ctx.dead_ends)
-            + (("\n\nBRIEF (from the planner):\n" + ctx.brief) if ctx.brief else ""),
+            + (("\n\nBRIEF (from the planner):\n" + ctx.brief) if ctx.brief else "")
+            + (("\n\n" + ctx.ground) if ctx.ground else ""),
             ctx.workdir)},
     ]
     # CLM-1 (T1.3): the model reads this list through a per-node ContextView.
@@ -1160,6 +1164,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             batch_results: List[str] = []
             batch_refs: List[tuple] = []
             batch_done = False
+            _manifest_only = False       # D5: a passing check closed this batch
             batch_changed = False
             batch_summaries: List[str] = []
             pending_shot = ""
@@ -1370,8 +1375,13 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         batch_done = True
                         _purpose = str((params or {}).get("purpose") or "the step's check passed")
                         # F1: the step's PRODUCT - the brief's output values - rides the result
+                        # D5: the step result IS the outputs manifest - purpose, the outputs,
+                        # "check: passed". The digest (stdout, changed variables) stays in the
+                        # node's own messages and the code row.
                         _ot = str(raw.get("outputs_text") or "")
-                        batch_summaries.append(_purpose + ("\n\nOutputs:\n" + _ot if _ot else ""))
+                        batch_summaries.append(_purpose + ("\n\nOutputs:\n" + _ot if _ot else "")
+                                               + "\n\ncheck: passed")
+                        _manifest_only = True
                     elif _is_exploration(ctx, raw):
                         # F4: outputs not defined yet - not a failed attempt (no count, no row,
                         # no escalation); the digest still says the check did not pass.
@@ -1489,6 +1499,10 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                    + _ref_line(*_r) + "]"
                                    if _r[0] else "\n[...rest of this result cut...]")
                                for _b, _r in zip(batch_results, batch_refs)]
+                    if _manifest_only:
+                        return NodeResult(True, summary.strip(), calls,
+                                          last_command_failed=bool(last_command_failed),
+                                          helped=helped)
                     return NodeResult(True, (summary + "\n\nTool results:\n"
                                              + "\n\n".join(_blocks)).strip(),
                                       calls, last_command_failed=bool(last_command_failed),

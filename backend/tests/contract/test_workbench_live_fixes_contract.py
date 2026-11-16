@@ -54,7 +54,11 @@ def test_f1_a_name_not_in_the_namespace_reads_not_set_and_a_long_value_says_it_w
     text, ok = k._der_run_node(k.item, "sess", "turn-1", [])
     assert ok is True
     assert "ghost = (not set)" in text
-    assert "[cut: 4000 of 9000 chars]" in text
+    # STATED CHANGE (Round 4 D5, 2026-11-16): a long output is its first 600 chars plus
+    # "[type, N chars, wb:<inc>/<name>]" (the whole value stays reachable by its ref),
+    # replacing the old 4,000-char cut note.
+    assert "big = " + "a" * 600 + "  [" in text and "a" * 601 not in text
+    assert "9000 chars, wb:" in text and "/big]" in text
     assert "not an identifier" not in text and "x-y" not in text
 
 
