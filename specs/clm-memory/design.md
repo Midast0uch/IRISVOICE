@@ -319,6 +319,10 @@ synthesis); the verifier is embedding-based.
   code nodes, median <= 10 s; scripts per code node <= 1.5; planner retries <= off; small arm
   pass above B0, blind drops 0, largest prompt <= 4,000. The flag goes on only when every row
   holds on the cloud arm; otherwise the failing row + number + date are written in tasks.md.
+- **Owner answers (2026-11-16):** (1) file-changing steps (edit, write) stay on the menu path
+  until the READ/RUN gain is proven by TG-7 v2; (2) on escalation the TOOL MODEL sends the
+  skeleton (the harness never runs Brain code itself); (3) the Brain-call proof = the floor
+  of 3 per turn and never above the off arm (synthesis stays).
 
 ### Round 3 (2026-11-16): the two-model loop; personal mode as a scope
 
