@@ -39,7 +39,7 @@ _out_n = 0
 _OUT_REF = re.compile(r"^out(\d+)$")
 
 
-_HELPERS = frozenset({"tools", "ToolError"})
+_HELPERS = frozenset({"tools", "ToolError", "sh"})
 NS = {"__name__": "__main__", "__builtins__": builtins}
 
 
@@ -106,6 +106,71 @@ NS["tools"] = _Tools()
 NS["ToolError"] = ToolError
 
 
+# --- other languages: sh(command) runs any language's command from a script ---------
+# Owner (2026-11-16): "i want the agent to able perform all coding languages inside the
+# workbench especially javascript". One Python namespace stays the medium; node / npm /
+# npx / ruby / go / ... run as child processes in the project folder and their output
+# comes back as a value the script can parse.
+SH_OUT_CAP = 200_000          # chars kept per stream: the namespace holds data, bounded
+
+
+def _kill_tree(p):
+    """End a child and everything it started (npm -> node; a shell -> its command)."""
+    try:
+        if os.name == "nt":
+            import subprocess
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                           capture_output=True, timeout=10)
+        else:
+            os.killpg(p.pid, 9)
+    except Exception:  # noqa: BLE001 - the child may be gone already
+        pass
+    try:
+        p.kill()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def sh(command, input=None, timeout=120):
+    """Run a command of ANY language in the project folder: sh('node app.js'),
+    sh('npm test'), sh('node -', input=js_code), sh(['go', 'run', '.']). A string goes
+    through the shell (npm / npx resolve on Windows); a list does not. Returns
+    {"code", "stdout", "stderr", "timed_out"} and never raises for a non-zero exit.
+    Bounded by `timeout` AND by this run's own deadline (it returns before the run is
+    stopped); on a timeout the whole process tree is killed."""
+    import subprocess
+
+    with _wd_lock:
+        left = None if _wd_deadline is None else _wd_deadline - time.monotonic()
+    limit = float(timeout) if left is None else max(0.1, min(float(timeout), left - 0.3))
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+             else {"start_new_session": True})
+    # stdin is never the worker's own: that pipe carries the protocol frames
+    p = subprocess.Popen(command, shell=isinstance(command, str), cwd=WORKDIR,
+                         stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, **group)
+    data = input.encode("utf-8") if isinstance(input, str) else input
+    timed_out = False
+    try:
+        out, err = p.communicate(data, timeout=limit)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_tree(p)
+        out, err = p.communicate()
+    except BaseException:            # the run was stopped: never leave the child behind
+        _kill_tree(p)
+        raise
+
+    def _text(b):
+        return (b or b"").decode("utf-8", "replace")[:SH_OUT_CAP]
+
+    return {"code": p.returncode, "stdout": _text(out), "stderr": _text(err),
+            "timed_out": timed_out}
+
+
+NS["sh"] = sh
+
+
 class _Cap(io.TextIOBase):
     """Python-level stream capture with a hard char cap."""
 
@@ -158,9 +223,18 @@ def _install_audit_hook():
     write_flags = (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC)
     devnull = os.path.normcase(os.devnull)
 
+    # the null device under every spelling: realpath() turns "nul" into "\\.\nul" on
+    # Windows, so the old check refused os.devnull (subprocess.DEVNULL, 2026-11-16)
+    null_names = {devnull, "nul", os.path.normcase("\\\\.\\nul"), "/dev/null"}
+
     def inside(path):
+        try:
+            if os.path.normcase(os.fsdecode(path)) in null_names:
+                return True
+        except (TypeError, ValueError):
+            pass
         p = os.path.normcase(os.path.realpath(os.path.abspath(path)))
-        if p == devnull or p == "nul":
+        if p in null_names:
             return True
         for root in allowed:
             try:
