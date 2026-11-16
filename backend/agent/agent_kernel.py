@@ -1861,9 +1861,9 @@ class AgentKernel(ModelsMixin, SurfaceMixin, ContextMixin, TurnMixin, PlanningMi
 
     def _handle_control_codes(self, response_text: str, messages: list) -> list:
         """
-        Scan response for MCM: control codes (MCM:999/998/997/996) and execute.
+        Scan response for MCM: control codes (MCM:998/997/996) and execute.
         Called after every agent response when swarm is enabled.
-        Never raises. Returns messages (potentially modified by MCM:999 prune).
+        Never raises. Returns messages.
         """
         if not self._swarm_enabled or self._context_control_handler is None:
             return messages

@@ -338,7 +338,17 @@ same-conditions A/B, numbers named with their cohort.
 
 ## Wave 6 - DCP removal (after TG-2; small)
 
-- [ ] **T6.1** (CLM-9): migrate or remove the two DCP callers; delete `dcp.py` and its
+- [x] **T6.1 DONE 2026-11-16** - DCP removed: backend/agent/dcp.py and the
+  mcm_protocol dcp_prune action deleted; the dcp_prune step left pre_call_flow.json (it
+  ran on every direct call and changed nothing in 42 measured runs); DCPConfig and the
+  mcm_core.json "dcp" block removed; the swarm MCM:999 code removed (handler, constant,
+  pattern, rule text) - swarm context is the later multi-agent view spec. Tests: the
+  two DCP-only tests (test_dcp_fan_trace, test_layers_share_resource) removed from both
+  copies of test_der_phase0.py; tests/behavioral/test_subloop_footprint_survives_pruning.py
+  keeps its subject with a plain history truncation as the pruner, its first test
+  renamed test_footprint_survives_history_pruning. No dcp import left in backend/.
+  Original task:
+- [x] **T6.1** (CLM-9): migrate or remove the two DCP callers; delete `dcp.py` and its
   tests; state each removed test in the commit.
   Also (Q1): remove the `dcp_prune` step from `mcm_protocol/workflows/pre_call_flow.json`; that
   workflow runs on the live direct path, so DCP is not only a swarm path (requirements U1 is too narrow).

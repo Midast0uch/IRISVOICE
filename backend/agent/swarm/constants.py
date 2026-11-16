@@ -20,9 +20,8 @@ SWARM_FINISHED_EARLY_PCT    = 0.80
 #   coordinate values (all 0.0–1.0 normalized floats, gates 1–5, DER steps max 40)
 #   natural prose numbers ("999 tokens", "998 lines") — no prefix → no match
 MCM_CTRL_PREFIX    = "MCM:"
-MCM_CTRL_PRUNE     = "MCM:999"   # Prune tool-call history via DCP
 MCM_CTRL_PIN       = "MCM:998"   # Pin artifact to mycelium_pins (permanent)
 MCM_CTRL_COMPRESS  = "MCM:997"   # Condense context + MCM compress + recall
 MCM_CTRL_BROADCAST = "MCM:996"   # Broadcast coordinate update to collective brain
 
-CTRL_CODE_RE_PATTERN = r"\bMCM:(999|998|997|996)\s+(.{0,200})"
+CTRL_CODE_RE_PATTERN = r"\bMCM:(998|997|996)\s+(.{0,200})"

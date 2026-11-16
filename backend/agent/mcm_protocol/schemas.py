@@ -26,12 +26,6 @@ class CompressionConfig(BaseModel):
     warnings_max:            int   = 2
 
 
-class DCPConfig(BaseModel):
-    turn_protection:  int        = 6
-    error_age_turns:  int        = 4
-    protected_tools:  list[str]  = Field(default_factory=list)
-
-
 class MCMCore(BaseModel):
     protocol_version: str               = "0.2"
     description:      str               = ""
@@ -39,7 +33,6 @@ class MCMCore(BaseModel):
     last_updated:     str               = ""
     author:           str               = ""
     compression:      CompressionConfig = Field(default_factory=CompressionConfig)
-    dcp:              DCPConfig         = Field(default_factory=DCPConfig)
 
 
 # ── NBL / MITO schema models ──────────────────────────────────────────────

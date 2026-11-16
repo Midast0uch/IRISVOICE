@@ -2,7 +2,6 @@
 ContextControlHandler — scans agent output for MCM: prefixed control codes.
 
 Codes (MCM: prefix required — collision-proof against Mycelium coordinates):
-  MCM:999 <reason>   → DCP prune — strip tool-call history, keep reasoning
   MCM:998 <artifact> → Pin artifact to mycelium_pins (is_permanent=True)
   MCM:997 <summary>  → MCM compress + inject_recovery (context condensation)
   MCM:996 <update>   → Broadcast coordinate update to collective brain
@@ -55,14 +54,11 @@ class ContextControlHandler:
         if not response_text:
             return result
         for match in _CODE_RE.finditer(response_text):
-            code_num  = match.group(1)        # "999" | "998" | "997" | "996"
+            code_num  = match.group(1)        # "998" | "997" | "996"
             code_body = match.group(2).strip()
             result.fired.append(f"MCM:{code_num}")
             try:
-                if code_num == "999":
-                    self._prune_tools(messages)
-                    result.pruned = True
-                elif code_num == "998":
+                if code_num == "998":
                     self._pin_artifact(code_body)
                     result.pinned = True
                 elif code_num == "997":
@@ -78,16 +74,6 @@ class ContextControlHandler:
         return result
 
     # ── Action handlers ───────────────────────────────────────────────────
-
-    def _prune_tools(self, messages: list[dict]) -> None:
-        """MCM:999 — strip tool-call history from messages in-place via DCP."""
-        try:
-            from backend.agent.dcp import DCP
-            pruned, stats = DCP().prune(messages)
-            messages[:] = pruned
-            logger.debug("[ctrl:999] DCP pruned: %s", stats)
-        except Exception as exc:
-            logger.debug("[ctrl:999] DCP unavailable: %s", exc)
 
     def _pin_artifact(self, artifact_text: str) -> None:
         """MCM:998 — pin artifact to mycelium_pins with is_permanent=True."""

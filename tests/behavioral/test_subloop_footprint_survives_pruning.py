@@ -1,4 +1,4 @@
-"""REQ-21 AC3/AC4 (T42): sub-loop footprint survives DCP pruning.
+"""REQ-21 AC3/AC4 (T42): sub-loop footprint survives message-history pruning.
 
 Behavioral replay: create a growth-width split with children (real
 ``_split_step``), force a DCP prune pass on the message history, then resume
@@ -15,7 +15,6 @@ going, and what remains" from footprint + ledger.
 import pytest
 
 from backend.agent.agent_kernel import AgentKernel
-from backend.agent.dcp import DCP
 from backend.agent.der_loop import QueueItem
 
 
@@ -59,8 +58,8 @@ def _fake_history(n=8):
     return msgs
 
 
-def test_footprint_survives_dcp_pruning():
-    """REQ-21 AC3: after DCP prunes the message history, the child's
+def test_footprint_survives_history_pruning():
+    """REQ-21 AC3: after the message history is pruned, the child's
     footprint is still intact — it lives on the QueueItem, not the messages."""
     k = _kernel_with_attempts({"hash_a", "hash_b"})
     item = _parent_item()
@@ -69,10 +68,12 @@ def test_footprint_survives_dcp_pruning():
     child = children[0]
     assert child.footprint is not None
 
-    # Force a DCP prune pass that drops most of the history.
-    dcp = DCP(turn_protection=1)
-    pruned, stats = dcp.prune(_fake_history(), session_id="conv_t42")
-    assert stats["output_count"] < stats["input_count"], "DCP must actually prune"
+    # Prune the history: drop all but the last turn (DCP, the pruner this
+    # test used, was removed with CLM-9 on 2026-11-16; the subject is that the
+    # footprint does not depend on the history, whatever prunes it).
+    history = _fake_history()
+    pruned = history[-2:]
+    assert len(pruned) < len(history), "the history must actually be pruned"
 
     # The footprint survives: it is durable structured data on the child.
     assert child.footprint.prior_summary, "footprint intact after prune (AC3)"
@@ -88,9 +89,8 @@ def test_child_resumes_from_footprint_plus_ledger():
     child = k._split_step(item, "verify_failed", {"u": 0.3}, work_units=10)[0]
     fp = child.footprint
 
-    # DCP prunes the history.
-    dcp = DCP(turn_protection=1)
-    pruned, _ = dcp.prune(_fake_history(), session_id="conv_t42")
+    # The history is pruned (all but the last turn).
+    pruned = _fake_history()[-2:]
 
     # Resume the child: reconstruct the three REQ-21 answers from the
     # footprint + ledger ONLY (the pruned messages are NOT consulted).

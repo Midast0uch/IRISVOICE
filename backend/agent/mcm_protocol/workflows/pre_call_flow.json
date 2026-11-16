@@ -1,13 +1,8 @@
 {
   "name": "pre_call_flow",
-  "description": "Runs before every LLM call. Prunes context, injects MCM_MITO tag, adds episodic memory.",
+  "description": "Runs before every LLM call. Injects MCM_MITO tag, adds episodic memory. (Context shrink is the CLM view: backend/agent/context_view.py.)",
   "dry_run": false,
   "steps": [
-    {
-      "action": "dcp_prune",
-      "on_error": "continue",
-      "params": {}
-    },
     {
       "action": "mito_inject",
       "on_error": "continue",

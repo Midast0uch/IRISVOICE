@@ -1868,7 +1868,7 @@ Respond with a JSON object:
         REQ-19 vocabulary: "COMPRESS"/"EXPAND"/"MAINTAIN" here are DER PHYSICS
         RECOMMENDATION CODES (ints 1/0/2) returned by ffi_caducean_recommend.
         They modulate temperature ONLY â€” they compact/expand NOTHING. Actual
-        compaction is DCP message pruning (dcp.py) and mycelium condense/expand
+        context shrink is the CLM view (context_view.py) and mycelium condense/expand
         (scorer.py); Step Expansion is _growth_width->_split_step. See the
         REQ-19 vocabulary table in specs/long-horizon-der-execution/design.md.
 

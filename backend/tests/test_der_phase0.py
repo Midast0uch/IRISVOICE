@@ -201,30 +201,6 @@ def test_failure_zone_canonical(monkeypatch):
 
 # ── D0.8 DCP fan-trace ───────────────────────────────────────────────────────
 
-def test_dcp_fan_trace(monkeypatch, tmp_path):
-    from backend.agent.dcp import DCP
-    from backend.agent.caducean_trajectory import CaduceanTrajectoryRecorder
-    traj_path = tmp_path / "traj.sqlite"
-    rec = CaduceanTrajectoryRecorder.__new__(CaduceanTrajectoryRecorder)
-    rec._conn = sqlite3.connect(str(traj_path))
-    rec._ensure_table()
-    pruner = DCP()
-    # Enough messages so some fall into the work zone (turn_protection ~5-6).
-    # 4 duplicate search pairs -> 4 drops -> 4 fan_traces.
-    msgs = [{"role": "user", "content": "hi"}]
-    for i in range(4):
-        msgs.append({"role": "tool", "tool_calls": [{"function": {"name": "search",
-            "arguments": '{"q": "x"}'}}], "content": f"result{i}a"})
-        msgs.append({"role": "tool", "tool_calls": [{"function": {"name": "search",
-            "arguments": '{"q": "x"}'}}], "content": f"result{i}b"})  # duplicate -> dropped
-    pruned, stats = pruner.prune(msgs, session_id="s1", traj=rec)
-    rows = rec._conn.execute(
-        "SELECT tool, outcome FROM der_fan_traces WHERE session_id='s1'"
-    ).fetchall()
-    assert stats["fan_traces"] >= 1, "DCP must write a fan_trace on dedup drop"
-    assert rows and rows[0][0] == "search"
-
-
 # ── D0.9 recovery preamble FAN SUMMARY ───────────────────────────────────────
 
 def test_recovery_has_fan_summary(monkeypatch, tmp_path):
@@ -244,9 +220,3 @@ def test_recovery_has_fan_summary(monkeypatch, tmp_path):
 
 # ── D0.10 shared resource (no independent budget) ───────────────────────────
 
-def test_layers_share_resource(monkeypatch):
-    import pathlib
-    _root = pathlib.Path(__file__).resolve().parents[2]
-    dcp_src = (_root / "backend/agent/dcp.py").read_text()
-    assert "resolve_context_window()" in dcp_src, "DCP must derive budget from context window"
-    assert "turn_protection = max(4, int(resolve_context_window() / 6000))" in dcp_src
