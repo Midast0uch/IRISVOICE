@@ -486,20 +486,22 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
                                      _wb_dispatch.get(_wb_key(conv, node_token)))
         mgr.touch(conv)
         wbd.remember_origin(rep, purpose)
-        wbd.remember_named(rep)
+        chk = (rep.get("check") or {"ok": False, "error": "check was not run"}) if check else {}
+        # D8: the spill set = the brief's outputs once a check passes (+ the out<n> refs); no brief
+        # -> this script's named values only. D6: the digest lists the outputs first.
+        wbd.remember_named(rep, outputs, passed=bool(check and chk.get("ok")))
         _record_code_row(conv, code, purpose, rep, int((time.monotonic() - t0) * 1000))
         err = rep.get("error") or None
         out = {
             "success": not (err and err.get("type") in _WB_INFRA_ERRORS),
-            "text": wbd.digest(rep, await asyncio.to_thread(client.rss_mb)), "ok": bool(rep.get("ok")),
+            "text": wbd.digest(rep, await asyncio.to_thread(client.rss_mb), outputs), "ok": bool(rep.get("ok")),
             "incarnation": rep.get("incarnation", ""), "vars": rep.get("vars") or [],
-            "wb_refs": wbd.refs(rep), "returncode": 0 if rep.get("ok") else 1,
+            "wb_refs": wbd.refs(rep, outputs), "returncode": 0 if rep.get("ok") else 1,
         }
         if err:
             out["error"] = f"{err.get('type')}: {err.get('message')}"
             out["error_type"] = err.get("type")
         if check:
-            chk = rep.get("check") or {"ok": False, "error": "check was not run"}
             out["check_ok"] = bool(chk.get("ok"))
             if chk.get("ok") and outputs:
                 # F1: the step's product - the brief's output VALUES - for the step result

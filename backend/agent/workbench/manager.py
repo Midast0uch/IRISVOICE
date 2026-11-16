@@ -23,9 +23,10 @@ BUDGET_BYTES = 768 << 20      # process-wide RSS of all live workbenches (whole 
 NEW_WORKBENCH_BYTES = 30 << 20  # what a fresh interpreter adds, counted against the budget
 
 
-# The spill (T7.10): when a Workbench ends with a live process, the values its digests
-# named (digest.named) are written as tool_results rows, so `wb:<incarnation>/<name>`
-# still expands. Only named values, text form, each capped; never the namespace. The row
+# The spill (T7.10): when a Workbench ends with a live process, the values digest.named
+# lists are written as tool_results rows, so `wb:<incarnation>/<name>` still expands. D8: those
+# are the brief's declared outputs (a passed check), the `out<n>` refs, or - with no brief - the
+# last script's named values; loop temporaries never. Text form, each capped; never the namespace. The row
 # id is derived from the ref, so expand needs no index. A crash or hard kill spills nothing.
 SPILL_VALUE_CHARS = 32_000   # one spilled value (the store caps a row at 128,000)
 SPILL_READ_S = 5.0           # total time one spill may spend reading values from the child

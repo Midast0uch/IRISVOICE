@@ -218,8 +218,13 @@ def test_a_deleted_name_is_not_spilled_and_the_rest_is(made, cs):
 # --- the spill respects the tool_results caps ---------------------------------------
 def test_spill_keeps_at_most_the_newest_named_values(made, cs):
     m, c = _live(made, cs)
+    # Round 4 D8 (2026-11-16): the spill writes DECLARED outputs (a passed check's brief
+    # names), not every variable a digest listed - so the 36 names are declared outputs of
+    # three passing runs. Same load (36 names > NAMED_MAX), same cap, same "oldest cut".
     for k in range(3):                                          # 36 names: more than the spill keeps
-        run(c, "\n".join(f"v{k}_{i} = {i}" for i in range(12)))
+        names = [f"v{k}_{i}" for i in range(12)]
+        rep = c.exec("\n".join(f"{n} = {i}" for i, n in enumerate(names)))
+        digest.remember_named(rep, outputs=names, passed=True)
     info = m.end_spilled("c1", "closed")
     assert info["confirmed"] and info["spilled"] == digest.NAMED_MAX == 24
     rows = rows_of(cs, "c1")
