@@ -405,7 +405,44 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   - [ ] **W2**: D3 ground function + tests, D6 diet, D8 spill outputs only.
   - [ ] **W3**: D3 wiring (node, planner, repair), D4 plan shape + entry rule, D5 result
     manifest - flag-off parity suites must stay byte-equal.
-  - [ ] **TG-7 v2 cloud** (A0/A1, all cohorts, >= 5 rounds) against the pass bar.
+  - [~] **TG-7 v2 cloud, STAGE 1 done (2026-11-16 14:02-17:58, commit d4d494de)**: context
+    x01-x04 + noise x05 + data c46-c52, IRIS_WORKBENCH 0/1 interleaved x5 (60 task-runs per
+    arm), deepseek-v4.1-flash both roles, developer mode. evals/results/20261116-{142816,
+    144824,151350,153432,160021,162425,164920,171014,173826,175749}.json; evals/
+    wb_ab_analysis.py on the scratch blocks file.
+    | all 12 tasks | off | on | change |
+    |---|---|---|---|
+    | pass | 58/60 | 60/60 | better |
+    | reply_s median | 43.0 | 30.8 | x0.72 |
+    | prompt tokens total | 3.21 M | 2.23 M | x0.70 (tool model x0.38) |
+    | completion tokens total | 212 k | 142 k | x0.67 |
+    | max prompt of one call | 48.9 k | 28.8 k | x0.59 |
+    | planner retries | 14 | 4 | x0.29 |
+    | HTTP sends | 672 | 609 | x0.91 |
+    Bar per cohort - context (x01-x04, 20 runs/arm): pass 20/20 vs 18/20 PASS; Brain calls
+    median 3 vs 4 PASS; reply_s x0.67 PASS; prompt tokens median x0.46 PASS; completion x0.62
+    PASS; planner retries 0 vs 12 PASS; tool-model calls median 7 vs 9 = x0.78 FAIL (bar 0.4);
+    escalations 14.3 % of code nodes, median 52.7 s FAIL (bar 10 %, 10 s); scripts per code
+    node 4.43 FAIL (bar 1.5). Data (c46-c52, 35 runs/arm): pass 35/35 both PASS; reply_s x0.68
+    PASS; scripts per node 1.21 PASS; escalations 0 PASS; tool-model calls median 2 vs 2 FAIL
+    (bar 0.4 - the off arm already needs 2); prompt tokens median x0.78 FAIL (bar 0.5) and
+    completion x1.03 FAIL (bar 0.7) - the Brain's planner prompt grows ~+530 tokens per plan
+    (brief rules + PROJECT FILES) on tasks of ~10 k tokens; planner retries 4 vs 2 FAIL. Noise
+    (x05, no code node): equal within noise.
+    Causes by call kind: (1) the repair call at max_tokens=1200 was cut by the provider's
+    hidden reasoning and resent - 17 sends for 5 calls, 52.7 s median: FIXED (4096, guard
+    test_d1_the_repair_call_has_the_planners_token_budget); (2) the remaining scripts per
+    code node are LOOK-AT-THE-DATA scripts ("Check severity field distribution", "Survey
+    invoice_total line formats", "Find rounding rules in tax.txt") - two head lines cannot
+    show a prose rule or a field index, so ~2 scripts is the honest floor for these tasks:
+    FINDING, the 1.5 bar conflicts with the data (owner decision); (3) the brief's fixed
+    planner cost (~530 tokens) dominates the data cohort's token rows; (4) the x01/x02
+    planner prompt is 24-28 k tokens in BOTH arms (a 17-19 k recall block in the planner's
+    user message) - not a Workbench cost, the largest single prompt left. Final answer
+    prompt 4,672 -> 1,007 tokens per call (D5); code-node call 2,486 vs menu-node 7,125
+    tokens. Verdict: the flag stays OFF until the owner decides on the failing rows.
+  - [ ] **TG-7 v2 cloud, STAGE 2** (config c38-c45, run-and-report c14 c17 c18 c19 c25 c26
+    c27, explain c13, write control c01 c02 c11).
   - [ ] **W4**: T7.0b on both small models (level 0 vs 1, with ground; one fenced-code
     variant), then TG-7 v2 small (B0/B1).
 - **Wave 7, Round 3 tasks (2026-11-16; the order is the priority):**

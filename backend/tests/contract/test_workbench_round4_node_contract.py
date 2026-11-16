@@ -79,6 +79,18 @@ def test_d1_the_repair_call_is_low_effort_tagged_and_its_note_shows_the_skeleton
     assert _SKELETON not in json.dumps(calls[1][2])                    # nothing before the escalation
 
 
+def test_d1_the_repair_call_has_the_planners_token_budget(repair_node):
+    """TG-7 v2 stage 1 (2026-11-16): at max_tokens=1200 the provider's hidden reasoning cut
+    the repair answer and the transport resent with a larger budget - 17 sends for 5
+    repair calls, median 52.7 s. The repair gets the planner's 4096."""
+    k = repair_node
+    calls = _spy(k)
+    k.scripts += ["result = 1", "result = 2", "exec(skeleton)"]
+    k._der_run_node(k.item, "sess", "turn-1", [])
+    brain = [kw for role, kw, m in calls if role == "reasoning"]
+    assert len(brain) == 1 and brain[0].get("max_tokens", 0) >= 4096, brain
+
+
 def _stub_manager(monkeypatch):
     from backend.agent.workbench import manager
 

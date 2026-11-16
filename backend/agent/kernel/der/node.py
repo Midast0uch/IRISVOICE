@@ -150,6 +150,7 @@ _WB_TOOLS_NOTE = (
 _WB_TOOLS_PREFER = ("read_file", "grep_files", "glob_files", "edit_file", "write_file", "run_command")
 _WB_TOOLS_MAX = 5
 _WB_SKELETON_MAX_LINES = 40
+_WB_REPAIR_MAX_TOKENS = 4096       # the planner's budget: no hidden-reasoning resend
 _WB_REPAIR_PROMPT = (
     "A small model is doing one step of a task in a Python workbench and its result "
     "failed the step's check twice. Write a REPAIR BRIEF: at most three sentences on "
@@ -315,7 +316,10 @@ def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: 
         prompt = _WB_REPAIR_PROMPT.format(ground=ground or "", brief=brief or "(none)", check=check,
                                           code=(code or "")[:3000], digest=(digest or "")[:3000])
         text, _think, _ = kernel._router.generate(
-            "reasoning", [{"role": "user", "content": prompt}], max_tokens=1200,
+            # 4096 like the planner: with 1200 the provider's hidden reasoning cut the
+            # answer and the transport resent with a larger budget - TG-7 v2 stage 1
+            # measured 17 sends for 5 repair calls, median 52.7 s (2026-11-16).
+            "reasoning", [{"role": "user", "content": prompt}], max_tokens=_WB_REPAIR_MAX_TOKENS,
             temperature=0.2, timeout_s=120.0, reasoning_effort="low", call_kind="wb_repair")
         _wb_stats["escalations"] = _wb_stats.get("escalations", 0) + 1
         m = _re.search(r"```python\n(.*?)```", text or "", _re.S)
