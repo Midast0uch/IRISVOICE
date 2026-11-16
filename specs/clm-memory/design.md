@@ -266,7 +266,61 @@ finished steps), memory (the node's `_memory_facts`). Leaves only through `keep(
 Import rule (a contract test): only `tool_bridge.py` and `kernel/der/node.py` import
 the package; `node_executor.py` never does.
 
-### Round 3 (2026-11-16, CURRENT): the two-model loop; personal mode as a scope
+### Round 4 (2026-11-16, CURRENT; advisor after TG-7 run 1): make the Workbench win on every metric
+
+Owner (verbatim): "We had a lower prompt token amount which is good but i expect a signficant
+improvement in all areas especially the ones that mattee and prove the workbench usefullness".
+Run 1 split by call kind (x01-x04, 12 runs per arm; role + max_tokens as the label): Brain calls
+3.6 -> 5.75 per task; escalations = 41 % of on-arm completion tokens and +1,075 s of Brain time;
+56 menu-node calls (41 % of on-arm prompt) for steps the entry rule kept out of code mode; 97
+scripts in 26 code nodes, 30 only list the folder, 13 only print `skeleton`; parallel code nodes
+waited 880 s in total on the `workbench` claim, charged to the node's 300 s clock; 7 extra
+planner calls (unparseable plans with the brief) in 5 of 12 runs. Re-run after F1-F4 (2 of 5
+rounds, then stopped for this round): escalations 19/26 -> 2/18 code nodes, but pass 7/10 vs
+10/10 - a check that passed on empty placeholders (x01), a per-file plan (x02), E_PLANNER_EMPTY
+(x03). Floor of Brain calls per turn = 3 (the 16-token user_feedback label, the planner,
+synthesis); the verifier is embedding-based.
+
+- **D1 cheap, sighted escalation.** `_wb_escalate` passes `reasoning_effort="low"` (as the
+  planner does), the repair prompt carries PROJECT FILES (D3), the note shows the skeleton text
+  as well as `put`ting it. Trigger unchanged (second REAL failed check, once per node).
+- **D2 the brief always parses.** Log the raw planner head when `_parse_planner_json` returns
+  None; brief rule: single quotes only and no backslashes inside check / inputs / outputs,
+  relative forward-slash paths. The parser fix follows the logged cause.
+- **D3 ground.** One pure, bounded function (50 ms, 2,000 entries, depth 3, <= 1,200 chars:
+  numbered runs collapsed, sizes, 2 head lines of <= 6 named text files) -> the code node's
+  step message (+ `files` variable), the flag-on planner prompt, the repair prompt. In code
+  mode the MEMORY text leaves the step message (it stays in the `memory` variable).
+- **D4 plan shape + entry rule.** Flag-on planner rule: ONE step per data product, not per
+  file / table / stage; outputs small and final; the check tests COMPLETENESS (expected
+  count of items / keys), never the type only. `_wb_code_mode` admits a step with outputs and
+  a check, or a READ/RUN class, with no browser / screen / web reference.
+- **D5 the step result is the outputs manifest:** purpose, each output in full when <= 600
+  chars else 600 chars + type, size and `wb:` ref, "check: passed"; no stdout / changed-variable
+  lines in a passed step's result.
+- **D6 tool-model diet for 8k:** a new `_WB_SYSTEM` (relative paths, never chdir, one script
+  that assigns every output, PROJECT FILES already listed); `_WB_TOOLS_NOTE` only when the
+  brief names a tool Python cannot replace; the code-node run_python schema = code + purpose;
+  digest lists outputs first + <= 4 others; max_tokens 2048 -> 1024.
+- **D7 the claim before the clock:** the code-mode node takes the `workbench` claim before
+  run_node starts its deadline; `wb_wait_s` counted.
+- **D8 the spill writes declared outputs only** (+ `out<n>` refs).
+- **Measurement (TG-7 v2):** W0 first - `call_kind` on every baseline row (label, plan, node,
+  code_node, wb_repair, synth, other) through one optional InferenceRouter.generate keyword,
+  HTTP sends (resends + hedges) per call, `wb_wait_s` / scripts per node / exploring scripts in
+  `_wb_stats`, the analysis script in `evals/`. Arms interleaved, >= 5 rounds: A0/A1 cloud both
+  roles, flag 0/1; B0/B1 the same Brain + LFM2.5-2.6B (8k) tool model, then LFM3-1.7B.
+  Cohorts: context x01-x04 (x05 noise control), data c46-c52, config c38-c45, run-and-report
+  c14 c17 c18 c19 c25 c26 c27, explain c13, write control c01 c02 c11.
+- **Pass bar (on vs off, per cohort, medians):** pass >= off and no task lower by >= 2 of 5;
+  Brain calls/task <= 3.1 and <= off; tool-model calls <= 0.4 x off (context, data), <= off
+  elsewhere; prompt tokens <= 0.5 x off (context, data); completion tokens <= 0.7 x off;
+  steps <= off; reply_s <= 0.8 x off (context, data), <= off elsewhere; escalations <= 10 % of
+  code nodes, median <= 10 s; scripts per code node <= 1.5; planner retries <= off; small arm
+  pass above B0, blind drops 0, largest prompt <= 4,000. The flag goes on only when every row
+  holds on the cloud arm; otherwise the failing row + number + date are written in tasks.md.
+
+### Round 3 (2026-11-16): the two-model loop; personal mode as a scope
 
 - **Roles.** Brain (`reasoning`): plans, writes each step's brief at plan time (no
   extra call), steps in on escalation, reads reports at synthesis. Tool model

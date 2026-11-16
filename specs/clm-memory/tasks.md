@@ -392,7 +392,23 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   DONE = contract tests pass and fail on a seeded frame change; soft stop keeps state;
   hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
   from inside Python.
-- **Wave 7, Round 3 tasks (2026-11-16, CURRENT; the order is the priority):**
+- **Wave 7, Round 4 tasks (2026-11-16, CURRENT; design.md "Round 4"):**
+  > Re-run after F1-F4 (5778022e), stopped after 2 of 5 rounds for Round 4: off 10/10, on 7/10;
+  > calls 135 vs 188; prompt tokens 1.14 M vs 1.07 M; completion 65 k vs 84 k; escalations 2
+  > in 18 code nodes (was 19 in 26 - F4 works). Failures: x01 check passed on empty
+  > placeholders, x02 per-file plan left a step unresolved, x03 E_PLANNER_EMPTY.
+  > evals/results/20261116-{113241,115350,121223,123037}.json.
+  - [ ] **W0 measurement**: call_kind + HTTP sends on baseline rows; planner raw head logged on
+    a None parse; `_wb_stats` wb_wait_s / scripts / exploring; analysis script in evals/.
+  - [ ] **W1**: D1 (effort low, ground + inline skeleton in the repair), D7 (claim before the
+    clock), D2 (log + quote rule; parser fix from the logged cause).
+  - [ ] **W2**: D3 ground function + tests, D6 diet, D8 spill outputs only.
+  - [ ] **W3**: D3 wiring (node, planner, repair), D4 plan shape + entry rule, D5 result
+    manifest - flag-off parity suites must stay byte-equal.
+  - [ ] **TG-7 v2 cloud** (A0/A1, all cohorts, >= 5 rounds) against the pass bar.
+  - [ ] **W4**: T7.0b on both small models (level 0 vs 1, with ground; one fenced-code
+    variant), then TG-7 v2 small (B0/B1).
+- **Wave 7, Round 3 tasks (2026-11-16; the order is the priority):**
   - [x] **T7.11 scope** - DONE d4353926 (8 contract tests; personal workbench refuses the IRIS repo, case workbench_scope; a mode change ends the workbench). One profile; run_python out of `_TERMINAL_TOOLS`; a personal
     workbench refuses a workdir at or under the IRIS repo. DONE = contract tests: a
     personal workbench refuses that workdir and a write into the IRIS repo; developer
