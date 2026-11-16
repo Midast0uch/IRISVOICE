@@ -362,7 +362,23 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   calls; calls per node; steps per plan; interpreter spawn time cold and warm.
   DONE = the table here; proceed only if the share is >= ~30 %.
   NOT THIS = any code in backend/.
-- [ ] **T7.1** `protocol.py` + `worker.py` + `client.py`.
+> **Memory (owner concern 2026-11-16: no memory spike in the app; efficiency).**
+> Measured with the T7.1 client, .venv python, the WHOLE process tree (on Windows a
+> venv python.exe is a launcher that starts the real interpreter as a child, so the
+> launcher's own RSS - 4.4 MB - hides the worker): the IRIS app process 74.3 -> 74.5
+> MB when a workbench starts (the workbench lives OUTSIDE the app process); worker
+> idle 32 MB; the whole x01 task as ONE script (read 14 logs, 103 KB, count error
+> codes) 34 MB and 4 ms - the fine-grained path needs ~10 model calls for it; a 200
+> MB value -> 234 MB, back to 33 MB after `del`; close 0.1 s, no process left.
+> DECISIONS: (1) the per-workbench cap drops from 1 GB to 512 MB and the
+> process-wide budget is 768 MB across live workbenches (oldest idle ends first); (2)
+> the digest tells the Brain the workbench size once it passes 256 MB ("holds N MB;
+> del what you no longer need") - the Brain manages its memory, the cap is the
+> safety net; (3) launch the base interpreter directly (sys._base_executable of the
+> resolved venv) to drop the launcher process. Small-model run with the two CLM
+> budget fixes (T7.6 + menu budget), offload on: context 1/5 (x01 passes; was 0/5),
+> blind-drop calls 21 (was 24) - evals/results/20261115-165745.json.
+- [x] **T7.1** `protocol.py` + `worker.py` + `client.py` - DONE 0e806270 (24 contract tests).
   DONE = contract tests pass and fail on a seeded frame change; soft stop keeps state;
   hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
   from inside Python.
