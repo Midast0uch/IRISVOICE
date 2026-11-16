@@ -401,6 +401,22 @@ learns from structured outcomes; the stated rule decides until the bar.
 | Phase scheduler | No | NO CHANGE | The view never reads live u/xi |
 | Frontend | No | NO CHANGE (v1) | Placeholders are model-facing only; never in the reply (contract CT-8) |
 
+**Workbench rows (CLM-11, added 2026-11-16 - the map had none; mapped read-only, file:line as of 283f902d):**
+
+| Area / File | Change? | Classification | Why / Evidence |
+|---|---|---|---|
+| `backend/agent/workbench/{protocol,worker,client}.py` | Yes | CHANGE NEEDED (T7.12, T7.9) | `check` on exec (worker evaluates it after the body, reply `check:{ok,error}`); protocol v2 callback frames `ev:call` / `op:result` |
+| `workbench/manager.py`, `capabilities.py` `_TERMINAL_TOOLS` (:71), `tool_registry.py` run_python spec (:997) | Yes | CHANGE NEEDED (T7.11) | Personal mode = scope: run_python offered in both modes; a personal workbench refuses a workdir at or under the IRIS repo |
+| `tool_bridge.py` `_run_python_tool` (:361) | Yes | CHANGE NEEDED (T7.12, T7.9) | Passes `check`, returns `check_ok`; passes the node's dispatch handler for callbacks. Today it reads only code/purpose/timeout_s |
+| `kernel/der/node.py` `_wb_code_mode` (:164), code-mode call site (~:1810) | Yes | CHANGE NEEDED (Round 3 R1, done in 283f902d) | Code nodes on `tool_execution`; brief, check and `on_check_failed` (`_wb_escalate`, one Brain call) |
+| Planner: `kernel/planning.py` (:863 prompt, :1048 parse), `core_models.PlanStep` (:715), `der_loop.QueueItem` (:216), `kernel/der/run.py` (:520-543 copy) | Yes | CHANGE NEEDED (T7.13) | Brief fields inputs/outputs/check/approach/tools; no model has them today, so `_wb_brief` returns empty. Flag off: planner prompt byte-equal |
+| `node_executor.run_node` `calls.append` (:1251), `_target` (:542) | Yes | CONTRACT LOCK (`test_step_calls_contract.py`) | Every run_python call and every callback (`via: run_python`) is one `calls[]` entry -> `item.node_call_log` (`kernel/der/node.py`) -> `_step_calls` (`kernel/base.py:88`). `_target` reads no run_python key today -> the card's step has an empty target; T7.12 reads `purpose` |
+| Task card events: `tool:call` (`kernel/der/run.py:1312-1322`), `tool:result` (`kernel/der/finalize.py:827-832`, `_step_tool_name` :88) -> `ws_event_bridge.py` -> `hooks/useIRISWebSocket.ts:1949` `iris:task_update` -> `components/chat/TaskListCard.tsx` | No (shape) | CONTRACT LOCK | Same events and shape in both modes and both paths. A node step sends `tool_name: "direct"` on `tool:call` (all nodes, not only code nodes); `tool:result` names the decisive call (run_python, or the last/failed callback tool). No Workbench-specific event exists |
+| Frontend labels: `lib/cards/verbRegistry.ts` (`run_` prefix -> exec family, :166), `hooks/useTaskProgress.ts` `TOOL_TITLES` (:443) | No | NO CHANGE (verified) | run_python is in no map; it falls back to the EXEC verb and the title "Run Python" |
+| Permission path for run_python (`tool_bridge.py:2505-2517`, permission `side_effect`) | Verify | VERIFY AT TG-7 | Personal mode after T7.11: count `permissions` per eval task; a permission card per script would make a code step slower than the menu path |
+| CLM events `OFFLOADED` / `RESTRETCHED` (`node_executor.py:846, 892, 955`) | Verify | VERIFY | No `on_clm_event=` assignment found in `backend/agent`; the memory dashboard words exist (`surface_queries.py:1737`) but the live sink is not confirmed |
+| Oracle `repair_route` (T7.15) | New consumer | CHANGE NEEDED | One question per failed check, REPAIR / ESCALATE, shadow until the bar |
+
 ## Error Handling
 
 - IF the record cannot resolve a reference at assembly THEN the block renders, marked
