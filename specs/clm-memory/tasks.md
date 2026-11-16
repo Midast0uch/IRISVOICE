@@ -393,19 +393,19 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
   from inside Python.
 - **Wave 7, Round 3 tasks (2026-11-16, CURRENT; the order is the priority):**
-  - [ ] **T7.11 scope.** One profile; run_python out of `_TERMINAL_TOOLS`; a personal
+  - [x] **T7.11 scope** - DONE d4353926 (8 contract tests; personal workbench refuses the IRIS repo, case workbench_scope; a mode change ends the workbench). One profile; run_python out of `_TERMINAL_TOOLS`; a personal
     workbench refuses a workdir at or under the IRIS repo. DONE = contract tests: a
     personal workbench refuses that workdir and a write into the IRIS repo; developer
     mode unchanged. NOT THIS = a Job Object, network rules.
-  - [ ] **T7.9 callbacks** (protocol v2 `ev:call` / `op:result` through the node's
+  - [x] **T7.9 callbacks** - DONE (18 contract tests; no-op callback round trip median 0.085-0.104 ms over 50; each callback = one calls[] entry via run_python and one card count; run_python dispatch deadline 90 -> 630 s, guard test_step_deadline_exceeds_the_longest_python_script). (protocol v2 `ev:call` / `op:result` through the node's
     `_execute`). DONE = a callback reaches box.dispatch, appears in calls[], holds the
     browser claim, the budget error keeps state; no-op overhead < 5 ms. NOT THIS = a
     second dispatcher, an async worker, nested exec.
-  - [ ] **T7.12 check + auto-close + role.** `check` in exec (worker evaluates); code
+  - [x] **T7.12 check + auto-close + role** - BUILT (14 contract tests: a passing check closes the node with one model call; the code-mode node counts toward the task card). Live part of DONE runs at TG-7. `check` in exec (worker evaluates); code
     nodes on `tool_execution`; brief rendering in the step message. DONE = a node
     closes on a passing check with one model call, live. NOT THIS = a model call to
     judge the check.
-  - [ ] **T7.13 planner brief fields** (inputs, outputs, check, approach, tools) in
+  - [x] **T7.13 planner brief fields** - BUILT 61415764 (8 contract tests; flag-off planner prompt byte-equal). Live part (cohort 21/21 with the fields) runs at TG-7. (inputs, outputs, check, approach, tools) in
     the existing planner call. DONE = cloud cohort 21/21 with the fields present; a
     step without them still runs. NOT THIS = a second planner call.
   - [ ] **T7.14 escalation hook** `on_check_failed` -> one Brain repair brief with a

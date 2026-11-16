@@ -3,6 +3,7 @@
 Stdlib only (psutil is imported lazily for the RSS cap). One client owns one child
 process; a hard kill starts a fresh incarnation (variables are lost, and the reply says so).
 """
+import json
 import logging
 import os
 import queue
@@ -12,7 +13,7 @@ import tempfile
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional, Tuple
 
 from .protocol import PROTOCOL_VERSION, ProtocolError, decode, encode
 
@@ -23,6 +24,7 @@ HARD_KILL_GRACE_S = 3.0        # after the soft stop, before the process is kill
 RSS_LIMIT_BYTES = 512 << 20    # 512 MB, over the whole process tree
 RSS_POLL_S = 0.25
 OP_TIMEOUT_S = 30.0            # hello / inspect / put
+RESULT_FRAME_MAX = 2_000_000   # bytes of one callback result sent back to the worker
 _CREATE_NO_WINDOW = 0x08000000
 
 
@@ -281,8 +283,32 @@ class WorkbenchClient:
         total = self.rss_bytes()
         return total is not None and total > RSS_LIMIT_BYTES
 
-    def _roundtrip(self, frame: dict, wait_s: float, rss: bool = True) -> dict:
-        """Send one frame, wait up to wait_s. Returns the reply, or a {"_fail": kind} marker."""
+    def _answer_call(self, call: dict, on_call) -> None:
+        """Run the handler for one worker `call` frame and send the `result` frame."""
+        if on_call is None:
+            ok, value, error = False, None, "tools are not available here"
+        else:
+            try:
+                ok, value, error = on_call(str(call["tool"]), call.get("args") or {})
+            except Exception as exc:  # noqa: BLE001 - the script sees a ToolError
+                logger.warning("[Workbench][%s] callback handler failed: %r", self._tag(), exc)
+                ok, value, error = False, None, f"{type(exc).__name__}: {exc}"[:300]
+        frame = {"v": PROTOCOL_VERSION, "op": "result", "id": call["id"], "seq": call["seq"],
+                 "ok": bool(ok), "value": value if ok else None, "error": None if ok else str(error or "failed")}
+        try:
+            data = json.dumps(frame, ensure_ascii=True, separators=(",", ":"), default=str).encode("utf-8") + b"\n"
+            if len(data) > RESULT_FRAME_MAX:
+                frame.update(ok=False, value=None, error="tool result too large for the workbench")
+                data = encode(frame)
+            self._proc.stdin.write(data)
+            self._proc.stdin.flush()
+        except (OSError, ValueError) as exc:
+            logger.warning("[Workbench][%s] result send failed: %s", self._tag(), exc)
+
+    def _roundtrip(self, frame: dict, wait_s: float, rss: bool = True, on_call=None) -> dict:
+        """Send one frame, wait up to wait_s. Returns the reply, or a {"_fail": kind} marker.
+        A worker `call` frame of THIS request is answered through `on_call`; the wait
+        deadline is paused while the handler runs."""
         proc = self._proc
         try:
             proc.stdin.write(encode(frame))
@@ -306,6 +332,14 @@ class WorkbenchClient:
                     self.counts["bad_frames"] += 1
                     logger.warning("[Workbench][%s] bad reply frame: %s", self._tag(), exc)
                     continue
+                if rep.get("ev") == "call":
+                    if "id" in frame and rep.get("id") == frame["id"]:
+                        t0 = time.monotonic()
+                        self._answer_call(rep, on_call)
+                        deadline += time.monotonic() - t0
+                    else:
+                        self.counts["stale_frames"] += 1     # a call of another exec: ignored
+                    continue
                 if rep.get("re") == "error":      # the worker refused the frame; it still runs
                     return {"_fail": "error_reply", "error": rep["error"]}
                 if "id" in frame and rep.get("id") != frame["id"]:
@@ -322,14 +356,14 @@ class WorkbenchClient:
             if now > deadline:
                 return {"_fail": "timeout"}
 
-    def _request(self, frame: dict, wait_s: float) -> dict:
+    def _request(self, frame: dict, wait_s: float, on_call=None) -> dict:
         with self._lock:
             if not self.alive:
                 return {"ok": False, "incarnation": self._incarnation, "error": {
                     "type": "WorkbenchUnavailable", "message": "workbench is not running", "trace_tail": ""}}
             self._next_id += 1
             frame["id"] = self._next_id
-            rep = self._roundtrip(frame, wait_s)
+            rep = self._roundtrip(frame, wait_s, on_call=on_call)
             fail = rep.get("_fail")
             if fail is None:
                 return rep
@@ -348,9 +382,15 @@ class WorkbenchClient:
                 return self._restart("WorkbenchRestarted", "workbench restarted, variables lost")
             return self._restart("WorkbenchCrashed", "workbench process ended, restarted, variables lost")
 
-    def exec(self, code: str, timeout_s: float = 60) -> dict:
-        return self._request({"v": PROTOCOL_VERSION, "op": "exec", "code": code,
-                              "timeout_s": timeout_s}, timeout_s + HARD_KILL_GRACE_S)
+    def exec(self, code: str, timeout_s: float = 60, check: Optional[str] = None,
+             on_call: Optional[Callable[[str, dict], Tuple[bool, object, Optional[str]]]] = None) -> dict:
+        """Run `code`. `check` (a Python expression) is evaluated after a clean run; the
+        reply then carries "check". `on_call(tool, args) -> (ok, value, error)` answers
+        tools.<name>() calls from the script; the lock is held for the whole exec."""
+        frame = {"v": PROTOCOL_VERSION, "op": "exec", "code": code, "timeout_s": timeout_s}
+        if check:
+            frame["check"] = check
+        return self._request(frame, timeout_s + HARD_KILL_GRACE_S, on_call=on_call)
 
     def inspect(self, expr: str, offset: int = 0, limit: int = 4000) -> dict:
         return self._request({"v": PROTOCOL_VERSION, "op": "inspect", "expr": expr,

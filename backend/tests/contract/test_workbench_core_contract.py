@@ -61,7 +61,9 @@ GOLDEN = {
 @pytest.mark.parametrize("op", sorted(GOLDEN))
 def test_golden_frame_round_trip(op):
     frame = protocol.decode(GOLDEN[op])
-    assert frame["op"] == op and frame["v"] == protocol.PROTOCOL_VERSION == 1
+    # T7.9 (2026-11-16): the protocol is v2 (callback frames); a v1 frame stays valid.
+    assert frame["op"] == op and frame["v"] == 1 and protocol.PROTOCOL_VERSION == 2
+    assert protocol.SUPPORTED_VERSIONS == (1, 2)
     assert protocol.encode(frame) == GOLDEN[op]
 
 
@@ -77,7 +79,7 @@ def test_seeded_frame_changes_are_caught():
     with pytest.raises(ProtocolError):
         protocol.decode(b'{"v":1,"op":"frobnicate"}\n')            # unknown op
     with pytest.raises(ProtocolError):
-        protocol.decode(b'{"v":2,"op":"hello"}\n')                  # wrong version
+        protocol.decode(b'{"v":3,"op":"hello"}\n')                  # wrong version (v1, v2 valid)
     with pytest.raises(ProtocolError):
         protocol.decode(b'{"v":1,"op":"exec","id":1,"code":"x"}\n')  # missing timeout_s
     with pytest.raises(ProtocolError):

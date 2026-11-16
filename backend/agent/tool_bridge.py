@@ -358,6 +358,24 @@ def _expand_workbench(params: dict) -> dict:
     return expand(str(params.get("expand") or "").strip(), offset, EXPAND_PAGE_CHARS)
 
 
+_WB_CHECK_MAX = 2000
+# conversation id -> handler(tool, args) -> (ok, value, error). The code-mode node
+# registers the node's OWN dispatch path for its lifetime (set and cleared in
+# kernel/der/node.py), so `tools.<name>()` in a script goes through it, not a
+# second dispatcher.
+_wb_dispatch: dict = {}
+
+
+def set_workbench_dispatch(conversation_id: str, handler) -> None:
+    _wb_dispatch[conversation_id] = handler
+
+
+def clear_workbench_dispatch(conversation_id: str, handler=None) -> None:
+    """Remove the registration (only the given handler's, when one is named)."""
+    if handler is None or _wb_dispatch.get(conversation_id) is handler:
+        _wb_dispatch.pop(conversation_id, None)
+
+
 async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> dict:
     """run_python(code, purpose, timeout_s) -> the digest as `text`, plus structured
     fields. A Python exception is a RESULT (success True, ok False), like a non-zero
@@ -370,6 +388,9 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
     except (TypeError, ValueError):
         timeout_s = _WB_TIMEOUT_DEFAULT_S
     purpose = " ".join(str(params.get("purpose") or "").split())[:200]
+    # The harness injects `check` (run_node); the model never writes it.
+    check = params.get("check")
+    check = check.strip()[:_WB_CHECK_MAX] if isinstance(check, str) and check.strip() else None
     conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
     try:
         from backend.agent.workbench import digest as wbd
@@ -383,7 +404,7 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         if client is None:
             return {"success": False, "case": "workbench_unavailable",
                     "error": "no Python interpreter is available for the workbench"}
-        rep = await asyncio.to_thread(client.exec, code, timeout_s)
+        rep = await asyncio.to_thread(client.exec, code, timeout_s, check, _wb_dispatch.get(conv))
         mgr.touch(conv)
         wbd.remember_origin(rep, purpose)
         err = rep.get("error") or None
@@ -396,6 +417,13 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         if err:
             out["error"] = f"{err.get('type')}: {err.get('message')}"
             out["error_type"] = err.get("type")
+        if check:
+            chk = rep.get("check") or {"ok": False, "error": "check was not run"}
+            out["check_ok"] = bool(chk.get("ok"))
+            if not chk.get("ok"):
+                out["check_error"] = str(chk.get("error") or "")[:300]
+            out["text"] += ("\ncheck: passed" if chk.get("ok")
+                            else f"\ncheck: failed - {out['check_error']}")
         return out
     except Exception as exc:  # noqa: BLE001 - a named result, never an exception into the turn
         logger.warning("[ToolBridge][%s] run_python failed: %r", session_id, exc)

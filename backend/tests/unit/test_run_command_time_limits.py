@@ -28,6 +28,18 @@ def test_step_deadline_exceeds_the_longest_command_timeout():
     assert deadline > _command_timeout(99999)
 
 
+def test_step_deadline_exceeds_the_longest_python_script():
+    """run_python (2026-11-16): a script may run up to _WB_TIMEOUT_MAX_S and its clock
+    pauses during tools.x() callbacks; the old "direct" default (90 s) stopped waiting
+    on a script that was still running."""
+    from backend.agent.tool_bridge import _WB_TIMEOUT_MAX_S
+
+    kernel = AgentKernel.__new__(AgentKernel)
+    with patch("backend.agent.permissions.get_auto_approve", return_value=True):
+        deadline = kernel._der_tool_deadline("run_python")
+    assert deadline > _WB_TIMEOUT_MAX_S
+
+
 def test_a_step_timeout_is_not_retried():
     err = "[STEP TIMEOUT after 90s — tool=run_command abandoned]"
     assert AgentKernel._der_step_error_is_retryable(err) is False

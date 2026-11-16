@@ -1,4 +1,4 @@
-"""Workbench child process (protocol v1). STDLIB ONLY.
+"""Workbench child process (protocol v2). STDLIB ONLY.
 
 Shipped as a data file and run by an arbitrary project Python:
     python -I -X utf8 -u worker.py
@@ -21,7 +21,10 @@ import types
 import uuid
 import _thread
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
+SUPPORTED_VERSIONS = (1, 2)
+CALLBACK_BUDGET = 24          # tools.<name>() calls per exec
+CHECK_ERROR_CHARS = 200
 OUTPUT_CAP = 256_000          # chars per stream
 VALUE_CAP = 20_000            # chars of a final-expression repr
 PREVIEW_CHARS = 80
@@ -36,8 +39,71 @@ _out_n = 0
 _OUT_REF = re.compile(r"^out(\d+)$")
 
 
-_HELPERS = frozenset()
+_HELPERS = frozenset({"tools", "ToolError"})
 NS = {"__name__": "__main__", "__builtins__": builtins}
+
+
+# --- callbacks: tools.<name>(**args) -> one `call` frame, block for its `result` ----
+class ToolError(Exception):
+    """A tools.<name>() call was denied, failed, or ran past the budget."""
+
+
+_IO = {"rd": None, "wr": None}      # set by main(): the private frame pipes
+_cb = {"id": None, "seq": 0}        # the running exec's id and its callback count
+
+
+def _send_frame(frame):
+    wr = _IO["wr"]
+    wr.write(json.dumps(frame, ensure_ascii=True, separators=(",", ":"), default=str).encode("utf-8") + b"\n")
+    wr.flush()
+
+
+def _call_tool(name, args):
+    global _wd_deadline
+    if _cb["seq"] >= CALLBACK_BUDGET:
+        raise ToolError(f"callback budget: at most {CALLBACK_BUDGET} tool calls per run_python call")
+    _cb["seq"] += 1
+    seq, eid = _cb["seq"], _cb["id"]
+    with _wd_lock:                       # the parent's tool runs on ITS clock: pause ours
+        left = None if _wd_deadline is None else max(0.0, _wd_deadline - time.monotonic())
+        _wd_deadline = None
+    try:
+        _send_frame({"v": PROTOCOL_VERSION, "ev": "call", "id": eid, "seq": seq,
+                     "tool": name, "args": args})
+        while True:
+            line = _IO["rd"].readline()
+            if not line:
+                raise ToolError("the parent closed the pipe")
+            try:
+                res = json.loads(line.decode("utf-8"))
+            except ValueError:
+                continue
+            if (isinstance(res, dict) and res.get("op") == "result"
+                    and res.get("id") == eid and res.get("seq") == seq):
+                break                    # any other frame here is stale: ignored
+    finally:
+        with _wd_lock:
+            if left is not None:
+                _wd_deadline = time.monotonic() + left
+    if not res.get("ok"):
+        raise ToolError(str(res.get("error") or f"{name} failed")[:2000])
+    return res.get("value")
+
+
+class _Tools:
+    """`tools.<name>(**args)`; tools.call(name, args) for a name that is not an identifier."""
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return lambda **args: _call_tool(name, args)
+
+    def call(self, name, args=None):
+        return _call_tool(name, dict(args or {}))
+
+
+NS["tools"] = _Tools()
+NS["ToolError"] = ToolError
 
 
 class _Cap(io.TextIOBase):
@@ -233,6 +299,9 @@ def _error(exc):
 def op_exec(req, cap):
     global _wd_deadline, _wd_fired
     code, timeout_s = req["code"], float(req["timeout_s"])
+    check = req.get("check")
+    check_out = None
+    _cb["id"], _cb["seq"] = req["id"], 0
     start = time.monotonic()
     before = _fingerprint()
     value, error = None, None
@@ -250,14 +319,25 @@ def op_exec(req, cap):
         with _wd_lock:
             _wd_fired = False
             _wd_deadline = time.monotonic() + timeout_s
+        body_ok = False
         try:
             exec(body, NS)
             if tail is not None:
                 res = eval(tail, NS)
                 if res is not None:
                     value = repr(res)[:VALUE_CAP]
+            body_ok = True
+            if isinstance(check, str) and check.strip():
+                # same namespace, same watchdog; a failing or raising check is a RESULT
+                try:
+                    check_out = {"ok": bool(eval(compile(check, "<check>", "eval"), NS)), "error": None}
+                except Exception as exc:
+                    check_out = {"ok": False,
+                                 "error": f"{type(exc).__name__}: {exc}"[:CHECK_ERROR_CHARS]}
         except KeyboardInterrupt as exc:
             error = _error(exc)
+            if body_ok:
+                check_out = {"ok": False, "error": "check timed out"}
             if _wd_fired:
                 error["message"] = f"execution exceeded timeout_s={timeout_s:g}; stopped, variables kept"
         except BaseException as exc:         # incl. SystemExit: the namespace must survive
@@ -270,16 +350,21 @@ def op_exec(req, cap):
             time.sleep(0)
         except KeyboardInterrupt:
             pass
+    if check_out is None and isinstance(check, str) and check.strip():
+        check_out = {"ok": False, "error": "body raised"}   # raised, timed out or never compiled: no check
     stdout, stderr, truncated = cap.drain()
     global _out_n
     _out_n += 1
     if stdout:
         _OUT_RING.append((_out_n, stdout))
-    return {"v": PROTOCOL_VERSION, "re": "exec", "id": req["id"], "ok": error is None,
-            "stdout": stdout, "stderr": stderr, "value": value, "error": error,
-            "vars": _changed_vars(before), "kept": [],
-            "wall_ms": int((time.monotonic() - start) * 1000),
-            "truncated": truncated, "out_n": _out_n, "incarnation": INCARNATION}
+    reply = {"v": PROTOCOL_VERSION, "re": "exec", "id": req["id"], "ok": error is None,
+             "stdout": stdout, "stderr": stderr, "value": value, "error": error,
+             "vars": _changed_vars(before), "kept": [],
+             "wall_ms": int((time.monotonic() - start) * 1000),
+             "truncated": truncated, "out_n": _out_n, "incarnation": INCARNATION}
+    if check_out is not None:
+        reply["check"] = check_out
+    return reply
 
 
 def op_inspect(req):
@@ -314,10 +399,11 @@ def op_put(req):
 
 
 def _validate(req):
-    if not isinstance(req, dict) or req.get("v") != PROTOCOL_VERSION:
+    if not isinstance(req, dict) or req.get("v") not in SUPPORTED_VERSIONS:
         raise ValueError("bad or mismatched frame version")
     need = {"hello": (), "exec": ("id", "code", "timeout_s"), "inspect": ("id", "expr", "offset", "limit"),
-            "put": ("id", "name", "value"), "shutdown": ()}.get(req.get("op"))
+            "put": ("id", "name", "value"), "shutdown": (),
+            "result": ("id", "seq", "ok", "value", "error")}.get(req.get("op"))
     if need is None:
         raise ValueError(f"unknown op {req.get('op')!r}")
     for k in need:
@@ -331,6 +417,7 @@ def main():
         site.addsitedir(sys.argv[sys.argv.index("--site") + 1])
     rd = os.fdopen(os.dup(0), "rb")
     wr = os.fdopen(os.dup(1), "wb")
+    _IO["rd"], _IO["wr"] = rd, wr
     devnull = os.open(os.devnull, os.O_RDWR)
     os.dup2(devnull, 0)                       # user code never reads the frame pipe
     cap = _Capture()
@@ -362,6 +449,8 @@ def main():
                 send(op_inspect(req))
             elif op == "put":
                 send(op_put(req))
+            elif op == "result":
+                continue                      # a late answer to a call that is over: ignored
             else:
                 send({"v": PROTOCOL_VERSION, "re": "shutdown", "ok": True})
                 return 0

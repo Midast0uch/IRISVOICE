@@ -139,6 +139,14 @@ _WB_SYSTEM = (
     "answer with a short plain summary of what you did and found, with no tool call, "
     "and end with `STATUS: done`, or `STATUS: failed: <reason>`."
 )
+_WB_TOOLS_NOTE = (
+    " Inside a script, `tools.<name>(**args)` calls an IRIS tool through the same path "
+    "the step's own tool calls take; it returns the result dict, and raises ToolError "
+    "when the tool fails or is not available (at most 24 calls per run; later lines "
+    "do not run after an uncaught ToolError). Tools: "
+)
+_WB_TOOLS_PREFER = ("read_file", "grep_files", "glob_files", "edit_file", "write_file", "run_command")
+_WB_TOOLS_MAX = 5
 _WB_SKELETON_MAX_LINES = 40
 _WB_REPAIR_PROMPT = (
     "A small model is doing one step of a task in a Python workbench and its result "
@@ -263,6 +271,56 @@ def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: 
                     conversation_id, attempt)
         return ("REPAIR BRIEF (from the planner):\n" + note) if note else None
     return _hook
+
+
+def _wb_tool_lines(tools: list, allowed) -> str:
+    """<= 5 one-line signatures `name(required, optional=)` of the tools a script may call."""
+    by_name = {}
+    for t in tools or []:
+        fn = t.get("function") or {}
+        if fn.get("name") in allowed:
+            by_name[fn["name"]] = fn
+    order = [n for n in _WB_TOOLS_PREFER if n in by_name]
+    order += [n for n in by_name if n not in order]
+    lines = []
+    for n in order[:_WB_TOOLS_MAX]:
+        schema = by_name[n].get("parameters") or {}
+        req = list(schema.get("required") or [])
+        opt = [k for k in (schema.get("properties") or {}) if k not in req][:3]
+        lines.append(f"tools.{n}({', '.join(req + [o + '=' for o in opt])})"[:100])
+    return "; ".join(lines)
+
+
+def _wb_callback_handler(execute, allowed, calls: list, count) -> Callable:
+    """handler(tool, args) -> (ok, value, error) for the Workbench `call` frames. It is the
+    node's OWN dispatch (`execute`: turn-live check, domain guard, claims, hooks,
+    box.dispatch), not a second path. Only tools in `allowed` (the node's mode menu) run.
+    Each callback adds one entry to `calls` (via run_python) and counts once as a real
+    tool call (`count`)."""
+    from backend.agent.node_executor import _ID_KEYS, _failed, _output_excerpt, _target
+
+    def _handler(tool: str, args: dict):
+        if tool not in allowed or not isinstance(args, dict):
+            return False, None, f"{tool}: not available"
+        if tool == "recall_memory" and str(args.get("expand") or "").startswith("wb:"):
+            return False, None, "read a workbench variable directly; it is in the namespace"
+        try:
+            raw = execute(tool, dict(args))
+        except Exception as exc:  # noqa: BLE001 - the script sees a ToolError
+            raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
+        failed = _failed(raw)
+        calls.append({"tool": tool, "target": _target(args), "ok": not failed, "ok_call": not failed,
+                      "out": _output_excerpt(raw), "via": "run_python",
+                      "args": {k: args[k] for k in _ID_KEYS if args.get(k)}})
+        try:
+            count()
+        except Exception as exc:  # noqa: BLE001 - bookkeeping never fails a call
+            logger.debug("[workbench] callback count failed: %r", exc)
+        if failed:
+            err = raw.get("error") if isinstance(raw, dict) else raw
+            return False, None, str(err or f"{tool} failed")[:2000]
+        return True, raw if isinstance(raw, dict) else {"result": raw}, None
+    return _handler
 
 
 def _wb_needs_fallback(result) -> str:
@@ -603,7 +661,10 @@ class DerNodeMixin:
                 DEADLINE_COMMAND_S, DEADLINE_BROWSER_S,
             )
             _fam = _tf(tool)
-            if (tool or "").lower() == "run_command":
+            # run_python: a script may run up to tool_bridge._WB_TIMEOUT_MAX_S (300 s)
+            # and its clock PAUSES during tools.x() callbacks, so the "direct" default
+            # (90 s) stopped waiting on a script that was still running (2026-11-16).
+            if (tool or "").lower() in ("run_command", "run_python"):
                 _base = max(float(DEADLINE_COMMAND_S), 1.0)
             elif (tool or "").lower().startswith("browser_"):
                 _base = max(float(DEADLINE_BROWSER_S), 1.0)
@@ -1809,6 +1870,8 @@ class DerNodeMixin:
                     self.conversation_id or "", workdir, task, goal, _prior_results, _step_facts):
                 import dataclasses as _dc
 
+                _wb_allowed = frozenset(n for n in _menu if n != "run_python")
+                _wb_cb_calls: list = []
                 _wb_ctx = _dc.replace(
                     _node_ctx,
                     tools=[t for t in _full_tools
@@ -1816,7 +1879,11 @@ class DerNodeMixin:
                     # Round 3 R1: the TOOL MODEL writes and runs the code; the
                     # Brain briefs (plan time) and steps in once on escalation.
                     role="tool_execution", helper_role=None, max_tokens=2048, max_calls=6,
-                    system=_WB_SYSTEM, choose_tool=None, on_call=None, on_result=None,
+                    system=_WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_allowed)
+                                         if _wb_allowed else ""),
+                    choose_tool=None, on_call=None,
+                    # a real tool call earns the card (kernel.surface counter); no Oracle labels in code
+                    on_result=lambda name, params, ok, approval_ok=None: self._der_count_tool_call(item),
                     brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
                                                   *_wb_brief(item))
@@ -1827,13 +1894,30 @@ class DerNodeMixin:
                 _wb_stats["code_nodes"] += 1
                 logger.info("[workbench] conv=%s step=%s code node", self.conversation_id,
                             getattr(item, "step_id", ""))
-                result = run_node(goal, _wb_ctx)
+                _wb_handler = _wb_callback_handler(
+                    _execute, _wb_allowed, _wb_cb_calls, lambda: self._der_count_tool_call(item))
+                _wb_conv = self.conversation_id or ""
+                from backend.agent.tool_bridge import (
+                    clear_workbench_dispatch, set_workbench_dispatch)
+
+                set_workbench_dispatch(_wb_conv, _wb_handler)
+                try:
+                    result = run_node(goal, _wb_ctx)
+                finally:
+                    clear_workbench_dispatch(_wb_conv, _wb_handler)
                 _why = _wb_needs_fallback(result)
                 if _why:
                     _wb_stats["fallback"] += 1
                     logger.info("[workbench] conv=%s step=%s falls back to tools (%s)",
                                 self.conversation_id, getattr(item, "step_id", ""), _why)
                     result = run_node(goal, _node_ctx)
+                # the tools a script called ran through the node's dispatch: they are
+                # this step's calls too (node_call_log, the task card). After a
+                # fallback they happened BEFORE the fallback's calls, so they go first.
+                if _why:
+                    result.calls[:0] = _wb_cb_calls
+                else:
+                    result.calls.extend(_wb_cb_calls)
             else:
                 result = run_node(goal, _node_ctx)
             _flush_decided()  # a last pick the step finished without calling
