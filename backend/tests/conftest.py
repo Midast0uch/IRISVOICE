@@ -44,13 +44,19 @@ def pytest_sessionfinish(session, exitstatus):
     still held open (Windows) stays; the next run's name differs, so it is harmless."""
     if os.environ.get("IRIS_CONVERSATIONS_DB") != _TEST_CONVERSATIONS_DB:
         return
-    try:
-        from backend import conversation_store as _cs
-        if getattr(_cs, "_conn", None) is not None:
-            _cs._conn.close()
-            _cs._conn = None
-    except Exception:  # noqa: BLE001 - cleanup never fails a run
-        pass
+    import sys as _sys
+    _cs = _sys.modules.get("backend.conversation_store")   # never import it just to close it
+    if _cs is not None and getattr(_cs, "_conn", None) is not None:
+        try:
+            # A queued tool_results write (run_python code rows) may still run on the
+            # lane thread: closing under it crashed the process (access violation,
+            # 2026-11-16). Drain the lane, then close under the store's own lock.
+            _cs._tr_lane().flush(10.0)
+            with _cs._lock:
+                _cs._conn.close()
+                _cs._conn = None
+        except Exception:  # noqa: BLE001 - cleanup never fails a run
+            pass
     for _suffix in ("", "-wal", "-shm"):
         try:
             os.remove(_TEST_CONVERSATIONS_DB + _suffix)

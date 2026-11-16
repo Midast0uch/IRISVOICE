@@ -296,6 +296,11 @@ class NodeContext:
     # on_check_failed, its return is ignored and an exception in it is logged: it
     # can never change what the node does.
     on_check: Optional[Callable[[int, bool, str, str], None]] = None
+    # Round 3 live fixes: the brief's output variable names (F1: a passing check puts their
+    # VALUES in the step result; F4: a NameError for one of them is an exploration) and the
+    # node's token (F2: its own callback slot). Both are injected into run_python params.
+    wb_outputs: tuple = ()
+    wb_node: str = ""
 
 
 @dataclass
@@ -704,6 +709,18 @@ def _observe_check(ctx: "NodeContext", attempt: int, ok: bool, raw: Any) -> None
                      str(raw.get("check_error") or ""))
     except Exception as exc:  # noqa: BLE001 - an observer never blocks a node
         logger.warning("[run_node] conv=%s check observer failed: %r", ctx.conv_id, exc)
+
+
+_UNDEFINED_NAME = re.compile(r"^NameError: name '([^']+)' is not defined")
+
+
+def _is_exploration(ctx: "NodeContext", raw: Any) -> bool:
+    """F4: the check failed ONLY because an output variable is not defined yet (a NameError
+    for one of the brief's outputs; with no outputs list, any NameError). The run explored;
+    it is not a failed attempt. A False check, any other error type, or a NameError for a
+    name that is not an output stays a real failure."""
+    m = _UNDEFINED_NAME.match(str((raw or {}).get("check_error") or "")) if isinstance(raw, dict) else None
+    return bool(m) and (not ctx.wb_outputs or m.group(1) in ctx.wb_outputs)
 
 
 def _failed(raw: Any) -> bool:
@@ -1206,8 +1223,15 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.on_call(name, params)
                         except Exception as exc:  # noqa: BLE001 — advisory only
                             logger.debug("[run_node] shadow hook failed: %r", exc)
-                    if name == "run_python" and ctx.check and isinstance(params, dict):
-                        params = dict(params, check=ctx.check)
+                    if name == "run_python" and isinstance(params, dict):
+                        # the harness injects these; the model never writes them
+                        params = {k: v for k, v in params.items() if k not in ("outputs", "_wb_node")}
+                        if ctx.check:
+                            params["check"] = ctx.check
+                        if ctx.wb_outputs:
+                            params["outputs"] = list(ctx.wb_outputs)
+                        if ctx.wb_node:
+                            params["_wb_node"] = ctx.wb_node
                     if (name == "recall_memory" and params.get("set_aside")
                             and ctx.window and view is not None):
                         raw = _model_set_aside(params)
@@ -1338,8 +1362,15 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         # R3: the harness ran the check and it passed - the step is
                         # done in this answer, no further model call.
                         batch_done = True
-                        batch_summaries.append(
-                            str((params or {}).get("purpose") or "the step's check passed"))
+                        _purpose = str((params or {}).get("purpose") or "the step's check passed")
+                        # F1: the step's PRODUCT - the brief's output values - rides the result
+                        _ot = str(raw.get("outputs_text") or "")
+                        batch_summaries.append(_purpose + ("\n\nOutputs:\n" + _ot if _ot else ""))
+                    elif _is_exploration(ctx, raw):
+                        # F4: outputs not defined yet - not a failed attempt (no count, no row,
+                        # no escalation); the digest still says the check did not pass.
+                        logger.info("[run_node] conv=%s check not passed: an output is not "
+                                    "defined yet (exploration, not counted)", ctx.conv_id)
                     else:
                         check_failures += 1
                         _observe_check(ctx, check_failures, False, raw)

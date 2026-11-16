@@ -199,7 +199,11 @@ def _score_job(consult_id: str, attempt: int, error_type: str, check_error: str,
             "attempt": int(attempt),
             # what the stated rule did here: a record, NOT a label (never scored against)
             "rule_choice": rule,
+            # the frame's own evidence, as fields: a row can be replayed without parsing `state`
+            "error_type": error_type, "check_error": check_error,
         }
+        if "failure_rows" in frame:               # left out when unreadable - never a made-up 0
+            row["failure_rows"] = frame["failure_rows"]
         row.update(scope)
         with _LOCK:
             _HELD[consult_id] = row

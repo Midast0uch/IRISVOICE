@@ -79,6 +79,13 @@ def _note_web_tool_used(tool_name: str, result: Any) -> None:
         pass
 
 
+# F3: evidence a consumer computed that its rows need for REPLAY. Per consumer, so no
+# other consumer's row changes shape. repair_route: the failed check's frame + the rule's call.
+_DECISION_META_EXTRA = {
+    "repair_route": ("attempt", "error_type", "check_error", "failure_rows", "rule_choice"),
+}
+
+
 def turn_used_web(turn_id: str) -> bool:
     """Did THIS turn run a web tool that did not fail? (web_intent/v3 label)"""
     return str(turn_id or "") in _WEB_USED_TURNS
@@ -364,16 +371,57 @@ _WB_CHECK_MAX = 2000
 # kernel/der/node.py), so `tools.<name>()` in a script goes through it, not a
 # second dispatcher.
 _wb_dispatch: dict = {}
+# F2: a code node registers under (conversation id, node token), so two code nodes
+# running in parallel in one conversation never share (or clear) one slot. No token =
+# the conversation-level slot, as before (a direct run_python).
 
 
-def set_workbench_dispatch(conversation_id: str, handler) -> None:
-    _wb_dispatch[conversation_id] = handler
+def _wb_key(conversation_id: str, node: str = ""):
+    return (conversation_id, node) if node else conversation_id
 
 
-def clear_workbench_dispatch(conversation_id: str, handler=None) -> None:
+def set_workbench_dispatch(conversation_id: str, handler, node: str = "") -> None:
+    _wb_dispatch[_wb_key(conversation_id, node)] = handler
+
+
+def clear_workbench_dispatch(conversation_id: str, handler=None, node: str = "") -> None:
     """Remove the registration (only the given handler's, when one is named)."""
-    if handler is None or _wb_dispatch.get(conversation_id) is handler:
-        _wb_dispatch.pop(conversation_id, None)
+    key = _wb_key(conversation_id, node)
+    if handler is None or _wb_dispatch.get(key) is handler:
+        _wb_dispatch.pop(key, None)
+
+
+_WB_OUTPUTS_MAX = 8
+_WB_OUTPUT_CAP = 4000
+_WB_OUTPUTS_TOTAL_CAP = 8000
+
+
+def _wb_outputs_text(client, names) -> str:
+    """F1: "name = <value text>" per brief output name, read from the namespace. Blocking
+    (call in a thread). A name that is not set -> "(not set)"; a cut says so."""
+    import keyword
+
+    lines, used = [], 0
+    for name in [n for n in names if isinstance(n, str) and n.isidentifier()
+                 and not keyword.iskeyword(n)][:_WB_OUTPUTS_MAX]:
+        room = min(_WB_OUTPUT_CAP, _WB_OUTPUTS_TOTAL_CAP - used)
+        if room <= 0:
+            lines.append(f"{name} = (omitted: the outputs size limit was reached)")
+            continue
+        try:
+            rep = client.inspect(name, 0, room)
+        except Exception as exc:  # noqa: BLE001 - a read never fails the step
+            lines.append(f"{name} = (could not be read: {type(exc).__name__})")
+            continue
+        if not rep.get("ok"):
+            lines.append(f"{name} = (not set)")
+            continue
+        text, total = str(rep.get("text") or ""), int(rep.get("total") or 0)
+        if total > len(text):
+            text += f" [cut: {len(text)} of {total} chars]"
+        used += len(text)
+        lines.append(f"{name} = {text}")
+    return "\n".join(lines)
 
 
 def _wb_flag(value) -> bool:
@@ -414,6 +462,10 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
     # The harness injects `check` (run_node); the model never writes it.
     check = params.get("check")
     check = check.strip()[:_WB_CHECK_MAX] if isinstance(check, str) and check.strip() else None
+    # ...and `outputs` (the brief's output names) and `_wb_node` (the node's token).
+    outputs = params.get("outputs")
+    outputs = [n for n in outputs if isinstance(n, str)][:_WB_OUTPUTS_MAX] if isinstance(outputs, list) else []
+    node_token = str(params.get("_wb_node") or "")
     conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
     fresh, close = _wb_flag(params.get("fresh")), _wb_flag(params.get("close"))
     try:
@@ -430,7 +482,8 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
             return {"success": False, "case": "workbench_unavailable",
                     "error": "no Python interpreter is available for the workbench"}
         t0 = time.monotonic()
-        rep = await asyncio.to_thread(client.exec, code, timeout_s, check, _wb_dispatch.get(conv))
+        rep = await asyncio.to_thread(client.exec, code, timeout_s, check,
+                                     _wb_dispatch.get(_wb_key(conv, node_token)))
         mgr.touch(conv)
         wbd.remember_origin(rep, purpose)
         wbd.remember_named(rep)
@@ -448,6 +501,9 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         if check:
             chk = rep.get("check") or {"ok": False, "error": "check was not run"}
             out["check_ok"] = bool(chk.get("ok"))
+            if chk.get("ok") and outputs:
+                # F1: the step's product - the brief's output VALUES - for the step result
+                out["outputs_text"] = await asyncio.to_thread(_wb_outputs_text, client, outputs)
             if not chk.get("ok"):
                 out["check_error"] = str(chk.get("error") or "")[:300]
             out["text"] += ("\ncheck: passed" if chk.get("ok")
@@ -3431,7 +3487,8 @@ class AgentToolBridge:
             if isinstance(_dm, dict):
                 _decision_block = {
                     k: _dm.get(k)
-                    for k in _DECISION_META_KEYS
+                    for k in _DECISION_META_KEYS + _DECISION_META_EXTRA.get(
+                        str(_dm.get("consumer_id") or ""), ())
                     if k in _dm
                 }
 

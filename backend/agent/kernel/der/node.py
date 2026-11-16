@@ -6,6 +6,7 @@ import re
 import hashlib
 import threading
 import os
+import uuid
 from backend.agent.inference.errors import RateLimitedError
 from backend.agent.call_context import (
     CallClass,
@@ -238,6 +239,17 @@ def _wb_brief(item) -> tuple:
     if check:
         parts.append(f"check (run by the harness after each run): {check}")
     return ("\n".join(parts)[:2400], check)
+
+
+def _wb_output_names(item) -> tuple:
+    """The brief's output variable names: each planner `outputs` entry is "name" or
+    "name: type"; the name is the part before ":", a valid identifier, at most 8."""
+    names = []
+    for entry in getattr(item, "outputs", None) or ():
+        name = str(entry).split(":", 1)[0].strip() if isinstance(entry, str) else ""
+        if name.isidentifier() and name not in names:
+            names.append(name)
+    return tuple(names[:8])
 
 
 def _wb_repair_tracker(kernel, session: str):
@@ -1895,6 +1907,7 @@ class DerNodeMixin:
 
                 _wb_allowed = frozenset(n for n in _menu if n != "run_python")
                 _wb_cb_calls: list = []
+                _wb_node = uuid.uuid4().hex   # F2: this node's own callback slot
                 _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item)[1] else None
                 _wb_ctx = _dc.replace(
                     _node_ctx,
@@ -1909,6 +1922,7 @@ class DerNodeMixin:
                     # a real tool call earns the card (kernel.surface counter); no Oracle labels in code
                     on_result=lambda name, params, ok, approval_ok=None: self._der_count_tool_call(item),
                     brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
+                    wb_outputs=_wb_output_names(item), wb_node=_wb_node,
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
                                                   *_wb_brief(item), tracker=_wb_rr)
                                      if _wb_brief(item)[1] else None),
@@ -1928,11 +1942,11 @@ class DerNodeMixin:
                 from backend.agent.tool_bridge import (
                     clear_workbench_dispatch, set_workbench_dispatch)
 
-                set_workbench_dispatch(_wb_conv, _wb_handler)
+                set_workbench_dispatch(_wb_conv, _wb_handler, _wb_node)
                 try:
                     result = run_node(goal, _wb_ctx)
                 finally:
-                    clear_workbench_dispatch(_wb_conv, _wb_handler)
+                    clear_workbench_dispatch(_wb_conv, _wb_handler, _wb_node)
                     if _wb_rr is not None:
                         _wb_rr.end()
                 _why = _wb_needs_fallback(result)
