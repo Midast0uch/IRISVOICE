@@ -417,6 +417,30 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   - [x] **T7.10 fresh / close / spill** - BUILT (16 contract tests: a wb: ref expands to its spilled text after fresh, close, idle end and cap eviction; hard kill -> workbench_gone; spill rows wbspill-<inc>-<name>, 32,000 chars each, newest 24 named values; spill and close run OUTSIDE the manager lock). T7.8 with it: keep()/kept removed; one code row per run_python execution on the tool_results lane. Live part at TG-7.
   - [x] **T7.15 `repair_route`** - BUILT, shadow (14 contract tests with T7.14; pattern = page_shadow.py; job judge_repair; label REPAIR = the next check passed with no Brain brief between, ESCALATE = passed after a brief, unlabelled = no pass; read the bar PER ATTEMPT - the rule escalates at attempt 2, so REPAIR labels come only from attempt-1 rows). Rows on a live task at TG-7. Oracle shadow rows. DONE = rows with labels. NOT THIS
     = enforcement.
+  > **TG-7 cloud arm, first run (2026-11-16 08:36-10:40, commit 6386f9f5).** deepseek-v4.1-flash
+  > on both roles, developer mode, `--group context`, IRIS_WORKBENCH 0 vs 1 INTERLEAVED x3 (15
+  > task-runs per arm), IRIS_CLM_BASELINE=1 for per-call usage. Results evals/results/20261116-
+  > {085457,091853,093524,100112,101735,104040}.json; analysis scratch wb_ab/analyze.py.
+  > | | off | on |
+  > |---|---|---|
+  > | pass | 14/15 | 11/15 (x01 1/3, x02 1/3) |
+  > | model calls (total / median per task) | 230 / 15 | 284 / 17 |
+  > | prompt tokens total | 1,912,672 | 1,487,855 (-22 %) |
+  > | completion tokens total | 100,870 | 155,500 (+54 %) |
+  > | max prompt tokens of any call | 53,079 | 28,183 (-47 %) |
+  > | reply_s median | 124.0 | 178.4 |
+  > | code nodes / fallbacks / escalations | - | 26 / 0 / 19 |
+  > Per task (median): x01 calls 17 -> 9, prompt tokens 240k -> 41k (-83 %), reply 140 -> 120 s,
+  > but 2/3 fail; x03 equal; x04 calls 15 -> 37, reply 89 -> 439 s (4-5 escalations per run);
+  > x05 runs no code node (control: reply 274 vs 342 s = the run-to-run noise). repair_route rows
+  > live: 46 raw / 30 distinct, labelled (16 correct, 14 wrong). Task card events (task:progress
+  > per step) equal in both arms. CAUSES FOUND: F1 - a passing check closes the step with the
+  > purpose line + the digest's 80-char previews, so the output VALUES never reach synthesis (x01
+  > and x02 replies say "truncated"; the namespace held the right answer). F2 - the callback
+  > dispatch slot is per conversation, so parallel code nodes overwrite / clear each other's
+  > handler ("ToolError: tools are not available here" in x04). F3 - the shadow-row sink keeps
+  > only the decision block: attempt / error_type / check_error never reach the store (no replay).
+  > Verdict: the flag stays OFF until F1-F2 are fixed and this arm is re-run.
   - [ ] **TG-7 (Round 3), four arms, same conditions:** small tool model (LFM3-1.7B,
     then LFM2.5-2.6B) ReAct vs the loop; cloud model on both roles ReAct vs the loop.
     Per arm: --group context and cohort pass counts; model calls per step by role;
