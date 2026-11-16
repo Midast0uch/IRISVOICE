@@ -147,6 +147,34 @@ def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
 
     submit(owner, fn_name, **kwargs)
 
+def _der_record_step_event(owner, item, step_result, step_success, verified, session, turn_id) -> None:
+    """Type one finished DER step (record_step: BUG / OBSTACLE / DEAD_END / ATTEMPT / FIX /
+    RECALL_HELPED / RECALL_MISLED, and its memory_cases row) on lane("memory_events").
+
+    THE chokepoint for it. A step settles on one of two roads: finalize (it ran and was judged)
+    and the failure road (_der_handle_step_failure: it failed after its retry and SKIPS
+    finalize). Only finalize used to call record_step, so a step that FAILED was never typed:
+    memory_cases stayed empty and no failure label was ever written (measured 2026-11-15: 0 of
+    61,230 live events, from the first record_step on 2026-10-02). Both roads call this.
+    Module level on purpose (stand-in kernels bind only some methods). Never raises."""
+    # The decisive call (the last failed one, else the last): a node step has no item.tool, so
+    # record_step saw "none" and a coding node's test run never counted as a test command.
+    call = _step_decisive_call(item) or {}
+    _memory_events_submit(
+        owner, "record_step",
+        thread_id=session,
+        task_id=f"{session}:{turn_id or ''}",
+        step_id=str(getattr(item, "step_id", "") or ""),
+        tool=call.get("tool") or getattr(item, "tool", None),
+        params=(dict(call.get("args") or {})
+                or (dict(item.params) if isinstance(getattr(item, "params", None), dict) else None)),
+        success=bool(step_success),
+        verified=str(verified or ""),
+        error_text=(str(step_result or "")[:2000] if not step_success else ""),
+        description=str(getattr(item, "description", "") or "")[:300],
+        recall_trace_ids=list(getattr(item, "recall_trace_ids", None) or []),
+    )
+
 def _emit_event(owner, label: str, **kw) -> None:
     """A rule-labelled taxonomy event (CONTROL / DELIVERY ...) on the same lane.
     Module level on purpose: stand-in kernels bind only some methods."""

@@ -12,6 +12,7 @@ from backend.agent.kernel.base import (
     DER_MAX_GRAFTS,
     _der_ledger_storage_path,
     _der_recovery_lock,
+    _der_record_step_event,
     _emit_event,
     _step_calls,
     _step_decisive_call,
@@ -1483,6 +1484,9 @@ class DerRecoveryMixin:
                 )
         except Exception:
             pass
+        # The failure path SKIPS finalize, where record_step used to be the only caller: type the
+        # failed step here (case + BUG/OBSTACLE + DEAD_END + RECALL_MISLED), on the memory lane.
+        _der_record_step_event(self, item, step_result, False, "FAILED", _session, _turn_id)
         # Goal contract T9 (REQ-5 AC5.1): the failure path SKIPS finalize, so
         # the finalize-site blocking twin never runs here. A FAILED settle
         # with a terminal typed reason blocks the facts it was working on â€”

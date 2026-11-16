@@ -3,7 +3,7 @@
  "note": "sha256(ast.dump(node, include_attributes=False)); key = kind:name; methods of AgentKernel and *Mixin classes are one namespace",
  "counts": {
   "method": 242,
-  "function": 72,
+  "function": 73,
   "class": 1
  },
  "entries": {
@@ -28,6 +28,7 @@
   "function:_der_post_step": "e96a670c8869dc487c071ff0bc256f13be223a85860b0d73312d5d4248706d6b",
   "function:_der_prior_research_delivered": "e15f4d913f1a36248f0dc1cda5ab339215f2542b0925c3398a0bbc047ff68d06",
   "function:_der_recall_delivered": "bd78015a254e84fbc7f2c897b06aaec3a71c18aca9d4eafaa642b4f586d16cb8",
+  "function:_der_record_step_event": "6fe8b49873e322b74117c4626e9f714c061abfbb128f1e3b7d09d21a9a6c228e",
   "function:_der_release": "3d69ffe403c91d28e087ca40749be03da7728b4a13487ebc710ae302c9c1af9f",
   "function:_der_settle_split": "8bf62155955241cb3095537c02f5789cbe7787b8dc59edf6bb768bd6806ade06",
   "function:_der_start_node": "3562ae1a3a512e070aad3446c7204a074434704c983534e25391929fbbd00a90",
@@ -119,10 +120,10 @@
   "method:_der_evidence_cap": "3a5d1d04bc46d4dc3b9d27628f0fb113d9a6a4b657795d705b5fbcbd0d2fbabb",
   "method:_der_execute_with_recovery": "2ae81aa2339ba2bfc55859e69dec99edfa905681fa54b472f283d65f5f4eab08",
   "method:_der_execution_domain": "17d66f1a21087c5c35f0d9c072e6189af372dbbb3eb24bc82e4edad47a805699",
-  "method:_der_finalize_step": "9ab1a2c2cb505895ec9d9c054a54bd02b00f1077fabb77d518619d2f89632a8b",
+  "method:_der_finalize_step": "56a19cb3703fca92e1a927be6ad98fd41bcda09e564d788fc0687bbddf400d1a",
   "method:_der_findings_sufficient": "524b44ffd7ab20eafa892056fd01a450513c7e0c5b28ef3c06f7b0f9ca10eff6",
   "method:_der_graft_missing_artifacts": "3c5792da67e3f9c8484c8c4ba8293d8f0b76198637914484426ca9651820dae0",
-  "method:_der_handle_step_failure": "b0f43edce13a2d3ce84b5462fce0c8278ab73075366b2233f94d6264fad206f2",
+  "method:_der_handle_step_failure": "dffe5db72c752bb6f407951fa5a5ee8dbd28560a2d0fcf0f0fba8e8b098ee7ae",
   "method:_der_live_cad_state": "5d67cda6fc5ed93c9427a6d2bd40dfee2dd02e2316c44e0919362f93cdaa4ac2",
   "method:_der_maybe_open_recovery": "7b8e1fa97808a6c28a79d37a1420184be1084cd65f798e91b537a28cd802bd22",
   "method:_der_mediator_for": "70dd2146e0e0fea9a24e32874a4b0143ff5536aca8d284d385010594d6029b1a",

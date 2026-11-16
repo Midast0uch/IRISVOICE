@@ -19,6 +19,7 @@ from backend.agent.kernel.base import (
     _der_fold_envelope,
     _der_ledger_storage_path,
     _der_recall_delivered,
+    _der_record_step_event,
     _memory_events_submit,
     _step_calls,
     _step_decisive_call,
@@ -1062,22 +1063,8 @@ class DerFinalizeMixin:
         # Spec D9 (Wave E): the step becomes a typed event (BUG / ATTEMPT /
         # DEAD_END / FIX ...) with the label the verifier gave it - event-level
         # credit. Values are bound now; the write runs on its own lane.
-        _memory_events_submit(
-            self, "record_step",
-            thread_id=_session,
-            task_id=f"{_session}:{_turn_id or ''}",
-            step_id=str(getattr(item, "step_id", "") or ""),
-            # The decisive call (the last failed one, else the last): a node
-            # step has no item.tool, so record_step saw "none" and a coding
-            # node's test run never counted as a test command.
-            tool=(_step_decisive_call(item) or {}).get("tool") or getattr(item, "tool", None),
-            params=(dict((_step_decisive_call(item) or {}).get("args") or {})
-                    or (dict(item.params) if isinstance(getattr(item, "params", None), dict) else None)),
-            success=bool(step_success),
-            verified=str(_verified or ""),
-            error_text=(str(step_result or "")[:2000] if not step_success else ""),
-            description=str(getattr(item, "description", "") or "")[:300],
-            recall_trace_ids=list(getattr(item, "recall_trace_ids", None) or []),
+        _der_record_step_event(
+            self, item, step_result, step_success, _verified, _session, _turn_id,
         )
 
         # â”€â”€ Phase 2 (D2.1): unified recovery â€” verification FAILED uses the
