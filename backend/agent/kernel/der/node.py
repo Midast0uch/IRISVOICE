@@ -134,9 +134,20 @@ _WB_SYSTEM = (
     "Ready variables: task (the user's request), goal (this step), steps (earlier "
     "steps: list of dicts with step, description, result), memory (what was said "
     "before). Large values stay in variables - print only the slices you need. "
-    "keep(name, note) marks a small value to remember. When the step is done, answer "
-    "with a short plain summary of what you did and found, with no tool call, and end "
-    "with `STATUS: done`, or `STATUS: failed: <reason>`."
+    "When the step has a BRIEF, fill its outputs: the harness checks them after each "
+    "run and closes the step when the check passes. Otherwise, when the step is done, "
+    "answer with a short plain summary of what you did and found, with no tool call, "
+    "and end with `STATUS: done`, or `STATUS: failed: <reason>`."
+)
+_WB_SKELETON_MAX_LINES = 40
+_WB_REPAIR_PROMPT = (
+    "A small model is doing one step of a task in a Python workbench and its result "
+    "failed the step's check twice. Write a REPAIR BRIEF for its next attempt: first "
+    "two or three sentences on what went wrong and what to do, then a Python "
+    "skeleton of at most 40 lines inside one ```python block that fills the outputs "
+    "so the check passes. Use only the variables and tools named in the brief.\n\n"
+    "BRIEF:\n{brief}\n\nCHECK: {check}\n\nITS LAST CODE:\n{code}\n\n"
+    "WHAT THE WORKBENCH REPORTED:\n{digest}"
 )
 _WB_PRIOR_HEAD = 300   # earlier results ride in `steps`; the message keeps a head
 _wb_stats = {"code_nodes": 0, "fallback": 0, "unavailable": 0, "seed_failed": 0}
@@ -199,6 +210,59 @@ def _wb_seed(conversation_id: str, workdir: str, task: str, goal: str,
         _wb_stats["seed_failed"] += 1
         logger.warning("[workbench] conv=%s seed failed: %r", conversation_id, exc)
         return False
+
+
+def _wb_brief(item) -> tuple:
+    """(brief text, check) from the planner's step fields (Round 3 R2); ("", "")
+    for a step planned without them - it still runs (closes by STATUS)."""
+    check = str(getattr(item, "check", "") or "").strip()
+    parts = []
+    for label, key in (("inputs", "inputs"), ("outputs", "outputs"),
+                       ("approach", "approach"), ("tools", "tools")):
+        val = getattr(item, key, None)
+        if not val:
+            continue
+        if isinstance(val, (list, tuple)):
+            val = "\n".join(f"  - {v if isinstance(v, str) else json.dumps(v)}" for v in val)
+            parts.append(f"{label}:\n{val}")
+        else:
+            parts.append(f"{label}: {val}")
+    if check:
+        parts.append(f"check (run by the harness after each run): {check}")
+    return ("\n".join(parts)[:2400], check)
+
+
+def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: str):
+    """R4: on the second failed check, ONE Brain call writes a repair brief with a
+    skeleton; the skeleton is put into the namespace as `skeleton`."""
+    def _hook(attempt: int, code: str, digest: str):
+        import re as _re
+
+        prompt = _WB_REPAIR_PROMPT.format(brief=brief or "(none)", check=check,
+                                          code=(code or "")[:3000], digest=(digest or "")[:3000])
+        text, _think, _ = kernel._router.generate(
+            "reasoning", [{"role": "user", "content": prompt}], max_tokens=1200,
+            temperature=0.2, timeout_s=120.0)
+        _wb_stats["escalations"] = _wb_stats.get("escalations", 0) + 1
+        m = _re.search(r"```python\n(.*?)```", text or "", _re.S)
+        skeleton = "\n".join((m.group(1) if m else "").splitlines()[:_WB_SKELETON_MAX_LINES])
+        note = _re.sub(r"```python\n.*?```", "", text or "", flags=_re.S).strip()[:1200]
+        if skeleton:
+            try:
+                from backend.agent.workbench.manager import get_manager
+
+                client = get_manager().workbench_for(conversation_id, workdir)
+                if client is not None:
+                    client.put("skeleton", skeleton)
+                    note += ("\n\nThe variable `skeleton` holds a starting script "
+                             f"({len(skeleton.splitlines())} lines): run exec(skeleton) "
+                             "or edit it.")
+            except Exception as exc:  # noqa: BLE001 - the note still goes, logged
+                logger.warning("[workbench] conv=%s skeleton put failed: %r", conversation_id, exc)
+        logger.info("[workbench] conv=%s escalated to the Brain after %d failed checks",
+                    conversation_id, attempt)
+        return ("REPAIR BRIEF (from the planner):\n" + note) if note else None
+    return _hook
 
 
 def _wb_needs_fallback(result) -> str:
@@ -1749,8 +1813,14 @@ class DerNodeMixin:
                     _node_ctx,
                     tools=[t for t in _full_tools
                            if (t.get("function") or {}).get("name") == "run_python"],
-                    role="reasoning", helper_role=None, max_tokens=2048, max_calls=6,
+                    # Round 3 R1: the TOOL MODEL writes and runs the code; the
+                    # Brain briefs (plan time) and steps in once on escalation.
+                    role="tool_execution", helper_role=None, max_tokens=2048, max_calls=6,
                     system=_WB_SYSTEM, choose_tool=None, on_call=None, on_result=None,
+                    brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
+                    on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
+                                                  *_wb_brief(item))
+                                     if _wb_brief(item)[1] else None),
                     prior_results=[dict(r, result=str(r.get("result") or "")[:_WB_PRIOR_HEAD]
                                         + " [full text: steps]") for r in _prior_results],
                 )

@@ -3,7 +3,7 @@
  "note": "sha256(ast.dump(node, include_attributes=False)); key = kind:name; methods of AgentKernel and *Mixin classes are one namespace",
  "counts": {
   "method": 242,
-  "function": 73,
+  "function": 75,
   "class": 1
  },
  "entries": {
@@ -67,7 +67,9 @@
   "function:_turn_end_submit": "2b921fa9a027780953cbce66e085b52afc89ea4ea57971ade5f03577d3fae28b",
   "function:_turn_in_flight": "57d9727daf6923b7eca2b8fab652412aa966bf7c868d79ba68259b779bb18e92",
   "function:_voice_turn_note": "f3bcca36694eefb09d16fc2c4f19ca6220b2fb5f5b262caadde33966d827f004",
+  "function:_wb_brief": "acc09495e602183aac35f528ca0ddfceda48e972cfdd5000b924328b70463c76",
   "function:_wb_code_mode": "8f19257604c28184c473e98890ed289a724a6fcfb5f7e2c707bc3f063b6ad0d0",
+  "function:_wb_escalate": "34dce3b7482ed81ee97ea23fd9d34b691685431233bbaf24f66b40d2d95fb42c",
   "function:_wb_needs_fallback": "4ffff2f6a5aae073cee9d2093c10c74a2440590b43ddad2b2f82a7aff7536fe4",
   "function:_wb_on": "ad4bae26616a4fb13bfdb04d4cf26f9cded16215b8c9951e484a4c8c1a16b945",
   "function:_wb_seed": "f998ecc1b94a34c01caecb78509551979fde0a35f681e1f5fed62b1a4ee26a6e",
@@ -142,7 +144,7 @@
   "method:_der_route_step_failure": "cac2e68eb2f76f5f4b40ec68b9dffa615db017f7e58a1bb3583d61a1d389131d",
   "method:_der_route_subloop_children": "850360b39962b3bbbb757e14146d60d5b38367b5031279a0656f7df546dcad19",
   "method:_der_run_direct_node": "6dc728e593315653515a5366be3bb4e567455bd154b469e55b4f5dd7150d097c",
-  "method:_der_run_node": "d0e9af369bfdea134228b8cfa2cbee744344ed8bbbdda8474f712d22550836c3",
+  "method:_der_run_node": "db77463464268dfc85a89dbc9e4b5e6e2ba2524ac6578c2ae8bb4a6647d4a5b4",
   "method:_der_run_step_execution": "d5f076c7a63c5cf6c449d9f42be963df6d3cd37ed51240caa92262a51ae1aeca",
   "method:_der_score_step_outcome": "00e722b0d6dfad5babc5fa1f62c3109a3e1a211af6a06b1ad8946f8a534bb0cb",
   "method:_der_split_blocker": "4e9f119fb7f7fc015c670c178f10d9bf92e7a395be114a4cd1e0de3054315000",

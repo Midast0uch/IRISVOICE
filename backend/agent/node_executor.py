@@ -284,6 +284,13 @@ class NodeContext:
     dead_ends: List[str] = field(default_factory=list)
     # CLM-11 (Workbench code mode): the node's system prompt; "" = _SYSTEM.
     system: str = ""
+    # CLM-11 Round 3: the step's brief (rendered text, "" = none), its check (one
+    # Python expression the workbench evaluates after each run_python; a pass
+    # closes the node), and the escalation hook: on_check_failed(attempt, code,
+    # digest) -> a note for the next attempt (the Brain's repair brief) or None.
+    brief: str = ""
+    check: str = ""
+    on_check_failed: Optional[Callable[[int, str, str], Optional[str]]] = None
 
 
 @dataclass
@@ -771,7 +778,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                           prior_limit=_step_clip(ctx)[1])
             + (("\n\nMEMORY (earlier statements, with their source):\n"
                 + ctx.memory_facts) if ctx.memory_facts else "")
-            + _ledger_section(ctx.dead_ends), ctx.workdir)},
+            + _ledger_section(ctx.dead_ends)
+            + (("\n\nBRIEF (from the planner):\n" + ctx.brief) if ctx.brief else ""),
+            ctx.workdir)},
     ]
     # CLM-1 (T1.3): the model reads this list through a per-node ContextView.
     # `messages` stays the loop's list; the view HOLDS the same dicts
@@ -982,6 +991,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     helped = ""
     edit_failures = 0
     picture_nudged = False
+    check_failures = 0
+    escalation_note = ""
 
     def _hand_over(why: str) -> bool:
         """Switch this node to the helper model once; True when it happened."""
@@ -1175,6 +1186,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.on_call(name, params)
                         except Exception as exc:  # noqa: BLE001 — advisory only
                             logger.debug("[run_node] shadow hook failed: %r", exc)
+                    if name == "run_python" and ctx.check and isinstance(params, dict):
+                        params = dict(params, check=ctx.check)
                     if (name == "recall_memory" and params.get("set_aside")
                             and ctx.window and view is not None):
                         raw = _model_set_aside(params)
@@ -1299,6 +1312,25 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 })
                 if _rid and _blk is not None:
                     _blk.ref = Ref(kind="tool_result", id=_rid)
+                if name == "run_python" and ctx.check and isinstance(raw, dict):
+                    if raw.get("check_ok") is True:
+                        # R3: the harness ran the check and it passed - the step is
+                        # done in this answer, no further model call.
+                        batch_done = True
+                        batch_summaries.append(
+                            str((params or {}).get("purpose") or "the step's check passed"))
+                    else:
+                        check_failures += 1
+                        if check_failures == 2 and ctx.on_check_failed is not None:
+                            try:
+                                _note = ctx.on_check_failed(
+                                    check_failures, str((params or {}).get("code") or ""), content)
+                            except Exception as exc:  # noqa: BLE001 - counted; the loop goes on
+                                _note = None
+                                logger.warning("[run_node] conv=%s escalation failed: %r",
+                                               ctx.conv_id, exc)
+                            if _note:
+                                escalation_note = _note
                 if ctx.window and _blk is not None and view is not None:
                     _s = _sig(name, params)
                     if failed:
@@ -1341,6 +1373,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
                     _clm_stats["shrink_failures"] += 1
                     logger.warning("[run_node] conv=%s gauge line failed: %r", ctx.conv_id, exc)
+            if escalation_note:
+                _add(HARNESS_NOTE, {"role": "user", "content": escalation_note})
+                escalation_note = ""
             if pending_shot:
                 # After the tool messages (a tool message carries text only on
                 # most APIs), as the user turn the model reads next.
