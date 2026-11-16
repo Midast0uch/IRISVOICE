@@ -735,6 +735,14 @@ class PlanStep:
     # site confirms it from raw_ref consumption (AC1.6, option C). One short
     # field inside the existing planning call — no extra inference.
     criticality: str                = "supporting"
+    # CLM-11 T7.13: the per-step BRIEF the planner writes in the same call
+    # (specs/clm-memory/design.md Round 3). Optional; empty = no brief, the step
+    # runs as before. expected_output stays the verifier's.
+    inputs: List[str]               = dc_field(default_factory=list)
+    outputs: List[str]              = dc_field(default_factory=list)
+    check: str                      = ""
+    approach: str                   = ""
+    tools: List[str]                = dc_field(default_factory=list)
 
 
 @dataclass

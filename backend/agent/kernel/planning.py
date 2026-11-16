@@ -22,6 +22,61 @@ def _plan_step_deps(raw_step: dict, earlier: list) -> list:
         return deps
     return [earlier[-1].step_id] if earlier else []
 
+
+# CLM-11 T7.13 (specs/clm-memory/design.md Round 3): the planner writes each step's
+# BRIEF in the SAME call - no second planner call. The prompt asks for it only with
+# IRIS_WORKBENCH=1 (read at call time); flag off, the prompt is byte-identical.
+# Module level on purpose: stand-in kernels bind only some methods.
+_PLANNER_BRIEF_RULES = (
+    "- Each step also carries a BRIEF for the program that will run it. The "
+    "brief fields are: 'inputs' (list of the variable names or sources the "
+    "step reads), 'outputs' (list of the variable names the step must fill, "
+    "each with a type, e.g. \"error_counts: dict[str,int]\"), 'check' (ONE "
+    "Python expression over those outputs that is True when the step is done), "
+    "'approach' (one or two sentences on how to do it) and 'tools' (list of "
+    "tool names the step may call). Keep the brief short; 'expected_output' "
+    "stays as above. Example step with a brief: "
+    '{"step_id":"s1","step_number":1,"description":"Count the errors per type in the log",'
+    '"expected_output":"a count of each error type","depends_on":["start"],'
+    '"critical":true,"criticality":"load-bearing",'
+    '"inputs":["task"],"outputs":["error_counts: dict[str,int]"],'
+    '"check":"isinstance(error_counts, dict) and len(error_counts) > 0",'
+    '"approach":"Read the log file, match each error line, count by type.",'
+    '"tools":["read_file"]}' + chr(10)
+)
+_BRIEF_LIST_MAX, _BRIEF_ITEM_MAX = 8, 120
+_BRIEF_CHECK_MAX, _BRIEF_APPROACH_MAX = 300, 400
+
+
+def _planner_brief_on() -> bool:
+    import os
+    return os.environ.get("IRIS_WORKBENCH") == "1"
+
+
+def _brief_list(v: Any) -> list:
+    """A planner list field: up to 8 strings of up to 120 chars; a wrong type -> []."""
+    if not isinstance(v, (list, tuple)):
+        return []
+    out = [x.strip()[:_BRIEF_ITEM_MAX] for x in v if isinstance(x, str) and x.strip()]
+    return out[:_BRIEF_LIST_MAX]
+
+
+def _brief_text(v: Any, cap: int) -> str:
+    """A planner text field, stripped and capped; a wrong type -> ""."""
+    return v.strip()[:cap] if isinstance(v, str) else ""
+
+
+def _plan_step_brief(raw_step: dict) -> dict:
+    """The five brief fields of one planned step, as PlanStep keyword arguments.
+    Never raises; a missing or badly typed field is empty."""
+    return {
+        "inputs": _brief_list(raw_step.get("inputs")),
+        "outputs": _brief_list(raw_step.get("outputs")),
+        "check": _brief_text(raw_step.get("check"), _BRIEF_CHECK_MAX),
+        "approach": _brief_text(raw_step.get("approach"), _BRIEF_APPROACH_MAX),
+        "tools": _brief_list(raw_step.get("tools")),
+    }
+
 # A spoken turn reaches the agent as text, so nothing told the planner or a step that IRIS heard it. Live
 # 2026-10-25 22:15: "Okay. Can you hear me?" planned "Verify audio input", every step answered "I cannot
 # process audio", the goal contract never covered and the Explorer added 7 steps - 99 s to the first word.
@@ -939,6 +994,8 @@ class PlanningMixin:
         "function returns, what a script prints), plan a step that RUNS it "
         "and reads the output; do not work the value out by reading.\n"
     )
+        if _planner_brief_on():
+            full_prompt += _PLANNER_BRIEF_RULES
 
         plan_raw: Optional[str] = None
         try:
@@ -1051,6 +1108,9 @@ class PlanningMixin:
                                 ),
                                 critical=bool(raw_step.get("critical", True)),
                                 depends_on=_plan_step_deps(raw_step, steps),
+                                # CLM-11 T7.13: brief fields, defensive like
+                                # expected_output (absent / wrong type -> empty).
+                                **_plan_step_brief(raw_step),
                                 # T5 (KD-9): planner-declared criticality,
                                 # validated to the locked vocabulary.
                                 criticality=(

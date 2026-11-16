@@ -521,6 +521,13 @@ class DerRunMixin:
                 # (the verifier had nothing to check; the needs_action Oracle saw
                 # a goal with no artifact).
                 expected_output=getattr(step, "expected_output", None) or None,
+                # CLM-11 T7.13: the planner's brief fields ride the node item
+                # (empty when the planner wrote none; the node reads them).
+                inputs=list(getattr(step, "inputs", None) or []),
+                outputs=list(getattr(step, "outputs", None) or []),
+                check=str(getattr(step, "check", "") or ""),
+                approach=str(getattr(step, "approach", "") or ""),
+                tools=list(getattr(step, "tools", None) or []),
                 coordinate_signal=(
                     getattr(context_package, "topology_position", "") or ""
                     if context_package

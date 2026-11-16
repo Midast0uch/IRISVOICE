@@ -272,6 +272,13 @@ class QueueItem:
     # T5 (KD-9): planner-DECLARED criticality (load-bearing|supporting|
     # cosmetic) — intent only until the finalize site confirms it (AC1.6).
     declared_criticality: str = "supporting"
+    # CLM-11 T7.13: the planner's per-step brief (copied from PlanStep at the
+    # plan -> queue site). Empty = no brief; read by kernel/der/node._wb_brief.
+    inputs: List[str] = field(default_factory=list)
+    outputs: List[str] = field(default_factory=list)
+    check: str = ""
+    approach: str = ""
+    tools: List[str] = field(default_factory=list)
     # Session-318 T16 (REQ-9 AC9.5/AC9.6): VLM in-site recovery lane.
     # recovery_of = parent step_id ("" = not a recovery); recovery_seeds =
     # exact unvisited in-site URLs resolved at trigger time. The resolver
