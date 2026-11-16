@@ -359,7 +359,7 @@ def op_exec(req, cap):
         _OUT_RING.append((_out_n, stdout))
     reply = {"v": PROTOCOL_VERSION, "re": "exec", "id": req["id"], "ok": error is None,
              "stdout": stdout, "stderr": stderr, "value": value, "error": error,
-             "vars": _changed_vars(before), "kept": [],
+             "vars": _changed_vars(before),
              "wall_ms": int((time.monotonic() - start) * 1000),
              "truncated": truncated, "out_n": _out_n, "incarnation": INCARNATION}
     if check_out is not None:

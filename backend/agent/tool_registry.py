@@ -998,12 +998,16 @@ def register_builtin_tools() -> None:
             description=(
                 "Run Python in this conversation's persistent namespace: variables stay between calls. "
                 "Values you name by wb: reference can be read again later. "
-                "Large values stay in variables: print slices of them, not the whole value."
+                "Large values stay in variables: print slices of them, not the whole value. "
+                "fresh=true: save the values you named by wb: reference, start a new empty namespace, then run. "
+                "close=true: run, save the values you named by wb: reference, then end the workbench."
             ),
             parameters={
                 "code": {"type": "string", "description": "Python code; the value of a final expression is returned"},
                 "purpose": {"type": "string", "description": "One line: why this code runs"},
                 "timeout_s": {"type": "integer", "description": "Seconds to allow, default 60, max 300", "optional": True},
+                "fresh": {"type": "boolean", "description": "True: save named values, start a new empty namespace, then run", "optional": True},
+                "close": {"type": "boolean", "description": "True: run, save named values, then end the workbench", "optional": True},
             },
             category="shell", executor="dev", permission_tier="side_effect", parallel_safe=False,
         ),

@@ -25,7 +25,7 @@ def test_run_python_listed_in_developer_mode_and_in_personal_mode(mode):
     mode("developer")
     dev = {t["name"]: t for t in AgentToolBridge().get_available_tools()}
     assert "run_python" in dev and dev["run_python"]["category"] == "shell"
-    assert set(dev["run_python"]["parameters"]) == {"code", "purpose", "timeout_s"}
+    assert set(dev["run_python"]["parameters"]) == {"code", "purpose", "timeout_s", "fresh", "close"}  # T7.10
     mode("personal")
     assert "run_python" in {t["name"] for t in AgentToolBridge().get_available_tools()}
     from backend.capabilities import CapabilitySet
@@ -42,7 +42,7 @@ def test_registry_spec_matches_run_command_registration():
     assert py is not None
     assert (py.category, py.executor, py.permission_tier, py.parallel_safe) == (
         cmd.category, cmd.executor, cmd.permission_tier, cmd.parallel_safe) == ("shell", "dev", "side_effect", False)
-    assert set(py.parameters) == {"code", "purpose", "timeout_s"}
+    assert set(py.parameters) == {"code", "purpose", "timeout_s", "fresh", "close"}  # T7.10
     assert "keep(" not in py.description
 
 

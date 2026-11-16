@@ -69,9 +69,10 @@ def test_golden_frame_round_trip(op):
 
 def test_golden_exec_reply_shape(wb):
     rep = wb.exec("1")
-    keys = {"v", "re", "id", "ok", "stdout", "stderr", "value", "error", "vars", "kept",
+    keys = {"v", "re", "id", "ok", "stdout", "stderr", "value", "error", "vars",
             "wall_ms", "truncated", "incarnation"}
     assert keys <= set(rep)
+    assert "kept" not in rep                   # T7.8: keep() removed (Round 2)
     protocol.decode(protocol.encode(rep))      # a real reply is itself a valid frame
 
 

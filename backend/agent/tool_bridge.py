@@ -376,10 +376,33 @@ def clear_workbench_dispatch(conversation_id: str, handler=None) -> None:
         _wb_dispatch.pop(conversation_id, None)
 
 
+def _wb_flag(value) -> bool:
+    """A boolean tool parameter: True, or the text a small model may send for it."""
+    return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "1", "yes"))
+
+
+def _record_code_row(conv: str, code: str, purpose: str, rep: dict, elapsed_ms: int) -> None:
+    """T7.8: ONE tool_results row per run_python execution - purpose, outcome, wall_ms, then
+    the code. The existing add_tool_result queues it on lane("tool_results"); this never
+    blocks and never raises. A crash or hard kill still leaves this row."""
+    try:
+        from backend import conversation_store as _cs
+
+        err = rep.get("error") or None
+        outcome = "ok" if rep.get("ok") else f"error {(err or {}).get('type')}: {str((err or {}).get('message') or '')[:200]}"
+        head = f"# run_python | purpose: {purpose or '-'} | {outcome} | wall_ms: {rep.get('wall_ms', elapsed_ms)}"
+        _cs.add_tool_result(_cs.new_tool_result_id(), conv, None, None, None, "run_python",
+                            purpose or None, f"{head}\n{code}", min_chars=0)
+    except Exception as exc:  # noqa: BLE001 - a record never fails the run
+        logger.warning("[ToolBridge][%s] run_python code row failed: %r", conv, exc)
+
+
 async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> dict:
-    """run_python(code, purpose, timeout_s) -> the digest as `text`, plus structured
-    fields. A Python exception is a RESULT (success True, ok False), like a non-zero
-    exit of run_command; only a Workbench-level failure is success False."""
+    """run_python(code, purpose, timeout_s[, fresh, close]) -> the digest as `text`, plus
+    structured fields. A Python exception is a RESULT (success True, ok False), like a
+    non-zero exit of run_command; only a Workbench-level failure is success False.
+    fresh: spill and end the old workbench, then run in a new incarnation. close: run, then
+    spill and end it. Both finish the spill (bounded wait) before the reply says done."""
     code = params.get("code")
     if not isinstance(code, str) or not code.strip():
         return {"success": False, "error": "code is required"}
@@ -392,11 +415,13 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
     check = params.get("check")
     check = check.strip()[:_WB_CHECK_MAX] if isinstance(check, str) and check.strip() else None
     conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
+    fresh, close = _wb_flag(params.get("fresh")), _wb_flag(params.get("close"))
     try:
         from backend.agent.workbench import digest as wbd
         from backend.agent.workbench.manager import WorkbenchCapReached, get_manager
 
         mgr = get_manager()
+        fresh_info = await asyncio.to_thread(mgr.end_spilled, conv, "fresh") if fresh else None
         try:
             client = await asyncio.to_thread(mgr.workbench_for, conv, cwd)
         except WorkbenchCapReached as exc:
@@ -404,9 +429,12 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         if client is None:
             return {"success": False, "case": "workbench_unavailable",
                     "error": "no Python interpreter is available for the workbench"}
+        t0 = time.monotonic()
         rep = await asyncio.to_thread(client.exec, code, timeout_s, check, _wb_dispatch.get(conv))
         mgr.touch(conv)
         wbd.remember_origin(rep, purpose)
+        wbd.remember_named(rep)
+        _record_code_row(conv, code, purpose, rep, int((time.monotonic() - t0) * 1000))
         err = rep.get("error") or None
         out = {
             "success": not (err and err.get("type") in _WB_INFRA_ERRORS),
@@ -424,10 +452,25 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
                 out["check_error"] = str(chk.get("error") or "")[:300]
             out["text"] += ("\ncheck: passed" if chk.get("ok")
                             else f"\ncheck: failed - {out['check_error']}")
+        if close:
+            info = await asyncio.to_thread(mgr.end_spilled, conv, "closed by run_python")
+            out.update(closed=True, spilled=info["spilled"], spill_confirmed=info["confirmed"])
+            out["text"] += _wb_spill_note("workbench closed", info)
+        elif fresh_info is not None:
+            out.update(fresh=True, spilled=fresh_info["spilled"], spill_confirmed=fresh_info["confirmed"])
+            out["text"] += _wb_spill_note("new workbench started (the old one ended)", fresh_info)
         return out
     except Exception as exc:  # noqa: BLE001 - a named result, never an exception into the turn
         logger.warning("[ToolBridge][%s] run_python failed: %r", session_id, exc)
         return {"success": False, "case": "workbench_error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+def _wb_spill_note(what: str, info: dict) -> str:
+    if not info.get("spilled"):
+        return f"\n{what}; no named values to save"
+    tail = "" if info.get("confirmed") else " (the save was not confirmed in time; it may still finish)"
+    return (f"\n{what}; {info['spilled']} named values saved - wb: references still read them "
+            f"(recall_memory expand=\"wb:...\"){tail}")
 
 
 def _close_workbench(conversation_id: str) -> None:
@@ -1336,11 +1379,15 @@ class AgentToolBridge:
             {"name": "run_python", "description": (
                 "Run Python in this conversation's persistent namespace: variables stay between calls. "
                 "Values you name by wb: reference can be read again later. "
-                "Large values stay in variables: print slices of them, not the whole value."),
+                "Large values stay in variables: print slices of them, not the whole value. "
+                "fresh=true: save the values you named by wb: reference, start a new empty namespace, then run. "
+                "close=true: run, save the values you named by wb: reference, then end the workbench."),
              "parameters": {
                 "code": {"type": "string", "description": "Python code; the value of a final expression is returned"},
                 "purpose": {"type": "string", "description": "One line: why this code runs"},
-                "timeout_s": {"type": "integer", "description": "Seconds to allow, default 60, max 300"}}, "category": "shell"},
+                "timeout_s": {"type": "integer", "description": "Seconds to allow, default 60, max 300"},
+                "fresh": {"type": "boolean", "description": "True: save named values, start a new empty namespace, then run"},
+                "close": {"type": "boolean", "description": "True: run, save named values, then end the workbench"}}, "category": "shell"},
 
             {
                 "name": "read_shell_output",

@@ -23,7 +23,7 @@ v1 stay valid: `check` is optional, and decode accepts "v" 1 or 2).
   hello reply    {"v":1,"re":"hello","ok":true,"version":1,"incarnation":hex}
   exec reply     {"v":1,"re":"exec","id","ok","stdout","stderr","value",
                   "error":null|{"type","message","trace_tail"},
-                  "vars":[{"name","type","size","preview"}],"kept":[{"name","note"}],
+                  "vars":[{"name","type","size","preview"}],
                   "wall_ms","truncated","out_n","incarnation"[,"check":{"ok":bool,"error":null|str}]}
                   ("check" only when the request carried one; if the body raised, the
                   check is not run: {"ok":false,"error":"body raised"})
@@ -54,7 +54,7 @@ EVENT_KEYS = {
 }
 REPLY_KEYS = {
     "hello": ("ok", "version", "incarnation"),
-    "exec": ("id", "ok", "stdout", "stderr", "value", "error", "vars", "kept",
+    "exec": ("id", "ok", "stdout", "stderr", "value", "error", "vars",
              "wall_ms", "truncated", "out_n", "incarnation"),
     "inspect": ("id", "ok", "text", "total", "error", "incarnation"),
     "put": ("id", "ok", "error", "incarnation"),

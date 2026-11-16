@@ -16,6 +16,8 @@ ERROR_MESSAGE_MAX = 300
 TRACE_TAIL_MAX = 600
 MEMORY_NOTE_MB = 256         # the digest warns above this worker-tree size
 ORIGIN_MAX = 1000            # remembered (incarnation, name) -> purpose entries
+NAMED_MAX = 24               # names kept per incarnation for the spill (newest last)
+NAMED_INCARNATIONS = 64      # incarnations remembered
 
 _origins: "collections.OrderedDict[Tuple[str, str], str]" = collections.OrderedDict()
 _origins_lock = threading.Lock()
@@ -116,3 +118,32 @@ def remember_origin(reply: dict, purpose: str) -> None:
 def origin_of(incarnation: str, name: str) -> Optional[str]:
     with _origins_lock:
         return _origins.get((incarnation, name))
+
+
+# --- which values a digest named (what the spill writes) -------------------------
+_named: "collections.OrderedDict[str, List[str]]" = collections.OrderedDict()
+
+
+def remember_named(reply: dict) -> None:
+    """Record the names `refs(reply)` handed to a model: the values a step result or a
+    live `wb:` placeholder can point at. The spill writes exactly these, never the namespace."""
+    with _origins_lock:
+        for ref in refs(reply):
+            parsed = parse_ref(ref)
+            if parsed is None:
+                continue
+            inc, name = parsed
+            names = _named.setdefault(inc, [])
+            if name in names:
+                names.remove(name)
+            names.append(name)
+            del names[:-NAMED_MAX]
+            _named.move_to_end(inc)
+        while len(_named) > NAMED_INCARNATIONS:
+            _named.popitem(last=False)
+
+
+def named(incarnation: str) -> List[str]:
+    """The names of `incarnation` a digest handed out, oldest first."""
+    with _origins_lock:
+        return list(_named.get(incarnation, ()))

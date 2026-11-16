@@ -758,11 +758,13 @@ def add_tool_result(
     tool: str | None,
     target: str | None,
     content: str,
+    min_chars: int = TOOL_RESULT_MIN_CHARS,
 ) -> bool:
     """QUEUE the write of one tool result and return at once.
 
     True = queued (it will be readable by get_tool_result shortly). False = not recorded: the text
-    is not longer than TOOL_RESULT_MIN_CHARS (counted `skipped_small`), the ids are missing, or the
+    is not longer than `min_chars` (default TOOL_RESULT_MIN_CHARS; counted `skipped_small`; the
+    Workbench code and spill rows pass 0 - a short script is still one row), the ids are missing, or the
     lane refused it because its queue is full (counted `refused`, logged). Never raises, never
     blocks, never touches SQLite on the calling thread."""
     try:
@@ -772,7 +774,7 @@ def add_tool_result(
             logger.warning("[conversation_store] tool result refused: missing id conv=%s id=%s",
                            conversation_id, result_id)
             return False
-        if len(text) <= TOOL_RESULT_MIN_CHARS:
+        if len(text) <= min_chars:
             _tr_count("skipped_small")
             return False
         was_cut = len(text) > TOOL_RESULT_MAX_CHARS

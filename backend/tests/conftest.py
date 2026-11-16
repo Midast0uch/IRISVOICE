@@ -11,11 +11,11 @@ History:
     collection in backend/tests/ to fail with AttributeError.
 
 Current behavior:
-  - conversation_store is in-memory; no patching is required.
-  - This conftest is intentionally a no-op. It exists for the sys.path
-    setup and as a placeholder for any future test fixtures.
-  - If conversation_store ever needs to be mocked or redirected in
-    tests, add the fixture here.
+  - conversation_store is SQLite again (data/conversations.db). The
+    "in-memory" note above was stale: tests that touched the store without
+    their own IRIS_CONVERSATIONS_DB wrote into the app's real chat store.
+    IRIS_CONVERSATIONS_DB now defaults to a per-run temp file (below); a test
+    that sets its own path (monkeypatch.setenv + reload) still wins.
 
 Usage:
   python -m pytest backend/tests/ -v
@@ -31,6 +31,31 @@ os.environ.setdefault(
     "IRIS_MODEL_CALL_PROFILE",
     os.path.join(_tempfile.gettempdir(), "iris-tests-model_call_times.json"),
 )
+# The chat store (conversations, tool_results rows): the same rule. Found 2026-11-16 -
+# run_python's code rows from the workbench contract tests landed in data/conversations.db.
+# Per process, so two concurrent pytest runs never share one file.
+_TEST_CONVERSATIONS_DB = os.path.join(
+    _tempfile.gettempdir(), f"iris-tests-conversations-{os.getpid()}.db")
+os.environ.setdefault("IRIS_CONVERSATIONS_DB", _TEST_CONVERSATIONS_DB)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Remove this run's temp chat store (one file per run would pile up). A file
+    still held open (Windows) stays; the next run's name differs, so it is harmless."""
+    if os.environ.get("IRIS_CONVERSATIONS_DB") != _TEST_CONVERSATIONS_DB:
+        return
+    try:
+        from backend import conversation_store as _cs
+        if getattr(_cs, "_conn", None) is not None:
+            _cs._conn.close()
+            _cs._conn = None
+    except Exception:  # noqa: BLE001 - cleanup never fails a run
+        pass
+    for _suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(_TEST_CONVERSATIONS_DB + _suffix)
+        except OSError:
+            pass
 import sys
 
 def pytest_addoption(parser):

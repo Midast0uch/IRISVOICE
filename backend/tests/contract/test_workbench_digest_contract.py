@@ -42,7 +42,7 @@ def test_digest_error_and_truncated(env):
     text = digest.digest(rep)
     assert "run_python error" in text and "error: ValueError: boom" in text
     assert "ValueError: boom" in text.split("error: ValueError: boom", 1)[1]        # the trace tail follows
-    assert "kept:" not in text and rep["kept"] == []
+    assert "kept:" not in text and "kept" not in rep          # T7.8: keep() removed (Round 2)
     assert "output was cut" in digest.digest({**rep, "truncated": True})
 
 
