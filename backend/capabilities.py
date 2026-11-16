@@ -66,9 +66,9 @@ class CapabilitySet:
     # Tools that require TERMINAL in developer mode
     _TERMINAL_TOOLS: Set[str] = {
         "run_command",
-        # CLM-11: Python in the conversation's Workbench; same trust boundary as
-        # run_command, so the same gate (developer mode only).
-        "run_python",
+        # CLM-11 Round 3 (T7.11): "run_python" is NOT here. Personal mode offers it; its
+        # scope is the session folder (the Workbench manager refuses a workdir at or
+        # under the IRIS repo in personal mode, the worker confines writes to the workdir).
         # Gate 3 T4b: reads back retained shell output, so it is gated exactly
         # like the tool that produced it. Personal mode has no terminal, so the
         # retention history is empty there anyway — the gate states the rule

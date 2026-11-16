@@ -35,20 +35,40 @@ class WorkbenchBudgetReached(WorkbenchCapReached):
 WorkbenchCapReached.case = "workbench_cap"
 
 
-class _Entry:
-    __slots__ = ("client", "workdir", "last_used")
+class WorkbenchScopeRefused(WorkbenchCapReached):
+    """Personal mode: the workdir is at or under the IRIS repo. The bridge's existing
+    WorkbenchCapReached handler turns it into {"success": False, "case": "workbench_scope"}."""
 
-    def __init__(self, client: WorkbenchClient, workdir: str):
-        self.client, self.workdir, self.last_used = client, workdir, time.monotonic()
+    case = "workbench_scope"
+
+
+class _Entry:
+    __slots__ = ("client", "workdir", "last_used", "mode")
+
+    def __init__(self, client: WorkbenchClient, workdir: str, mode: Optional[str] = None):
+        self.client, self.workdir, self.last_used, self.mode = client, workdir, time.monotonic(), mode
 
 
 def _norm(path: str) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(path)))
 
 
+# The directory that holds backend/: the IRIS repo. Personal mode never works inside it.
+IRIS_REPO_ROOT = _norm(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+
+
+def _under_repo(wd: str) -> bool:
+    try:
+        return os.path.commonpath([wd, IRIS_REPO_ROOT]) == IRIS_REPO_ROOT
+    except ValueError:  # different drives
+        return False
+
+
 class WorkbenchManager:
     def __init__(self, idle_s: float = IDLE_END_S, max_live: int = MAX_LIVE, budget_bytes: int = BUDGET_BYTES,
-                 reap_every_s: Optional[float] = None, resolver=resolve_interpreter):
+                 reap_every_s: Optional[float] = None, resolver=resolve_interpreter, mode_of=None):
+        # mode_of() -> "personal" | "developer"; None = no scope rule (get_manager() sets it).
+        self._mode_of = mode_of
         self._idle_s = idle_s
         self._max_live = max_live
         self._budget = budget_bytes
@@ -59,16 +79,28 @@ class WorkbenchManager:
         self._stop = threading.Event()
         self._reaper: Optional[threading.Thread] = None
         self._counts = {"started": 0, "unavailable": 0, "idle_ended": 0, "cap_evicted": 0,
-                        "cap_refused": 0, "budget_evicted": 0, "budget_refused": 0, "workdir_changed": 0, "closed": 0, "start_failed": 0}
+                        "cap_refused": 0, "budget_evicted": 0, "budget_refused": 0, "workdir_changed": 0, "closed": 0, "start_failed": 0,
+                        "scope_refused": 0, "mode_changed": 0}
 
     # --- lookup / start ------------------------------------------------------
     def workbench_for(self, conversation_id: str, workdir: str) -> Optional[WorkbenchClient]:
         """The conversation's live Workbench (started on first use), or None when no
         interpreter exists (counted `unavailable`). Raises WorkbenchCapReached when
-        every slot is busy. Blocking (process start): call from a worker thread."""
+        every slot is busy, WorkbenchScopeRefused (a WorkbenchCapReached) in personal mode
+        for a workdir at or under the IRIS repo. Blocking (process start): call from a worker thread."""
         wd = _norm(workdir)
+        mode = self._mode_of() if self._mode_of else None
         with self._lock:
             ent = self._entries.get(conversation_id)
+            if ent is not None and ent.mode != mode:   # a mode change never keeps a workbench
+                self._counts["mode_changed"] += 1
+                self._end(conversation_id, f"mode changed to {mode}")
+                ent = None
+            if mode == "personal" and _under_repo(wd):
+                self._counts["scope_refused"] += 1
+                logger.warning("[Workbench][%s] personal mode refuses a workdir inside the IRIS repo", conversation_id)
+                raise WorkbenchScopeRefused("personal mode does not run Python inside the IRIS repo; "
+                                            "work in a project folder outside it")
             if ent is not None and (ent.workdir != wd or not ent.client.alive):
                 moved = ent.workdir != wd
                 if moved:
@@ -95,7 +127,7 @@ class WorkbenchManager:
                 except Exception:  # noqa: BLE001
                     pass
                 return None
-            self._entries[conversation_id] = _Entry(client, wd)
+            self._entries[conversation_id] = _Entry(client, wd, mode)
             self._counts["started"] += 1
             self._ensure_reaper()
             return client
@@ -209,12 +241,18 @@ _MANAGER: Optional[WorkbenchManager] = None
 _MANAGER_LOCK = threading.Lock()
 
 
+def _current_mode() -> str:
+    from backend.capabilities import CapabilitySet   # lazy: the manager stays stdlib-only at import
+
+    return CapabilitySet.get_mode()
+
+
 def get_manager() -> WorkbenchManager:
     """The process-wide manager. Registers its close_all at interpreter exit."""
     global _MANAGER
     with _MANAGER_LOCK:
         if _MANAGER is None:
-            _MANAGER = WorkbenchManager()
+            _MANAGER = WorkbenchManager(mode_of=_current_mode)
             atexit.register(_MANAGER.close_all)
         return _MANAGER
 

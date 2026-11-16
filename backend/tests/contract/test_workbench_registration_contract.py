@@ -1,5 +1,5 @@
-"""CLM-11 / T7.2 contract: run_python is registered like run_command, offered in developer
-mode only (the mode rule lives in ONE constant, CapabilitySet._TERMINAL_TOOLS), never on
+"""CLM-11 / T7.2 contract: run_python is registered like run_command, offered in both
+modes (T7.11: it is not in CapabilitySet._TERMINAL_TOOLS; personal mode's scope is the session folder), never on
 the fine-grained node menu, and the Workbench package has exactly the allowed importers."""
 import re
 from pathlib import Path
@@ -19,7 +19,7 @@ def mode(monkeypatch):
     return set_mode
 
 
-def test_run_python_listed_in_developer_mode_absent_in_personal(mode):
+def test_run_python_listed_in_developer_mode_and_in_personal_mode(mode):
     from backend.agent.tool_bridge import AgentToolBridge
 
     mode("developer")
@@ -27,10 +27,10 @@ def test_run_python_listed_in_developer_mode_absent_in_personal(mode):
     assert "run_python" in dev and dev["run_python"]["category"] == "shell"
     assert set(dev["run_python"]["parameters"]) == {"code", "purpose", "timeout_s"}
     mode("personal")
-    assert "run_python" not in {t["name"] for t in AgentToolBridge().get_available_tools()}
+    assert "run_python" in {t["name"] for t in AgentToolBridge().get_available_tools()}
     from backend.capabilities import CapabilitySet
 
-    assert not CapabilitySet.is_tool_allowed("run_python")
+    assert CapabilitySet.is_tool_allowed("run_python")
     mode("developer")
     assert CapabilitySet.is_tool_allowed("run_python")
 

@@ -44,7 +44,9 @@ def test_entry_rule_takes_read_and_run_steps_only(flag_on, goal, expected):
 
 def test_no_code_mode_without_run_python_or_without_the_flag(flag_on, monkeypatch):
     goal = "Read the logs and count the errors"
-    assert node._wb_code_mode(goal, PERSONAL, ".") is False                  # personal mode
+    assert node._wb_code_mode(goal, PERSONAL, ".") is False                  # run_python not offered
+    import tempfile                                                          # T7.11: personal mode may, outside the IRIS repo
+    assert node._wb_code_mode(goal, PERSONAL + [_tool("run_python")], tempfile.gettempdir()) is True
     monkeypatch.delenv("IRIS_WORKBENCH")
     assert node._wb_code_mode(goal, DEV, ".") is False                       # flag off
 

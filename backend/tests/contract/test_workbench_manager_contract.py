@@ -139,9 +139,14 @@ def test_close_all_and_stats(mgrs, dirs):
     assert m.stats()["live"] == 0 and wait_for(lambda: not any(psutil.pid_exists(p) for p in pids), 5)
 
 
-def test_process_exit_leaves_no_child(dirs):
-    """atexit + stdin EOF: a process that started a Workbench and exits normally leaves none."""
-    wd = dirs()
+def test_process_exit_leaves_no_child(tmp_path):
+    """atexit + stdin EOF: a process that started a Workbench and exits normally leaves none.
+
+    The workdir is a temp folder OUTSIDE the IRIS repo (T7.11, 2026-11-16): this test
+    goes through the real get_manager(), which reads the live mode, and a personal-mode
+    manager refuses a workdir inside the repo - the old in-repo workdir made the result
+    depend on the owner's current mode."""
+    wd = str(tmp_path)
     code = (
         "import sys\n"
         + (f"sys.path.insert(0, {PKG_PATH!r})\n" if PKG_PATH else "")
