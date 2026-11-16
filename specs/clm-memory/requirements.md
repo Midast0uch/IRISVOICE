@@ -389,6 +389,38 @@ failed 0/5 with and without offload because the PROTECTED blocks (tools schema p
 cloud reply is ~93 % model wait (fewer calls = faster). No jupyter_client / ipykernel /
 pyzmq is installed; the backend ships as a PyInstaller one-file exe.
 
+> **ROUND 3 (2026-11-16) - CURRENT. Supersedes Round 2 R1-R9 and AC1-AC9 where they
+> differ.** Owner: the TOOL MODEL does all execution (never a fallback); the BRAIN
+> plans, briefs and steps in on escalation; personal mode = coding on the user's own
+> projects (same capability as developer mode, different scope; IRIS source out of
+> reach). A "script" is Python run in the Workbench (our Jupyter-style persistent
+> process); the app's tools are callable from it as `tools.<name>(...)`.
+> - R1: WHEN a node starts and an interpreter is available THE SYSTEM SHALL run it as a
+>   code node on the `tool_execution` role with `run_python` as its only tool.
+> - R2: THE planner SHALL give each step a brief: goal, inputs (variables from earlier
+>   steps), outputs (<= 4: name, type, what it holds), check (one Python expression
+>   over the outputs), approach (<= 5 lines), tools (the tools.* names allowed).
+> - R3: WHEN an execution ends THE SYSTEM SHALL evaluate the step's check in the
+>   Workbench and close the node when it passes (no further model call).
+> - R4: IF the check fails twice THEN THE SYSTEM SHALL ask the Brain once for a repair
+>   brief (a skeleton of <= 40 lines put into the namespace); IF the next attempt
+>   fails THEN the step SHALL fail into DER recovery. One model on both roles: the
+>   Brain step is skipped.
+> - R5: WHEN code calls `tools.<name>` THE SYSTEM SHALL execute it through the node's
+>   dispatch path and list it as a call of that node.
+> - R6: THE SYSTEM SHALL give the Workbench the same capability in both modes, scoped
+>   to the session folder; WHERE the mode is personal the IRIS source folder SHALL NOT
+>   be in the scope (the audit hook refuses writes, deletes and renames outside the
+>   scope and temp in both modes; it is not a boundary against a hostile script -
+>   equal to run_command).
+> - R7: WHEN the Brain sets `fresh` or `close` THE SYSTEM SHALL spill named values,
+>   then start or end the namespace; a dead `wb` ref SHALL return the spilled text or
+>   `workbench_gone` with the code row.
+> - R8: THE SYSTEM SHALL record the code of every submission and bound callbacks
+>   (24 per execution, 48 per node) and memory (512 MB per workbench, 768 MB total).
+> - R9: IF no interpreter exists THEN the node SHALL run on the menu path, counted as
+>   degraded (`wb_degraded`, an alarm - not a route).
+
 > **REVISED 2026-11-16 (owner answers + advisor round 2; supersedes AC1-AC9 below
 > where they differ).** Owner: the project's own python; the Brain controls the
 > lifetime; ALL steps written by the Brain; all tool calls runnable from the

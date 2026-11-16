@@ -392,7 +392,44 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   DONE = contract tests pass and fail on a seeded frame change; soft stop keeps state;
   hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
   from inside Python.
-- **Wave 7, Round 2 tasks (2026-11-16; the order is the priority):**
+- **Wave 7, Round 3 tasks (2026-11-16, CURRENT; the order is the priority):**
+  - [ ] **T7.11 scope.** One profile; run_python out of `_TERMINAL_TOOLS`; a personal
+    workbench refuses a workdir at or under the IRIS repo. DONE = contract tests: a
+    personal workbench refuses that workdir and a write into the IRIS repo; developer
+    mode unchanged. NOT THIS = a Job Object, network rules.
+  - [ ] **T7.9 callbacks** (protocol v2 `ev:call` / `op:result` through the node's
+    `_execute`). DONE = a callback reaches box.dispatch, appears in calls[], holds the
+    browser claim, the budget error keeps state; no-op overhead < 5 ms. NOT THIS = a
+    second dispatcher, an async worker, nested exec.
+  - [ ] **T7.12 check + auto-close + role.** `check` in exec (worker evaluates); code
+    nodes on `tool_execution`; brief rendering in the step message. DONE = a node
+    closes on a passing check with one model call, live. NOT THIS = a model call to
+    judge the check.
+  - [ ] **T7.13 planner brief fields** (inputs, outputs, check, approach, tools) in
+    the existing planner call. DONE = cloud cohort 21/21 with the fields present; a
+    step without them still runs. NOT THIS = a second planner call.
+  - [ ] **T7.14 escalation hook** `on_check_failed` -> one Brain repair brief with a
+    skeleton. DONE = a seeded failing step shows two attempts, one Brain call, a third
+    attempt, in the log. NOT THIS = role hand-over; an unbounded loop.
+  - [ ] **T7.0b probe** (needs T7.12): ten brief-to-script tasks with checks on each
+    small model, level 0 and level 1. DONE = a pass-rate table here; the default start
+    level written from it. NOT THIS = a per-model prompt.
+  - [ ] **T7.10 fresh / close / spill** (as Round 2).
+  - [ ] **T7.15 `repair_route`** Oracle shadow rows. DONE = rows with labels. NOT THIS
+    = enforcement.
+  - [ ] **TG-7 (Round 3), four arms, same conditions:** small tool model (LFM3-1.7B,
+    then LFM2.5-2.6B) ReAct vs the loop; cloud model on both roles ReAct vs the loop.
+    Per arm: --group context and cohort pass counts; model calls per step by role;
+    Brain calls per reply; escalation rate and the level at which steps pass; max
+    prompt tokens of any tool-model call; router blind drops; reply_s medians; steps
+    where the check passed but the verifier failed; wb_degraded. Proof: small arm
+    above 1/5 with blind drops 0 and every call inside the window; cloud arm 21/21 and
+    5/5 with fewer model calls per step. Then the flag goes on, or the reason it stays
+    off is written here with the number and date.
+  - Superseded by Round 3: Round 2's personal profile / Job Object (T7.11 old), the
+    tool_choice shadow rows from callbacks (T7.13 old), "every node a code node on the
+    Brain" (T7.12 old), the tool model as fallback.
+- **Wave 7, Round 2 tasks (2026-11-16; superseded by Round 3 where they differ):**
   - [ ] **T7.8** remove keep(); record a code row per submission. DONE = no `kept`
     in a frame; one code row per execution live. NOT THIS = a new table.
   - [ ] **T7.9** protocol v2 callbacks. DONE = contract tests: a callback reaches

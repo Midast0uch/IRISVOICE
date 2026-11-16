@@ -266,7 +266,49 @@ finished steps), memory (the node's `_memory_facts`). Leaves only through `keep(
 Import rule (a contract test): only `tool_bridge.py` and `kernel/der/node.py` import
 the package; `node_executor.py` never does.
 
-### Round 2 (2026-11-16): every step a code step, tools callable from Python
+### Round 3 (2026-11-16, CURRENT): the two-model loop; personal mode as a scope
+
+- **Roles.** Brain (`reasoning`): plans, writes each step's brief at plan time (no
+  extra call), steps in on escalation, reads reports at synthesis. Tool model
+  (`tool_execution`): writes and runs ALL Workbench Python, repairs its own script.
+  The harness runs the check. The menu path runs only with no interpreter
+  (`wb_degraded`).
+- **The brief (planner fields per step):** goal, inputs, outputs, check, approach,
+  tools; `expected_output` stays for the verifier. Level 0 = contract + approach (the
+  planner has not seen the data); level 1 = the Brain's repair skeleton (<= 40 lines,
+  `put` into the namespace as `skeleton`, run as `exec(skeleton)`). T7.0b measures
+  which level a 1.7-2.6B model needs to start at.
+- **The report:** `exec` carries `check`; the worker evaluates it after the body in
+  the same request; reply `check: {ok, error}`. A passing check closes the node. The
+  step result = the purpose line, the output manifest (name, type, size, preview,
+  `wb:` ref), the check result, the digest. No Brain call per step; the verifier
+  grades against expected_output.
+- **Repair loop:** attempts 1-2 by the tool model from the digest and the check error;
+  then ONE Brain call (`on_check_failed(attempt, code, digest)` hook on NodeContext,
+  implemented in the kernel) returns a level-1 repair brief; attempt 3 by the tool
+  model; still failing -> DER recovery. Replaces `_hand_over`.
+- **The namespace is the medium:** the Brain names variables (outputs/inputs); the tool
+  model fills them; prompts carry names, types, sizes and 80-char previews, never the
+  data; `task`, `steps`, `memory` are variables.
+- **Token budget on 8k (est.):** limit 4,710 at max_tokens 2048; first call ~1,425
+  (system 260, run_python schema 250, <= 5 tool signatures 125, brief <= 2,400 chars
+  ~690, memory 100); +~880 per kept attempt; +~400 for a skeleton.
+- **Personal mode = scope.** One profile (no `profile` field, no Job Object, no
+  subprocess/network refusal); `run_python` leaves `_TERMINAL_TOOLS`; the scope is the
+  session folder; personal mode refuses a workdir at or under the IRIS repo (no bound
+  folder -> the existing ask-user folder flow); developer mode = the IRIS repo through
+  `_self_edit_view`. Finding: personal mode also blocks run_command/git and
+  auto-approves side-effect tools today - that does not match the owner's definition
+  (owner question; its own change).
+- **Oracle:** tool_choice has no question inside code (no manufactured rows). New
+  single question at each failed check: REPAIR or ESCALATE (consumer `repair_route`,
+  two fixed labels; evidence: attempt, error type, check error, the typed failure
+  rows BUG/OBSTACLE/DEAD_END now written live; label: did the next tool-model attempt
+  pass). Shadow until the bar.
+- **Protocol v2:** callbacks (`ev:call` / `op:result`), `fresh`, `close`, spill as
+  Round 2; `check` added to exec; `profile` removed.
+
+### Round 2 (2026-11-16, superseded by Round 3 where they differ): every step a code step, tools callable from Python
 
 - **Boundary.** The Workbench is the default execution surface of every DER node in
   both modes; the menu path (run_node + NODE_TOOLS on tool_execution) is the
