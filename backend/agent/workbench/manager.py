@@ -13,7 +13,7 @@ import time
 from typing import Dict, List, Optional
 
 from . import digest as _digest
-from .client import WorkbenchClient, resolve_interpreter
+from .client import ConfineFailed, WorkbenchClient, label_low, resolve_interpreter
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,14 @@ class WorkbenchScopeRefused(WorkbenchCapReached):
     case = "workbench_scope"
 
 
+class WorkbenchConfineFailed(WorkbenchCapReached):
+    """Personal mode on Windows could not confine the worker to the project folder (label, temp
+    folder, or the worker could not lower its integrity level). Nothing runs unconfined; the
+    bridge's WorkbenchCapReached handler returns {"success": False, "case": "workbench_confine_failed"}."""
+
+    case = "workbench_confine_failed"
+
+
 class _Entry:
     __slots__ = ("client", "workdir", "last_used", "mode")
 
@@ -105,6 +113,39 @@ def _under_repo(wd: str) -> bool:
         return False
 
 
+_NOT_WINDOWS_LOGGED = False
+
+
+def _confines() -> bool:
+    """True when a personal-mode worker gets OS confinement. Only Windows has it; elsewhere
+    personal mode keeps the worker's Python audit hook alone, and the log says so once."""
+    global _NOT_WINDOWS_LOGGED
+    if os.name == "nt":
+        return True
+    if not _NOT_WINDOWS_LOGGED:
+        _NOT_WINDOWS_LOGGED = True
+        logger.warning("[Workbench] OS confinement of child processes is Windows-only; personal mode "
+                       "here confines Python writes only (the audit hook), not sh()/subprocess")
+    return False
+
+
+def _unlabelable(wd: str) -> Optional[str]:
+    """Why `wd` must not get the Low label, or None. The label is inheritable, so it reaches
+    everything below the folder: a drive root or the user profile root would open the whole
+    disk or profile to the worker, and a folder that CONTAINS the IRIS repo would open the repo."""
+    if os.path.dirname(wd) == wd:
+        return "a drive root"
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    if wd == _norm(home):
+        return "the user profile folder"
+    try:
+        if os.path.commonpath([wd, IRIS_REPO_ROOT]) == wd:
+            return "a folder that contains the IRIS repo"
+    except ValueError:  # different drives
+        pass
+    return None
+
+
 class WorkbenchManager:
     def __init__(self, idle_s: float = IDLE_END_S, max_live: int = MAX_LIVE, budget_bytes: int = BUDGET_BYTES,
                  reap_every_s: Optional[float] = None, resolver=resolve_interpreter, mode_of=None,
@@ -124,7 +165,7 @@ class WorkbenchManager:
         self._reaper: Optional[threading.Thread] = None
         self._counts = {"started": 0, "unavailable": 0, "idle_ended": 0, "cap_evicted": 0,
                         "cap_refused": 0, "budget_evicted": 0, "budget_refused": 0, "workdir_changed": 0, "closed": 0, "start_failed": 0,
-                        "scope_refused": 0, "mode_changed": 0,
+                        "scope_refused": 0, "mode_changed": 0, "confine_failed": 0,
                         "spilled": 0, "spill_refused": 0, "spill_budget": 0, "spill_unconfirmed": 0}
 
     # --- lookup / start ------------------------------------------------------
@@ -135,6 +176,13 @@ class WorkbenchManager:
         for a workdir at or under the IRIS repo. Blocking (process start): call from a worker thread."""
         wd = _norm(workdir)
         mode = self._mode_of() if self._mode_of else None
+        confine = mode == "personal" and _confines()
+        if confine and not _under_repo(wd):
+            # Refuse / label BEFORE the lock: icacls takes 2.8 s on 20,000 files, and under
+            # the lock every other conversation's run_python would wait for it (the spill
+            # precedent, 3295469e). The label is idempotent and cached per folder; a workdir
+            # under the IRIS repo is refused below and is never labelled.
+            self._confine_prepare(conversation_id, wd, workdir)
         with self._lock:
             ent = self._entries.get(conversation_id)
             if ent is not None and ent.mode != mode:   # a mode change never keeps a workbench
@@ -161,9 +209,17 @@ class WorkbenchManager:
                 logger.warning("[Workbench][%s] no interpreter found; unavailable", conversation_id)
                 return None
             self._make_room()
-            client = WorkbenchClient(exe, workdir)
+            client = WorkbenchClient(exe, workdir, confine=confine)
             try:
                 client.start()
+            except ConfineFailed as exc:     # fail closed: no worker is left running
+                self._counts["confine_failed"] += 1
+                logger.error("[Workbench][%s] confinement failed: %s", conversation_id, exc)
+                try:
+                    client.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise WorkbenchConfineFailed(f"the workbench could not confine its processes: {exc}") from exc
             except Exception as exc:  # noqa: BLE001 - counted, reported as unavailable
                 self._counts["start_failed"] += 1
                 logger.error("[Workbench][%s] start failed: %s", conversation_id, exc)
@@ -176,6 +232,22 @@ class WorkbenchManager:
             self._counts["started"] += 1
             self._ensure_reaper()
             return client
+
+    def _confine_prepare(self, conversation_id: str, wd: str, workdir: str) -> None:
+        """Personal mode (Windows): refuse a folder that must not be labelled, then label the
+        project folder Low so the confined worker can still write there."""
+        why = _unlabelable(wd)
+        if why is not None:
+            self._bump("scope_refused")
+            logger.warning("[Workbench][%s] personal mode refuses %s as the project folder", conversation_id, why)
+            raise WorkbenchScopeRefused(f"personal mode confines the workbench to one project folder; "
+                                        f"{workdir!r} is {why}. Work in a project folder")
+        try:
+            label_low(workdir)
+        except ConfineFailed as exc:
+            self._bump("confine_failed")
+            logger.error("[Workbench][%s] confinement failed: %s", conversation_id, exc)
+            raise WorkbenchConfineFailed(f"the workbench could not confine its processes: {exc}") from exc
 
     def _live_bytes(self) -> int:
         return sum(e.client.rss_bytes() or 0 for e in self._entries.values())

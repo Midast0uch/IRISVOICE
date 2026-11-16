@@ -13,6 +13,7 @@ import tempfile
 import sys
 import threading
 import time
+import uuid
 from typing import Callable, Optional, Tuple
 
 from .protocol import PROTOCOL_VERSION, ProtocolError, decode, encode
@@ -26,6 +27,14 @@ RSS_POLL_S = 0.25
 OP_TIMEOUT_S = 30.0            # hello / inspect / put
 RESULT_FRAME_MAX = 2_000_000   # bytes of one callback result sent back to the worker
 _CREATE_NO_WINDOW = 0x08000000
+CONFINE_ENV = "IRIS_WB_CONFINE"            # worker.py reads it and lowers its own token
+CONFINE_FAIL_MARK = "workbench_confine_failed"   # what a worker prints to stderr when it cannot
+ICACLS_TIMEOUT_S = 120.0       # one label pass; ~3 s measured for a folder of 20,000 files
+
+
+class ConfineFailed(ProtocolError):
+    """Personal mode could not confine the worker (label, temp folder or token lowering).
+    The manager turns it into the named case `workbench_confine_failed`."""
 
 
 def resolve_interpreter(workdir: str) -> Optional[str]:
@@ -44,6 +53,56 @@ def resolve_interpreter(workdir: str) -> Optional[str]:
     if not getattr(sys, "frozen", False) and sys.executable:
         return sys.executable
     return None
+
+
+def low_root() -> str:
+    """The Low-integrity folder of the confined workers: <profile>/AppData/LocalLow/iris-workbench."""
+    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
+    return os.path.join(home, "AppData", "LocalLow", "iris-workbench")
+
+
+_LABELED: set = set()
+_LABEL_LOCK = threading.Lock()
+
+
+def label_low(path: str) -> None:
+    """Mark `path` writable for Low-integrity processes: an inheritable Low mandatory label
+    ((OI)(CI)L). icacls applies it to the files and folders already inside too (measured:
+    20,000 files in ~3 s), and new files inherit it. Once per path per process. The label
+    stays on the folder; nothing here removes it. Raises ConfineFailed."""
+    key = os.path.normcase(os.path.realpath(path))
+    with _LABEL_LOCK:
+        if key in _LABELED:
+            return
+        try:
+            r = subprocess.run(["icacls", path, "/setintegritylevel", "(OI)(CI)L"], capture_output=True,
+                               text=True, timeout=ICACLS_TIMEOUT_S, creationflags=_CREATE_NO_WINDOW)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ConfineFailed(f"could not label {path!r} for the workbench: {exc}") from exc
+        if r.returncode != 0:
+            raise ConfineFailed(f"could not label {path!r} for the workbench: "
+                                f"icacls exit {r.returncode}: {(r.stdout + r.stderr).strip()[:300]}")
+        _LABELED.add(key)
+        logger.info("[Workbench] labelled %s Low-integrity (writable by the confined worker)", path)
+
+
+def confine_env(env: dict) -> Tuple[dict, str]:
+    """(env for a confined worker, its private temp folder). TEMP / TMP and npm's cache and prefix
+    point into the Low-integrity folder, since a Low process cannot write the normal ones (the
+    prefix also keeps npm.cmd from walking %APPDATA%, which a Low process cannot read).
+    Raises ConfineFailed."""
+    root = low_root()
+    tmp = os.path.join(root, uuid.uuid4().hex[:8])
+    try:
+        os.makedirs(tmp, exist_ok=True)
+        label_low(root)
+    except OSError as exc:
+        raise ConfineFailed(f"could not create the workbench temp folder {tmp!r}: {exc}") from exc
+    out = dict(env)
+    out.update({CONFINE_ENV: "1", "TEMP": tmp, "TMP": tmp,
+                "npm_config_cache": os.path.join(root, "npm-cache"),
+                "npm_config_prefix": os.path.join(root, "npm-prefix")})
+    return out, tmp
 
 
 _BASE_CACHE: dict = {}
@@ -104,9 +163,14 @@ def _kill_tree(proc: "subprocess.Popen", tag: str) -> None:
 
 
 class WorkbenchClient:
-    def __init__(self, python_exe: str, workdir: str, env: Optional[dict] = None):
+    def __init__(self, python_exe: str, workdir: str, env: Optional[dict] = None, confine: bool = False):
+        # confine: personal mode on Windows - the worker lowers itself to Low integrity (the
+        # manager has labelled `workdir` Low first). A worker that does not say so is refused.
         self._python = python_exe
         self._workdir = workdir
+        self._confine = confine
+        self._confined = False
+        self._tmp = ""
         self._env = dict(env) if env is not None else None
         self._lock = threading.Lock()          # one request at a time
         self._proc: Optional[subprocess.Popen] = None
@@ -124,6 +188,11 @@ class WorkbenchClient:
     @property
     def alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def confined(self) -> bool:
+        """True when the live worker reported itself at Low integrity."""
+        return self._confined
 
     @property
     def incarnation(self) -> str:
@@ -151,6 +220,9 @@ class WorkbenchClient:
         self._errfile = tempfile.TemporaryFile("w+b")
         flags = _CREATE_NO_WINDOW if os.name == "nt" else 0
         env = self._env if self._env is not None else os.environ.copy()
+        self._confined = False
+        if self._confine:
+            env, self._tmp = confine_env(env)
         exe, site = base_launch(self._python)
         argv = [exe, "-I", "-X", "utf8", "-u", WORKER_PATH] + (["--site", site] if site else [])
         self._proc = subprocess.Popen(
@@ -168,7 +240,13 @@ class WorkbenchClient:
         if rep.get("ok") is False or rep.get("re") != "hello" or rep.get("version") != PROTOCOL_VERSION:
             tail = self._stderr_tail()
             self._teardown()
+            if CONFINE_FAIL_MARK in tail:
+                raise ConfineFailed(f"the worker could not lower itself to Low integrity: {tail.strip()[-300:]}")
             raise ProtocolError(f"worker hello failed: {str(rep)[:300]} stderr={tail!r}")
+        if self._confine and rep.get("confined") is not True:     # fail closed: never run unconfined
+            self._teardown()
+            raise ConfineFailed("the worker did not report itself confined")
+        self._confined = bool(rep.get("confined"))
         self._incarnation = rep["incarnation"]
         logger.info("[Workbench][%s] started pid=%s python=%s", self._tag(), proc.pid, self._python)
 
@@ -215,6 +293,9 @@ class WorkbenchClient:
         self._proc = None
         self._reader = None
         self._errfile = None
+        if self._tmp:                       # the confined worker's private temp folder
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            self._tmp = ""
 
     def _restart(self, err_type: str, message: str) -> dict:
         """Hard-kill and start a fresh incarnation. Caller holds the lock."""

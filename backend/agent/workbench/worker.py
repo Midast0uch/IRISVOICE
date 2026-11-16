@@ -485,7 +485,86 @@ def _validate(req):
             raise ValueError(f"missing key {k!r}")
 
 
+# --- OS confinement (personal mode): lower this process to LOW integrity ----------------
+# The parent sets IRIS_WB_CONFINE=1 for a personal-mode worker. Windows Mandatory Integrity
+# Control then refuses every write to an object labelled Medium or higher (the user's
+# folders, the IRIS repo) - for this process AND every child it starts (sh(), subprocess,
+# npm, ctypes), because a child inherits the token. The parent labelled the project folder
+# Low, so that folder stays writable. A process may lower its own level, never raise it.
+CONFINE_ENV = "IRIS_WB_CONFINE"
+CONFINE_FAIL_MARK = "workbench_confine_failed"
+CONFINE_EXIT = 87
+LOW_SID = "S-1-16-4096"
+_CONFINED = False
+
+
+def _lower_integrity():
+    """Set this process token to Low integrity and read it back. Raises on any failure."""
+    if os.name != "nt":
+        raise OSError("OS confinement is Windows-only")
+    import ctypes
+    import ctypes.wintypes as wt
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    adv = ctypes.WinDLL("advapi32", use_last_error=True)
+    k32.GetCurrentProcess.restype = wt.HANDLE
+    k32.LocalFree.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [wt.HANDLE]
+    adv.GetLengthSid.argtypes = [ctypes.c_void_p]
+    adv.GetLengthSid.restype = wt.DWORD
+    adv.OpenProcessToken.argtypes = [wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE)]
+    adv.ConvertStringSidToSidW.argtypes = [wt.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+    adv.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p)]
+    adv.SetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+    adv.GetTokenInformation.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD,
+                                        ctypes.POINTER(wt.DWORD)]
+    adv.OpenProcessToken.restype = adv.ConvertStringSidToSidW.restype = wt.BOOL
+    adv.ConvertSidToStringSidW.restype = adv.SetTokenInformation.restype = wt.BOOL
+    adv.GetTokenInformation.restype = wt.BOOL
+
+    class SidAndAttributes(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wt.DWORD)]
+
+    TOKEN_ADJUST_DEFAULT, TOKEN_QUERY, TOKEN_INTEGRITY_LEVEL, SE_GROUP_INTEGRITY = 0x80, 0x08, 25, 0x20
+    tok, sid = wt.HANDLE(), ctypes.c_void_p()
+    if not adv.OpenProcessToken(k32.GetCurrentProcess(), TOKEN_ADJUST_DEFAULT | TOKEN_QUERY, ctypes.byref(tok)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not adv.ConvertStringSidToSidW(LOW_SID, ctypes.byref(sid)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            label = SidAndAttributes(sid, SE_GROUP_INTEGRITY)
+            if not adv.SetTokenInformation(tok, TOKEN_INTEGRITY_LEVEL, ctypes.byref(label),
+                                       ctypes.sizeof(label) + adv.GetLengthSid(sid)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            k32.LocalFree(sid)
+        need = wt.DWORD(0)
+        adv.GetTokenInformation(tok, TOKEN_INTEGRITY_LEVEL, None, 0, ctypes.byref(need))
+        buf = ctypes.create_string_buffer(need.value or 64)
+        if not adv.GetTokenInformation(tok, TOKEN_INTEGRITY_LEVEL, buf, len(buf), ctypes.byref(need)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        text = ctypes.c_wchar_p()
+        if not adv.ConvertSidToStringSidW(SidAndAttributes.from_buffer(buf).Sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        got = text.value
+        k32.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+        if got != LOW_SID:
+            raise OSError(f"token integrity is {got}, expected {LOW_SID}")
+    finally:
+        k32.CloseHandle(tok)
+
+
 def main():
+    global _CONFINED
+    if os.environ.get(CONFINE_ENV) == "1":      # before any user code, any import of project code
+        try:
+            _lower_integrity()
+            _CONFINED = True
+        except BaseException as exc:            # fail closed: never run unconfined when asked to
+            sys.stderr.write(f"{CONFINE_FAIL_MARK}: {type(exc).__name__}: {exc}\n")
+            sys.stderr.flush()
+            return CONFINE_EXIT
     if "--site" in sys.argv:             # the project venv's site-packages (see client.py)
         import site
         site.addsitedir(sys.argv[sys.argv.index("--site") + 1])
@@ -516,7 +595,8 @@ def main():
             op = req["op"]
             if op == "hello":
                 send({"v": PROTOCOL_VERSION, "re": "hello", "ok": True,
-                      "version": PROTOCOL_VERSION, "incarnation": INCARNATION})
+                      "version": PROTOCOL_VERSION, "incarnation": INCARNATION,
+                      "confined": _CONFINED})
             elif op == "exec":
                 send(op_exec(req, cap))
             elif op == "inspect":
