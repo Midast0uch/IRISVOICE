@@ -320,11 +320,15 @@ def test_the_registration_is_cleared_when_the_node_ends(code_node):
 
 
 def test_the_code_prompt_lists_at_most_five_tool_signatures(code_node):
+    # STATED CHANGE (Round 4 D6, 2026-11-16): the tools note and its signatures appear only
+    # when the brief names a tool Python cannot replace (read_file is replaced by open()),
+    # so the item names edit_file and the test pins that tool's line.
     k = code_node
+    k.item.tools = ["edit_file"]
     k.scripts += ["1"]
     k._der_run_node(k.item, "sess", "turn-1", [])
     system = k.systems[0]
-    assert "tools.read_file(path)" in system and "ToolError" in system
+    assert "tools.edit_file(" in system and "ToolError" in system
     assert system.count("tools.") - system.count("tools.<name>") <= 5 + 1   # 5 signatures
 
 

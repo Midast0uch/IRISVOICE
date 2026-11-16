@@ -255,8 +255,19 @@ def brain_for(owner: Any) -> Optional[Callable[[str], str]]:
     if not callable(infer):
         return None
 
+    # Round 4 W0: the call is tagged "label" in the baseline rows - only for an `infer`
+    # that names the keyword (or takes **kwargs); a fixed-signature stand-in is called as before.
+    import inspect as _inspect
+
+    try:
+        _params = _inspect.signature(infer).parameters
+        _tag = ({"call_kind": "label"} if ("call_kind" in _params or any(
+            p.kind is _inspect.Parameter.VAR_KEYWORD for p in _params.values())) else {})
+    except (TypeError, ValueError):
+        _tag = {}
+
     def _call(prompt: str) -> str:
-        resp = infer(prompt, role="reasoning", max_tokens=16, temperature=0.0)
+        resp = infer(prompt, role="reasoning", max_tokens=16, temperature=0.0, **_tag)
         return getattr(resp, "raw_text", "") or ""
 
     return _call

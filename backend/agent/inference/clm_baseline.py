@@ -222,8 +222,15 @@ def record_call(
     max_tokens: int,
     cap: Optional[Dict[str, Any]],
     resolver: Any,
+    call_kind: str = "other",
+    sends: int = 1,
+    seconds: Optional[float] = None,
 ) -> None:
-    """Call path (flag on only): bind values, queue the row. Never raises."""
+    """Call path (flag on only): bind values, queue the row. Never raises.
+
+    Round 4 W0: ``call_kind`` (what the call is for), ``sends`` (HTTP requests the call
+    made, >= 1: resends after a cut answer and hedge duplicates count) and ``seconds``
+    (wall time of the call, failed ones included) ride on the row for wb_ab_analysis."""
     try:
         owner = _owner_of(resolver)
         row = {
@@ -237,6 +244,9 @@ def record_call(
             "provider": provider,
             "provider_kind": provider_kind,
             "model": model,
+            "call_kind": str(call_kind or "other"),
+            "sends": max(1, int(sends or 1)),
+            "seconds": round(float(seconds), 3) if seconds is not None else None,
             "ok": bool(ok),
             "window": window,
             "max_tokens": max_tokens,

@@ -35,7 +35,12 @@ _PLANNER_BRIEF_RULES = (
     "Python expression over those outputs that is True when the step is done), "
     "'approach' (one or two sentences on how to do it) and 'tools' (list of "
     "tool names the step may call). Keep the brief short; 'expected_output' "
-    "stays as above. Example step with a brief: "
+    "stays as above. "
+    # D2 (Round 4): the planner's brief strings failed to parse in 5 of 12 runs. Before
+    # the example, which the flag-on test reads as the last thing in the added text.
+    "Inside 'check', 'inputs' and 'outputs' use single quotes only and no "
+    "backslashes; write paths relative with forward slashes. "
+    "Example step with a brief: "
     '{"step_id":"s1","step_number":1,"description":"Count the errors per type in the log",'
     '"expected_output":"a count of each error type","depends_on":["start"],'
     '"critical":true,"criticality":"load-bearing",'
@@ -1015,6 +1020,7 @@ class PlanningMixin:
                     # 2026-10-05, 6/6 valid plans. Providers without the
                     # parameter are sent the call unchanged.
                     reasoning_effort="low",
+                    call_kind="plan",
                 )
                 self._accrue_tokens(
                     _rt_text, getattr(self._router, "last_usage", None),
@@ -1074,6 +1080,14 @@ class PlanningMixin:
         try:
             if plan_raw:
                 data = self._parse_planner_json(plan_raw)
+                if data is None:
+                    # D2 (Round 4): an unparseable plan costs a planner retry; the
+                    # raw head names the cause (quotes, backslashes, prose) so the
+                    # parser fix follows the evidence.
+                    logger.warning(
+                        "[AgentKernel._plan_task] conv=%s planner text did not parse "
+                        "(%d chars); head: %s", getattr(self, "conversation_id", None),
+                        len(plan_raw), plan_raw[:1200])
                 if data is not None:
                     logger.info(
                         "[AgentKernel._plan_task] parsed plan keys=%s "

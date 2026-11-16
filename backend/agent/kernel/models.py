@@ -42,6 +42,7 @@ class ModelsMixin:
         role: str = "EXECUTION",
         max_tokens: int = 200,
         temperature: float = 0.0,
+        call_kind: str = "other",
     ):
         """
         Thin inference adapter used by Reviewer (and other DER components).
@@ -62,6 +63,7 @@ class ModelsMixin:
             text, _thinking, _tool_calls = self._router.generate(
                 role, messages,
                 max_tokens=max_tokens, temperature=temperature,
+                **({"call_kind": call_kind} if call_kind != "other" else {}),
             )
             self._accrue_tokens(
                 text, getattr(self._router, "last_usage", None), source="infer"

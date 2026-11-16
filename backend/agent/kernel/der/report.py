@@ -1549,6 +1549,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                     max_tokens=self.response_max_tokens(),
                     temperature=0.6,
                     timeout_s=_syn_deadline_s,
+                    call_kind="synth",
                 )
                 self._accrue_tokens(
                     _syn_text, getattr(self._router, "last_usage", None),
@@ -1573,6 +1574,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                         max_tokens=self.response_max_tokens(),
                         temperature=0.6,
                         timeout_s=_syn_deadline_s,
+                        call_kind="synth",
                     )
                     self._accrue_tokens(
                         _syn_text, getattr(self._router, "last_usage", None),
@@ -1617,6 +1619,7 @@ PRIOR RESEARCH lines are results of earlier searches: a fact found only there is
                                 max_tokens=self.response_max_tokens(),
                                 temperature=0.6,
                                 timeout_s=_syn_deadline_s,
+                                call_kind="synth",
                             )
                         )
                         self._accrue_tokens(

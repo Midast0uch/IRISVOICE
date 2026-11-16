@@ -301,6 +301,9 @@ class NodeContext:
     # node's token (F2: its own callback slot). Both are injected into run_python params.
     wb_outputs: tuple = ()
     wb_node: str = ""
+    # W0 (Round 4): counters run_node keeps for the node's owner: "scripts" (run_python calls)
+    # and "exploring" (checks _is_exploration did not count). Read after run_node returns.
+    stats: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -1014,7 +1017,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         view.admit_live(STEP_GOAL, messages[1], protected=True)
     except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
         _view_failed(exc)
-    tools = _with_close_args(ctx.tools)
+    # A code node closes by its check (or a STATUS line): no step_done / step_summary on
+    # run_python (D6: the model sees code + purpose only).
+    tools = ctx.tools if ctx.wb_node else _with_close_args(ctx.tools)
     malformed = 0
     # Stuck detector (2026-10-01): a small local model called read_file on the
     # same file ~230 times in one step, each result unchanged; only the 300 s
@@ -1226,6 +1231,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     if name == "run_python" and isinstance(params, dict):
                         # the harness injects these; the model never writes them
                         params = {k: v for k, v in params.items() if k not in ("outputs", "_wb_node")}
+                        ctx.stats["scripts"] = ctx.stats.get("scripts", 0) + 1
                         if ctx.check:
                             params["check"] = ctx.check
                         if ctx.wb_outputs:
@@ -1369,6 +1375,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     elif _is_exploration(ctx, raw):
                         # F4: outputs not defined yet - not a failed attempt (no count, no row,
                         # no escalation); the digest still says the check did not pass.
+                        ctx.stats["exploring"] = ctx.stats.get("exploring", 0) + 1
                         logger.info("[run_node] conv=%s check not passed: an output is not "
                                     "defined yet (exploration, not counted)", ctx.conv_id)
                     else:

@@ -68,15 +68,20 @@ def test_f1_without_a_brief_the_result_has_no_outputs_section(repair_node):
 
 # --- F2 --------------------------------------------------------------------------
 def test_f2_two_code_nodes_in_one_conversation_each_reach_their_own_handler(repair_node):
-    """A registers; B registers and finishes (and clears) while A's script has not yet
-    called back; then A's callback runs. Keyed by conversation, A's callback met B's
-    handler (wrong calls list) or an empty slot ("tools are not available here")."""
+    """A registers; B starts while A is still in its first model call. Keyed by
+    conversation, A's callback met B's handler (wrong calls list) or an empty slot
+    ("tools are not available here").
+    STATED CHANGE (Round 4 D7, 2026-11-16): a code node now takes the `workbench` claim
+    BEFORE its clock starts, so two code nodes of one conversation never overlap - B waits
+    for the claim until A ends. The old setup (A waits inside its model call for B to
+    FINISH) is a deadlock by design now; A waits only until B has STARTED, and the test
+    also pins the new order (B's script runs after A's node ended)."""
     from backend.agent import tool_bridge
 
     k = repair_node
     k.item.check, k.item.outputs = "", []
-    a_waiting, b_done = threading.Event(), threading.Event()
-    seen = []
+    a_waiting, b_started = threading.Event(), threading.Event()
+    seen, order = [], []
 
     def _item(step, desc):
         return SimpleNamespace(description=desc, objective_anchor="", expected_output="",
@@ -97,7 +102,8 @@ def test_f2_two_code_nodes_in_one_conversation_each_reach_their_own_handler(repa
             sent.add(who)
             if who == "A":
                 a_waiting.set()
-                assert b_done.wait(30), "B never finished"
+                assert b_started.wait(30), "B never started"
+                time.sleep(0.5)                          # B now tries to overlap A
             return "", "", [_run_call(1, f"r = tools.read_file(path='{who}1')\nr")]
 
         def resolve(self, role):
@@ -108,6 +114,7 @@ def test_f2_two_code_nodes_in_one_conversation_each_reach_their_own_handler(repa
     class _Box:
         def dispatch(self, decision, **kw):
             if decision.tool == "run_python":
+                order.append(("run", "A" if "A1" in str(decision.params.get("code")) else "B"))
                 return real_dispatch(decision, **kw)
             seen.append(decision.params.get("path"))
             return SimpleNamespace(result={"success": True, "content": "ok"}, error="")
@@ -121,9 +128,10 @@ def test_f2_two_code_nodes_in_one_conversation_each_reach_their_own_handler(repa
     out = {}
 
     def _go(name, item):
-        out[name] = k._der_run_node(item, "sess", "turn-1", [])
         if name == "B":
-            b_done.set()
+            b_started.set()
+        out[name] = k._der_run_node(item, "sess", "turn-1", [])
+        order.append(f"{name}:end")
     ta = threading.Thread(target=_go, args=("A", item_a))
     ta.start()
     assert a_waiting.wait(30)
@@ -139,6 +147,7 @@ def test_f2_two_code_nodes_in_one_conversation_each_reach_their_own_handler(repa
         assert log[1]["target"] == path and log[1]["via"] == "run_python"
         assert "not available" not in log[0]["out"]
     assert sorted(seen) == ["A1", "B1"]
+    assert order.index(("run", "B")) > order.index("A:end"), order   # D7: no overlap
     assert not tool_bridge._wb_dispatch                 # both registrations cleared
 
 

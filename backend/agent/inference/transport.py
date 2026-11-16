@@ -230,6 +230,21 @@ def _observe_advertised_limit(transport: "object", response_headers: Any) -> Non
         pass
 
 
+# W0 (Round 4): HTTP requests sent by the CURRENT call, per calling thread. Every request
+# goes through _record_attempt (the first send, a resend after "answer cut by ... reasoning",
+# a retry, the hedge duplicate), so one counter there sees them all. The router resets it
+# before transport.generate and reads it after; it only COUNTS - no behavior hangs on it.
+_SENDS = _threading.local()
+
+
+def sends_reset() -> None:
+    _SENDS.n = 0
+
+
+def sends_count() -> int:
+    return int(getattr(_SENDS, "n", 0))
+
+
 def _record_attempt(transport: "object") -> None:
     """REQ-9 / root-cause of the 429 storm: record a logical LLM call attempt
     in the rate window BEFORE sending.
@@ -244,6 +259,7 @@ def _record_attempt(transport: "object") -> None:
     call do not double-count) lets the gate actually hold new admissions while
     the provider is saturated. Best-effort — metering must never break a call.
     """
+    _SENDS.n = getattr(_SENDS, "n", 0) + 1
     try:
         _qid = getattr(transport, "_quota_id", None)
         if _qid:

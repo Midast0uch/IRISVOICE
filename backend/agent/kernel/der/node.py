@@ -128,17 +128,18 @@ def _clm_menu_budget(tools: list, window: int) -> list:
 
 # -- CLM-11 Workbench code mode (IRIS_WORKBENCH; unset = today's node, byte for byte)
 _WB_SYSTEM = (
-    "You are doing ONE step of a larger task in a persistent Python workbench. Write "
-    "Python and run it with run_python: one script may read, search, transform and "
-    "check many files. The working folder is the project (written `.`). Variables, "
-    "imports and functions persist across your run_python calls in this conversation. "
-    "Ready variables: task (the user's request), goal (this step), steps (earlier "
-    "steps: list of dicts with step, description, result), memory (what was said "
-    "before). Large values stay in variables - print only the slices you need. "
-    "When the step has a BRIEF, fill its outputs: the harness checks them after each "
-    "run and closes the step when the check passes. Otherwise, when the step is done, "
-    "answer with a short plain summary of what you did and found, with no tool call, "
-    "and end with `STATUS: done`, or `STATUS: failed: <reason>`."
+    "You do ONE step of a task by writing Python and running it with run_python. The "
+    "current folder is the project: use relative paths; never chdir; never use an "
+    "absolute path. PROJECT FILES lists what is there - do not list the folder again. "
+    "Variables persist between your runs. Ready variables: task, goal, steps, memory, "
+    "files. The BRIEF names the output variables: write the whole step as ONE script "
+    "that assigns every output. The harness runs the brief's check after each run and "
+    "closes the step when it passes. Read files with open(); print at most a few lines. "
+    "Other languages run from the same script: sh('node app.js'), sh('npm test'), "
+    "sh('npx tsc --noEmit'), or a JavaScript snippet with sh('node -', input=js_code); "
+    "sh() returns a dict with code, stdout, stderr. "
+    "With no BRIEF, when done answer with a short summary ending `STATUS: done` or "
+    "`STATUS: failed: <reason>`."
 )
 _WB_TOOLS_NOTE = (
     " Inside a script, `tools.<name>(**args)` calls an IRIS tool through the same path "
@@ -151,15 +152,21 @@ _WB_TOOLS_MAX = 5
 _WB_SKELETON_MAX_LINES = 40
 _WB_REPAIR_PROMPT = (
     "A small model is doing one step of a task in a Python workbench and its result "
-    "failed the step's check twice. Write a REPAIR BRIEF for its next attempt: first "
-    "two or three sentences on what went wrong and what to do, then a Python "
-    "skeleton of at most 40 lines inside one ```python block that fills the outputs "
-    "so the check passes. Use only the variables and tools named in the brief.\n\n"
-    "BRIEF:\n{brief}\n\nCHECK: {check}\n\nITS LAST CODE:\n{code}\n\n"
-    "WHAT THE WORKBENCH REPORTED:\n{digest}"
+    "failed the step's check twice. Write a REPAIR BRIEF: at most three sentences on "
+    "what went wrong and what to do, then one ```python block of at most 40 lines that "
+    "fills the outputs so the check passes. Use relative paths and only the names in "
+    "the brief.\n\nPROJECT FILES:\n{ground}\n\nBRIEF:\n{brief}\n\nCHECK: {check}\n\n"
+    "ITS LAST CODE:\n{code}\n\nWHAT THE WORKBENCH REPORTED:\n{digest}"
 )
 _WB_PRIOR_HEAD = 300   # earlier results ride in `steps`; the message keeps a head
-_wb_stats = {"code_nodes": 0, "fallback": 0, "unavailable": 0, "seed_failed": 0}
+# W0 (Round 4): wb_wait_s = seconds code nodes waited for the `workbench` claim (D7);
+# scripts = run_python calls in code nodes; exploring = runs _is_exploration counted.
+_wb_stats = {"code_nodes": 0, "fallback": 0, "unavailable": 0, "seed_failed": 0,
+             "wb_wait_s": 0.0, "scripts": 0, "exploring": 0}
+# Tools a Python script replaces with open() / glob / re / subprocess: a brief that names
+# only these gets no `tools.<name>` note (D6). Anything else it names keeps the note.
+_WB_PY_REPLACES = frozenset({"read_file", "grep_files", "glob_files", "run_command",
+                             "list_directory", "list_dir", "list_files", "search_files"})
 
 
 def _wb_on() -> bool:
@@ -272,22 +279,25 @@ def _wb_repair_tracker(kernel, session: str):
 
 
 def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: str,
-                 tracker=None):
+                 tracker=None, ground: str = ""):
     """R4: on the second failed check, ONE Brain call writes a repair brief with a
-    skeleton; the skeleton is put into the namespace as `skeleton`. `tracker` (T7.15) is
-    told when a brief is going to the next attempt - it only labels the shadow rows."""
+    skeleton; the skeleton is put into the namespace as `skeleton` AND shown in the note.
+    `tracker` (T7.15) is told when a brief is going to the next attempt - it only labels
+    the shadow rows. `ground` (D3) = the PROJECT FILES text the repair prompt carries.
+    D1: a "low" reasoning budget (as the planner) and call_kind "wb_repair"."""
     def _hook(attempt: int, code: str, digest: str):
         import re as _re
 
-        prompt = _WB_REPAIR_PROMPT.format(brief=brief or "(none)", check=check,
+        prompt = _WB_REPAIR_PROMPT.format(ground=ground or "", brief=brief or "(none)", check=check,
                                           code=(code or "")[:3000], digest=(digest or "")[:3000])
         text, _think, _ = kernel._router.generate(
             "reasoning", [{"role": "user", "content": prompt}], max_tokens=1200,
-            temperature=0.2, timeout_s=120.0)
+            temperature=0.2, timeout_s=120.0, reasoning_effort="low", call_kind="wb_repair")
         _wb_stats["escalations"] = _wb_stats.get("escalations", 0) + 1
         m = _re.search(r"```python\n(.*?)```", text or "", _re.S)
         skeleton = "\n".join((m.group(1) if m else "").splitlines()[:_WB_SKELETON_MAX_LINES])
         note = _re.sub(r"```python\n.*?```", "", text or "", flags=_re.S).strip()[:1200]
+        in_namespace = False
         if skeleton:
             try:
                 from backend.agent.workbench.manager import get_manager
@@ -295,16 +305,21 @@ def _wb_escalate(kernel, conversation_id: str, workdir: str, brief: str, check: 
                 client = get_manager().workbench_for(conversation_id, workdir)
                 if client is not None:
                     client.put("skeleton", skeleton)
-                    note += ("\n\nThe variable `skeleton` holds a starting script "
-                             f"({len(skeleton.splitlines())} lines): run exec(skeleton) "
-                             "or edit it.")
+                    in_namespace = True
             except Exception as exc:  # noqa: BLE001 - the note still goes, logged
                 logger.warning("[workbench] conv=%s skeleton put failed: %r", conversation_id, exc)
         logger.info("[workbench] conv=%s escalated to the Brain after %d failed checks",
                     conversation_id, attempt)
-        if note and tracker is not None:
+        if not (note or skeleton):
+            return None
+        if tracker is not None:
             tracker.briefed()
-        return ("REPAIR BRIEF (from the planner):\n" + note) if note else None
+        out = "REPAIR BRIEF (from the planner):\n" + note
+        if skeleton:   # D1: the tool model SEES the script, not only a variable name
+            out += ("\n\nStarting script (also in the variable `skeleton`; run `exec(skeleton)` "
+                    "as it is, or send a corrected version):\n" if in_namespace else
+                    "\n\nStarting script (run it as it is, or send a corrected version):\n") + skeleton
+        return out
     return _hook
 
 
@@ -324,6 +339,31 @@ def _wb_tool_lines(tools: list, allowed) -> str:
         opt = [k for k in (schema.get("properties") or {}) if k not in req][:3]
         lines.append(f"tools.{n}({', '.join(req + [o + '=' for o in opt])})"[:100])
     return "; ".join(lines)
+
+
+def _wb_slim_run_python(tools: list) -> list:
+    """D6: the run_python schema a code node's model sees: `code` and `purpose` only and a
+    one-sentence description. The full schema (timeout_s, fresh, close, a long description)
+    cost ~250 tokens of an 8k window for options the harness does not need to offer."""
+    for t in tools or []:
+        fn = t.get("function") or {}
+        if fn.get("name") == "run_python":
+            props = (fn.get("parameters") or {}).get("properties") or {}
+            slim = {k: props.get(k) or {"type": "string"} for k in ("code", "purpose")}
+            return [{**t, "function": {
+                **fn,
+                "description": "Run Python in this conversation's persistent namespace; "
+                               "variables stay between calls.",
+                "parameters": {"type": "object", "properties": slim, "required": ["code"]},
+            }}]
+    return []
+
+
+def _wb_needed_tools(item, allowed) -> frozenset:
+    """D6: the tools the brief names that a Python script cannot replace (not a reader or
+    `run_command`) and that the node's menu offers. Empty = no `tools.<name>` note."""
+    named = {str(n).strip() for n in (getattr(item, "tools", None) or ()) if isinstance(n, str)}
+    return frozenset(n for n in named if n in allowed and n not in _WB_PY_REPLACES)
 
 
 def _wb_callback_handler(execute, allowed, calls: list, count) -> Callable:
@@ -1495,7 +1535,9 @@ class DerNodeMixin:
             if not _turn_live():
                 logger.info("[run_node] conv=%s turn=%s %s", self.conversation_id, _turn_id, _ended)
                 raise RuntimeError(_ended)
-            out = self._router.generate(role, messages, **kw)
+            # W0: node model calls read "node" in the baseline rows; a code node's
+            # generate (below) passes "code_node" ahead of this default.
+            out = self._router.generate(role, messages, **{"call_kind": "node", **kw})
             self._accrue_tokens("", getattr(self._router, "last_usage", None), source="run_node")
             return out
 
@@ -1901,23 +1943,45 @@ class DerNodeMixin:
             )
             _node_state["ctx"] = _node_ctx
             _full_tools = self._get_openai_tools() if _wb_on() else []
-            if _wb_on() and _wb_code_mode(goal, _full_tools, workdir) and _wb_seed(
-                    self.conversation_id or "", workdir, task, goal, _prior_results, _step_facts):
+            _wb_go = False
+            if _wb_on() and _wb_code_mode(goal, _full_tools, workdir):
+                # D7: ONE code node at a time owns the conversation's namespace. Take that
+                # claim BEFORE run_node starts its 300 s clock (parallel code nodes waited
+                # 880 s on it INSIDE their budget, measured). It is released in the finally
+                # below with the other held claims; _execute sees it in `_held` and does not
+                # take it a second time at the first run_python.
+                _wb_t0 = time.perf_counter()
+                _wb_go = "workbench" in _held or _der_claim(self, "workbench", item)
+                _wb_wait = time.perf_counter() - _wb_t0
+                _wb_stats["wb_wait_s"] += _wb_wait
+                if _wb_go and "workbench" not in _held:
+                    _held.append("workbench")
+                if _wb_go and not _wb_seed(
+                        self.conversation_id or "", workdir, task, goal, _prior_results, _step_facts):
+                    _wb_go = False
+                    _held.remove("workbench")   # a menu node does not keep the namespace
+                    _der_release(self, "workbench")
+            if _wb_go:
                 import dataclasses as _dc
 
                 _wb_allowed = frozenset(n for n in _menu if n != "run_python")
+                _wb_need = _wb_needed_tools(item, _wb_allowed)
                 _wb_cb_calls: list = []
                 _wb_node = uuid.uuid4().hex   # F2: this node's own callback slot
                 _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item)[1] else None
                 _wb_ctx = _dc.replace(
                     _node_ctx,
-                    tools=[t for t in _full_tools
-                           if (t.get("function") or {}).get("name") == "run_python"],
+                    tools=_wb_slim_run_python(_full_tools),
+                    # the tagged generate: a code node's model calls read "code_node" in the
+                    # baseline rows (the closure tags every other node call "node")
+                    generate=lambda role, messages, **kw: _generate(
+                        role, messages, **{"call_kind": "code_node", **kw}),
+                    stats={},
                     # Round 3 R1: the TOOL MODEL writes and runs the code; the
                     # Brain briefs (plan time) and steps in once on escalation.
-                    role="tool_execution", helper_role=None, max_tokens=2048, max_calls=6,
-                    system=_WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_allowed)
-                                         if _wb_allowed else ""),
+                    role="tool_execution", helper_role=None, max_tokens=1024, max_calls=6,
+                    system=_WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_need)
+                                         if _wb_need else ""),
                     choose_tool=None, on_call=None,
                     # a real tool call earns the card (kernel.surface counter); no Oracle labels in code
                     on_result=lambda name, params, ok, approval_ok=None: self._der_count_tool_call(item),
@@ -1949,6 +2013,13 @@ class DerNodeMixin:
                     clear_workbench_dispatch(_wb_conv, _wb_handler, _wb_node)
                     if _wb_rr is not None:
                         _wb_rr.end()
+                    # W0: what this node did, once, at its close (the A/B analysis reads it)
+                    _wb_stats["scripts"] += _wb_ctx.stats.get("scripts", 0)
+                    _wb_stats["exploring"] += _wb_ctx.stats.get("exploring", 0)
+                    logger.info("[workbench] conv=%s step=%s scripts=%d exploring=%d wait_s=%.1f",
+                                self.conversation_id, getattr(item, "step_id", ""),
+                                _wb_ctx.stats.get("scripts", 0), _wb_ctx.stats.get("exploring", 0),
+                                _wb_wait)
                 _why = _wb_needs_fallback(result)
                 if _why:
                     _wb_stats["fallback"] += 1

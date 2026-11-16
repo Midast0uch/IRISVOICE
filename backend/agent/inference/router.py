@@ -40,6 +40,8 @@ from .transport import (
     OpenAICompatTransport,
     PerThreadUsage,
     Transport,
+    sends_count as _sends_count,
+    sends_reset as _sends_reset,
 )
 from ..rate_meter import get_rate_meter, metered, quota_key
 from ..call_context import call_class
@@ -1170,9 +1172,14 @@ class InferenceRouter:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        call_kind: str = "other",
         **kwargs: Any,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """Generate a response for the given *role*.
+
+        ``call_kind`` (Round 4 W0) names WHAT the call is for (label, plan, node,
+        code_node, wb_repair, synth; "other" = untagged). It only rides into the
+        IRIS_CLM_BASELINE row; no transport sees it and nothing branches on it.
 
         Resolution chain:
             1. ``role`` → ``ProviderInstance`` (via ``RoleBindingTable``)
@@ -1350,6 +1357,7 @@ class InferenceRouter:
 
         _t0 = _time.monotonic()
         _ok = False
+        _sends_reset()  # W0: HTTP requests this call sends (resends, hedge) are counted
         try:
             try:
                 result = transport.generate(
@@ -1389,6 +1397,8 @@ class InferenceRouter:
                     model=effective_model, messages=messages, tools=normalized_tools,
                     usage=None, ok=False, window=_window, max_tokens=max_tokens,
                     cap=_clm_cap, resolver=getattr(self, "_window_resolver", None),
+                    call_kind=call_kind, sends=_sends_count(),
+                    seconds=_time.monotonic() - _t0,
                 )
 
         # Remap sanitized tool names back to the originals (see above) so
@@ -1438,6 +1448,8 @@ class InferenceRouter:
                 model=effective_model, messages=messages, tools=normalized_tools,
                 usage=self.last_usage, ok=True, window=_window, max_tokens=max_tokens,
                 cap=_clm_cap, resolver=getattr(self, "_window_resolver", None),
+                call_kind=call_kind, sends=_sends_count(),
+                seconds=_time.monotonic() - _t0,
             )
 
         return result
