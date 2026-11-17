@@ -392,6 +392,23 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   DONE = contract tests pass and fail on a seeded frame change; soft stop keeps state;
   hard kill changes the incarnation. NOT THIS = async, rich MIME output, tool callbacks
   from inside Python.
+- **Wave 7, Round 6 tasks (2026-11-16; browser + Oracle + code mode; design.md "Round 6"):**
+  - [ ] **P0 probes** (main session): no-folder personal workdir; scope on the callback thread;
+    the web toggle at dispatch.
+  - [ ] **C1 latch + browser budget + 12-call cap**, **C2 claim order**, **C3 entry rule +
+    `_wb_allowed` intersection**, **C6 screenshot strip**, **C7 needs_sight**, C4 handler half
+    (kernel/der/node.py - one builder).
+  - [ ] **C4 shadow rows** (browser_next_shadow.py `scope=` / `via=`).
+  - [ ] **C5 browser_read** (browser_tools.py, tool_registry.py, tool_bridge.py, kernel/base.py
+    claims, external_reference.py, tool_envelope.py, pacman_fragment.py, physics_action.py,
+    permissions tier; the vocabulary pin in tests/unit/test_external_reference.py moves with it).
+  - [ ] **C8 scratch workdir + C10 worker network guard** (workbench/manager.py, worker.py,
+    client.py).
+  - [ ] **C9** planner browser-brief rule (<= 1,400 chars total) + `_WB_BROWSER_NOTE`.
+  - [ ] **Tests**: contract + behavioral files; CDD replay for C4.
+  - [ ] **`browser_data` eval tasks** + COHORTS in evals/wb_ab_analysis.py.
+  - [ ] **Live gate** (after TG-7 v2 full ends, never concurrent): browser + browser_goal +
+    browser_data, flag 0/1 interleaved x5, cloud then small model; the Round 6 bar.
 - **Wave 7, Round 4 tasks (2026-11-16, CURRENT; design.md "Round 4"):**
   > Re-run after F1-F4 (5778022e), stopped after 2 of 5 rounds for Round 4: off 10/10, on 7/10;
   > calls 135 vs 188; prompt tokens 1.14 M vs 1.07 M; completion 65 k vs 84 k; escalations 2

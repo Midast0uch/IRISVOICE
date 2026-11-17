@@ -266,6 +266,87 @@ finished steps), memory (the node's `_memory_facts`). Leaves only through `keep(
 Import rule (a contract test): only `tool_bridge.py` and `kernel/der/node.py` import
 the package; `node_executor.py` never does.
 
+### Round 6 (2026-11-16, CURRENT for browser work): the Oracle, the browser and code mode in unison
+
+Owner (verbatim): "so essentially the application would need be able to handle the oracle
+using browser tools and code mode with workbench in unison or a parallel if that aligns with
+your recommendation i want you to build that and do proper testing to make sure theres no
+issues". Advisor report 2026-11-16 (read-only).
+
+Facts that set the design: the Round 2 line "tool_approval and browser_next continue through
+the same hooks" was NOT built (the code-mode ctx has on_call=None and a counting-only
+on_result) - a script's browser_act writes no browser_next row; all 14 browser evals are
+personal mode on live public sites, judged by reply regex, and none strictly needs sight;
+with no bound folder a personal conversation resolves the workdir to the IRIS repo, which is
+refused, so code mode cannot start there; browser_observe returns a 2,500-char digest, so a
+script cannot read a page; when a vision model is live the results carry marked_screenshot
+b64, which the callback handler passed into the worker; an ended node cannot stop its script
+(the handler object is handed to client.exec once); a code node would take the `browser`
+claim inside its clock (the D7 problem); record_browser_next reads its scope from a contextvar
+of the node thread (empty on the callback thread); the browser runs in the backend process
+(the Low-integrity worker only writes a call frame); the worker's network is open.
+
+- **Entry rule (C3).** A browser code step = flag on + run_python offered + a brief with
+  outputs and a check + the brief's `tools` names a browser tool (browser_open / browser_read /
+  browser_observe / browser_act / browser_explore) + not WRITE / not after a change +
+  `_vision_relevant(goal)` false. Only for such a step the external-reference exclusion is
+  lifted. A browser step without a brief stays on today's menu / vision path. `_wb_allowed`
+  = the node's menu INTERSECTED with the offered tool names (the web toggle holds).
+- **Driving the page.** tools.browser_*() -> the node's `_execute` -> box.dispatch (egress
+  guard, click-safety gate, hand-back wait, the 150 s browser deadline unchanged). C2: a
+  browser code node takes `browser` then `workbench` at entry, before its clock; a
+  non-browser code node's handler refuses browser tools. C1: the handler carries a `closed`
+  latch (set in the node's finally before the claims are released) and a browser wall budget
+  (node budget - 20 s); after either it answers "the step ended" and dispatches nothing; at
+  most 12 browser callbacks per run_python. C5: a new read-only tool `browser_read(max_chars
+  = 200000)` (main text + links of the open page, `trust: untrusted`), in the browser claim,
+  offered only to browser code nodes (not in NODE_TOOLS). C6: the handler strips
+  marked_screenshot and trims marks to id / role / name / disabled before the value reaches
+  the worker. A `_WB_BROWSER_NOTE` (<= 400 chars) for browser code nodes only.
+- **Sight (C7).** No mixed node this round. Plan time: a sight step is its own menu-path step
+  (the page persists per conversation between steps). Run time: a new fallback reason
+  `needs_sight` (the check did not pass and the script raised ToolError('needs sight') or an
+  observation had too few marks): the node re-runs once on the menu path with sees / look,
+  still holding the claim, on the same page. tools.browser_look(question) comes later.
+- **Parallel.** Allowed: a code node on files beside a browser node (different claims); the
+  loop over pages inside ONE script (zero model calls between pages); browser_explore /
+  crawler fan-out for read-only linked pages. Refused: a second page / context per
+  conversation (_MAX_SESSIONS = 2 process-wide with LRU close; marks numbering and the
+  click-safety memory are per session). Two browser code nodes of one conversation serialize
+  on both claims.
+- **The Oracle now (C4, shadow).** One browser_next question per script browser_act with an
+  element_id, after its result: goal, the last observation text the script saw, element_id,
+  action, done_when, calls_this_step, brain_ok, scope captured on the node thread at entry
+  (new `scope=` parameter), `via="run_python"`; same consumer and criteria_version; the
+  oracle_shadow lane; no sampled swap inside a script. **Later (enforcing):**
+  tools.browser_act(action=..., target='<label>') without element_id asks browser_next
+  synchronously and clicks its element ONLY when the consumer is enforced on the active
+  engine (the existing enforcement check), the confidence clears the fitted threshold, and
+  IRIS_WB_BROWSER_PICK=1; otherwise ToolError("no confident element").
+- **Scope and safety.** C8 (owner 2026-11-16: "Private scratch folder"): a personal
+  conversation with no bound folder gets a per-conversation scratch folder (labelled Low,
+  removed at the end), never the IRIS repo and never an ask card in a browser step. C10
+  (owner: "Yes, refuse them"): the confined worker refuses socket connects to loopback and
+  private addresses ("use tools.browser_open"); child processes are not covered (a firewall
+  rule / AppContainer later). Page actions in scripts (owner: "Actions now"): click / type /
+  select through the click-safety gate; credentials and login stay on the vision path.
+- **Tests.** Contract (test_workbench_browser_contract.py): latch, claim order, entry table,
+  row shape, no b64 in frames, browser_read in claim / family / tier, enforcement guard (bar
+  unmet -> no Oracle click). Behavioral (test_workbench_browser_behavior.py): the real
+  _der_run_node + a real worker + a fake browser box (no network) through plan -> code node
+  -> callbacks -> check -> manifest -> synthesis; needs_sight fallback; a parallel menu
+  browser node and a code node without deadlock; a script that outlives its node does not
+  act. CDD replay for C4 rows (replay_consumer_instrument). Keep green: the browser_next,
+  browser_tools, browser_vision_in_node, browser_session, browser_kept_driver contract tests,
+  test_browser_control_behavior, the workbench contract files, unit test_external_reference.
+- **Live gate.** Cohorts `browser` (10), `browser_goal` (4) + a new `browser_data` (4 multi-page
+  extract-and-compute tasks); IRIS_WORKBENCH 0/1 interleaved, >= 5 rounds, cloud first. Bar
+  (on vs off, per cohort): pass >= off and no task lower by >= 2 of 5; model calls, prompt
+  tokens, reply_s <= off on `browser` and <= 0.7 x off on `browser_goal` / `browser_data`;
+  Brain calls <= off; browser_next rows per script browser_act on an on-list element = 1.0 and
+  on-arm rows per task >= off; claim waits >= 0.5 s inside a script 0; latch hits 0; browser
+  timeouts <= off; vision steps lost 0; code-node fallbacks <= 20 %; planner retries <= off.
+
 ### Round 4 (2026-11-16, CURRENT; advisor after TG-7 run 1): make the Workbench win on every metric
 
 Owner (verbatim): "We had a lower prompt token amount which is good but i expect a signficant
