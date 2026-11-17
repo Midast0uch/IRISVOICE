@@ -6915,6 +6915,51 @@
         "read_chars": 196000,
         "needs": "fact in turn 4 of 7 pasted turns; the record keeps turns 4-7 (112,000 chars = 28,000 tokens chars/4) against ~22.8k tokens of history budget: the oldest user message is trimmed"
       }
+    },
+    {
+      "id": "d01_einstein_quote_count",
+      "group": "browser_data",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 900,
+      "prompt": "On https://quotes.toscrape.com, look at pages 1, 2 and 3 of the quote list (/page/1/, /page/2/, /page/3/) and tell me how many quotes in total are by Albert Einstein on those three pages.",
+      "reply_patterns": [
+        "\\b(6|six)\\b"
+      ]
+    },
+    {
+      "id": "d02_page1_top_tag",
+      "group": "browser_data",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 900,
+      "prompt": "On https://quotes.toscrape.com page 1, count how often each tag appears across the quotes on that page. Which tag appears most often, and how many times?",
+      "reply_patterns": [
+        "inspirational",
+        "\\b(3|three)\\b"
+      ]
+    },
+    {
+      "id": "d03_books_top5_total",
+      "group": "browser_data",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 900,
+      "prompt": "On https://books.toscrape.com page 1 (the first page of the book list, 20 books), find the 5 most expensive books by price and tell me the total of their 5 prices in pounds.",
+      "reply_patterns": [
+        "269[.,]66"
+      ]
+    },
+    {
+      "id": "d04_countries_first3_population",
+      "group": "browser_data",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 900,
+      "prompt": "On https://www.scrapethissite.com/pages/simple/, take the first 3 countries listed on the page and tell me the sum of their populations.",
+      "reply_patterns": [
+        "34[,. ]?180[,. ]?879"
+      ]
     }
   ]
 }

@@ -40,6 +40,9 @@ COHORTS = {
     "run-report": ("c14", "c17", "c18", "c19", "c25", "c26", "c27"),
     "explain": ("c13",),
     "write": ("c01", "c02", "c11"),
+    "browser": ("b01", "b02", "b03", "b04", "b05", "b06", "b07", "b08", "b09", "b10"),
+    "browser_goal": ("g01", "g02", "g03", "g04"),
+    "browser_data": ("d01", "d02", "d03", "d04"),
 }
 KINDS = ("label", "plan", "node", "code_node", "wb_repair", "synth", "other")
 ROLES = ("reasoning", "tool_execution")
