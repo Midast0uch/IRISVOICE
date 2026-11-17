@@ -409,6 +409,25 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
   - [ ] **`browser_data` eval tasks** + COHORTS in evals/wb_ab_analysis.py.
   - [ ] **Live gate** (after TG-7 v2 full ends, never concurrent): browser + browser_goal +
     browser_data, flag 0/1 interleaved x5, cloud then small model; the Round 6 bar.
+    > **PARTIAL run 2026-11-17 11:09-14:45 (commit 9f36b039), STOPPED by a Claude Code crash
+    > after 4 of 10 blocks = 2 rounds per arm (n = 2 per task - NOT a verdict; the bar needs
+    > >= 5).** 24 tasks: b01-b10, g01-g04, d01-d04 + re-check x02 x03 c51 c01 c02 c11; IRIS_WORKBENCH
+    > 0/1 interleaved; evals/results/20261117-{120554,125451,134221,144055}.json.
+    > all: pass 46/48 -> 48/48, reply_s x0.91, calls x1.12, tool calls x1.20, sends x1.11,
+    > prompt x0.82, completion x0.95, planner retries 15 -> 1, 62 code nodes, 3.23 scripts each,
+    > 3 escalations, 0 fallbacks. browser (b01-b10): pass 19/20 -> 20/20 but calls x1.47, tool
+    > calls x2.0, completion x1.47, prompt x1.01, reply x1.05, 3.46 scripts per code node - FAILS
+    > the bar (calls / tokens / reply <= off): simple one-page lookups got a brief and became
+    > code nodes that spend ~3.5 scripts where the menu path needs fewer calls. browser_goal:
+    > calls x0.69, prompt x0.52, reply x0.70 (passes). browser_data: calls x1.14, prompt x0.91,
+    > reply x0.97, 4 scripts per node - FAILS (bar <= 0.7 x off): the scripts explore the page
+    > structure. Re-check cohorts hold the earlier fixes: context prompt x0.55 / reply x0.61, data
+    > prompt x0.40 / reply x0.61, write 6/6 vs 5/6 with prompt x0.65. NEXT: (1) only multi-page
+    > or computed browser work gets a brief (a single-page lookup stays on the menu path); (2)
+    > give the code node the page structure up front (a browser ground: the first
+    > browser_read/observe result of the target page, like PROJECT FILES for folders) so the
+    > script does not explore; (3) count browser_next rows per script act in the analysis
+    > (not yet in wb_ab_analysis.py); (4) re-run the gate x5 after the restart fix.
 - **Wave 7, Round 4 tasks (2026-11-16, CURRENT; design.md "Round 4"):**
   > Re-run after F1-F4 (5778022e), stopped after 2 of 5 rounds for Round 4: off 10/10, on 7/10;
   > calls 135 vs 188; prompt tokens 1.14 M vs 1.07 M; completion 65 k vs 84 k; escalations 2
