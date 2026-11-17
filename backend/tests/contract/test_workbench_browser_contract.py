@@ -522,3 +522,11 @@ def test_the_browser_note_is_short_and_only_a_browser_code_node_has_it(bnode):
     k.st.scripts += ["price = '19.99'"]
     _run(k)
     assert "needs sight" not in k.st.systems[0]
+
+
+def test_the_browser_note_names_browser_reads_result_fields():
+    """2026-11-17 smoke run (d03): the script spent 7 runs guessing browser_read's keys and took
+    the digest's printout cut for a cut page. The note names the fields and says so."""
+    note = _node_module()._WB_BROWSER_NOTE
+    assert "browser_read() -> dict: text" in note and "links" in note
+    assert "printed output is cut, the page is not" in note

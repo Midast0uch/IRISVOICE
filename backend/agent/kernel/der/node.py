@@ -156,11 +156,15 @@ _WB_BROWSER_TOOLS = frozenset({"browser_open", "browser_read", "browser_observe"
 _WB_BROWSER_CALLS_MAX = 12   # browser callbacks per run_python (the worker's general cap is 24)
 _WB_BROWSER_MARGIN_S = 20.0  # the browser wall budget = the node's budget minus this
 _WB_ENDED = "the step ended"
+# Exact result fields (2026-11-17 smoke run d03: the script spent 7 runs guessing browser_read's
+# keys - it returns both `content` and `text` - and took the digest's "chars cut" mark in its
+# printout for a cut page).
 _WB_BROWSER_NOTE = (
-    " BROWSER: tools.browser_observe() returns `marks` (id, role, name, disabled): pick the "
-    "element from marks by its name, then tools.browser_act(action=..., element_id=...). "
-    "Observe again after any change. tools.browser_read() gives the page text. If the label "
-    "is not in marks, raise ToolError('needs sight'). Never log in or type credentials in a script."
+    " BROWSER: tools.browser_observe() -> marks (id, role, name, disabled): pick by name, then "
+    "tools.browser_act(action=..., element_id=...); observe again after a change. "
+    "tools.browser_read() -> dict: text (the whole page text), links, url, title - parse text "
+    "in the script; printed output is cut, the page is not. Label not in marks: raise "
+    "ToolError('needs sight'). Never log in or type credentials."
 )
 _WB_OBS_MARK = "Elements (pass the number as element_id to browser_act):"
 _WB_POOR_MARKS = 2           # an observation with this many marks or fewer cannot be scripted
