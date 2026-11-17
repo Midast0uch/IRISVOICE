@@ -206,7 +206,9 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
         # out, it ran with web on only when an earlier task had left the
         # in-memory toggle on (fresh backend 2026-10-13: g02 got no browser
         # tools, wrote scripts, and waited 120 s on the save-folder question).
-        if task["group"] in ("research", "browser", "browser_goal"):
+        # browser_data (Round 6, 2026-11-17) too: its smoke runs replied "Web search is
+        # currently disabled" because the group was not in this list.
+        if task["group"] in ("research", "browser", "browser_goal", "browser_data"):
             await ws.send(json.dumps({"type": "set_web_mode", "payload": {"enabled": True}}))
 
         if task["path"] == "dev_cli":

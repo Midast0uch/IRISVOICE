@@ -56,3 +56,10 @@ def test_cohorts_cover_browser_groups():
     assert mod.cohort_of("d03_books_top5_total") == "browser_data"
     assert mod.cohort_of("g01_quote_author_birth") == "browser_goal"
     assert mod.cohort_of("b05_python_docs_library") == "browser"
+
+
+def test_the_runner_switches_the_web_on_for_browser_data():
+    """2026-11-17: the browser_data smoke runs replied "Web search is currently disabled" -
+    the runner turned the web on only for research / browser / browser_goal."""
+    src = (Path(__file__).resolve().parents[3] / "evals" / "run_evals.py").read_text(encoding="utf-8")
+    assert '"browser_data"' in next(l for l in src.splitlines() if 'task["group"] in ("research"' in l)
