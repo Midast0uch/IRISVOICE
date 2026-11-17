@@ -15,6 +15,13 @@ PKG = os.environ.get("WORKBENCH_PKG", "backend.agent.workbench")
 
 HERE = Path(__file__).resolve().parent
 PYTHON = sys.executable
+# Test workdirs live OUTSIDE the test tree (2026-11-17): created and deleted inside
+# backend/tests/contract, a concurrent pytest collection lstat()ed a folder another run
+# had just deleted -> FileNotFoundError (6 of 6 collections failed under churn). Also
+# outside the repo and outside the system temp folder (the worker allows writes to
+# temp, so a temp workdir would blur the "outside the workdir" refusals).
+WB_WORK = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "iris-wb-tests"
+WB_WORK.mkdir(parents=True, exist_ok=True)
 
 
 def mod(name):
@@ -23,7 +30,7 @@ def mod(name):
 
 def make_workdir():
     # Outside the system temp folder, so workdir and temp allowances stay distinguishable.
-    return tempfile.mkdtemp(dir=str(HERE), prefix="_wb_")
+    return tempfile.mkdtemp(dir=str(WB_WORK), prefix="_wb_")
 
 
 def drop(path):

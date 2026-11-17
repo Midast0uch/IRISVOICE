@@ -13,7 +13,7 @@ import tempfile
 
 import pytest
 
-from backend.tests.contract._wb_common import HERE, PKG, PKG_PATH, PYTHON
+from backend.tests.contract._wb_common import HERE, PKG, PKG_PATH, PYTHON, WB_WORK
 from backend.tests.contract._wb_common import drop as _drop
 
 if PKG_PATH:
@@ -25,7 +25,7 @@ WorkbenchClient = client_mod.WorkbenchClient
 
 @pytest.fixture()
 def wb():
-    workdir = tempfile.mkdtemp(dir=str(HERE), prefix="_wb_")
+    workdir = tempfile.mkdtemp(dir=str(WB_WORK), prefix="_wb_")
     c = WorkbenchClient(PYTHON, workdir)
     c.start()
     try:

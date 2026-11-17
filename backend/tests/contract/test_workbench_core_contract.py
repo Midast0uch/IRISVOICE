@@ -28,6 +28,7 @@ client_mod = importlib.import_module(_PKG + ".client")
 WorkbenchClient = client_mod.WorkbenchClient
 ProtocolError = protocol.ProtocolError
 
+from backend.tests.contract._wb_common import WB_WORK
 from backend.tests.contract._wb_common import drop as _drop
 
 HERE = Path(__file__).resolve().parent
@@ -38,7 +39,7 @@ PYTHON = sys.executable
 
 @pytest.fixture
 def wb():
-    workdir = tempfile.mkdtemp(dir=str(HERE), prefix="_wb_")
+    workdir = tempfile.mkdtemp(dir=str(WB_WORK), prefix="_wb_")
     c = WorkbenchClient(PYTHON, workdir)
     c.start()
     try:
@@ -203,7 +204,7 @@ def test_hard_kill_restarts_new_incarnation_without_orphan(wb):
 
 # --- audit hook ---------------------------------------------------------------
 def test_audit_hook_refuses_write_outside_workdir_and_temp(wb):
-    probe = HERE / "_wb_probe_outside.txt"
+    probe = WB_WORK / "_wb_probe_outside.txt"   # outside every workdir (WB_WORK/_wb_*)
     try:
         rep = wb.exec(f"open({str(probe)!r}, 'w').write('x')")
         assert rep["ok"] is False and rep["error"]["type"] == "PermissionError"
@@ -223,7 +224,7 @@ def test_audit_hook_allows_workdir_temp_and_reads(wb):
 
 # --- close --------------------------------------------------------------------
 def test_close_ends_process():
-    workdir = tempfile.mkdtemp(dir=str(HERE), prefix="_wb_")
+    workdir = tempfile.mkdtemp(dir=str(WB_WORK), prefix="_wb_")
     try:
         c = WorkbenchClient(PYTHON, workdir)
         c.start()
@@ -271,7 +272,7 @@ def test_client_names_an_error_reply_and_the_worker_survives(wb):
 @pytest.fixture
 def victim():
     """A file and a folder OUTSIDE the workdir and the temp folder."""
-    f, d = HERE / "_wb_victim.txt", HERE / "_wb_victim_dir"
+    f, d = WB_WORK / "_wb_victim.txt", WB_WORK / "_wb_victim_dir"   # outside every workdir
     f.write_text("v")
     d.mkdir(exist_ok=True)
     (d / "inner.txt").write_text("v")
