@@ -161,6 +161,23 @@ from backend.monitor import (
 logger.info("Finished backend.main imports.")
 
 
+def _after_tts_ready(max_wait_s: float = 300.0) -> None:
+    """Block (call it on a worker thread) until the TTS worker has left "loading" /
+    "not_started", at most `max_wait_s`. /health waits for TTS, and the TTS worker's import
+    reads from the C: hard disk: a boot warm-up that reads the disk in the same window
+    starves it (the Phonon-2 warm learned this on 2026-10-11; the browser pool and the
+    embedding warm on 2026-11-17 - cold start 226 s). Bounded, so a TTS that never loads
+    never blocks a warm-up forever. Never raises."""
+    deadline = time.monotonic() + max_wait_s
+    while time.monotonic() < deadline:
+        try:
+            if get_tts_manager().readiness().get("status") not in ("loading", "not_started"):
+                return
+        except Exception:  # noqa: BLE001 - a probe never blocks a warm-up
+            return
+        time.sleep(1.0)
+
+
 # ============================================================================
 # Lifespan Management (Startup & Shutdown) - AUDIO ENGINE INITIALIZATION LOGGING
 # ============================================================================
@@ -1128,6 +1145,11 @@ async def lifespan(app: FastAPI):
         # a machine that never searches simply has the pool's own idle watchdog
         # reclaim it.
         async def _warm_browser_pool() -> None:
+            # AFTER the TTS worker (2026-11-17, owner: "it shouldnt be taking longer than
+            # 100s"): the Chromium launch reads ~200 MB from the C: hard disk; started in
+            # the TTS window it starved the TTS import (cold start 226 s, the TTS worker
+            # began loading only at +140 s). /health waits for TTS, not for the browser.
+            await asyncio.to_thread(_after_tts_ready)
             try:
                 from backend.vision.browser_pool import acquire_browser
 
@@ -1162,12 +1184,18 @@ async def lifespan(app: FastAPI):
         async def _warm_embedding_service() -> None:
             import time as _warm_time
 
+            # After the TTS worker and OFF the event loop (2026-11-17): the model load ran
+            # inside this coroutine and blocked the loop (a "loop stall" in the boot log)
+            # while it read from the hard disk in the TTS window.
+            await asyncio.to_thread(_after_tts_ready)
             _t0 = _warm_time.perf_counter()
             try:
                 from backend.memory.embedding import get_embedding_service
 
-                _svc = get_embedding_service()
-                _svc.encode("warmup")
+                def _load_and_encode():
+                    get_embedding_service().encode("warmup")
+
+                await asyncio.to_thread(_load_and_encode)
                 _elapsed_ms = int((_warm_time.perf_counter() - _t0) * 1000)
                 # NOTE: StructuredLogger.info() takes a single formatted
                 # string — printf-style lazy args crash the call (caught by
