@@ -83,7 +83,7 @@ EXTERNAL_TOOLS = frozenset({
     "get_rendered_documents", "fetch_url", "crawl",
     # the search / open-url / browser family
     "search", "open_url",
-    "browser_open", "browser_observe", "browser_act", "browser_explore",
+    "browser_open", "browser_observe", "browser_read", "browser_act", "browser_explore",
 })
 
 

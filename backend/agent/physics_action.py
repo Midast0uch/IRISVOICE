@@ -36,7 +36,7 @@ GATHER = frozenset({
     "get_rendered_documents", "get_system_info", "glob_files", "grep_files",
     "recall_memory", "recall_research", "vision_analyze_screen", "take_screenshot",
     "read_shell_output", "open_url", "list_conversations", "git_log", "git_status",
-    "git_diff", "browser_open", "browser_observe", "browser_explore",
+    "git_diff", "browser_open", "browser_observe", "browser_read", "browser_explore",
 })
 
 # docs/cad_v2_architecture.md S2.2: balance = clamp(EML / 2.3418, 0.1, 3.0).

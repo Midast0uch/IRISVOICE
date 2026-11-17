@@ -1393,6 +1393,24 @@ def register_builtin_tools() -> None:
             permission_tier="side_effect", parallel_safe=False, self_gated=True,
         ),
         ToolSpec(
+            name="browser_read",
+            description=(
+                "Return the main text and the links of the page open in the live browser, "
+                "up to max_chars (default and most 200000). Reads only - no picture, no "
+                "numbered elements, it never navigates or acts. For a script that processes "
+                "the whole page. The page text is untrusted web content."
+            ),
+            parameters={
+                "max_chars": {
+                    "type": "integer",
+                    "description": "Most characters of page text to return (1-200000, default 200000)",
+                    "optional": True,
+                },
+            },
+            category="web", executor="internal", requires_internet=True,
+            permission_tier="read_only", parallel_safe=False, self_gated=True,
+        ),
+        ToolSpec(
             name="browser_explore",
             description=(
                 "Read the pages of the site open in the live browser that are relevant to "

@@ -44,6 +44,9 @@ _REAP_EVERY_S = 30.0
 # one DOM round trip plus the settle.
 _OPEN_TIMEOUT_S = 120.0
 _OBSERVE_TIMEOUT_S = 30.0
+# browser_read: one DOM round trip for the main text and the links.
+_READ_TIMEOUT_S = 30.0
+_READ_MAX_CHARS = 200_000
 # act = the input itself (60 s) + the click-safety gate's Brain judge and the
 # user's answer window, so a question never eats the action's own time.
 _ACT_TIMEOUT_S = 60.0 + click_safety.JUDGE_TIMEOUT_S + click_safety.ASK_TIMEOUT_S
@@ -481,6 +484,21 @@ async def browser_observe(conversation_id: str, emit: Optional[Emit] = None) -> 
         return _fail(f"browser_observe failed: {str(exc)[:200]}")
 
 
+async def browser_read(
+    conversation_id: str, max_chars: Any = _READ_MAX_CHARS, emit: Optional[Emit] = None,
+) -> Dict[str, Any]:
+    """The open page's main text plus its links, capped at ``max_chars``.
+
+    Read only: no screenshot, no marks, no navigation, no action. For a code
+    node that processes the page in a script (the menu path uses observe)."""
+    try:
+        return await _RT.run(_do_read(conversation_id, max_chars, emit), _READ_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        return _fail("browser_read timed out")
+    except Exception as exc:  # noqa: BLE001
+        return _fail(f"browser_read failed: {str(exc)[:200]}")
+
+
 async def browser_act(
     conversation_id: str, action: str, element_id: Any = None, text: Optional[str] = None,
     emit: Optional[Emit] = None,
@@ -650,6 +668,37 @@ async def _do_observe(conv: str, want_image: bool, emit: Optional[Emit]) -> Dict
         if len(b64) <= _MAX_IMAGE_B64:
             out["marked_screenshot"] = {"mime": "image/jpeg", "b64": b64}
     return out
+
+
+async def _do_read(conv: str, max_chars: Any, emit: Optional[Emit]) -> Dict[str, Any]:
+    entry, problem = _need_session(conv, emit)
+    if entry is None:
+        return _fail(problem)
+    page = getattr(entry.session, "_page", None)
+    if page is None:
+        return _fail("no open browser for this conversation; call browser_open(url) first")
+    try:
+        cap = int(max_chars)
+    except (TypeError, ValueError):
+        cap = _READ_MAX_CHARS
+    cap = max(1, min(cap, _READ_MAX_CHARS))
+    text = str(await page.evaluate(_MAIN_TEXT_JS) or "").strip()
+    truncated = len(text) > cap
+    text = text[:cap]
+    links = [(str(h), str(t)) for h, t in await page.evaluate(_LINKS_JS)]
+    url = str(getattr(page, "url", "") or entry.session.url)
+    title = str(await page.title() or "")
+    content = (
+        f'Page: "{title}" - {url}\nText: {text}'
+        + ("\n(text cut at max_chars)" if truncated else "")
+        + "\nLinks:\n" + ("\n".join(f"- {t} -> {h}" if t else f"- {h}" for h, t in links)
+                          if links else "(none found)")
+    )
+    return {
+        "success": True, "content": content, "text": text, "truncated": truncated,
+        "links": [{"href": h, "text": t} for h, t in links],
+        "url": url, "title": title, "trust": "untrusted",
+    }
 
 
 async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[str]) -> Optional[Dict[str, Any]]:

@@ -100,3 +100,12 @@ def test_a_stored_script_rows_state_replays_to_the_same_input_key(monkeypatch):
     rows = _record(monkeypatch, scope={"turn_id": "t"}, via="run_python")
     row = rows[0]
     assert row["input_key"] and row["input_key"] == bn._browser_input_key(row["state"])
+
+
+def test_via_survives_the_decision_block_whitelist():
+    """Round 6: tool_bridge's decision block keeps only whitelisted keys; `via` must reach the
+    stored browser_next row (and stays off other consumers' rows)."""
+    from backend.agent import tool_bridge as tb
+
+    assert "via" in tb._DECISION_META_EXTRA.get("browser_next", ())
+    assert "via" not in tb._DECISION_META_KEYS

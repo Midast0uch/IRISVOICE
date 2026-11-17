@@ -83,6 +83,9 @@ def _note_web_tool_used(tool_name: str, result: Any) -> None:
 # other consumer's row changes shape. repair_route: the failed check's frame + the rule's call.
 _DECISION_META_EXTRA = {
     "repair_route": ("attempt", "error_type", "check_error", "failure_rows", "rule_choice"),
+    # Round 6 C4: a browser_next row from a Workbench script carries via="run_python"
+    # (calibration can split script clicks from menu clicks).
+    "browser_next": ("via",),
 }
 
 
@@ -2318,6 +2321,10 @@ class AgentToolBridge:
                 return await browser_tools.browser_open(conversation_id, params.get("url") or "", _emit)
             if tool_name == "browser_observe":
                 return await browser_tools.browser_observe(conversation_id, _emit)
+            if tool_name == "browser_read":
+                return await browser_tools.browser_read(
+                    conversation_id, params.get("max_chars") or 200000, _emit,
+                )
             if tool_name == "browser_explore":
                 return await browser_tools.browser_explore(
                     conversation_id, params.get("goal") or "", params.get("max_pages") or 5, _emit,
@@ -3045,7 +3052,7 @@ class AgentToolBridge:
             # ── Live browser control (specs/websearch-vision-browser REQ-4/5) ──
             # One page per conversation; the user sees each action's cursor
             # glide before the input. Gated by the internet flag (registry).
-            if tool_name in ("browser_open", "browser_observe", "browser_act", "browser_explore"):
+            if tool_name in ("browser_open", "browser_observe", "browser_read", "browser_act", "browser_explore"):
                 _wtm = {}
                 _wt_tok = _WEB_TIMING.set(_wtm)
                 _wt0 = time.monotonic()

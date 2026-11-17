@@ -2513,7 +2513,7 @@ class ToolDecisionBox:
                 # (repeated call / unchanged result).
                 _IDEMPOTENT_READ_TOOLS = frozenset(
                     {"get_rendered_documents", "recall_memory", "read_file", "read_command_output",
-                     "browser_open", "browser_observe", "browser_act", "browser_explore"}
+                     "browser_open", "browser_observe", "browser_read", "browser_act", "browser_explore"}
                 )
                 if (
                     decision.tool

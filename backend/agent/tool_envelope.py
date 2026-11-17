@@ -60,7 +60,7 @@ _GATHER_TOOLS = frozenset({
     # `tool_family(...) == "gather"`, so a browser_open / open_url step that
     # came back with NOTHING was never offered recovery - the one case that
     # needs it most. `browser_act` is deliberately NOT here; see _ACTION_TOOLS.
-    "open_url", "browser_open", "browser_observe", "browser_explore",
+    "open_url", "browser_open", "browser_observe", "browser_read", "browser_explore",
 })
 _SYNTHESIS_TOOLS = frozenset({"synthesis", "respond", "compose"})
 _ACTION_TOOLS = frozenset({
