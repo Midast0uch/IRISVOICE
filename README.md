@@ -178,6 +178,15 @@ DER no longer runs as a hardcoded Director→Explorer→Reviewer pipeline over a
 - **Outer loop as live judge.** `run_outer_loop` now runs at real session boundaries, feeding live observations so the agent learns in real time whether a memory signal is relevant/strong enough (REQ-16).
 - **DAG Node Execution Model.** Every action — tool call, MCP tool, vision/audio pipeline — is a *node* with a typed, routable outcome (terminal status + enumerated reason + artifact). Composite actions decompose into sub-graphs whose decision points DER can see and re-route; recovery is outcome-driven routing, not a hand-written `if` branch. Adoption is strangler-fig: undeclared legacy tools keep working untouched (REQ-1..REQ-9).
 
+### 🧩 Context Lifecycle (CLM) and the Workbench
+
+- **CLM** replaces the blind context cut with a live view over a record. A block leaves the model window only through a gate (`context_view.offload_decision`), leaves a one-line placeholder with its address, and returns byte for byte by reference (`recall_memory expand=<ref>`). One gauge (`context_gauge.py`) counts tokens; a router-cap drop the view did not make is a counted alarm.
+- **Record and events.** Long tool results are rows in `tool_results` (`conversations.db`). `OFFLOADED`, `RESTRETCHED` and `PREMATURE_EVICTION` go to `memory_events`. Model notes become pins with provenance; a dead-end ledger keeps failed actions in view.
+- **Workbench** (CLM-11) gives a DER node a persistent Python worker process per conversation (stdlib only, protocol v2). The planner writes a brief per step (outputs, check, approach, tools); the tool model writes the code; the harness runs the check; the Brain repairs once after two failed checks. The step result is the outputs manifest.
+- **Safety.** 512 MB per worker, 768 MB total (private bytes on Windows), idle end after 10 min, declared outputs spilled to the record, personal mode refuses the IRIS repo, and a personal-mode worker and its children run at Windows Low integrity.
+- **Flags:** `IRIS_CLM_OFFLOAD=1` (view hooks in the node loop), `IRIS_WORKBENCH=1` (code mode; off, pending the TG-7 v2 decision), `IRIS_CLM_BASELINE=1` + `IRIS_CLM_DUMP_DIR` (per-call measurement rows). Measure with `evals/wb_ab_analysis.py`.
+- Architecture and blueprint: **[`docs/architecture/CLM_AND_WORKBENCH.md`](./docs/architecture/CLM_AND_WORKBENCH.md)**; specs in `specs/clm-memory/`.
+
 ### 👁 Vision Layer (LFM2.5-VL)
 - **LFM2.5-VL-3B**: Liquid AI's vision-language model (upgraded 2026-08-12 from the 450M; same LFM2.5-VL class, ~3B params) running via `llama-server` on port 8081. The 450M is retained as an automatic fallback for setups that haven't downloaded the 3B.
 - **VisionMCPServer**: 5 MCP tools — `vision.analyze_screen`, `vision.find_ui_element`, `vision.read_text`, `vision.suggest_next_action`, `vision.describe_live_frame`
@@ -1280,6 +1289,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[Agent Architecture](./docs/architecture/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
 - **[UI Architecture](./docs/architecture/UI_ARCHITECTURE.md)**: Frontend component structure
 - **[DER-DAG](./docs/architecture/DER_DAG.md)**: **the authoritative map of the execution model** — turn entry and routing, planning (goals, never tools), the scheduler, node execution, finalize (verify · record · coverage · score), turn end, the data objects (`QueueItem`, `NodeRecord`, `NodeContext`, `ToolResultEnvelope`), and an honest health section of what is solid vs still open
+- **[CLM and the Workbench](./docs/architecture/CLM_AND_WORKBENCH.md)**: the live context view (offload, re-stretch, gauge, pins, ledger) and the persistent Python Workbench for DER nodes - components, protocol, flags, safety, measurement
 - **[Oracle — Decision Engine](./docs/architecture/oracle.md)**: the CPU-only calibrated scorer — jobs and their routing, the two-key enforcement chokepoint, the hardened bar, calibration (`fit_oracle_calibration.py`), the phase-domain concurrency model, and every measured number with its provenance
 - **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: *(historical)* the pre-DAG DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges. Superseded by DER-DAG above; the trailing director was deleted 2026-08-06.
 - **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
