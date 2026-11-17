@@ -149,6 +149,21 @@ _WB_TOOLS_NOTE = (
 )
 _WB_TOOLS_PREFER = ("read_file", "grep_files", "glob_files", "edit_file", "write_file", "run_command")
 _WB_TOOLS_MAX = 5
+# Round 6 (2026-11-16): the browser as a code node's tool. A script may drive the page of the
+# conversation (one page, one driver: the node holds the `browser` claim for the whole step).
+_WB_BROWSER_TOOLS = frozenset({"browser_open", "browser_read", "browser_observe", "browser_act",
+                               "browser_explore"})
+_WB_BROWSER_CALLS_MAX = 12   # browser callbacks per run_python (the worker's general cap is 24)
+_WB_BROWSER_MARGIN_S = 20.0  # the browser wall budget = the node's budget minus this
+_WB_ENDED = "the step ended"
+_WB_BROWSER_NOTE = (
+    " BROWSER: tools.browser_observe() returns `marks` (id, role, name, disabled): pick the "
+    "element from marks by its name, then tools.browser_act(action=..., element_id=...). "
+    "Observe again after any change. tools.browser_read() gives the page text. If the label "
+    "is not in marks, raise ToolError('needs sight'). Never log in or type credentials in a script."
+)
+_WB_OBS_MARK = "Elements (pass the number as element_id to browser_act):"
+_WB_POOR_MARKS = 2           # an observation with this many marks or fewer cannot be scripted
 _WB_SKELETON_MAX_LINES = 40
 # Room for the provider's hidden reasoning in ONE send: a real repair is a hard debugging
 # question - TG-7 v2 full (2026-11-17) measured 4,846-5,988 completion tokens at 4096, cut,
@@ -211,7 +226,10 @@ def _wb_code_mode(goal: str, tools: list, workdir: str, item=None) -> bool:
             str(getattr(item, "check", "") or "").strip())
         if not briefed and required_class(goal) not in (READ, RUN):
             return False
-        if _vision_relevant(goal) or _xr.is_external(_xr.classify(goal)):
+        # Round 6 C3: the external-reference exclusion is lifted ONLY for a briefed step that
+        # names an offered browser tool; a step about the screen still refuses.
+        if _vision_relevant(goal) or (not _wb_browser_step(item, tools)
+                                      and _xr.is_external(_xr.classify(goal))):
             return False
         from backend.agent.workbench.client import resolve_interpreter
 
@@ -222,6 +240,56 @@ def _wb_code_mode(goal: str, tools: list, workdir: str, item=None) -> bool:
         logger.warning("[workbench] entry rule failed (%r): fine-grained node", exc)
         return False
     return True
+
+
+def _wb_browser_step(item, tools) -> bool:
+    """Round 6 C3: a browser code step = a brief with outputs AND a check, whose `tools` names
+    a browser tool the node was OFFERED (the web toggle takes the browser tools out of the
+    offered list, so it holds). The caller has already refused WRITE / after-change steps."""
+    try:
+        if not (getattr(item, "outputs", None) and str(getattr(item, "check", "") or "").strip()):
+            return False
+        named = {str(n).strip() for n in (getattr(item, "tools", None) or ()) if isinstance(n, str)}
+        offered = {(t.get("function") or {}).get("name") for t in tools or []}
+        return bool(named & _WB_BROWSER_TOOLS & offered)
+    except Exception:  # noqa: BLE001 - an item that cannot be read is not a browser step
+        return False
+
+
+def _wb_scratch_dir(conversation_id: str) -> Optional[str]:
+    """Round 6 C8: the conversation's private scratch folder when the mode is personal; "" when
+    it is not (the workdir stays as it is); None when the folder is refused. A personal
+    conversation with no bound folder would otherwise resolve to the IRIS repo, which personal
+    mode refuses."""
+    try:
+        from backend.capabilities import CapabilitySet
+
+        if CapabilitySet.get_mode() != "personal":
+            return ""
+        from backend.agent.workbench.manager import scratch_workdir
+
+        return scratch_workdir(conversation_id)
+    except Exception as exc:  # noqa: BLE001 - the node stays on the menu path, logged
+        logger.warning("[workbench] conv=%s scratch folder unavailable: %r", conversation_id, exc)
+        return None
+
+
+def _wb_script_view(raw):
+    """Round 6 C6: what a script may see of a tool result: no picture (marked_screenshot or any
+    b64 field) and `marks` trimmed to id / role / name / disabled. A copy; the node's own
+    bookkeeping keeps the full result."""
+    if not isinstance(raw, dict):
+        return raw
+    out = {}
+    for k, v in raw.items():
+        if k == "marked_screenshot" or "b64" in str(k).lower() \
+                or (isinstance(v, dict) and "b64" in v):
+            continue
+        if k == "marks" and isinstance(v, list):
+            v = [{f: m.get(f) for f in ("id", "role", "name", "disabled")}
+                 for m in v if isinstance(m, dict)]
+        out[k] = v
+    return out
 
 
 def _wb_after_change(item, queue) -> bool:
@@ -441,19 +509,40 @@ def _wb_needed_tools(item, allowed) -> frozenset:
     return frozenset(n for n in named if n in allowed and n not in _WB_PY_REPLACES)
 
 
-def _wb_callback_handler(execute, allowed, calls: list, count) -> Callable:
+def _wb_callback_handler(execute, allowed, calls: list, count, *, browser: bool = False,
+                         wall_s: Optional[float] = None, on_browser_act=None) -> Callable:
     """handler(tool, args) -> (ok, value, error) for the Workbench `call` frames. It is the
     node's OWN dispatch (`execute`: turn-live check, domain guard, claims, hooks,
     box.dispatch), not a second path. Only tools in `allowed` (the node's mode menu) run.
     Each callback adds one entry to `calls` (via run_python) and counts once as a real
-    tool call (`count`)."""
+    tool call (`count`).
+
+    Round 6: `.close()` latches it (the node's finally, BEFORE its claims are released): an
+    ended node cannot stop its script, so after the latch - or after `wall_s` seconds (the
+    browser wall budget) - it answers "the step ended" and dispatches nothing. Browser tools
+    run only for a `browser` node, at most 12 per run_python (`.new_exec()` starts the count
+    again). The result a script gets has no picture and trimmed marks. After each browser_act
+    on an element, `on_browser_act(args, ok, page_text, history)` gets the observation the
+    script last saw. `.sight_poor()` = the last observation had too few marks to script."""
     from backend.agent.node_executor import _ID_KEYS, _failed, _output_excerpt, _target
 
+    state = {"closed": False, "n_browser": 0, "obs": "", "marks_n": None, "hist": []}
+    deadline = None if wall_s is None else time.monotonic() + wall_s
+
     def _handler(tool: str, args: dict):
+        if state["closed"] or (deadline is not None and time.monotonic() >= deadline):
+            return False, None, _WB_ENDED
+        if tool in _WB_BROWSER_TOOLS and not browser:
+            return False, None, f"{tool}: not available in this step"
         if tool not in allowed or not isinstance(args, dict):
             return False, None, f"{tool}: not available"
         if tool == "recall_memory" and str(args.get("expand") or "").startswith("wb:"):
             return False, None, "read a workbench variable directly; it is in the namespace"
+        if tool in _WB_BROWSER_TOOLS:
+            if state["n_browser"] >= _WB_BROWSER_CALLS_MAX:
+                return False, None, (f"at most {_WB_BROWSER_CALLS_MAX} browser calls per run_python; "
+                                     "finish with what you have")
+            state["n_browser"] += 1
         try:
             raw = execute(tool, dict(args))
         except Exception as exc:  # noqa: BLE001 - the script sees a ToolError
@@ -466,23 +555,60 @@ def _wb_callback_handler(execute, allowed, calls: list, count) -> Callable:
             count()
         except Exception as exc:  # noqa: BLE001 - bookkeeping never fails a call
             logger.debug("[workbench] callback count failed: %r", exc)
+        if tool in _WB_BROWSER_TOOLS:
+            # C4: the Oracle's question is asked on the observation the script saw BEFORE this act
+            if tool == "browser_act" and args.get("element_id") is not None and on_browser_act:
+                try:
+                    on_browser_act(dict(args), not failed, state["obs"], "; ".join(state["hist"][-6:]))
+                except Exception as exc:  # noqa: BLE001 - a shadow never blocks a call
+                    logger.debug("[workbench] browser_next row failed: %r", exc)
+            state["hist"].append(" ".join(f"{tool} {args.get('action') or ''} "
+                                          f"{args.get('element_id') or ''}".split())
+                                 + (" -> FAILED" if failed else " -> ok"))
+            del state["hist"][:-12]
+            if not failed and isinstance(raw, dict):
+                if isinstance(raw.get("marks"), list):
+                    state["marks_n"] = len(raw["marks"])
+                if _WB_OBS_MARK in str(raw.get("content") or ""):
+                    state["obs"] = str(raw["content"])
         if failed:
             err = raw.get("error") if isinstance(raw, dict) else raw
             return False, None, str(err or f"{tool} failed")[:2000]
-        return True, raw if isinstance(raw, dict) else {"result": raw}, None
+        value = _wb_script_view(raw if isinstance(raw, dict) else {"result": raw})
+        return True, value, None
+
+    def _close() -> None:
+        state["closed"] = True
+        _handler.closed = True
+
+    def _new_exec() -> None:
+        state["n_browser"] = 0
+
+    def _sight_poor() -> bool:
+        return state["marks_n"] is not None and state["marks_n"] <= _WB_POOR_MARKS
+
+    _handler.closed = False
+    _handler.close = _close
+    _handler.new_exec = _new_exec
+    _handler.sight_poor = _sight_poor
     return _handler
 
 
-def _wb_needs_fallback(result) -> str:
+def _wb_needs_fallback(result, sight_poor: bool = False) -> str:
     """CLM-11 AC4: why a code node re-runs on the fine-grained path ('' = it
-    does not): the workbench was unavailable, the sandbox refused, or two
-    run_python calls in a row failed with the same exception type."""
+    does not): the workbench was unavailable, the sandbox refused, the check did not pass and
+    the page needs sight (Round 6 C7: the script raised ToolError('needs sight'), or the last
+    observation had too few marks - `sight_poor`), or two run_python calls in a row failed with
+    the same exception type."""
     outs = [(bool(c.get("ok")), str(c.get("out") or ""))
             for c in (getattr(result, "calls", None) or []) if c.get("tool") == "run_python"]
     if any("workbench_unavailable" in o or "WorkbenchUnavailable" in o for _ok, o in outs):
         return "unavailable"
     if any("PermissionError" in o and "workbench" in o.lower() for ok, o in outs if not ok):
         return "sandbox_refused"
+    if getattr(result, "check_passed", False) is not True and (
+            sight_poor or any("ToolError" in o and "needs sight" in o.lower() for ok, o in outs if not ok)):
+        return "needs_sight"
     kinds = [o.split(":", 1)[0].strip() for ok, o in outs if not ok]
     fails = [ok for ok, _o in outs]
     if len(fails) >= 2 and not fails[-1] and not fails[-2] and len(kinds) >= 2 \
@@ -1617,6 +1743,7 @@ class DerNodeMixin:
             return out
 
         _held: List[str] = []
+        _wb_bound: List[str] = []   # C8: the scratch folder bound to the session for this node
 
         # One domain correction per step (2026-10-08). Bounded deliberately:
         # unbounded re-steering is the TrailingDirector failure mode.
@@ -2019,27 +2146,52 @@ class DerNodeMixin:
             _node_state["ctx"] = _node_ctx
             _full_tools = self._get_openai_tools() if _wb_on() else []
             _wb_go = False
+            _wb_browser = False
             if _wb_on() and _wb_code_mode(goal, _full_tools, workdir, item):
                 # D7: ONE code node at a time owns the conversation's namespace. Take that
                 # claim BEFORE run_node starts its 300 s clock (parallel code nodes waited
                 # 880 s on it INSIDE their budget, measured). It is released in the finally
                 # below with the other held claims; _execute sees it in `_held` and does not
                 # take it a second time at the first run_python.
+                # Round 6 C2: a browser code node takes `browser` THEN `workbench` (the one order
+                # every node uses), both before the clock, and keeps `browser` for the menu
+                # re-run of a needs_sight fallback.
+                _wb_browser = _wb_browser_step(item, _full_tools)
                 _wb_t0 = time.perf_counter()
-                _wb_go = "workbench" in _held or _der_claim(self, "workbench", item)
+                _wb_go = True
+                for _cl in (("browser", "workbench") if _wb_browser else ("workbench",)):
+                    _wb_go = _cl in _held or _der_claim(self, _cl, item)
+                    if not _wb_go:
+                        break
+                    if _cl not in _held:
+                        _held.append(_cl)
                 _wb_wait = time.perf_counter() - _wb_t0
                 _wb_stats["wb_wait_s"] += _wb_wait
-                if _wb_go and "workbench" not in _held:
-                    _held.append("workbench")
+                if _wb_go and _wb_browser and not workdir:
+                    # C8: no bound folder in personal mode = the private scratch folder, bound for
+                    # this node so run_python (which reads the session workdir) agrees with the seed
+                    _scratch = _wb_scratch_dir(self.conversation_id or "")
+                    _wb_go = _scratch is not None
+                    if _scratch:
+                        workdir = _scratch
+                        if hasattr(self._tool_bridge, "set_session_workdir"):
+                            self._tool_bridge.set_session_workdir(_session, workdir)
+                            _wb_bound.append(workdir)
                 if _wb_go and not _wb_seed(
                         self.conversation_id or "", workdir, task, goal, _prior_results, _step_facts):
                     _wb_go = False
+                if not _wb_go and "workbench" in _held:
                     _held.remove("workbench")   # a menu node does not keep the namespace
                     _der_release(self, "workbench")
             if _wb_go:
                 import dataclasses as _dc
 
-                _wb_allowed = frozenset(n for n in _menu if n != "run_python")
+                # C3: the node's menu INTERSECTED with the tools it was offered (the web toggle
+                # holds); the browser tools (browser_read too) only for a browser code node.
+                _wb_offered = {(t.get("function") or {}).get("name") for t in _full_tools}
+                _wb_menu = (set(_menu) | _WB_BROWSER_TOOLS) if _wb_browser \
+                    else set(_menu) - _WB_BROWSER_TOOLS
+                _wb_allowed = frozenset(n for n in _wb_menu if n != "run_python" and n in _wb_offered)
                 _wb_need = _wb_needed_tools(item, _wb_allowed)
                 _wb_cb_calls: list = []
                 _wb_node = uuid.uuid4().hex   # F2: this node's own callback slot
@@ -2047,8 +2199,32 @@ class DerNodeMixin:
                 # D3: the ground, ONCE per node - in the first message, and in the repair prompt
                 _wb_ground = _wb_ground_text(workdir, profile=True, max_chars=_wb_ground_chars(_node_ctx.window),
                                              text=f"{task}\n{goal}")
+                _wb_hold: list = []
+                try:
+                    from backend.agent.decision_engine import scope_now as _scope_now
+                    _wb_scope = _scope_now()    # C4: captured HERE, on the node thread
+                except Exception:  # noqa: BLE001 - a scope is best-effort
+                    _wb_scope = {}
+
+                def _wb_on_result(name, params, ok, approval_ok=None):
+                    # a real tool call earns the card (kernel.surface counter); no Oracle labels
+                    # in code. A finished run_python starts the browser-call count again (C1).
+                    self._der_count_tool_call(item)
+                    if name == "run_python" and _wb_hold:
+                        _wb_hold[0].new_exec()
+
+                def _wb_browser_row(args, ok, page_text, history):
+                    from backend.agent import browser_next_shadow as _bn
+
+                    _bn.record_browser_next(
+                        goal=goal, page_text=page_text or "", element_id=args.get("element_id"),
+                        action=str(args.get("action") or ""), done_when=_done_when or None,
+                        calls_this_step=history or None, brain_ok=bool(ok),
+                        scope=_wb_scope, via="run_python")
+
                 _wb_ctx = _dc.replace(
                     _node_ctx,
+                    workdir=workdir,
                     ground=_wb_ground,
                     memory_facts="",      # D3: in code mode the MEMORY text is the `memory` variable only
                     tools=_wb_slim_run_python(_full_tools),
@@ -2061,10 +2237,10 @@ class DerNodeMixin:
                     # Brain briefs (plan time) and steps in once on escalation.
                     role="tool_execution", helper_role=None, max_tokens=1024, max_calls=6,
                     system=_WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_need)
-                                         if _wb_need else ""),
+                                         if _wb_need else "")
+                    + (_WB_BROWSER_NOTE if _wb_browser else ""),
                     choose_tool=None, on_call=None,
-                    # a real tool call earns the card (kernel.surface counter); no Oracle labels in code
-                    on_result=lambda name, params, ok, approval_ok=None: self._der_count_tool_call(item),
+                    on_result=_wb_on_result,
                     brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
                     wb_outputs=_wb_output_names(item), wb_node=_wb_node,
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
@@ -2082,7 +2258,11 @@ class DerNodeMixin:
                 logger.info("[workbench] conv=%s step=%s code node", self.conversation_id,
                             getattr(item, "step_id", ""))
                 _wb_handler = _wb_callback_handler(
-                    _execute, _wb_allowed, _wb_cb_calls, lambda: self._der_count_tool_call(item))
+                    _execute, _wb_allowed, _wb_cb_calls, lambda: self._der_count_tool_call(item),
+                    browser=_wb_browser,
+                    wall_s=(max(0.0, _wb_ctx.budget_s - _WB_BROWSER_MARGIN_S) if _wb_browser else None),
+                    on_browser_act=_wb_browser_row if _wb_browser else None)
+                _wb_hold.append(_wb_handler)
                 _wb_conv = self.conversation_id or ""
                 from backend.agent.tool_bridge import (
                     clear_workbench_dispatch, set_workbench_dispatch)
@@ -2091,6 +2271,7 @@ class DerNodeMixin:
                 try:
                     result = run_node(goal, _wb_ctx)
                 finally:
+                    _wb_handler.close()   # C1: first - the claims are released after this
                     clear_workbench_dispatch(_wb_conv, _wb_handler, _wb_node)
                     if _wb_rr is not None:
                         _wb_rr.end()
@@ -2103,7 +2284,7 @@ class DerNodeMixin:
                                 _wb_wait)
                 # G1: the verdict reads it (finalize); set per run so a re-run never keeps a stale True
                 item.wb_check_passed = getattr(result, "check_passed", False) is True
-                _why = _wb_needs_fallback(result)
+                _why = _wb_needs_fallback(result, _wb_browser and _wb_handler.sight_poor())
                 if _why:
                     _wb_stats["fallback"] += 1
                     logger.info("[workbench] conv=%s step=%s falls back to tools (%s)",
@@ -2122,6 +2303,10 @@ class DerNodeMixin:
         finally:
             for _c in _held:
                 _der_release(self, _c)
+            if _wb_bound:   # C8: the scratch binding lasts for this node only
+                _sw = getattr(self._tool_bridge, "_session_workdirs", None)
+                if isinstance(_sw, dict) and _sw.get(_session) == _wb_bound[0]:
+                    _sw.pop(_session, None)
         # What the node actually did, for the step's physics action (REQ-8 redo).
         try:
             item.node_calls = [

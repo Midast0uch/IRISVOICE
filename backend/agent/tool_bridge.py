@@ -3836,6 +3836,15 @@ class AgentToolBridge:
             pass  # no config yet — repo root only (matches GET /api/projects default)
         except Exception as exc:
             logger.debug("[ToolBridge] could not read project registry: %s", exc)
+        # Round 6 C8: the app-owned Workbench scratch base (LocalLow\iris-workbench\scratch;
+        # a personal browser code step with no bound folder works there). Without it the
+        # script's run_python was refused as workdir_denied. Only that base - never LocalLow.
+        try:
+            from backend.agent.workbench.client import low_root
+
+            roots.append(os.path.normpath(os.path.join(low_root(), "scratch")))
+        except Exception as exc:  # noqa: BLE001 - the allowlist never fails a call
+            logger.debug("[ToolBridge] no workbench scratch root: %s", exc)
         return roots
 
     def _resolve_scope(self, raw: str, session_id: str) -> str:

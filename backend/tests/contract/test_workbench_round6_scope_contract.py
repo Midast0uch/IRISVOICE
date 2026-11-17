@@ -211,3 +211,20 @@ def test_developer_mode_still_connects_to_loopback(project, listener):
         assert _listener_saw_a_connection(listener)
     finally:
         m.shutdown()
+
+
+def test_the_scratch_base_is_a_registered_root_and_lowlow_is_not():
+    """Round 6 C8 end to end: the node binds manager.scratch_workdir(conv) as the session's
+    workdir, and the dev-tools branch refuses any cwd outside _registered_roots() as
+    workdir_denied. The scratch BASE must be a root (the folder itself under it); LocalLow and
+    the workbench temp folders must not be."""
+    import os as _os
+
+    from backend.agent.tool_bridge import AgentToolBridge
+    from backend.agent.workbench.client import low_root
+
+    roots = [_os.path.normcase(r) for r in AgentToolBridge()._registered_roots()]
+    base = _os.path.normcase(_os.path.normpath(_os.path.join(low_root(), "scratch")))
+    assert base in roots
+    assert _os.path.normcase(_os.path.normpath(low_root())) not in roots
+    assert _os.path.normcase(_os.path.dirname(low_root())) not in roots
