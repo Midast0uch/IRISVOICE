@@ -28,6 +28,11 @@ def _plan_step_deps(raw_step: dict, earlier: list) -> list:
 # IRIS_WORKBENCH=1 (read at call time); flag off, the prompt is byte-identical.
 # Module level on purpose: stand-in kernels bind only some methods.
 _PLANNER_EXAMPLE_AT = "Example step with a brief: "
+# A stray quote right after a JSON number value: '"step_number":2","description"' -> 2,
+# (used only on planner text that failed to parse; see _parse_planner_json).
+import re as _re_plan
+_PLAN_NUM_STRAY_QUOTE = _re_plan.compile(r'(":\s*-?\d+(?:\.\d+)?)"(\s*[,}\]])')
+
 _PLANNER_BRIEF_RULES = (
     # Round 5 B1: at most 1,400 chars (was ~2,300; +530 tokens per plan on tiny tasks).
     # Only steps that read or compute carry a brief; 'inputs' is no longer requested (the
@@ -587,18 +592,34 @@ class PlanningMixin:
         """
         import json as _json
 
-        _best = None
-        for _cand in AgentKernel._iter_json_objects(raw or ""):
-            try:
-                _obj = _json.loads(_cand)
-            except Exception:
-                continue
-            if not isinstance(_obj, dict):
-                continue
-            if "steps" in _obj or "plan_title" in _obj:
-                return _obj
-            if _best is None:
-                _best = _obj
+        def _scan(text):
+            best = None
+            for _cand in AgentKernel._iter_json_objects(text):
+                try:
+                    _obj = _json.loads(_cand)
+                except Exception:
+                    continue
+                if not isinstance(_obj, dict):
+                    continue
+                if "steps" in _obj or "plan_title" in _obj:
+                    return _obj, best
+                if best is None:
+                    best = _obj
+            return None, best
+
+        _plan, _best = _scan(raw or "")
+        if _plan is not None:
+            return _plan
+        # ONE narrow repair, only when no plan parsed: a stray quote after a number value
+        # ('"step_number":2","description"') - all 3 logged planner parse failures of the
+        # TG-7 v2 full run (2026-11-17, write cohort) had exactly this. It runs on the raw
+        # text because the stray quote also misleads the object scanner.
+        _fixed = _PLAN_NUM_STRAY_QUOTE.sub(r"\1\2", raw or "")
+        if _fixed != (raw or ""):
+            _plan, _ = _scan(_fixed)
+            if _plan is not None:
+                logger.info("[AgentKernel._plan_task] planner JSON repaired (stray quote after a number)")
+                return _plan
         return _best
 
     @staticmethod

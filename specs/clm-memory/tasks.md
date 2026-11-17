@@ -460,6 +460,45 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
     tokens. Verdict: the flag stays OFF until the owner decides on the failing rows.
   - [ ] **TG-7 v2 cloud, STAGE 2** (config c38-c45, run-and-report c14 c17 c18 c19 c25 c26
     c27, explain c13, write control c01 c02 c11).
+  - [~] **TG-7 v2 cloud, FULL re-run (2026-11-16 23:10 -> 2026-11-17 06:48, commit b851a420)**:
+    all 31 tasks, IRIS_WORKBENCH 0/1 interleaved x5, deepseek-v4.1-flash both roles,
+    IRIS_CLM_BASELINE=1; evals/results/20261117-*.json (10 blocks).
+
+    | all 31 tasks (155 runs per arm) | off | on | change |
+    |---|---|---|---|
+    | pass | 140/155 | 150/155 | +10 |
+    | reply_s median | 38.6 | 25.5 | x0.66 |
+    | model calls median | 6 | 4 | x0.67 |
+    | tool-model calls median | 2 | 1 | x0.50 |
+    | Brain calls median | 3 | 3 | equal (the floor) |
+    | HTTP sends | 1,399 | 989 | x0.71 |
+    | prompt tokens total | 4.14 M | 2.11 M | x0.51 |
+    | completion tokens total | 358 k | 209 k | x0.58 |
+    | largest prompt | 48.9 k | 22.5 k | x0.46 |
+    | planner retries | 44 | 5 | x0.11 |
+    | escalations | - | 3 of 154 code nodes (1.9 %) | |
+
+    Per cohort (on vs off, medians): context x01-x04 - pass 18/20 = 18/20, reply x0.36, prompt
+    tokens x0.15, completion x0.24, tool-model calls x0.27, Brain 4 -> 3; data c46-c52 - pass
+    33/35 vs 35/35, reply x0.64, prompt x0.48, completion x0.76, tool calls x0.5; config c38-c45 -
+    40/40 both, reply x0.61, prompt x0.45; run-and-report c14 c17-c19 c25-c27 - pass 35/35 vs
+    23/35, reply x0.67, prompt x0.74; explain c13 - 5/5 both, reply x0.82, prompt x0.47; write
+    control c01 c02 c11 - 15/15 both, reply x1.20, prompt x0.77, planner retries 5 vs 2; noise x05
+    (no code node) - equal within noise.
+
+    Causes of the remaining failing rows, each fixed (commit after this run):
+    (1) data c51 2/5 + context x02 1/5 replies said "the output was truncated": the call dump
+    (IRIS_CLM_DUMP_DIR, conv-8235) showed the synthesis read a code step through
+    _der_node_record_evidence's COMPRESSED path - content_summary[:300] - because run_python is
+    neither a gather nor a read tool; the manifest was cut mid-value with the total and "check:
+    passed" gone. run_python now takes the wide path (guard test_code_step_evidence_contract).
+    (2) write cohort planner retries 5 vs 2: all 3 logged parse failures had one model typo, a
+    stray quote after a number ('"step_number":2","description"'); the parser repairs exactly
+    that, only when no plan parsed (guard test_planner_json_repair_contract). (3) the 3
+    escalations (all x03, all passed after the repair) took 166-177 s: at max_tokens 4096 the
+    hidden reasoning (4,846-5,988 tokens) was cut and resent up to 4 times, each resend
+    generating from the start; the repair budget is now 16,384 (one send). Not a Workbench
+    fault: x04 1/5 a dollars-vs-cents model error; x05 1/5 a WebSocket handshake timeout.
   - [ ] **W4**: T7.0b on both small models (level 0 vs 1, with ground; one fenced-code
     variant), then TG-7 v2 small (B0/B1).
 - **Wave 7, Round 3 tasks (2026-11-16; the order is the priority):**

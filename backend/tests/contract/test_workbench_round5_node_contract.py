@@ -354,7 +354,9 @@ def test_b8_the_repair_prompt_asks_for_one_sentence_on_the_cause():
     mod = _node_module()
     assert "one sentence on the cause" in mod._WB_REPAIR_PROMPT
     assert "at most three sentences" not in mod._WB_REPAIR_PROMPT
-    assert mod._WB_REPAIR_MAX_TOKENS == 4096
+    # STATED CHANGE (2026-11-17, TG-7 v2 full): at 4096 the hidden reasoning cut the repair
+    # and the transport resent up to 4 times (166-177 s); the budget is now one send's room.
+    assert mod._WB_REPAIR_MAX_TOKENS >= 16384
 
 
 # --- R2 ------------------------------------------------------------------------------------

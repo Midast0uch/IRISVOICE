@@ -551,7 +551,12 @@ class DerReportMixin:
             # searched got the 300-char record summary, so the synthesis never
             # saw the search results (evals 2026-10-04: r01/r06/r07 0/3,
             # "the results did not return the figures"; 8/8 on 2026-10-01).
-            _wide = AgentKernel._DER_GATHER_TOOLS | AgentKernel._DER_READ_TOOLS
+            # A Workbench code step (run_python) reads and computes: its result is the outputs
+            # manifest - the step's payload. On the compressed path it got content_summary[:300]
+            # and the synthesis saw "per_row = [... 'sprocket', ...15.0}," with the total and
+            # "check: passed" cut off (TG-7 v2 full, c51 2/5 and x02 1/5 failed "truncated";
+            # call dump conv-8235, 2026-11-17).
+            _wide = AgentKernel._DER_GATHER_TOOLS | AgentKernel._DER_READ_TOOLS | {"run_python"}
             if any(str(c.get("tool") or "").lower() in _wide for c in _step_calls(item)):
                 _raw_gather = getattr(item, "result", "") or ""
                 if _raw_gather:

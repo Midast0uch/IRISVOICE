@@ -150,7 +150,11 @@ _WB_TOOLS_NOTE = (
 _WB_TOOLS_PREFER = ("read_file", "grep_files", "glob_files", "edit_file", "write_file", "run_command")
 _WB_TOOLS_MAX = 5
 _WB_SKELETON_MAX_LINES = 40
-_WB_REPAIR_MAX_TOKENS = 4096       # the planner's budget: no hidden-reasoning resend
+# Room for the provider's hidden reasoning in ONE send: a real repair is a hard debugging
+# question - TG-7 v2 full (2026-11-17) measured 4,846-5,988 completion tokens at 4096, cut,
+# resent up to 4 times (each resend generates again from the start): 166-177 s per repair.
+# The model writes only what it needs, so the larger cap costs nothing when unused.
+_WB_REPAIR_MAX_TOKENS = 16384
 _WB_REPAIR_PROMPT = (
     "A small model is doing one step of a task in a Python workbench and its result "
     "failed the step's check twice. Write a REPAIR BRIEF: one sentence on the cause, "
