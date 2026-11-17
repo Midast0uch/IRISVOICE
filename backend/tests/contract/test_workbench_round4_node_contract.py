@@ -71,7 +71,7 @@ def test_d1_the_repair_call_is_low_effort_tagged_and_its_note_shows_the_skeleton
     assert kw.get("reasoning_effort") == "low" and kw.get("call_kind") == "wb_repair"
     prompt = messages[0]["content"]
     assert prompt.startswith("A small model is doing one step of a task in a Python workbench")
-    assert "at most three sentences" in prompt and "PROJECT FILES:\n\n\nBRIEF:" in prompt  # ground "" for now
+    assert "one sentence on the cause" in prompt and "PROJECT FILES:\n\n\nBRIEF:" in prompt  # ground "" for now
     # the tool model's third attempt SEES the script: the skeleton text rides in the note
     third = json.dumps(calls[3][2])
     assert "Starting script (also in the variable `skeleton`" in third
@@ -194,8 +194,8 @@ def test_d6_no_tools_note_when_the_brief_names_no_tool_python_cannot_replace(rep
     assert system.startswith("You do ONE step of a task by writing Python")
     assert "tools." not in system and "ToolError" not in system
     # owner 2026-11-16: other languages (JavaScript first) run from the same script through sh()
-    assert (" Other languages run from the same script: sh('node app.js'), sh('npm test'), "
-            "sh('npx tsc --noEmit'), or a JavaScript snippet with sh('node -', input=js_code); "
+    assert (" Other languages run from the same script: sh('python -m pytest -q'), sh('node app.js'), sh('npm test'), "
+            "or a JavaScript snippet with sh('node -', input=js_code); "
             "sh() returns a dict with code, stdout, stderr.") in system
 
 

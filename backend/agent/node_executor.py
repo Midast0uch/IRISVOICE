@@ -317,6 +317,9 @@ class NodeResult:
     error: str = ""
     last_command_failed: bool = False
     helped: str = ""  # why the helper took over ("" = it did not)
+    # G1 (Round 5): True when the step closed on a PASSED harness check (the `_manifest_only`
+    # return) - the planner's own completeness test, run by the harness. The step verdict reads it.
+    check_passed: bool = False
 
     def as_step_result(self) -> str:
         lines = [self.summary.strip() or "(no summary)"]
@@ -724,9 +727,24 @@ def _is_exploration(ctx: "NodeContext", raw: Any) -> bool:
     """F4: the check failed ONLY because an output variable is not defined yet (a NameError
     for one of the brief's outputs; with no outputs list, any NameError). The run explored;
     it is not a failed attempt. A False check, any other error type, or a NameError for a
-    name that is not an output stays a real failure."""
+    name that is not an output stays a real failure.
+    E1 (Round 5): a run that RAN and assigned none of the brief's outputs is a look too (the
+    handler reports `assigned_outputs`); a run that raised is a real attempt."""
     m = _UNDEFINED_NAME.match(str((raw or {}).get("check_error") or "")) if isinstance(raw, dict) else None
-    return bool(m) and (not ctx.wb_outputs or m.group(1) in ctx.wb_outputs)
+    if bool(m) and (not ctx.wb_outputs or m.group(1) in ctx.wb_outputs):
+        return True
+    return (isinstance(raw, dict) and bool(ctx.wb_outputs) and raw.get("ok") is not False
+            and raw.get("assigned_outputs") == [])
+
+
+def _stdout_budget(window: int) -> int:
+    """K1a (Round 5): the stdout chars a look script may show a code node: 1,200 at a window of
+    8,192 or less (or unknown), rising linearly to 12,000 at 32,768 or more."""
+    if not window or window <= 8192:
+        return 1200
+    if window >= 32768:
+        return 12000
+    return 1200 + (window - 8192) * (12000 - 1200) // (32768 - 8192)
 
 
 def _failed(raw: Any) -> bool:
@@ -1039,6 +1057,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     picture_nudged = False
     check_failures = 0
     escalation_note = ""
+    look_note = ""
+    call_cap = ctx.max_calls
+    extra_call_used = False      # E2: at most ONE extra call per node, only after an escalation
 
     def _hand_over(why: str) -> bool:
         """Switch this node to the helper model once; True when it happened."""
@@ -1165,6 +1186,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             batch_refs: List[tuple] = []
             batch_done = False
             _manifest_only = False       # D5: a passing check closed this batch
+            _escalated_now = False       # E2: an escalation was written in this batch
             batch_changed = False
             batch_summaries: List[str] = []
             pending_shot = ""
@@ -1235,7 +1257,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             logger.debug("[run_node] shadow hook failed: %r", exc)
                     if name == "run_python" and isinstance(params, dict):
                         # the harness injects these; the model never writes them
-                        params = {k: v for k, v in params.items() if k not in ("outputs", "_wb_node")}
+                        params = {k: v for k, v in params.items()
+                                  if k not in ("outputs", "_wb_node", "stdout_max")}
                         ctx.stats["scripts"] = ctx.stats.get("scripts", 0) + 1
                         if ctx.check:
                             params["check"] = ctx.check
@@ -1243,6 +1266,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             params["outputs"] = list(ctx.wb_outputs)
                         if ctx.wb_node:
                             params["_wb_node"] = ctx.wb_node
+                            params["stdout_max"] = _stdout_budget(ctx.window)   # K1a
                     if (name == "recall_memory" and params.get("set_aside")
                             and ctx.window and view is not None):
                         raw = _model_set_aside(params)
@@ -1386,6 +1410,12 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         # F4: outputs not defined yet - not a failed attempt (no count, no row,
                         # no escalation); the digest still says the check did not pass.
                         ctx.stats["exploring"] = ctx.stats.get("exploring", 0) + 1
+                        # Round 5 item 5: tell the model what the next run must assign - once
+                        # per look, never cumulative (look_note is replaced, then cleared).
+                        _got = raw.get("assigned_outputs") or []
+                        _left = [n for n in ctx.wb_outputs if n not in _got]
+                        if _left:
+                            look_note = f"The next run must assign: {', '.join(_left)}."
                         logger.info("[run_node] conv=%s check not passed: an output is not "
                                     "defined yet (exploration, not counted)", ctx.conv_id)
                     else:
@@ -1401,6 +1431,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                                ctx.conv_id, exc)
                             if _note:
                                 escalation_note = _note
+                                _escalated_now = True
                 if ctx.window and _blk is not None and view is not None:
                     _s = _sig(name, params)
                     if failed:
@@ -1446,6 +1477,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             if escalation_note:
                 _add(HARNESS_NOTE, {"role": "user", "content": escalation_note})
                 escalation_note = ""
+            if look_note:
+                _add(HARNESS_NOTE, {"role": "user", "content": look_note})
+                look_note = ""
             if pending_shot:
                 # After the tool messages (a tool message carries text only on
                 # most APIs), as the user turn the model reads next.
@@ -1502,18 +1536,23 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     if _manifest_only:
                         return NodeResult(True, summary.strip(), calls,
                                           last_command_failed=bool(last_command_failed),
-                                          helped=helped)
+                                          helped=helped, check_passed=True)
                     return NodeResult(True, (summary + "\n\nTool results:\n"
                                              + "\n\n".join(_blocks)).strip(),
                                       calls, last_command_failed=bool(last_command_failed),
                                       helped=helped)
                 _resolve_claims("premature")
-            if len(calls) >= ctx.max_calls:
-                break
+            if len(calls) >= call_cap:
+                # E2: an escalation is never the last call - its repaired attempt gets ONE more.
+                if _escalated_now and not extra_call_used:
+                    extra_call_used = True
+                    call_cap += 1
+                else:
+                    break
         # Calls or time spent with work still requested: the node closes and
         # says honestly whether its step is met - only an explicit
         # `STATUS: done` counts; the DER verifies and decides what is next.
-        why = (f"step call limit reached ({len(calls)} calls)" if len(calls) >= ctx.max_calls
+        why = (f"step call limit reached ({len(calls)} calls)" if len(calls) >= call_cap
                else "node time budget used up")
         _add(HARNESS_NOTE, {"role": "user", "content": (
             f"Stop here: {why}. Say in a few lines what you did and what you found. End "

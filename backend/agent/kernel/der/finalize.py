@@ -1028,11 +1028,25 @@ class DerFinalizeMixin:
         # pin_517dfcbda150: pass the resolved tool so web/crawl steps verify by
         # content sufficiency instead of assertion matching. A node step has
         # no item.tool; its decisive call is the tool (_step_calls chokepoint).
-        _verified = self._verify_step_result(
-            item.description, item.expected_output, step_result,
-            tool=_step_tool(item),
-            success=step_success,
-        )
+        if step_success and getattr(item, "wb_check_passed", False) is True:
+            # G1 (Round 5): a Workbench step that closed on a PASSED harness check is VERIFIED -
+            # the check is the planner's own completeness test, run by the harness; the embedding
+            # verifier graded "total = 26" UNVERIFIED and the contract opened a gap. A failed or
+            # absent check (and every non-code step) takes the path below.
+            _verified = "VERIFIED"
+            try:
+                from backend.agent.der_trace import get_der_trace
+
+                get_der_trace(self._der_trace_task_id()).record(
+                    "verify", scorer_tag="harness_check", score=1.0)
+            except Exception:
+                pass
+        else:
+            _verified = self._verify_step_result(
+                item.description, item.expected_output, step_result,
+                tool=_step_tool(item),
+                success=step_success,
+            )
         if _verified == "VERIFIED" and _node_failed_after_change(item):
             _verified = "UNVERIFIED"
             logger.info(

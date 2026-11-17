@@ -468,6 +468,9 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
     outputs = params.get("outputs")
     outputs = [n for n in outputs if isinstance(n, str)][:_WB_OUTPUTS_MAX] if isinstance(outputs, list) else []
     node_token = str(params.get("_wb_node") or "")
+    # K1a: the harness's stdout budget for a look script (run_node injects it; a bad value = none)
+    stdout_max = params.get("stdout_max")
+    stdout_max = stdout_max if isinstance(stdout_max, int) and not isinstance(stdout_max, bool) and stdout_max > 0 else None
     conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
     fresh, close = _wb_flag(params.get("fresh")), _wb_flag(params.get("close"))
     try:
@@ -494,9 +497,14 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         wbd.remember_named(rep, outputs, passed=bool(check and chk.get("ok")))
         _record_code_row(conv, code, purpose, rep, int((time.monotonic() - t0) * 1000))
         err = rep.get("error") or None
+        # E1: which of the brief's outputs this run assigned; K1a: only a run that assigned none
+        # of them (a look) gets the larger stdout budget - any other run keeps today's digest.
+        got = wbd.assigned(rep, outputs)
         out = {
             "success": not (err and err.get("type") in _WB_INFRA_ERRORS),
-            "text": wbd.digest(rep, await asyncio.to_thread(client.rss_mb), outputs), "ok": bool(rep.get("ok")),
+            "text": wbd.digest(rep, await asyncio.to_thread(client.rss_mb), outputs,
+                               stdout_max=None if got else stdout_max),
+            "assigned_outputs": got, "ok": bool(rep.get("ok")),
             "incarnation": rep.get("incarnation", ""), "vars": rep.get("vars") or [],
             "wb_refs": wbd.refs(rep, outputs), "returncode": 0 if rep.get("ok") else 1,
         }

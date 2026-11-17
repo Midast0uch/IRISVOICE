@@ -135,8 +135,8 @@ _WB_SYSTEM = (
     "files. The BRIEF names the output variables: write the whole step as ONE script "
     "that assigns every output. The harness runs the brief's check after each run and "
     "closes the step when it passes. Read files with open(); print at most a few lines. "
-    "Other languages run from the same script: sh('node app.js'), sh('npm test'), "
-    "sh('npx tsc --noEmit'), or a JavaScript snippet with sh('node -', input=js_code); "
+    "Other languages run from the same script: sh('python -m pytest -q'), sh('node app.js'), "
+    "sh('npm test'), or a JavaScript snippet with sh('node -', input=js_code); "
     "sh() returns a dict with code, stdout, stderr. "
     "With no BRIEF, when done answer with a short summary ending `STATUS: done` or "
     "`STATUS: failed: <reason>`."
@@ -153,8 +153,8 @@ _WB_SKELETON_MAX_LINES = 40
 _WB_REPAIR_MAX_TOKENS = 4096       # the planner's budget: no hidden-reasoning resend
 _WB_REPAIR_PROMPT = (
     "A small model is doing one step of a task in a Python workbench and its result "
-    "failed the step's check twice. Write a REPAIR BRIEF: at most three sentences on "
-    "what went wrong and what to do, then one ```python block of at most 40 lines that "
+    "failed the step's check twice. Write a REPAIR BRIEF: one sentence on the cause, "
+    "then one ```python block of at most 40 lines that "
     "fills the outputs so the check passes. Use relative paths and only the names in "
     "the brief.\n\nPROJECT FILES:\n{ground}\n\nBRIEF:\n{brief}\n\nCHECK: {check}\n\n"
     "ITS LAST CODE:\n{code}\n\nWHAT THE WORKBENCH REPORTED:\n{digest}"
@@ -198,6 +198,11 @@ def _wb_code_mode(goal: str, tools: list, workdir: str, item=None) -> bool:
         # lists WRITE for it, and for create/write/add/...
         if WRITE in (required_classes(goal) or ()):
             return False
+        # S3 (Round 5, owner 2026-11-16): a step after a file-changing step of this turn stays
+        # on the menu path - the check after a change belongs with it. `wb_after_change` is
+        # set by the caller (_wb_after_change) only when the flag is on.
+        if getattr(item, "wb_after_change", False) is True:
+            return False
         briefed = bool(getattr(item, "outputs", None)) and bool(
             str(getattr(item, "check", "") or "").strip())
         if not briefed and required_class(goal) not in (READ, RUN):
@@ -213,6 +218,32 @@ def _wb_code_mode(goal: str, tools: list, workdir: str, item=None) -> bool:
         logger.warning("[workbench] entry rule failed (%r): fine-grained node", exc)
         return False
     return True
+
+
+def _wb_after_change(item, queue) -> bool:
+    """S3: True when this turn's plan changed files before this step: an earlier step that ran
+    a change tool (a direct tool step or a node's call log, outside evidence), or a step it
+    depends on whose goal is WRITE class. Never raises; False with no queue."""
+    try:
+        from backend.agent.node_executor import _CHANGE_TOOLS
+        from backend.agent.tool_choice_action_class import WRITE, required_classes
+
+        deps = set(getattr(item, "depends_on", None) or [])
+        for other in getattr(queue, "items", None) or []:
+            if other is item:
+                continue
+            if getattr(other, "result", None):
+                if getattr(other, "tool", None) in _CHANGE_TOOLS:
+                    return True
+                if any(c.get("tool") in _CHANGE_TOOLS and c.get("ok", True)
+                       for c in (getattr(other, "node_call_log", None) or []) if isinstance(c, dict)):
+                    return True
+            if getattr(other, "step_id", None) in deps and WRITE in (
+                    required_classes(str(getattr(other, "description", "") or "")) or ()):
+                return True
+    except Exception as exc:  # noqa: BLE001 - counted by the log; the entry rule decides without it
+        logger.warning("[workbench] after-change probe failed: %r", exc)
+    return False
 
 
 def _wb_seed(conversation_id: str, workdir: str, task: str, goal: str,
@@ -242,15 +273,27 @@ def _wb_seed(conversation_id: str, workdir: str, task: str, goal: str,
         return False
 
 
-def _wb_ground_text(workdir: str, text: str = "") -> str:
+def _wb_ground_chars(window: int) -> int:
+    """R2 (Round 5): the code node's ground budget in chars: 1,200 at a window of 8,192 or
+    less (or unknown), rising linearly to 4,000 at 32,768 or more."""
+    if not window or window <= 8192:
+        return 1200
+    if window >= 32768:
+        return 4000
+    return 1200 + (window - 8192) * (4000 - 1200) // (32768 - 8192)
+
+
+def _wb_ground_text(workdir: str, text: str = "", profile: bool = False,
+                    max_chars: int = 1200) -> str:
     """D3: the PROJECT FILES text of a folder ("" for none). The one place outside the
     workbench package that reaches `ground` - the code node and the planner (kernel/planning.py)
-    both call it, so the package keeps its allowed importers (registration contract)."""
+    both call it, so the package keeps its allowed importers (registration contract).
+    The planner keeps profile=False, 1,200 chars; the code node asks for R2's profile."""
     if not workdir:
         return ""
     from backend.agent.workbench.ground import ground
 
-    return ground(workdir, text=text)
+    return ground(workdir, text=text, profile=profile, max_chars=max_chars)
 
 
 def _wb_brief(item) -> tuple:
@@ -1998,7 +2041,8 @@ class DerNodeMixin:
                 _wb_node = uuid.uuid4().hex   # F2: this node's own callback slot
                 _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item)[1] else None
                 # D3: the ground, ONCE per node - in the first message, and in the repair prompt
-                _wb_ground = _wb_ground_text(workdir, f"{task}\n{goal}")
+                _wb_ground = _wb_ground_text(workdir, profile=True, max_chars=_wb_ground_chars(_node_ctx.window),
+                                             text=f"{task}\n{goal}")
                 _wb_ctx = _dc.replace(
                     _node_ctx,
                     ground=_wb_ground,
@@ -2053,6 +2097,8 @@ class DerNodeMixin:
                                 self.conversation_id, getattr(item, "step_id", ""),
                                 _wb_ctx.stats.get("scripts", 0), _wb_ctx.stats.get("exploring", 0),
                                 _wb_wait)
+                # G1: the verdict reads it (finalize); set per run so a re-run never keeps a stale True
+                item.wb_check_passed = getattr(result, "check_passed", False) is True
                 _why = _wb_needs_fallback(result)
                 if _why:
                     _wb_stats["fallback"] += 1
@@ -2146,6 +2192,8 @@ class DerNodeMixin:
             # once. Both modes (owner 2026-10-03, V10: personal mode ran one
             # tool per step - no retry of a failed call, no page screenshot).
             if not item.tool:
+                if _wb_on():
+                    item.wb_after_change = _wb_after_change(item, queue)   # S3
                 return self._der_run_node(item, _session, _turn_id, _prior_results,
                                           task=getattr(plan, "original_task", "") or "")
 
