@@ -249,11 +249,18 @@ def record_browser_next(
     calls_this_step: Optional[str] = None,
     engine: Any = AUTO_ENGINE,
     brain_ok: Optional[bool] = None,
+    scope: Optional[dict] = None,
+    via: Optional[str] = None,
 ) -> bool:
     """Submit the consult on the ``oracle_shadow`` lane. Returns True when a
     consult was queued. The values are bound NOW (the page and the step change
     after this call). No element list, or the model's element not on it, means
-    no row: an element the menu never offered is unscoreable, never wrong."""
+    no row: an element the menu never offered is unscoreable, never wrong.
+
+    ``scope`` (turn_id / step_id / session, captured by the caller on the node
+    thread) is used INSTEAD of ``_scope_now()``, which is empty on a Workbench
+    callback thread. ``via`` names the path that made the click ("run_python");
+    both default to None, and then the row is exactly what it always was."""
     head, elements = parse_page(page_text)
     ids = [e[0] for e in elements]
     target = str(element_id).strip() if element_id is not None else ""
@@ -267,7 +274,7 @@ def record_browser_next(
         # the element labels go into the OPTION LINES ("A Sign in"), never the state
         "option_criteria": {eid: label for eid, label in elements},
     }
-    scope = _scope_now()
+    scope = dict(scope) if scope else _scope_now()
     try:
         from backend.agent.decision_engine import job_input
 
@@ -276,9 +283,12 @@ def record_browser_next(
         state = ""
 
     def _job() -> None:
-        emit_row(shadow_row(score(frame, ids, engine), target, action, scope,
-                            state=state, brain_ok=brain_ok,
-                            input_key=_browser_input_key(state)))
+        row = shadow_row(score(frame, ids, engine), target, action, scope,
+                         state=state, brain_ok=brain_ok,
+                         input_key=_browser_input_key(state))
+        if row is not None and via:
+            row["via"] = str(via)
+        emit_row(row)
 
     try:
         from backend.utils.durability_queue import lane
