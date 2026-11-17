@@ -9,6 +9,7 @@ import ast
 import builtins
 import collections
 import io
+import ipaddress
 import json
 import os
 import re
@@ -112,6 +113,7 @@ NS["ToolError"] = ToolError
 # npx / ruby / go / ... run as child processes in the project folder and their output
 # comes back as a value the script can parse.
 SH_OUT_CAP = 200_000          # chars kept per stream: the namespace holds data, bounded
+SH_KILL_MARGIN_S = 1.5       # sh() returns this long before the run's deadline (tree-kill time)
 
 
 def _kill_tree(p):
@@ -140,9 +142,14 @@ def sh(command, input=None, timeout=120):
     stopped); on a timeout the whole process tree is killed."""
     import subprocess
 
+    global _wd_deadline
     with _wd_lock:
         left = None if _wd_deadline is None else _wd_deadline - time.monotonic()
-    limit = float(timeout) if left is None else max(0.1, min(float(timeout), left - 0.3))
+    # Stop SH_KILL_MARGIN_S before the run's deadline: the tree kill (taskkill /T) needs time,
+    # and under load it took longer than the old 0.3 s - the watchdog then interrupted the
+    # cleanup and the client restarted the worker (test_the_runs_own_deadline_bounds_sh was
+    # flaky with WorkbenchRestarted, 2026-11-17).
+    limit = float(timeout) if left is None else max(0.1, min(float(timeout), left - SH_KILL_MARGIN_S))
     group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
              else {"start_new_session": True})
     # stdin is never the worker's own: that pipe carries the protocol frames
@@ -155,8 +162,20 @@ def sh(command, input=None, timeout=120):
         out, err = p.communicate(data, timeout=limit)
     except subprocess.TimeoutExpired:
         timed_out = True
-        _kill_tree(p)
-        out, err = p.communicate()
+        with _wd_lock:                   # the cleanup runs on no run clock (like a callback)
+            _left = None if _wd_deadline is None else max(0.0, _wd_deadline - time.monotonic())
+            _wd_deadline = None
+        try:
+            _kill_tree(p)
+            try:
+                out, err = p.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                out, err = b"", b""
+        finally:
+            with _wd_lock:
+                if _left is not None:
+                    _wd_deadline = time.monotonic() + _left
     except BaseException:            # the run was stopped: never leave the child behind
         _kill_tree(p)
         raise
@@ -218,7 +237,56 @@ def _watchdog():
                 _thread.interrupt_main()
 
 
-def _install_audit_hook():
+# --- network refusal (personal mode, confined worker only) ---------------------------------
+# Loopback and private networks hold the owner's own services (IRIS backend, dev servers, a
+# router): a confined script reaches the web through tools.browser_open, never through them.
+_REFUSED_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+    "169.254.0.0/16", "fc00::/7", "fe80::/10", "0.0.0.0/32", "::/128"))
+
+
+def _refused_address(host):
+    """Why a connect to `host` (an address string or a host name) is refused, or None.
+    An address is judged as it is; "localhost" is refused by name; any other name is resolved
+    and refused when ANY of its addresses is loopback or private. A name that does not resolve
+    is allowed (the connect fails by itself)."""
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if not isinstance(host, str):
+        return None
+    name = host.strip().strip("[]").split("%", 1)[0].lower()
+    if name == "":
+        return "an empty address (this machine)"
+    try:
+        addrs = [ipaddress.ip_address(name)]
+    except ValueError:
+        if name == "localhost" or name.endswith(".localhost"):
+            return "loopback"
+        try:
+            import socket
+            infos = socket.getaddrinfo(name, None)
+        except Exception:
+            return None
+        addrs = []
+        for info in infos:
+            try:
+                addrs.append(ipaddress.ip_address(info[4][0].split("%", 1)[0]))
+            except ValueError:
+                continue
+    for a in addrs:
+        a = getattr(a, "ipv4_mapped", None) or a         # ::ffff:127.0.0.1 is 127.0.0.1
+        if any(a in net for net in _REFUSED_NETS if net.version == a.version):
+            return "loopback" if a.is_loopback else "a private network"
+    return None
+
+
+def _install_audit_hook(confined=False):
+    """Refuse writes / removals outside the project folder and the temp folder. With `confined`
+    (personal mode on Windows) also refuse socket connects to loopback and private networks:
+    events hooked are `socket.connect` and `socket.sendto` (their address argument; a host NAME
+    is resolved here, a name that resolves to a refused address is refused). Public addresses stay
+    allowed. NOT covered: child processes (sh, subprocess, node) open their own sockets; a
+    firewall rule or an AppContainer would cover those later."""
     allowed = [os.path.normcase(WORKDIR), os.path.normcase(os.path.realpath(tempfile.gettempdir()))]
     write_flags = (os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC)
     devnull = os.path.normcase(os.devnull)
@@ -257,6 +325,14 @@ def _install_audit_hook():
             f"changes are allowed only under {WORKDIR!r} and the temp folder")
 
     def hook(event, args):
+        if confined and event in ("socket.connect", "socket.sendto"):
+            addr = args[1]
+            if isinstance(addr, tuple) and addr:
+                why = _refused_address(addr[0])
+                if why is not None:
+                    raise PermissionError(f"workbench: network address {addr[0]} is refused; "
+                                          "use tools.browser_open for the web")
+            return
         if event in path_events:
             for i in path_events[event]:
                 path = args[i]
@@ -598,7 +674,7 @@ def main():
     os.dup2(devnull, 0)                       # user code never reads the frame pipe
     cap = _Capture()
     cap.install()
-    _install_audit_hook()
+    _install_audit_hook(confined=_CONFINED)
     threading.Thread(target=_watchdog, name="wb-watchdog", daemon=True).start()
 
     def send(frame):

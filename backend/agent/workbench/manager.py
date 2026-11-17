@@ -5,15 +5,17 @@ idle (reaper thread), conversation close, workdir change, or backend exit. At mo
 `max_live` processes process-wide. Stdlib only; thread-safe.
 """
 import atexit
+import hashlib
 import logging
 import os
 import re
+import shutil
 import threading
 import time
 from typing import Dict, List, Optional
 
 from . import digest as _digest
-from .client import ConfineFailed, WorkbenchClient, label_low, resolve_interpreter
+from .client import ConfineFailed, WorkbenchClient, label_low, low_root, resolve_interpreter
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +146,72 @@ def _unlabelable(wd: str) -> Optional[str]:
     except ValueError:  # different drives
         pass
     return None
+
+
+# --- the private scratch folder (C8) -------------------------------------------------------
+# A personal conversation with no bound folder works here: <profile>/AppData/LocalLow/
+# iris-workbench/scratch/<conversation>. LocalLow is Low-integrity already, so the confined
+# worker can write it; it is never the IRIS repo, a drive root or the profile root. It lives
+# until the conversation closes or the backend exits - NOT on an idle end, the next step may
+# still need the files. The 200 MB bound is not enforced here; the size is logged at removal.
+_SCRATCH: Dict[str, str] = {}
+_SCRATCH_LOCK = threading.Lock()
+
+
+def _scratch_name(conversation_id: str) -> str:
+    cid = str(conversation_id)
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", cid)[:48]
+    return f"{safe}-{hashlib.sha1(cid.encode('utf-8')).hexdigest()[:8]}"   # the hash keeps "a/b" and "a_b" apart
+
+
+def scratch_workdir(conversation_id: str) -> str:
+    """The conversation's private scratch folder, created on the first call (the same path
+    on every later call). Labelled Low when the OS needs it. Raises WorkbenchScopeRefused if
+    the folder would land in the IRIS repo or on a folder that must not be labelled."""
+    with _SCRATCH_LOCK:
+        path = _SCRATCH.get(conversation_id)
+        if path is not None and os.path.isdir(path):
+            return path
+        path = os.path.join(low_root(), "scratch", _scratch_name(conversation_id))
+        wd = _norm(path)
+        if _under_repo(wd) or _unlabelable(wd) is not None:
+            raise WorkbenchScopeRefused(f"the scratch folder {path!r} is not allowed there")
+        os.makedirs(path, exist_ok=True)
+        if os.name == "nt":
+            try:
+                label_low(path)     # a no-op in effect under LocalLow (inherited); never fatal
+            except ConfineFailed as exc:
+                logger.warning("[Workbench][%s] scratch label skipped: %s", conversation_id, exc)
+        _SCRATCH[conversation_id] = path
+        logger.info("[Workbench][%s] scratch folder %s", conversation_id, path)
+        return path
+
+
+def _dir_bytes(path: str) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def _remove_scratch(conversation_id: Optional[str] = None) -> int:
+    """Remove one conversation's scratch folder (None = every one); the count removed. Logs the
+    size of each. Never raises."""
+    with _SCRATCH_LOCK:
+        keys = list(_SCRATCH) if conversation_id is None else [conversation_id]
+        paths = [(k, _SCRATCH.pop(k)) for k in keys if k in _SCRATCH]
+    for cid, path in paths:
+        try:
+            size = _dir_bytes(path)
+            shutil.rmtree(path, ignore_errors=True)
+            logger.info("[Workbench][%s] scratch folder removed (%d bytes): %s", cid, size, path)
+        except Exception as exc:  # noqa: BLE001 - a removal never fails the close
+            logger.error("[Workbench][%s] scratch removal failed: %r", cid, exc)
+    return len(paths)
 
 
 class WorkbenchManager:
@@ -385,12 +453,14 @@ class WorkbenchManager:
             if had:
                 self._counts["closed"] += 1
                 self._end(conversation_id, "conversation closed")
-            return had
+        _remove_scratch(conversation_id)       # after the worker is gone, outside the lock
+        return had
 
     def close_all(self) -> None:
         with self._lock:
             for cid in list(self._entries):
                 self._end(cid, "backend exit")
+        _remove_scratch()
 
     # --- idle reaper ---------------------------------------------------------
     def _ensure_reaper(self) -> None:
