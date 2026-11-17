@@ -148,6 +148,19 @@ _CHECK_CMD_RE = re.compile(
 _LAST_CMD_FAILED = "last command in this step exited non-zero"
 
 
+# The closing line of a Workbench code step whose planner check passed
+# (node_executor `_manifest_only` close: purpose, "Outputs:", "check: passed").
+_HARNESS_PASSED_RE = re.compile(r"^check: passed\s*$", re.MULTILINE)
+
+
+def _harness_check_passed(result: str) -> bool:
+    """True when the step result is the outputs manifest of a code step whose
+    brief `check` the harness ran and PASSED. A failed or absent check never
+    matches. The manifest has no Actions/Output sections, so without this a
+    passed check left its fact open (TG-7 v2 stage 1: gap opens 36 vs 23)."""
+    return bool(_HARNESS_PASSED_RE.search(result or ""))
+
+
 def _checked_after_change(result: str) -> bool:
     """True when the step RAN the code or its tests after its last file change
     and that run passed. A passing run is outside evidence for a spec fact a
@@ -157,6 +170,8 @@ def _checked_after_change(result: str) -> bool:
     15 -> 47 s)."""
     if not result or _LAST_CMD_FAILED in result:
         return False
+    if _harness_check_passed(result):
+        return True
     from backend.agent.node_executor import _CHANGE_TOOLS
 
     acts = _ACTION_RE.findall(result)
@@ -541,6 +556,9 @@ def mark_coverage(
                         _hit = True
                         break
                     _out = _norm(_tool_output(_res))
+                    if not _out and _harness_check_passed(_res):
+                        # The manifest's output values are the step's product.
+                        _out = _norm(_res)
                     if _out and (_name_re.search(_out) is not None if _names
                                  else any(_t in _out for _t in _match_terms)):
                         _hit = True

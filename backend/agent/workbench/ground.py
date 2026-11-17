@@ -6,6 +6,12 @@ ground text gives it the folder up front: numbered runs collapsed (`svc-01.txt .
 svc-14.txt`), sizes, and the first lines of a few text files. Bounded in time (50 ms),
 entries (2,000), depth (3) and size (1,200 chars). Never raises: an error -> "" and
 one counted failure.
+
+`profile=True` (code nodes, not the planner) replaces the 2 head lines of the files NAMED in
+the task with a profile: a small file whole, a big CSV/TSV as header + 2 rows + row count,
+any other text file as a line count and its top line SHAPES (digit runs and hex ids -> "#"),
+so a severity field, an error-code pattern or a short rule file shows without a "look at
+the data" script. Bounded: 256 KB read per file, 150 ms in all, the same max_chars.
 """
 import logging
 import os
@@ -29,10 +35,18 @@ RUN_MIN = 3                  # a numbered run collapses from this many files
 FOLDER_NAMES_MAX = 12        # single files listed per folder before "+N more"
 LINE_MAX = 300
 FILES_MAX = 200              # ground_files
+PROFILE_FILES = 6            # files profiled (profile=True)
+PROFILE_WHOLE_BYTES = 2000   # a file this small is shown whole
+PROFILE_READ_BYTES = 256 * 1024
+PROFILE_BUDGET_MS = 150
+PROFILE_SHAPES = 6
+PROFILE_SHAPE_TOKENS = 5
+PROFILE_CUT_NOTE = "(profile cut)"
 CUT_NOTE = "(listing cut)"
 MORE_NOTE = "(more files not shown)"
 
 _DIGITS = re.compile(r"\d+")
+_HEXID = re.compile(r"\b(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{8,}\b")
 _failures = 0                # ground / ground_files calls that raised (counted, never raised)
 
 
@@ -157,6 +171,58 @@ def _head(path: str) -> List[str]:
     return [ln if len(ln) <= HEAD_LINE_CHARS else ln[:HEAD_LINE_CHARS - 3] + "..." for ln in lines]
 
 
+def _clip(ln: str, n: int) -> str:
+    return ln if len(ln) <= n else ln[:n - 3] + "..."
+
+
+def _shape(line: str) -> str:
+    """A line with hex-like ids and digit runs -> "#"; only the first tokens, then "..."."""
+    toks = _DIGITS.sub("#", _HEXID.sub("#", line)).split()
+    out = " ".join(toks[:PROFILE_SHAPE_TOKENS])
+    return out + " ..." if len(toks) > PROFILE_SHAPE_TOKENS else out
+
+
+def _profile(path: str, name: str, size: int, t_end: float) -> Optional[List[str]]:
+    """The profile lines of one text file (see the module doc), or None for a binary or
+    unreadable one. Reads at most PROFILE_READ_BYTES."""
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(PROFILE_READ_BYTES)
+    except OSError:
+        return None
+    if b"\x00" in raw:
+        return None
+    partial = size > len(raw)
+    text = raw.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if partial and lines:
+        lines.pop()                                     # the last line is cut at the read edge
+    if size <= PROFILE_WHOLE_BYTES:
+        return [f"  {name} (whole file):"] + ["    " + _clip(ln, LINE_MAX) for ln in lines]
+    est = len(lines) if not partial else int(len(lines) * size / max(len(raw), 1))
+    n = f"~{est}" if partial else str(est)
+    if os.path.splitext(name)[1].lower() in (".csv", ".tsv"):
+        rows = [ln for ln in lines if ln.strip()]
+        shown = [f"    {_clip(ln, HEAD_LINE_CHARS)}" for ln in rows[:3]]
+        total = max(len(rows) - 1, 0) if not partial else max(int(len(rows) * size / max(len(raw), 1)) - 1, 0)
+        return [f"  {name} ({'~' if partial else ''}{total} rows):"] + shown
+    counts: Dict[str, int] = {}
+    example: Dict[str, str] = {}
+    for i, ln in enumerate(lines):
+        if i & 1023 == 1023 and time.perf_counter() > t_end:
+            break
+        if not ln.strip():
+            continue
+        sh = _shape(ln)
+        counts[sh] = counts.get(sh, 0) + 1
+        example.setdefault(sh, ln.strip())
+    top = sorted(counts, key=lambda k: -counts[k])[:PROFILE_SHAPES]    # stable: ties keep file order
+    out = [f"  {name} ({n} lines):"]
+    for sh in top:
+        out.append(f"    {counts[sh]}x  {sh} e.g. {_clip(example[sh], HEAD_LINE_CHARS)}")
+    return out
+
+
 def _is_text(name: str) -> bool:
     return os.path.splitext(name)[1].lower() in TEXT_EXT
 
@@ -166,7 +232,7 @@ def _named_in(text: str, rel: str, name: str) -> bool:
     return name.lower() in low or (rel + name).lower() in low
 
 
-def _head_choice(folders: List[_Folder], text: str) -> List[Tuple[int, str]]:
+def _head_choice(folders: List[_Folder], text: str, profile: bool = False) -> List[Tuple[int, str]]:
     """Which files get head lines: named in `text` first, then the first file of each
     collapsed run, then the other text files in listing order; at most HEAD_FILES."""
     named, firsts, rest = [], [], []
@@ -184,11 +250,13 @@ def _head_choice(folders: List[_Folder], text: str) -> List[Tuple[int, str]]:
                 firsts.append(key)
             elif name not in in_run:
                 rest.append(key)
-    return (named + firsts + rest)[:HEAD_FILES]
+    if profile and named:
+        return named[:PROFILE_FILES]
+    return (named + firsts + rest)[:PROFILE_FILES if profile else HEAD_FILES]
 
 
 def ground(workdir: str, text: str = "", budget_ms: int = 50, max_entries: int = 2000,
-           max_depth: int = 3, max_chars: int = 1200) -> str:
+           max_depth: int = 3, max_chars: int = 1200, profile: bool = False) -> str:
     """The folder as bounded text (see the module doc). `text` = the task and goal: a text
     file named in it gets its head lines first. Returns "" for an empty or missing folder,
     and on any error (counted: failures())."""
@@ -197,9 +265,22 @@ def ground(workdir: str, text: str = "", budget_ms: int = 50, max_entries: int =
         folders, cut = _walk(workdir, budget_ms, max_entries, max_depth)
         if not any(f.files or f.dirs for f in folders):
             return ""
-        chosen = _head_choice(folders, text or "")
+        chosen = _head_choice(folders, text or "", profile)
         heads: Dict[Tuple[int, str], List[str]] = {}
+        profiles: Dict[Tuple[int, str], List[str]] = {}
+        profile_cut = False
+        p_end = time.perf_counter() + PROFILE_BUDGET_MS / 1000.0
         for key in chosen:
+            if profile:
+                if time.perf_counter() > p_end:
+                    profile_cut = True
+                    break
+                f = folders[key[0]]
+                size = next((s for n, s in f.files if n == key[1]), 0)
+                got = _profile(os.path.join(workdir, f.rel, key[1]), f"{f.rel}{key[1]}", size, p_end)
+                if got:
+                    profiles[key] = got
+                continue
             if time.perf_counter() > t_end:
                 cut = True
                 break
@@ -224,11 +305,14 @@ def ground(workdir: str, text: str = "", budget_ms: int = 50, max_entries: int =
             for name, _ in f.files:
                 for ln in heads.get((i, name), ()):
                     body.append(f"  {name} starts: {ln}")
+                body.extend(profiles.get((i, name), ()))
         tail = [CUT_NOTE] if cut else []
+        if profile_cut:
+            tail.append(PROFILE_CUT_NOTE)
         lines = [HEADER] + body + tail
         if sum(len(x) + 1 for x in lines) - 1 > max_chars:
             keep, used = [HEADER], len(HEADER)
-            reserve = len(MORE_NOTE) + 1 + (len(CUT_NOTE) + 1 if cut else 0)
+            reserve = len(MORE_NOTE) + 1 + sum(len(t) + 1 for t in tail)
             for x in body:
                 if used + 1 + len(x) + reserve > max_chars:
                     break

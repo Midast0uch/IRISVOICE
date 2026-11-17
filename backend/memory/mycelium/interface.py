@@ -52,6 +52,25 @@ _USER_CHANNEL = 3
 CONTEXT_PACKAGE_MAX_CHARS: int = 1600
 _CAP_MARKER = "\n...[context capped]"
 
+
+def cap_whole_lines(content: str) -> str:
+    """Cap text at CONTEXT_PACKAGE_MAX_CHARS: drop whole trailing lines, say so."""
+    if len(content) <= CONTEXT_PACKAGE_MAX_CHARS:
+        return content
+    # Over the cap: drop whole trailing lines (never half a line) and say so.
+    room = CONTEXT_PACKAGE_MAX_CHARS - len(_CAP_MARKER)
+    cut = content.rfind("\n", 0, room)
+    return content[: cut if cut > 0 else room] + _CAP_MARKER
+
+
+def package_path_text(package: Any) -> str:
+    """The capped path text of a package. A stand-in without get_path_text is
+    capped from its raw string with the same function. Never raises."""
+    getter = getattr(package, "get_path_text", None)
+    if callable(getter):
+        return getter() or ""
+    return cap_whole_lines(getattr(package, "mycelium_path", "") or "")
+
 # Time budget for building a package (seconds). The walk and the encode are
 # required; topology, predictions and failures are optional and are skipped once
 # the budget is spent - the package degrades, the turn is never delayed.
@@ -94,13 +113,13 @@ class ContextPackage:
             self.topology_path,
             self.ambient_signals,
         ]
-        content = "\n".join(p for p in parts if p)
-        if len(content) <= CONTEXT_PACKAGE_MAX_CHARS:
-            return content
-        # Over the cap: drop whole trailing lines (never half a line) and say so.
-        room = CONTEXT_PACKAGE_MAX_CHARS - len(_CAP_MARKER)
-        cut = content.rfind("\n", 0, room)
-        return content[: cut if cut > 0 else room] + _CAP_MARKER
+        return cap_whole_lines("\n".join(p for p in parts if p))
+
+    def get_path_text(self) -> str:
+        """mycelium_path through the same cap the system zone uses. A prompt
+        consumer reads this, never the raw field: the encoded path of a large
+        graph is tens of thousands of chars."""
+        return cap_whole_lines(self.mycelium_path or "")
 
     def get_tier2_predictions(self) -> str:
         return self.tier2_predictions or ""

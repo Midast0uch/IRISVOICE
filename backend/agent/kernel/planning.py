@@ -29,40 +29,31 @@ def _plan_step_deps(raw_step: dict, earlier: list) -> list:
 # Module level on purpose: stand-in kernels bind only some methods.
 _PLANNER_EXAMPLE_AT = "Example step with a brief: "
 _PLANNER_BRIEF_RULES = (
-    "- Each step also carries a BRIEF for the program that will run it. The "
-    "brief fields are: 'inputs' (list of the variable names or sources the "
-    "step reads), 'outputs' (list of the variable names the step must fill, "
-    "each with a type, e.g. \"error_counts: dict[str,int]\"), 'check' (ONE "
-    "Python expression over those outputs that is True when the step is done), "
-    "'approach' (one or two sentences on how to do it) and 'tools' (list of "
-    "tool names the step may call). Keep the brief short; 'expected_output' "
-    "stays as above. "
-    # D2 (Round 4): the planner's brief strings failed to parse in 5 of 12 runs. Before
-    # the example, which the flag-on test reads as the last thing in the added text.
+    # Round 5 B1: at most 1,400 chars (was ~2,300; +530 tokens per plan on tiny tasks).
+    # Only steps that read or compute carry a brief; 'inputs' is no longer requested (the
+    # parser still accepts it). The quote rule (D2), "ONE step per data product" (D4) and the
+    # completeness rule are pinned by tests; the example stays last and parses to the end.
+    "- A step that reads or computes also carries a BRIEF (a write step carries none): "
+    "'outputs' (names with types, e.g. \"n: dict[str,int]\"), 'check' "
+    "(ONE Python expression over the outputs, True when the step is done), 'approach' (one "
+    "or two sentences), and 'tools' only when the step must call an IRIS tool. "
     "Inside 'check', 'inputs' and 'outputs' use single quotes only and no "
     "backslashes; write paths relative with forward slashes." + chr(10) +
-    # D4 (Round 4): the plan shape. Measured: one data question split into a step per file, a
-    # check that passed on empty placeholders. The PROJECT FILES text (D3) goes in just before
-    # the example when a folder is bound (_planner_ground).
-    "- CODE STEPS. A step with a brief runs as ONE Python program that reads, parses, joins and "
-    "computes over any number of files in milliseconds. Plan ONE step per data product - the "
-    "values the reply needs - not one step per file, table or stage. A task that reads files and "
-    "answers a question is ONE step whose outputs are the answer's values. Add another step only "
-    "for a different kind of work: changing a file, a web page, or a command whose output "
-    "decides what comes next. Never plan parallel steps that each read one file." + chr(10) +
-    "- PROJECT FILES shows the real names and first lines: write 'approach' against them (the "
-    "separator, the field that holds the value, the exact pattern)." + chr(10) +
-    "- 'outputs' are the values the reply will quote, small and final (a number, a short list, a "
-    "dict of at most about 20 items), never raw file text. 'check' must test completeness, not "
-    "only the type (the expected number of items or keys)." + chr(10) +
+    "- CODE STEPS. A step with a brief runs as ONE Python program that reads, parses and "
+    "computes over any number of files. Plan ONE step per data product - the values the reply "
+    "needs - not one step per file or stage. Add another step only for a different kind of "
+    "work: changing a file, or a command whose output decides what comes next. "
+    "Never plan parallel steps that each read one file." + chr(10) +
+    "- PROJECT FILES shows the real names and first lines: write 'approach' against them. "
+    "'outputs' are the values the reply will quote, small and final, never raw text. "
+    "'check' must test completeness, not only the type (the expected number of items or keys)."
+    + chr(10) +
     _PLANNER_EXAMPLE_AT +
-    '{"step_id":"s1","step_number":1,"description":"Count the errors per type in the log",'
-    '"expected_output":"a count of each error type","depends_on":["start"],'
-    '"critical":true,"criticality":"load-bearing",'
-    '"inputs":["task"],"outputs":["error_counts: dict[str,int]"],'
-    '"check":"isinstance(error_counts, dict) and len(error_counts) > 0",'
-    '"approach":"Read the log file, match each error line, count by type.",'
-    '"tools":["read_file"]}' + chr(10)
+    '{"step_id":"s1","step_number":1,"description":"Count errors",'
+    '"expected_output":"error counts","depends_on":["start"],"critical":true,'
+    '"inputs":["task"],"outputs":["counts: dict[str,int]"],'
+    '"check":"len(counts) > 0","approach":"Match each error line, count by type.",'
+    '"tools":[]}' + chr(10)
 )
 _BRIEF_LIST_MAX, _BRIEF_ITEM_MAX = 8, 120
 _BRIEF_CHECK_MAX, _BRIEF_APPROACH_MAX = 300, 400

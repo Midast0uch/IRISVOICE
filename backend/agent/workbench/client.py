@@ -323,18 +323,29 @@ class WorkbenchClient:
             logger.info("[Workbench][%s] closed", self._tag())
 
     # --- requests ------------------------------------------------------------
+    @staticmethod
+    def _held(mi) -> int:
+        """Memory a process HOLDS. Windows: private bytes - the working set (`rss`) is what
+        Windows keeps in RAM and it trims an idle process: measured 2026-11-16, a worker
+        holding a 300 MB value read rss 1 MB / private 318 MB after a trim, so the caps and
+        the "workbench holds" warning missed it exactly under memory pressure. Elsewhere
+        rss (no `private` field)."""
+        private = getattr(mi, "private", None)
+        return int(private) if private else int(mi.rss)
+
     def rss_bytes(self) -> Optional[int]:
-        """RSS of the whole worker tree (process + all descendants); None when unknown."""
+        """Memory held by the whole worker tree (process + all descendants; private bytes
+        on Windows, RSS elsewhere - see _held); None when unknown."""
         if not self.alive or not self._load_psutil():
             return None
         ps = self._psutil
         try:
             if self._psutil_proc is None:
                 self._psutil_proc = ps.Process(self._proc.pid)
-            total = self._psutil_proc.memory_info().rss
+            total = self._held(self._psutil_proc.memory_info())
             for child in self._psutil_proc.children(recursive=True):
                 try:
-                    total += child.memory_info().rss
+                    total += self._held(child.memory_info())
                 except ps.Error:
                     pass
             return total

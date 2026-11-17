@@ -1470,7 +1470,8 @@ class ContextMixin:
             if self._memory_interface is None or not session_id:
                 return []
             pkg, ok = self._memory_interface.get_task_context_package(text, session_id)
-            prof = getattr(pkg, "mycelium_path", "") if ok else ""
+            from backend.memory.mycelium.interface import package_path_text  # lazy: keeps the import off the kernel load path
+            prof = package_path_text(pkg) if ok else ""
             if not (prof and prof.strip()):
                 return []
             return [
@@ -1494,7 +1495,8 @@ class ContextMixin:
                   "failure_warnings": "None"}
         if context_package is None:
             return fields
-        fields["tier1"] = getattr(context_package, "mycelium_path", "") or ""
+        from backend.memory.mycelium.interface import package_path_text  # lazy: keeps the import off the kernel load path
+        fields["tier1"] = package_path_text(context_package)
         try:
             fields["preds"] = context_package.get_tier2_predictions() or ""
         except Exception:

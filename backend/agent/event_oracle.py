@@ -261,13 +261,18 @@ def brain_for(owner: Any) -> Optional[Callable[[str], str]]:
 
     try:
         _params = _inspect.signature(infer).parameters
-        _tag = ({"call_kind": "label"} if ("call_kind" in _params or any(
-            p.kind is _inspect.Parameter.VAR_KEYWORD for p in _params.values())) else {})
+        _kw = any(p.kind is _inspect.Parameter.VAR_KEYWORD for p in _params.values())
+        _tag = {"call_kind": "label"} if ("call_kind" in _params or _kw) else {}
+        # Round 5 L1: 16 tokens were eaten by the provider's hidden reasoning and the call
+        # was resent at 1040 (110 times in one log). Low effort + 64 tokens; same rule: only
+        # for an `infer` that names the keyword (or takes **kwargs).
+        if "reasoning_effort" in _params or _kw:
+            _tag["reasoning_effort"] = "low"
     except (TypeError, ValueError):
         _tag = {}
 
     def _call(prompt: str) -> str:
-        resp = infer(prompt, role="reasoning", max_tokens=16, temperature=0.0, **_tag)
+        resp = infer(prompt, role="reasoning", max_tokens=64, temperature=0.0, **_tag)
         return getattr(resp, "raw_text", "") or ""
 
     return _call

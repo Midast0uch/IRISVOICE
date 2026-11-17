@@ -306,9 +306,28 @@ def _fingerprint():
     return out
 
 
+# A BOUNDED repr for the changed-variable previews (2026-11-16): repr() of the WHOLE value
+# ran after every script - a 300 MB bytes value briefly took a second 300 MB copy (peak
+# 611 MB measured), tripped the 512 MB cap and restarted the workbench, all to show 80
+# chars. Strings / bytes are sliced before repr; containers go through reprlib limits.
+import reprlib as _reprlib
+
+_REPR = _reprlib.Repr()
+_REPR.maxstring = _REPR.maxother = PREVIEW_CHARS
+_REPR.maxlist = _REPR.maxtuple = _REPR.maxset = _REPR.maxfrozenset = 40
+_REPR.maxdeque = _REPR.maxarray = 40
+_REPR.maxdict, _REPR.maxlong, _REPR.maxlevel = 20, 60, 3
+_SLICEABLE = (str, bytes, bytearray)
+
+
 def _preview(obj):
     try:
-        text = repr(obj)
+        if isinstance(obj, _SLICEABLE) and len(obj) > PREVIEW_CHARS:
+            text = repr(obj[:PREVIEW_CHARS])
+        elif isinstance(obj, memoryview) and obj.nbytes > PREVIEW_CHARS:
+            text = repr(bytes(obj[:PREVIEW_CHARS]))
+        else:
+            text = _REPR.repr(obj)
     except Exception as exc:
         text = f"<repr failed: {type(exc).__name__}>"
     text = text.replace("\n", " ")
@@ -568,6 +587,10 @@ def main():
     if "--site" in sys.argv:             # the project venv's site-packages (see client.py)
         import site
         site.addsitedir(sys.argv[sys.argv.index("--site") + 1])
+    # `python -I` leaves the project folder off sys.path; APPEND it (never insert) so the
+    # standard library still wins over a project file named like a stdlib module.
+    if WORKDIR not in sys.path:
+        sys.path.append(WORKDIR)
     rd = os.fdopen(os.dup(0), "rb")
     wr = os.fdopen(os.dup(1), "wb")
     _IO["rd"], _IO["wr"] = rd, wr

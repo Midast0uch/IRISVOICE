@@ -68,27 +68,42 @@ def refs(reply: dict, outputs: Optional[List[str]] = None) -> List[str]:
     return out
 
 
-def _stdout_cut(reply: dict) -> bool:
-    return len(reply.get("stdout") or "") > STDOUT_HEAD + STDOUT_TAIL and reply.get("out_n") is not None
+def _stdout_cut(reply: dict, stdout_max: Optional[int] = None) -> bool:
+    limit = STDOUT_HEAD + STDOUT_TAIL if stdout_max is None else max(0, stdout_max)
+    return len(reply.get("stdout") or "") > limit and reply.get("out_n") is not None
 
 
-def digest(reply: dict, rss_mb: Optional[float] = None, outputs: Optional[List[str]] = None) -> str:
+def assigned(reply: dict, outputs: Optional[List[str]]) -> List[str]:
+    """Which of `outputs` (the brief's names) this run assigned: those among the reply's changed
+    variables, in the brief's order."""
+    changed = {v.get("name") for v in (reply.get("vars") or [])}
+    return [n for n in dict.fromkeys(outputs or []) if n in changed]
+
+
+def digest(reply: dict, rss_mb: Optional[float] = None, outputs: Optional[List[str]] = None,
+           stdout_max: Optional[int] = None) -> str:
     """The text of one execution, bounded: stdout <= 1,200 chars, value <= 400,
     <= 12 variable lines (with `outputs`: those first, then <= 4 others), the error type,
     message and a trace tail. `rss_mb` is the memory of the whole worker tree; above 256 MB
-    the digest says so."""
+    the digest says so. `stdout_max`: the total stdout chars shown (head and tail split evenly);
+    None -> 1,200 (STDOUT_HEAD + STDOUT_TAIL)."""
+    if stdout_max is None:
+        head, tail = STDOUT_HEAD, STDOUT_TAIL
+    else:
+        head = max(0, stdout_max) // 2
+        tail = max(0, stdout_max) - head
     inc = reply.get("incarnation") or ""
     lines = [f"run_python {'ok' if reply.get('ok') else 'error'} ({reply.get('wall_ms', 0)} ms)"]
     stdout = reply.get("stdout") or ""
     if stdout:
-        if _stdout_cut(reply):
-            gap = len(stdout) - STDOUT_HEAD - STDOUT_TAIL
-            lines.append("stdout:\n" + stdout[:STDOUT_HEAD] + f"\n... [{gap} chars cut] ...\n"
-                         + stdout[-STDOUT_TAIL:])
+        if _stdout_cut(reply, stdout_max):
+            gap = len(stdout) - head - tail
+            lines.append("stdout:\n" + stdout[:head] + f"\n... [{gap} chars cut] ...\n"
+                         + (stdout[-tail:] if tail else ""))
             lines.append(f"full output: [wb out:{inc}/out{reply['out_n']}] "
                          f"(recall_memory expand=\"{make_ref(inc, 'out%d' % reply['out_n'])}\")")
         else:
-            lines.append("stdout:\n" + stdout[:STDOUT_HEAD + STDOUT_TAIL])
+            lines.append("stdout:\n" + stdout[:head + tail])
     stderr = reply.get("stderr") or ""
     if stderr:
         lines.append("stderr:\n" + _clip(stderr, 400))

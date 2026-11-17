@@ -244,7 +244,9 @@ def test_the_user_feedback_label_call_is_tagged_label():
         seen.append((max_tokens, kw))
         return SimpleNamespace(raw_text="confirmation")
     assert eo.brain_for(SimpleNamespace(infer=infer))("p") == "confirmation"
-    assert seen == [(16, {"call_kind": "label"})]
+    # STATED CHANGE (Round 5 L1, 2026-11-16): the 16-token label call was cut by hidden
+    # reasoning and resent (110 "resending" lines); it is now 64 tokens at low effort.
+    assert seen == [(64, {"call_kind": "label", "reasoning_effort": "low"})]
 
 
 def test_an_infer_with_a_fixed_signature_is_called_as_before():
@@ -257,7 +259,7 @@ def test_an_infer_with_a_fixed_signature_is_called_as_before():
     def infer(prompt, role, max_tokens, temperature):
         seen.append(max_tokens)
         return SimpleNamespace(raw_text="none")
-    assert eo.brain_for(SimpleNamespace(infer=infer))("p") == "none" and seen == [16]
+    assert eo.brain_for(SimpleNamespace(infer=infer))("p") == "none" and seen == [64]  # Round 5 L1
 
 
 def test_infer_passes_a_kind_to_the_router_only_when_given():

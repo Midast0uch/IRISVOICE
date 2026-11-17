@@ -151,3 +151,136 @@ def test_ground_files_is_capped_at_200(tmp_path):
     for i in range(300):
         (tmp_path / f"f{i}.dat").write_bytes(b"x")
     assert len(ground.ground_files(str(tmp_path))) == 200
+
+
+# ---- R2: profile=True (code nodes) - the data shows in the ground, no "look at it" script ----
+
+_X01_HEAD = (HEADER + "\nservice-logs/  14 files  svc-01.txt .. svc-14.txt  3.6-3.7 KB each"
+             "\n  svc-01.txt starts: 2026-03-14 06:12:01 svc-01 INFO  request id=10001 status=200"
+             "\n  svc-01.txt starts: 2026-03-14 06:12:01 svc-01 INFO  request id=10001 status=200")
+_X04_HEAD = (HEADER + "\ndata/  classes.csv 40 B | orders.csv 5.7 KB | tax.txt 6.9 KB | zones.csv 1.1 KB"
+             "\n  classes.csv starts: class,multiplier_percent\n  classes.csv starts: standard,100"
+             "\n  orders.csv starts: order_id,zone,weight_kg,class\n  orders.csv starts: ORD-0001,Z-19,17.5,standard"
+             "\n  tax.txt starts: SHIPPING TAX RULES 2026\n  tax.txt starts: Tax depends on the region."
+             "\n  zones.csv starts: zone,region,base_cents,per_kg_cents\n  zones.csv starts: Z-01,south,716,156")
+
+
+def _x01_errors(root):
+    d = root / "service-logs"
+    d.mkdir()
+    for n in range(1, 15):
+        lines = [f"2026-03-14 06:{n:02d}:31 svc-{n:02d} INFO  request id={n}0001 status=200"] * 60
+        lines += [f"2026-03-14 06:09:{k:02d} svc-{n:02d} ERROR [E-{3300 + k * 7}] queue overflow" for k in range(5)]
+        lines += [f"2026-03-14 06:10:{k:02d} svc-{n:02d} WARN  slow call {k}ms" for k in range(3)]
+        (d / f"svc-{n:02d}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _x04_rules(root):
+    _x04(root)
+    d = root / "data"
+    (d / "tax.txt").write_text(
+        "SHIPPING TAX RULES 2026\n"
+        "Tax depends on the region.\n"
+        "North and south regions pay 8 percent tax.\n"
+        "East and west regions pay 12 percent tax.\n"
+        "Round the tax to whole cents using banker's rounding (half to even).\n"
+        "Apply tax after the class multiplier.\n" * 30, encoding="utf-8")
+    (d / "classes.csv").write_text("class,multiplier_percent\nstandard,100\nexpress,150\n", encoding="utf-8")
+
+
+def test_r2_profile_false_is_byte_equal_to_the_listing_of_today(tmp_path):
+    _x01(tmp_path)
+    assert ground.ground(str(tmp_path)) == _X01_HEAD
+    assert ground.ground(str(tmp_path), "svc-01.txt", profile=False) == ground.ground(str(tmp_path), "svc-01.txt")
+    d = tmp_path / "x"
+    d.mkdir()
+    _x04(d)
+    assert ground.ground(str(d)) == _X04_HEAD
+    assert ground.ground(str(d), "read data/classes.csv and tax.txt", profile=False) == _X04_HEAD
+
+
+def test_r2_x01_profile_shows_the_error_line_shape_with_its_code_pattern(tmp_path):
+    _x01_errors(tmp_path)
+    out = ground.ground(str(tmp_path), "count the ERROR lines in svc-03.txt and svc-04.txt", profile=True, max_chars=4000)
+    assert "svc-03.txt" in out and "svc-04.txt" in out and "svc-05.txt (" not in out
+    assert "(68 lines)" in out
+    assert "5x  #-#-# #:#:# svc-# ERROR [E-#] ..." in out
+    assert "e.g. 2026-03-14 06:09:00 svc-03 ERROR [E-3300] queue overflow" in out
+    assert "WARN" in out and "starts:" not in out
+
+
+def test_r2_x04_profile_small_csv_whole_big_csv_header_rows_prose_shapes(tmp_path):
+    _x04_rules(tmp_path)
+    out = ground.ground(str(tmp_path), "use data/orders.csv, classes.csv and tax.txt", profile=True, max_chars=4000)
+    assert "  data/classes.csv (whole file):\n    class,multiplier_percent\n    standard,100\n    express,150\n" in out
+    assert ("  data/orders.csv (200 rows):\n    order_id,zone,weight_kg,class\n"
+            "    ORD-0001,Z-19,17.5,standard\n    ORD-0001,Z-19,17.5,standard\n") in out
+    assert "ORD-0001" not in out.split("(200 rows):")[1].split("data/")[0].split("standard\n")[2]
+    assert "zones.csv (" not in out
+    assert "tax.txt (180 lines):" in out
+    assert "30x  Round the tax to whole ..." in out and "e.g. Round the tax to whole cents using banker's rounding (half to even)." in out
+    assert out.count("30x") == 6          # the whole file repeats 6 lines x 30: all 6 shapes shown
+
+
+def test_r2_a_file_of_2000_bytes_is_shown_whole(tmp_path):
+    body = "[core]\nname = demo\n" + "key_%02d = value\n" % 1
+    body = (body + "# pad\n" * 400)[:2000]
+    (tmp_path / "settings.ini").write_bytes(body.encode())
+    assert len(body.encode()) == 2000
+    out = ground.ground(str(tmp_path), "edit settings.ini", profile=True, max_chars=4000)
+    assert "settings.ini (whole file):\n    [core]\n    name = demo\n    key_01 = value\n    # pad" in out
+    (tmp_path / "settings.ini").write_bytes((body + "x").encode())        # 2001 bytes: shapes, not whole
+    assert "(whole file)" not in ground.ground(str(tmp_path), "edit settings.ini", profile=True, max_chars=4000)
+
+
+def test_r2_profile_bounds_read_output_and_time(tmp_path, monkeypatch):
+    big = tmp_path / "big.log"
+    chunk = "2026-03-14 06:09:31 svc-14 ERROR [E-3369] queue overflow\n" * 1000
+    with open(big, "w", encoding="utf-8") as fh:
+        for _ in range(50 * 1024 * 1024 // len(chunk) + 1):
+            fh.write(chunk)
+    assert big.stat().st_size >= 50 * 1024 * 1024
+    for n in range(8):
+        (tmp_path / f"n{n}.txt").write_text("alpha beta gamma delta epsilon zeta %d\n" % n * 80, encoding="utf-8")
+    read = []
+    real_open = open
+
+    def spy(path, mode="r", *a, **k):
+        fh = real_open(path, mode, *a, **k)
+        if "b" in mode and str(path).endswith("big.log"):
+            real_read = fh.read
+            fh.read = lambda n=-1: read.append(n) or real_read(n)
+            read.append(("opened", n))
+        return fh
+    monkeypatch.setattr(ground, "open", spy, raising=False)
+    text = "big.log " + " ".join(f"n{n}.txt" for n in range(8))
+    t0 = time.perf_counter()
+    out = ground.ground(str(tmp_path), text, profile=True, max_chars=1200)
+    took = time.perf_counter() - t0
+    reads = [r for r in read if isinstance(r, int)]
+    assert reads and all(0 < r <= 256 * 1024 for r in reads)       # never more than 256 KB asked of it
+    assert "big.log (~" in out and "lines):" in out                # a partial read says "~"
+    assert len(out) <= 1200
+    assert out.count("lines):") + out.count("whole file") <= 6      # at most 6 files
+    assert took < 0.5                                                # 150 ms profile budget + walk, with slack for the disk
+
+
+def test_r2_profile_time_bound_marks_the_cut(tmp_path, monkeypatch):
+    for n in range(6):
+        (tmp_path / f"f{n}.txt").write_text("a b c %d\n" % n * 400, encoding="utf-8")
+    ticks = iter(range(0, 10_000))
+    monkeypatch.setattr(ground.time, "perf_counter", lambda: next(ticks) * 0.1)   # every call = 100 ms
+    out = ground.ground(str(tmp_path), "f0.txt f1.txt f2.txt f3.txt", profile=True, max_chars=4000, budget_ms=10**9)
+    assert out.splitlines()[-1] == "(profile cut)"
+
+
+def test_r2_profile_output_is_whole_lines_within_max_chars_and_never_raises(tmp_path, monkeypatch):
+    _x04_rules(tmp_path)
+    full = ground.ground(str(tmp_path), "orders.csv classes.csv tax.txt", profile=True, max_chars=4000)
+    small = ground.ground(str(tmp_path), "orders.csv classes.csv tax.txt", profile=True, max_chars=500)
+    assert len(small) <= 500 and len(full) > 500
+    assert all(ln in full.splitlines() for ln in small.splitlines() if not ln.startswith("("))
+    before = ground.failures()
+    monkeypatch.setattr(ground, "_profile", lambda *a, **k: 1 / 0)
+    assert ground.ground(str(tmp_path), "tax.txt", profile=True) == ""
+    assert ground.failures() == before + 1
