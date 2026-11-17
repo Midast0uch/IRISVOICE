@@ -280,6 +280,11 @@ def _refused_address(host):
     return None
 
 
+# Audit events of direct network use from a script (refused in every mode; see the hook).
+_NET_EVENTS = frozenset({"socket.connect", "socket.sendto", "socket.getaddrinfo",
+                         "socket.gethostbyname", "socket.gethostbyaddr"})
+
+
 def _install_audit_hook(confined=False):
     """Refuse writes / removals outside the project folder and the temp folder. With `confined`
     (personal mode on Windows) also refuse socket connects to loopback and private networks:
@@ -325,14 +330,17 @@ def _install_audit_hook(confined=False):
             f"changes are allowed only under {WORKDIR!r} and the temp folder")
 
     def hook(event, args):
-        if confined and event in ("socket.connect", "socket.sendto"):
-            addr = args[1]
-            if isinstance(addr, tuple) and addr:
-                why = _refused_address(addr[0])
-                if why is not None:
-                    raise PermissionError(f"workbench: network address {addr[0]} is refused; "
-                                          "use tools.browser_open for the web")
-            return
+        # Owner 2026-11-17: a script reaches the web "only [through] the browser in the
+        # application with the tools and should block if the webswitch isnt on" - so NO
+        # direct network from a script, in every mode: connect, UDP send and name lookups
+        # (a lookup alone can carry data out). tools.browser_* go through the egress guard
+        # and the web switch. Measured before: a personal script fetched 3 public pages with
+        # urllib in 1 s, around the browser tools, the egress guard and the Oracle rows.
+        if event in _NET_EVENTS:
+            target = args[1] if event in ("socket.connect", "socket.sendto") else args[0]
+            host = target[0] if isinstance(target, tuple) and target else target
+            raise PermissionError(f"workbench: network address {host!r} is refused ({event}); "
+                                  "use tools.browser_open / tools.browser_read for the web")
         if event in path_events:
             for i in path_events[event]:
                 path = args[i]

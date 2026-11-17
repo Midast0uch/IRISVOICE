@@ -201,16 +201,50 @@ def test_a_confined_worker_cannot_use_a_raw_socket_connect_either(project, liste
         m.shutdown()
 
 
-def test_developer_mode_still_connects_to_loopback(project, listener):
+def test_developer_mode_refuses_direct_network_too(project, listener):
+    """STATED CHANGE (owner 2026-11-17: scripts reach the web "only [through] the browser in
+    the application with the tools and should block if the webswitch isnt on"): this test
+    pinned "developer mode still connects"; a script's direct network is now refused in every
+    mode - the web goes through tools.browser_* (egress guard + the web switch)."""
     m = _manager("developer")
     try:
         c = m.workbench_for("r6-dev", project)
         assert c is not None and c.confined is False
         rep = c.exec(_connect_code(listener.getsockname()[1]))
-        assert rep["ok"] and rep["value"].strip("'") == "connected", rep
-        assert _listener_saw_a_connection(listener)
+        assert rep["ok"] and "refused: workbench: network address" in rep["value"], rep
+        assert not _listener_saw_a_connection(listener)
     finally:
         m.shutdown()
+
+
+@pytest.mark.parametrize("mode", ["personal", "developer"])
+def test_a_public_address_and_a_name_lookup_are_refused_in_every_mode(project, mode):
+    """A public address and a DNS lookup (a lookup alone can carry data out) are refused too.
+    No packet leaves: the audit hook raises before the socket call runs."""
+    m = _manager(mode)
+    try:
+        c = m.workbench_for(f"r6-pub-{mode}", project)
+        code = ("import socket\nres = []\n"
+                "for f in (lambda: socket.create_connection(('93.184.216.34', 80), timeout=1),\n"
+                "          lambda: socket.getaddrinfo('example.com', 80)):\n"
+                "    try:\n        f(); res.append('reached')\n"
+                "    except PermissionError as e:\n        res.append('refused')\n"
+                "    except OSError:\n        res.append('oserror')\n"
+                "res")
+        rep = c.exec(code)
+        assert rep["ok"] and rep["value"] == "['refused', 'refused']", rep
+    finally:
+        m.shutdown()
+
+
+def test_child_processes_get_the_dead_proxy():
+    """Children (sh / subprocess: curl, npm, pip, python) inherit proxies to a dead port; a
+    child that ignores proxy variables is NOT covered (firewall / AppContainer later)."""
+    from backend.agent.workbench import client as cl
+
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "npm_config_proxy"):
+        assert cl.NO_NET_ENV[k] == "http://127.0.0.1:9"
+    assert cl.NO_NET_ENV["npm_config_offline"] == "true" and cl.NO_NET_ENV["PIP_NO_INDEX"] == "1"
 
 
 def test_the_scratch_base_is_a_registered_root_and_lowlow_is_not():

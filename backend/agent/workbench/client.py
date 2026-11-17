@@ -28,6 +28,15 @@ OP_TIMEOUT_S = 30.0            # hello / inspect / put
 RESULT_FRAME_MAX = 2_000_000   # bytes of one callback result sent back to the worker
 _CREATE_NO_WINDOW = 0x08000000
 CONFINE_ENV = "IRIS_WB_CONFINE"            # worker.py reads it and lowers its own token
+# A dead proxy (port 9, "discard", nothing listens) for the worker's child processes.
+_DEAD_PROXY = "http://127.0.0.1:9"
+NO_NET_ENV = {
+    "HTTP_PROXY": _DEAD_PROXY, "HTTPS_PROXY": _DEAD_PROXY, "ALL_PROXY": _DEAD_PROXY,
+    "http_proxy": _DEAD_PROXY, "https_proxy": _DEAD_PROXY, "all_proxy": _DEAD_PROXY,
+    "NO_PROXY": "", "no_proxy": "",
+    "npm_config_proxy": _DEAD_PROXY, "npm_config_https_proxy": _DEAD_PROXY,
+    "npm_config_offline": "true", "PIP_NO_INDEX": "1",
+}
 CONFINE_FAIL_MARK = "workbench_confine_failed"   # what a worker prints to stderr when it cannot
 ICACLS_TIMEOUT_S = 120.0       # one label pass; ~3 s measured for a folder of 20,000 files
 
@@ -219,7 +228,12 @@ class WorkbenchClient:
         self._q = queue.Queue(maxsize=2)
         self._errfile = tempfile.TemporaryFile("w+b")
         flags = _CREATE_NO_WINDOW if os.name == "nt" else 0
-        env = self._env if self._env is not None else os.environ.copy()
+        env = dict(self._env) if self._env is not None else os.environ.copy()
+        # Owner 2026-11-17: scripts reach the web only through the app's browser tools. The
+        # worker's audit hook refuses Python sockets; CHILD processes (sh / subprocess: curl,
+        # npm, pip, python) inherit these dead proxies, which most tools obey. A child that
+        # ignores proxy variables is NOT covered - that needs a firewall rule / AppContainer.
+        env.update(NO_NET_ENV)
         self._confined = False
         if self._confine:
             env, self._tmp = confine_env(env)

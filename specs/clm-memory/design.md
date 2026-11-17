@@ -326,9 +326,15 @@ of the node thread (empty on the callback thread); the browser runs in the backe
 - **Scope and safety.** C8 (owner 2026-11-16: "Private scratch folder"): a personal
   conversation with no bound folder gets a per-conversation scratch folder (labelled Low,
   removed at the end), never the IRIS repo and never an ask card in a browser step. C10
-  (owner: "Yes, refuse them"): the confined worker refuses socket connects to loopback and
-  private addresses ("use tools.browser_open"); child processes are not covered (a firewall
-  rule / AppContainer later). Page actions in scripts (owner: "Actions now"): click / type /
+  (owner: "Yes, refuse them"; WIDENED by the owner 2026-11-17 after a smoke run showed a
+  script fetching 3 public pages with urllib in 1 s, around the browser tools, the egress
+  guard and the Oracle rows: "only the browser in the application with the tools and should
+  block if the webswitch isnt on"): a script's direct network is refused in EVERY mode -
+  socket connect / sendto and name lookups (a lookup alone can carry data out); the web goes
+  only through tools.browser_* (egress guard + the web switch's InternetGate). Child
+  processes inherit dead proxies (127.0.0.1:9, npm offline, PIP_NO_INDEX), which curl / npm /
+  pip / Python obey; a child that ignores proxy variables is NOT covered (a firewall rule /
+  AppContainer later). Page actions in scripts (owner: "Actions now"): click / type /
   select through the click-safety gate; credentials and login stay on the vision path.
 - **Tests.** Contract (test_workbench_browser_contract.py): latch, claim order, entry table,
   row shape, no b64 in frames, browser_read in claim / family / tier, enforcement guard (bar
