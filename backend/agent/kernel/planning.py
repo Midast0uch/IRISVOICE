@@ -38,26 +38,28 @@ _PLANNER_BRIEF_RULES = (
     # Only steps that read or compute carry a brief; 'inputs' is no longer requested (the
     # parser still accepts it). The quote rule (D2), "ONE step per data product" (D4) and the
     # completeness rule are pinned by tests; the example stays last and parses to the end.
-    "- A step that reads or computes also carries a BRIEF (a write step carries none): "
-    "'outputs' (names with types, e.g. \"n: dict[str,int]\"), 'check' "
-    "(ONE Python expression over the outputs, True when the step is done), 'approach' (one "
-    "or two sentences), and 'tools' only when the step must call an IRIS tool. "
+    "- A step that reads or computes carries a BRIEF (a write step none): "
+    "'outputs' (names with types), 'check' "
+    "(ONE Python expression over the outputs, True when done), 'approach' (1-2 "
+    "sentences), and 'tools' only when it must call an IRIS tool. "
     "Inside 'check', 'inputs' and 'outputs' use single quotes only and no "
     "backslashes; write paths relative with forward slashes." + chr(10) +
-    "- CODE STEPS. A step with a brief runs as ONE Python program that reads, parses and "
-    "computes over any number of files. Plan ONE step per data product - the values the reply "
-    "needs - not one step per file or stage. Add another step only for a different kind of "
-    "work: changing a file, or a command whose output decides what comes next. "
+    "- A step with a brief runs as ONE Python program over many files. "
+    "Plan ONE step per data product, not per file. Add a step only for different "
+    "work: changing a file, or a command whose output decides the next step. "
     "Never plan parallel steps that each read one file." + chr(10) +
-    "- PROJECT FILES shows the real names and first lines: write 'approach' against them. "
-    "'outputs' are the values the reply will quote, small and final, never raw text. "
+    "- A BROWSER step gets a brief only when the element is named in the request or it "
+    "reads known pages; 'tools' names browser_open, browser_read, browser_observe, "
+    "browser_act or browser_explore. Login, credentials, CAPTCHA, finding by look: no brief." + chr(10) +
+    "- PROJECT FILES lists the real names: write 'approach' against them. "
+    "'outputs' are the values the reply will quote, never raw text. "
     "'check' must test completeness, not only the type (the expected number of items or keys)."
     + chr(10) +
     _PLANNER_EXAMPLE_AT +
     '{"step_id":"s1","step_number":1,"description":"Count errors",'
     '"expected_output":"error counts","depends_on":["start"],"critical":true,'
     '"inputs":["task"],"outputs":["counts: dict[str,int]"],'
-    '"check":"len(counts) > 0","approach":"Match each error line, count by type.",'
+    '"check":"len(counts) > 0","approach":"Count errors by type.",'
     '"tools":[]}' + chr(10)
 )
 _BRIEF_LIST_MAX, _BRIEF_ITEM_MAX = 8, 120
