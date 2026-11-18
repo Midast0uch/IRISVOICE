@@ -94,8 +94,12 @@ def test_single_authority(monkeypatch):
     # second authority at execution time" — only the module name is corrected.
     assert "from backend.agent.tool_decision import ToolDecisionBox" in src, \
         "the runtime resolver must be ToolDecisionBox"
-    assert "_box.resolve(" in src, \
-        "the DER step must resolve its tool through the single authority"
+    # STALE-BY-SPEC update (owner 2026-10-25): the kernel split moved the single dispatch
+    # authority out of the facade. DER nodes no longer call ToolDecisionBox.resolve(); they
+    # dispatch through the cached box (kernel/der/node.py). The invariant is unchanged - one
+    # dispatch authority at execution time - only the call site moved.
+    assert "box.dispatch(" in src, \
+        "the DER step must dispatch its tool through the single authority"
 
 
 # ── Test 3: planner emits goals only (no tool field) ───────────────────────

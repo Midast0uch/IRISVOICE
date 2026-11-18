@@ -65,6 +65,13 @@ HTTP_BASE = "http://127.0.0.1:8090"
 WS_BASE = "ws://127.0.0.1:8090/ws"
 LOCAL_MODEL_PORT = int(os.environ.get("IRIS_LOCAL_PORT", "8082"))
 
+# Round 6 gate: the post-reply drain keeps the socket open while TTS speaks the
+# answer (~31 s/task measured 2026-11-17) and collects late document:render frames.
+# The A/B analysis reads reply_s (captured BEFORE the drain), never `seconds`, and
+# browser cohorts render no documents. The gate driver sets IRIS_EVAL_NO_DRAIN=1 to
+# skip the drain and cut ~2 h off a 240-run gate. Default (unset) is unchanged.
+NO_DRAIN = os.environ.get("IRIS_EVAL_NO_DRAIN") == "1"
+
 # Work copies live OUTSIDE the IRIS repo: a workdir inside the repo triggers the
 # self-edit worktree routing, which would test a different path.
 EVAL_ROOT = Path(tempfile.gettempdir()) / "iris-evals"
@@ -344,16 +351,19 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
                 # socket open while the reply is SPOKEN, which "seconds" counts.
                 record["reply_at"] = time.monotonic()
                 # Documents are emitted before the final reply; give a late
-                # document frame a moment to arrive before closing.
-                try:
-                    while True:
-                        extra = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
-                        if extra.get("type") == "document:render":
-                            p = extra.get("payload") or {}
-                            if isinstance(p.get("content"), str):
-                                record["documents"].append(p["content"])
-                except (asyncio.TimeoutError, websockets.ConnectionClosed, ValueError):
-                    pass
+                # document frame a moment to arrive before closing. Skipped when
+                # IRIS_EVAL_NO_DRAIN=1 (gate driver): reply_s is already captured
+                # and browser cohorts render no documents.
+                if not NO_DRAIN:
+                    try:
+                        while True:
+                            extra = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
+                            if extra.get("type") == "document:render":
+                                p = extra.get("payload") or {}
+                                if isinstance(p.get("content"), str):
+                                    record["documents"].append(p["content"])
+                    except (asyncio.TimeoutError, websockets.ConnectionClosed, ValueError):
+                        pass
                 break
     return record
 

@@ -49,6 +49,10 @@ ROLES = ("reasoning", "tool_execution")
 
 _WB_LINE = re.compile(r"\[workbench\] conv=(\S+) (?:step=(\S+) )?(code node|falls back|escalated)")
 _WB_CLOSE = re.compile(r"\[workbench\] conv=(\S+) step=\S+ scripts=(\d+) exploring=(\d+) wait_s=([\d.]+)")
+# Round 6 fix (c): one browser_next shadow row per script browser_act on an on-list
+# element. The log line carries conv= (browser_next_shadow.emit_row) so rows join to
+# tasks by conversation, the same key the workbench lines use.
+_BN_ROW = re.compile(r"\[browser_next\] shadow row conv=(\S+) chosen=")
 
 
 def cohort_of(task_id: str) -> str:
@@ -117,7 +121,23 @@ def load_wb(path: Path, conv_arm):
     return wb
 
 
-def per_run(runs, calls, wb):
+def load_browser_next(path: Path, conv_arm):
+    """conversation_id -> count of browser_next shadow rows (Round 6 fix (c))."""
+    bn = defaultdict(int)
+    if not path.exists():
+        return bn
+    with path.open(encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if "[browser_next]" not in line:
+                continue
+            m = _BN_ROW.search(line)
+            if m and m.group(1) in conv_arm:
+                bn[m.group(1)] += 1
+    return bn
+
+
+def per_run(runs, calls, wb, bn=None):
+    bn = bn or {}
     for r in runs:
         rows = calls.get(r["conv"], [])
         usage = [x.get("usage") or {} for x in rows]
@@ -140,7 +160,8 @@ def per_run(runs, calls, wb):
         r["plan_retries"] = max(0, by_kind.get("plan", 0) - 1)
         w = wb[r["conv"]]
         r.update(code_nodes=w["code"], fallbacks=w["fallback"], escalations=w["escalated"],
-                 scripts=w["scripts"], exploring=w["exploring"], wb_wait_s=round(w["wait_s"], 1))
+                 scripts=w["scripts"], exploring=w["exploring"], wb_wait_s=round(w["wait_s"], 1),
+                 browser_next_rows=bn.get(r["conv"], 0))
     return runs
 
 
@@ -189,6 +210,12 @@ def metrics(rs):
     out["escalation seconds median"] = med([s for r in rs for s in r["repair_s"]])
     out["planner retries total"] = sum(r["plan_retries"] for r in rs)
     out["wb_wait_s total"] = round(sum(r["wb_wait_s"] for r in rs), 1)
+    # Round 6 fix (c): browser_next rows per script browser_act. The bar reads rows per
+    # task (on-arm >= off) and the ratio to code nodes (one row per on-list click).
+    out["browser_next rows total"] = sum(r.get("browser_next_rows", 0) for r in rs)
+    out["browser_next rows per task median"] = med([r.get("browser_next_rows", 0) for r in rs])
+    out["browser_next rows per code node"] = (
+        round(out["browser_next rows total"] / nodes, 2) if nodes else None)
     return out
 
 
@@ -214,7 +241,9 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     runs, conv_arm = load_runs(Path(args.blocks))
-    runs = per_run(runs, load_calls(Path(args.baseline), conv_arm), load_wb(Path(args.log), conv_arm))
+    runs = per_run(runs, load_calls(Path(args.baseline), conv_arm),
+                   load_wb(Path(args.log), conv_arm),
+                   load_browser_next(Path(args.log), conv_arm))
     arms = {r["arm"] for r in runs}
     summary = {}
     for pair in args.pairs.split(","):

@@ -38,23 +38,25 @@ _PLANNER_BRIEF_RULES = (
     # Only steps that read or compute carry a brief; 'inputs' is no longer requested (the
     # parser still accepts it). The quote rule (D2), "ONE step per data product" (D4) and the
     # completeness rule are pinned by tests; the example stays last and parses to the end.
-    "- A step that reads or computes carries a BRIEF (a write step none): "
-    "'outputs' (names with types), 'check' "
-    "(ONE Python expression over the outputs, True when done), 'approach' (1-2 "
-    "sentences), and 'tools' only when it must call an IRIS tool. "
-    "Inside 'check', 'inputs' and 'outputs' use single quotes only and no "
-    "backslashes; write paths relative with forward slashes." + chr(10) +
-    "- A step with a brief runs as ONE Python program over many files. "
-    "Plan ONE step per data product, not per file. Add a step only for different "
-    "work: changing a file, or a command whose output decides the next step. "
-    "Never plan parallel steps that each read one file." + chr(10) +
-    "- A BROWSER step gets a brief only when the element is named in the request or it "
-    "reads known pages; 'tools' names browser_open, browser_read, browser_observe, "
-    "browser_act or browser_explore. Login, credentials, CAPTCHA, finding by look: no brief." + chr(10) +
-    "- PROJECT FILES lists the real names: write 'approach' against them. "
-    "'outputs' are the values the reply will quote, never raw text. "
-    "'check' must test completeness, not only the type (the expected number of items or keys)."
+    # Round 6 fix (a): a single-page browser lookup stays on the menu path (no brief); only
+    # multi-page / computed browser work gets one. A briefed single-page lookup sets the
+    # wb_browser_single backstop flag (the entry rule in kernel/der/node.py refuses it).
+    "- A read/compute step has a BRIEF: 'outputs' (names+types), 'check' "
+    "(ONE Python expr over outputs, True when done), 'approach' (brief), "
+    "'tools' only if it calls an IRIS tool. Inside 'check', 'inputs' and 'outputs' "
+    "use single quotes only and no backslashes; write paths relative with forward slashes."
     + chr(10) +
+    "- A brief runs as ONE program. Plan ONE step per data product, not "
+    "file. Add a step only for different work: a file change, or a command "
+    "decides next step. Never plan parallel steps that each read one file." + chr(10) +
+    "- A BROWSER step gets a brief when it reads pages, finds content (author/row/tag) "
+    "or computes/cross pages (count/sum/compare); a lookup naming exact element stays on menu path, no brief. "
+    "Set wb_browser_single if named element has one. 'tools' names "
+    "browser_open, browser_read, browser_observe, browser_act or browser_explore. Login, "
+    "credentials, CAPTCHA: no brief; look only if sight needed." + chr(10) +
+    "- PROJECT FILES lists names: write 'approach' against them. 'outputs' are the "
+    "values the reply will quote, never raw text. 'check' must test completeness, not only "
+    "the type (the expected number of items or keys)." + chr(10) +
     _PLANNER_EXAMPLE_AT +
     '{"step_id":"s1","step_number":1,"description":"Count errors",'
     '"expected_output":"error counts","depends_on":["start"],"critical":true,'
@@ -113,6 +115,9 @@ def _plan_step_brief(raw_step: dict) -> dict:
         "check": _brief_text(raw_step.get("check"), _BRIEF_CHECK_MAX),
         "approach": _brief_text(raw_step.get("approach"), _BRIEF_APPROACH_MAX),
         "tools": _brief_list(raw_step.get("tools")),
+        # Round 6 fix (a): the planner marks a single-page lookup that still carries a
+        # brief; the entry rule (_wb_browser_step) keeps it on the menu path.
+        "wb_browser_single": bool(raw_step.get("wb_browser_single", False)),
     }
 
 # A spoken turn reaches the agent as text, so nothing told the planner or a step that IRIS heard it. Live

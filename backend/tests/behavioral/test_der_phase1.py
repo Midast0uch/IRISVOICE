@@ -93,8 +93,12 @@ def test_single_authority(monkeypatch):
     # ALSO engine-first: _engine_try() runs before _resolve_legacy().
     assert "from backend.agent.tool_decision import ToolDecisionBox" in src, \
         "the single resolver (ToolDecisionBox) must be imported by the kernel"
-    assert "_box.resolve(" in src, \
-        "the runtime resolver must be wired through ToolDecisionBox.resolve()"
+    # STALE-BY-SPEC update (owner 2026-10-25): the kernel split moved the single dispatch
+    # authority out of the facade. DER nodes no longer call ToolDecisionBox.resolve(); they
+    # dispatch through the cached box (kernel/der/node.py). The invariant is unchanged - one
+    # dispatch authority at execution time - only the call site moved.
+    assert "box.dispatch(" in src, \
+        "the runtime resolver must be wired through the single box.dispatch authority"
 
 
 # ── Test 3: planner emits goals only (no tool field) ───────────────────────

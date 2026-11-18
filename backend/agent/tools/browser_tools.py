@@ -152,6 +152,20 @@ class _BrowserRuntime:
 _RT = _BrowserRuntime()
 
 
+def has_open_page(conversation_id: str) -> bool:
+    """True when this conversation already has a live browser page (Round 6 fix (b)).
+
+    A best-effort, read-only membership test on the runtime's session map. The map is
+    written only on the browser host loop; a dict membership read is atomic under the
+    GIL and never mutates it, so this is safe to call from a node thread. It lets a
+    browser code node read the ALREADY-OPEN page for its ground without issuing a
+    browser_open (which would lose the page's state on a needs-sight re-run)."""
+    try:
+        return bool(conversation_id) and conversation_id in _RT.sessions
+    except Exception:  # noqa: BLE001 - a ground probe never blocks a node
+        return False
+
+
 def _emit(emit: Optional[Emit], event: str, payload: dict) -> None:
     """Forward one crawl-vocabulary event; a dead frontend never fails a tool."""
     if emit is None:

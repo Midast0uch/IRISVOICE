@@ -1761,6 +1761,37 @@ async def set_launcher_mode(request: dict):
     return {"mode": mode, "status": "ok"}
 
 
+# Round 6 gate: the workbench and baseline flags are read at CALL TIME from
+# os.environ (kernel/planning.py:73, kernel/der/node.py:197,
+# inference/clm_baseline.py:59). The gate driver toggles them between arms in one
+# backend process instead of restarting 10 times. Whitelisted to these two flags
+# and to "1"/"0" only - never a general env setter. Test/eval tooling only.
+_EVAL_FLAG_NAMES = frozenset({"IRIS_WORKBENCH", "IRIS_CLM_BASELINE"})
+
+
+@app.post("/api/eval-flag")
+async def set_eval_flag(request: dict):
+    """Set a whitelisted eval flag at runtime. Body: {"name": ..., "value": "1"|"0"}."""
+    from fastapi import Response as FastAPIResponse
+
+    name = request.get("name")
+    value = request.get("value")
+    if name not in _EVAL_FLAG_NAMES or str(value) not in ("1", "0"):
+        return FastAPIResponse(
+            content=json.dumps({"error": "name must be IRIS_WORKBENCH or IRIS_CLM_BASELINE; value 1 or 0"}),
+            status_code=422, media_type="application/json",
+        )
+    os.environ[name] = str(value)
+    logger.info(f"[EvalFlag] {name}={value}")
+    return {"name": name, "value": str(value), "status": "ok"}
+
+
+@app.get("/api/eval-flag")
+async def get_eval_flag():
+    """Read the current value of the whitelisted eval flags."""
+    return {name: os.environ.get(name, "") for name in sorted(_EVAL_FLAG_NAMES)}
+
+
 @app.post("/api/auto-approve")
 async def set_auto_approve(request: dict):
     """Persist the Auto-approve consent toggle (goal-contract T19, KD-12).

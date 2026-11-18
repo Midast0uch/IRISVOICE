@@ -51,19 +51,23 @@ def set_row_sink(sink: Optional[Callable[[dict], None]]) -> None:
     _ROW_SINK = sink
 
 
-def emit_row(row: Optional[dict]) -> None:
-    """Hand a shadow row to the installed sink, else log it. Never raises."""
+def emit_row(row: Optional[dict], conversation_id: Optional[str] = None) -> None:
+    """Hand a shadow row to the installed sink AND log it for the A/B analysis. Never raises.
+    ``conversation_id`` is logged only (never added to the row): the A/B analysis
+    joins browser_next rows to tasks by conversation, and the row shape is pinned.
+    The log line fires even when a sink is installed - production installs one, so
+    without this the gate's browser_next rows metric reads 0 (found 2026-11-18)."""
     if not row:
         return
+    logger.info(f"[browser_next] shadow row conv={conversation_id or ''} "
+                f"chosen={row.get('chosen')} brain={row.get('brain_choice')} "
+                f"conf={row.get('confidence')}")
     sink = _ROW_SINK
     if callable(sink):
         try:
             sink(row)
-            return
         except Exception as e:  # noqa: BLE001 — an observer never blocks
-            logger.debug("[browser_next] row sink failed: %r", e)
-    logger.info("[browser_next] shadow row chosen=%s brain=%s conf=%s",
-                row.get("chosen"), row.get("brain_choice"), row.get("confidence"))
+            logger.debug(f"[browser_next] row sink failed: {e!r}")
 
 
 def parse_page(text: str) -> Tuple[str, List[Tuple[str, str]]]:
@@ -251,6 +255,7 @@ def record_browser_next(
     brain_ok: Optional[bool] = None,
     scope: Optional[dict] = None,
     via: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> bool:
     """Submit the consult on the ``oracle_shadow`` lane. Returns True when a
     consult was queued. The values are bound NOW (the page and the step change
@@ -288,7 +293,7 @@ def record_browser_next(
                          input_key=_browser_input_key(state))
         if row is not None and via:
             row["via"] = str(via)
-        emit_row(row)
+        emit_row(row, conversation_id)
 
     try:
         from backend.utils.durability_queue import lane

@@ -249,8 +249,12 @@ def _wb_code_mode(goal: str, tools: list, workdir: str, item=None) -> bool:
 def _wb_browser_step(item, tools) -> bool:
     """Round 6 C3: a browser code step = a brief with outputs AND a check, whose `tools` names
     a browser tool the node was OFFERED (the web toggle takes the browser tools out of the
-    offered list, so it holds). The caller has already refused WRITE / after-change steps."""
+    offered list, so it holds). The caller has already refused WRITE / after-change steps.
+    Round 6 fix (a): a single-page lookup marked by the planner stays on the menu path even
+    when it carries a brief - only multi-page / computed browser work enters code mode."""
     try:
+        if getattr(item, "wb_browser_single", False) is True:
+            return False
         if not (getattr(item, "outputs", None) and str(getattr(item, "check", "") or "").strip()):
             return False
         named = {str(n).strip() for n in (getattr(item, "tools", None) or ()) if isinstance(n, str)}
@@ -370,6 +374,51 @@ def _wb_ground_text(workdir: str, text: str = "", profile: bool = False,
     from backend.agent.workbench.ground import ground
 
     return ground(workdir, text=text, profile=profile, max_chars=max_chars)
+
+
+# Round 6 fix (b): the browser analogue of PROJECT FILES. When the conversation ALREADY
+# has an open page (a prior step opened it), read that page ONCE at node entry and put its
+# shape in the code node's first message, so the script does not spend runs exploring it.
+# It NEVER issues browser_open: a needs-sight re-run must reuse the same page (pinned by
+# test_workbench_browser_behavior.py). No open page -> no ground, no dispatch, no change.
+_WB_BROWSER_GROUND_HEAD = (
+    "BROWSER PAGE (already open; its shape is below - do not re-open it, parse the "
+    "text/links in your script):"
+)
+_WB_BROWSER_GROUND_MAX = 2000
+
+
+def _wb_browser_ground(conversation_id: str, execute, max_chars: int = _WB_BROWSER_GROUND_MAX) -> str:
+    """The already-open page's title, url, links and text head, read through the node's
+    own dispatch (`execute`, which holds the browser claim). "" when no page is open,
+    the read fails, or anything raises - the node then runs with no browser ground."""
+    try:
+        from backend.agent.tools import browser_tools
+
+        if not browser_tools.has_open_page(conversation_id):
+            return ""
+        res = execute("browser_read", {})
+        if not isinstance(res, dict) or res.get("success") is False:
+            return ""
+        text = str(res.get("text") or res.get("content") or "")
+        title = str(res.get("title") or "")
+        page_url = str(res.get("url") or "")
+        lines = [_WB_BROWSER_GROUND_HEAD, f"url: {page_url}", f"title: {title}"]
+        links = res.get("links") or []
+        if isinstance(links, (list, tuple)):
+            lines.append("links (href | label):")
+            for link in links[:40]:
+                if isinstance(link, (list, tuple)) and len(link) >= 2:
+                    lines.append(f"  {str(link[0])[:160]} | {str(link[1])[:80]}")
+                else:
+                    lines.append(f"  {str(link)[:200]}")
+        lines.append("page text (head):")
+        lines.append(text)
+        out = "\n".join(lines)
+        return out[:max_chars] if max_chars > 0 else out
+    except Exception as exc:  # noqa: BLE001 - a ground never blocks the node
+        logger.warning(f"[workbench] browser ground skipped: {exc!r}")
+        return ""
 
 
 def _wb_brief(item) -> tuple:
@@ -2037,7 +2086,7 @@ class DerNodeMixin:
                         element_id=params.get("element_id"),
                         action=str(params.get("action") or ""),
                         done_when=_done_when or None, calls_this_step=_hist or None,
-                        brain_ok=bool(ok),
+                        brain_ok=bool(ok), conversation_id=self.conversation_id or "",
                     )
                 except Exception as _bn_err:  # noqa: BLE001 â€” a shadow never blocks
                     logger.debug("[DER] browser_next row failed: %r", _bn_err)
@@ -2203,6 +2252,12 @@ class DerNodeMixin:
                 # D3: the ground, ONCE per node - in the first message, and in the repair prompt
                 _wb_ground = _wb_ground_text(workdir, profile=True, max_chars=_wb_ground_chars(_node_ctx.window),
                                              text=f"{task}\n{goal}")
+                # Round 6 fix (b): a browser code node gets the ALREADY-OPEN page's shape up
+                # front (no browser_open), so its script does not spend runs exploring it.
+                if _wb_browser:
+                    _wb_page = _wb_browser_ground(self.conversation_id or "", _execute)
+                    if _wb_page:
+                        _wb_ground = (_wb_ground + "\n\n" + _wb_page) if _wb_ground else _wb_page
                 _wb_hold: list = []
                 try:
                     from backend.agent.decision_engine import scope_now as _scope_now
@@ -2224,7 +2279,8 @@ class DerNodeMixin:
                         goal=goal, page_text=page_text or "", element_id=args.get("element_id"),
                         action=str(args.get("action") or ""), done_when=_done_when or None,
                         calls_this_step=history or None, brain_ok=bool(ok),
-                        scope=_wb_scope, via="run_python")
+                        scope=_wb_scope, via="run_python",
+                        conversation_id=self.conversation_id or "")
 
                 _wb_ctx = _dc.replace(
                     _node_ctx,

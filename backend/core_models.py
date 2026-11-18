@@ -743,6 +743,9 @@ class PlanStep:
     check: str                      = ""
     approach: str                   = ""
     tools: List[str]                = dc_field(default_factory=list)
+    # Round 6 fix (a): a single-page browser lookup that still carries a brief stays on
+    # the menu path. Set by the planner; the entry rule (_wb_browser_step) refuses it.
+    wb_browser_single: bool         = False
 
 
 @dataclass
