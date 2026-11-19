@@ -63,10 +63,39 @@ _LINKS_JS = (
     "() => Array.from(document.querySelectorAll('a[href]')).slice(0, 300)"
     ".map(a => [a.href, (a.innerText || a.getAttribute('aria-label') || '').trim().slice(0, 120)])"
 )
-_MAIN_TEXT_JS = (
-    "() => { const r = document.querySelector('article') || document.querySelector('main') "
-    "|| document.body; return r ? r.innerText : ''; }"
-)
+# Round 6 gate-gap fix (2026-11-19): the old selector was
+# `article || main || body`. On a LIST page (books.toscrape.com, 20
+# `<article class=product_pod>` cards, no `<main>`) it returned ONLY THE FIRST
+# card - "A Light in the ... £51.77" (48 chars). The tool model could not see
+# the other 19 prices, so it spent 3-6 scripts re-opening, re-reading and
+# inspecting before it could compute a top-5 total. browser_observe already
+# handles this case (browser_session._OBSERVE_JS): an <article> counts as the
+# content only when it is the ONLY one; otherwise the body minus its chrome is
+# the content. Align browser_read with that rule so one read returns the whole
+# listing. Bounded downstream by browser_read's max_chars cap.
+_MAIN_TEXT_JS = r"""() => {
+  const CHROME = 'nav, aside, header, footer, [role=navigation], [role=banner], ' +
+    '[role=contentinfo], [role=complementary]';
+  let main = null;
+  for (const s of ['main', '[role=main]', '#mw-content-text', '#content']) {
+    main = document.querySelector(s);
+    if (main) break;
+  }
+  if (!main && document.querySelectorAll('article').length === 1) {
+    main = document.querySelector('article');
+  }
+  let text = '';
+  if (main) {
+    text = main.innerText || '';
+  } else {
+    text = document.body ? (document.body.innerText || '') : '';
+    document.querySelectorAll(CHROME).forEach(c => {
+      const t = c.innerText || '';
+      if (t.length > 20) text = text.replace(t, ' ');
+    });
+  }
+  return text;
+}"""
 # A long interactive task takes many steps; the defaults for vision sessions
 # (12 actions / 60 s) are sized for a reading pass, not for this.
 _SESSION_MAX_ACTIONS = 150

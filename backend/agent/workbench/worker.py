@@ -91,13 +91,63 @@ def _call_tool(name, args):
     return res.get("value")
 
 
+# Round 6 gate-gap fix (2026-11-19): a frontier tool model writes
+# `tools.browser_open(url)` (positional) as naturally as `tools.browser_open(url=url)`.
+# The old `__getattr__` returned `lambda **args`, so the positional form raised
+# "takes 0 positional arguments but 1 was given" and cost a whole model round trip
+# (measured: conv-9043/9053/9069/9075/9091/9044 each spent one script on this retry).
+# Map positional args to the tool's real parameter names so BOTH forms work. The
+# table holds the user-facing parameters only (conversation_id/emit are injected by
+# the parent callback handler). Unknown tools keep the keyword-only contract.
+_TOOL_POSITIONAL = {
+    "browser_open": ("url",),
+    "browser_read": ("max_chars",),
+    "browser_observe": (),
+    "browser_act": ("action", "element_id", "text"),
+    "browser_explore": ("goal", "max_pages"),
+    "read_file": ("path", "start_line", "end_line"),
+    "grep_files": ("pattern", "path"),
+    "glob_files": ("pattern",),
+    "list_directory": ("path",),
+    "create_directory": ("path",),
+    "edit_file": ("path", "old", "new"),
+    "write_file": ("path", "content"),
+    "run_command": ("command",),
+    "crawler_query": ("query",),
+    "search": ("query",),
+    "web_search": ("query",),
+}
+
+
 class _Tools:
-    """`tools.<name>(**args)`; tools.call(name, args) for a name that is not an identifier."""
+    """`tools.<name>(**args)`; tools.call(name, args) for a name that is not an identifier.
+
+    Positional args are accepted for the known tools and mapped to their real
+    parameter names, so `tools.browser_open(url)` == `tools.browser_open(url=url)`.
+    """
 
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError(name)
-        return lambda **args: _call_tool(name, args)
+        params = _TOOL_POSITIONAL.get(name)
+
+        def _invoke(*args, **kwargs):
+            if args:
+                if params is None:
+                    raise ToolError(
+                        f"{name}: use keyword arguments (positional args are not "
+                        f"defined for this tool)")
+                if len(args) > len(params):
+                    raise ToolError(f"{name}: too many positional arguments (max {len(params)})")
+                for key, value in zip(params, args):
+                    if key not in kwargs:
+                        kwargs[key] = value
+            return _call_tool(name, kwargs)
+
+        _invoke.__name__ = name
+        _invoke.__doc__ = (f"{name}({', '.join(params) if params else ''})"
+                           " - call an IRIS tool; returns its result dict.")
+        return _invoke
 
     def call(self, name, args=None):
         return _call_tool(name, dict(args or {}))
