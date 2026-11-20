@@ -428,6 +428,51 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
     > browser_read/observe result of the target page, like PROJECT FILES for folders) so the
     > script does not explore; (3) count browser_next rows per script act in the analysis
     > (not yet in wb_ab_analysis.py); (4) re-run the gate x5 after the restart fix.
+    >
+    > **FINDING 2026-11-19 (owner rule: bar unreachable, record numbers + date; do NOT weaken
+    > the bar or edit tests).** Eight scoped gates (g01-g04, d01-d04, x5 reps x2 arms, cloud
+    > deepseek-v4.1-flash both roles) were run 2026-11-17 to 2026-11-19. The Round 6 bar
+    > (design.md:348-354) requires calls, prompt tokens and reply_s <= 0.7 x off on both
+    > browser_goal and browser_data. It was NEVER met for both cohorts at once:
+    >   - calls ratio: goal 0.79-1.08, data 0.83-1.25 across gates (never <= 0.7 both).
+    >   - reply_s and prompt tokens often passed (best gate 2026-11-19: reply all x0.58,
+    >     goal prompt x0.60); calls is the persistent blocker.
+    >   - scripts per code node stayed 3.15-4.21 in EVERY gate, unchanged by: planner brief
+    >     rules, page seed (side-lane fetch), goal-contract facts in the brief, a page-data
+    >     manifest, a bounded page-data digest, and an exploration cap (the cap caused 16
+    >     escalations / 55% of nodes and was reverted as a regression).
+    >   - Root cause: the tool model writes 3-4 scripts per node as its operating pattern;
+    >     the worker namespace is invisible to its prompt, so it spends look scripts. Giving
+    >     it a 500-char sample did not change this. This is a property of the current tool
+    >     model + loop, not a prompt/seed defect.
+    >   - Gate dirs: wb_gate-20261117-190337, -20261118-014001, -124204, -160806, -182340,
+    >     -204301, -235003, wb_gate-20261119-040141. Details in pins pin_6438567998ed,
+    >     pin_0386b166a67a, pin_a52056386f4b, pin_521f16dc4a77, pin_e1da382253b6.
+    >   - General improvements that stand (all flag-gated IRIS_WB_PAGE_SEED, off by default):
+    >     page seed, goal-contract facts in brief, bounded page digest. Reverted regressions:
+    >     pre-exec AST rejection, exploration cap, escalation latency cut. None clear the bar
+    >     alone. Owner decision pending on whether to change the tool model or the bar.
+    >
+    > **FULL GATE 2026-11-19 (commit 67cfabad, two unconditional system-gap fixes).** Ran the
+    > complete 18-task x5-rep x2-arm gate (180 runs): evals/results/wb_gate-20261119-180321/.
+    > Fixes: worker.py `_Tools.__getattr__` now accepts positional tool args (the old
+    > `lambda **args` raised a TypeError on `tools.browser_open(url)`, costing a retry script);
+    > browser_tools.py `_MAIN_TEXT_JS` now returns the whole listing on multi-article pages
+    > (it returned only the first `<article>` - 48 chars of a 20-book page). Both backward
+    > compatible, 123 targeted tests green, kernel guard OK, no test/bar edits.
+    > Bar STILL not cleared:
+    >   - browser_goal: calls x0.67 PASS, reply x0.63 PASS, prompt x0.76 FAIL, pass 20/20->19/20.
+    >   - browser_data: prompt x0.68 PASS, calls x0.75 FAIL, reply x0.76 FAIL, pass 18/20->19/20.
+    >   - browser: calls x1.12 FAIL, prompt x1.16 FAIL (planner chose 25 code nodes this run vs
+    >     0 in gate 190337 - planner variance, not the fixes).
+    >   - scripts/node still 3.15-3.48; no fallbacks; planner retries down (goal 11->1, data 14->1).
+    >   - vs prior gate 060628: goal calls 0.86->0.67, data calls 0.93->0.75, data prompt
+    >     1.01->0.68 (improved); goal prompt 0.58->0.76 (regressed). No cohort clears all three.
+    > An exhaustive single-shot investigation (8 smoke gates: clean system prompt, full page
+    > digest, crawler_query brief/schema, max_calls=1, no fallback, synth-closes-step) confirmed
+    > the model ALWAYS writes an inspect script first regardless of prompt/data/interface; the
+    > one script never assigns outputs, so calls do not drop. All experimental changes reverted.
+    > Details in pins pin_5143af7f5e60, pin_eb9aa91de36d. Owner decision still pending.
 - **Wave 7, Round 4 tasks (2026-11-16, CURRENT; design.md "Round 4"):**
   > Re-run after F1-F4 (5778022e), stopped after 2 of 5 rounds for Round 4: off 10/10, on 7/10;
   > calls 135 vs 188; prompt tokens 1.14 M vs 1.07 M; completion 65 k vs 84 k; escalations 2
