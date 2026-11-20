@@ -473,6 +473,21 @@ parity harnesses). Order is the priority; T7.0 decides whether to proceed.
     > the model ALWAYS writes an inspect script first regardless of prompt/data/interface; the
     > one script never assigns outputs, so calls do not drop. All experimental changes reverted.
     > Details in pins pin_5143af7f5e60, pin_eb9aa91de36d. Owner decision still pending.
+    >
+    > **BAR CLEARED 2026-11-20 (commits cdfcdfeb + 53c49000, flag IRIS_WB_TWO_CALL, off by
+    > default).** Option 3: `run_python_pair` runs gather + compute in ONE model generate in the
+    > same worker namespace; the page text is seeded into the PROMPT so compute is informed (the
+    > TTS/monitor logs showed blind compute "printed instead of assigning"); output manifest cap
+    > 600 -> 2400 chars so synthesis sees a structured output whole (it saw 2 of 5 books before);
+    > page-seed collect wait 8s -> 30s so a slow fetch stays off the reply critical path (it was
+    > done inline at ~19.5s). crawler_query reverted to browser_open (it returned wrong pages).
+    > Measured 2-rep 8-task gate evals/results/wb_gate-20261120-121525/:
+    >   - browser_goal: pass 8/8 = off; calls x0.57, prompt x0.38, reply x0.46 - ALL PASS.
+    >   - browser_data: pass 7/8 = off; calls x0.56, prompt x0.70, reply x0.68 - ALL PASS.
+    >   - scripts/node 2; fallbacks 0; escalations 0; planner retries 0 (vs 11/4/7 off).
+    > All three metrics <= 0.7x off on both cohorts, pass equals off. 107 targeted tests green,
+    > kernel guard OK, no test/bar edits. Details in pin_80e86abc42a4. NOTE: this is a 2-rep
+    > scoped gate; a full 5-rep 18-task gate is the final confirmation before switching the flag on.
 - **Wave 7, Round 4 tasks (2026-11-16, CURRENT; design.md "Round 4"):**
   > Re-run after F1-F4 (5778022e), stopped after 2 of 5 rounds for Round 4: off 10/10, on 7/10;
   > calls 135 vs 188; prompt tokens 1.14 M vs 1.07 M; completion 65 k vs 84 k; escalations 2

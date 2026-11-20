@@ -531,7 +531,13 @@ def _wb_browser_ground(conversation_id: str, execute, max_chars: int = _WB_BROWS
 _PAGE_SEED: dict = {}          # conv -> {"done": Event, "pages": list, "urls": tuple}
 _PAGE_SEED_LOCK = threading.Lock()
 _PAGE_SEED_MAX_URLS = 3
-_PAGE_SEED_WAIT_S = 8.0
+# Round 6 (2026-11-20): raised from 8.0 to 30.0 to match the seed fetch's own
+# timeout. At 8s, a fetch taking 8-30s was abandoned by collect (0 pages), so the
+# code node's gather had to do browser_open INLINE (~19.5s) - measured in g03
+# (67.6s reply). Waiting up to 30s captures the slow fetch that already started
+# during planning, keeping it OFF the reply's critical path. A fetch that truly
+# times out at 30s costs the same as the old 8s wait + 19.5s inline retry.
+_PAGE_SEED_WAIT_S = 30.0
 
 
 def _page_seed_on() -> bool:
