@@ -166,6 +166,108 @@ _WB_BROWSER_NOTE = (
     "in the script; printed output is cut, the page is not. Label not in marks: raise "
     "ToolError('needs sight'). Never log in or type credentials."
 )
+# Round 6 PROTOTYPE: when the side-lane fetch seeded the task's page(s), tell the
+# tool model so it parses them in ONE script instead of opening them again.
+_WB_PAGE_SEED_NOTE = (
+    " PAGE TEXT IS ALREADY HERE: the variable `page_text` holds the task's page(s) "
+    "as a list of {'url': ..., 'text': ...} dicts, read before this step. Parse it "
+    "directly in your script - do NOT call browser_open/browser_read for a page whose "
+    "url is already in page_text. Use browser tools only for pages NOT in page_text. "
+    "Write ONE script that computes every output from page_text."
+)
+# Round 6 option 1 (IRIS_WB_SELF_VERIFY): give the tool model the check expression
+# and ask it to verify INSIDE one script, so it does not spend model round trips
+# waiting for the harness to tell it the check failed. Flag-gated; off = unchanged.
+def _wb_self_verify_on() -> bool:
+    return os.environ.get("IRIS_WB_SELF_VERIFY") == "1"
+
+
+# Round 6 option 3 (2026-11-20): the program owns the two phases. The model emits
+# TWO run_python tool calls in ONE response; the loop executes them in order in the
+# SAME worker namespace. Call 1 gathers data into variables, call 2 computes and
+# assigns the outputs from those variables. One model generate, two executions -
+# the second execution is NOT a second model call. Flag-gated; off = unchanged.
+def _two_call_on() -> bool:
+    return os.environ.get("IRIS_WB_TWO_CALL") == "1"
+
+
+# Round 6 option 3b (2026-11-20): let the model SEE the gather result before it
+# writes compute. Two model calls per code node, but the compute script is written
+# against the real data (not blind), so it can assign outputs correctly. The TTS
+# logs showed the blind pair's compute phase printed instead of assigning because
+# it could not adapt to what gather found. Flag-gated; off = unchanged.
+def _see_gather_on() -> bool:
+    return os.environ.get("IRIS_WB_SEE_GATHER") == "1"
+
+
+_WB_SEE_GATHER_SYSTEM = (
+    "You do ONE step of a task in TWO scripts. You will be called TWICE.\n"
+    "SCRIPT 1 (gather): open the EXACT page the task names with "
+    "tools.browser_open(url) then tools.browser_read(), and store the result dict "
+    "in a variable named `raw`. Print only a short confirmation (e.g. the page "
+    "title and text length). Do NOT assign the output variables yet. "
+    "Do NOT use crawler_query - it may return a DIFFERENT page than the one named.\n"
+    "After SCRIPT 1 the harness shows you its result, including the page text.\n"
+    "SCRIPT 2 (compute): using what SCRIPT 1 found, write ONE script that assigns "
+    "EVERY output variable named in the BRIEF. Parse the page text with regex on "
+    "plain text (prices look like '£51.77'; use re.findall(r'£([0-9.]+)', text)). "
+    "Do NOT write HTML tag regexes - the text has no tags. If the answer needs a "
+    "linked page (e.g. an author page), open and read it in SCRIPT 2 before "
+    "assigning. Assign your best parse; do NOT add assert statements - the harness "
+    "runs the check.\n"
+    "Inside a script, tools.<name>(...) calls an IRIS tool and returns its result "
+    "dict; positional and keyword arguments both work. "
+    "Direct network (urllib, requests, socket) is REFUSED - use the app's tools. "
+    "The worker is STDLIB ONLY (no bs4, requests, pandas); use re and json. "
+    "Use relative paths; never chdir."
+)
+
+
+_WB_TWO_CALL_SYSTEM = (
+    "You do ONE step of a task. Reply with ONE assistant message that contains "
+    "EXACTLY TWO run_python tool calls, in this order:\n"
+    "  CALL 1 (gather): open/read the pages you need and store the raw text in a "
+    "variable such as `raw`. Do NOT print long text and do NOT assign the output "
+    "variables yet.\n"
+    "  CALL 2 (compute): using the variables CALL 1 left in the SAME namespace, "
+    "compute the answer and assign EVERY output variable named in the BRIEF. "
+    "CALL 2 may call tools too - if the answer needs another page (e.g. an author "
+    "page linked from the first), open and read it here before assigning. "
+    "Assign the outputs from your best parse; do NOT add assert statements that "
+    "could fail on a slightly different page layout - the harness runs the check.\n"
+    "Both calls run in the same persistent namespace, so variables from CALL 1 are "
+    "available in CALL 2. The harness runs the brief's check after each call; CALL 2 "
+    "must pass it. Do not emit more than two run_python calls. "
+    "Inside a script, tools.<name>(...) calls an IRIS tool and returns its result "
+    "dict; positional and keyword arguments both work. "
+    "FOR A WEB STEP: the PAGE DATA section in your prompt already contains the "
+    "FULL plain text of the task's page(s) (NOT HTML). You do NOT need to open or "
+    "read any page - the data is already in your prompt. "
+    "In CALL 1, copy that page text into a variable `raw` (a plain assignment, e.g. "
+    "raw = '''...the page text...''') or just leave a short note. "
+    "In CALL 2, parse the page text with regex on plain text to assign every output. "
+    "Prices appear as '£51.77'; use re.findall(r'£([0-9.]+)', text). "
+    "Do NOT write HTML tag regexes - the text has no tags. "
+    "Do NOT use crawler_query - it may return a DIFFERENT page than the one named. "
+    "Direct network (urllib, requests, socket) is REFUSED - use the app's tools. "
+    "The worker is STDLIB ONLY (no bs4, requests, pandas); use re and json. "
+    "Use relative paths; never chdir."
+)
+
+
+def _wb_self_verify_note(check: str) -> str:
+    if not check:
+        return ""
+    return (
+        " SELF-CHECK: the step's check is: " + check[:300] + ". The output variables are "
+        "in your namespace. Write ONE script that assigns every output, then verify the "
+        "check YOURSELF inside the script (e.g. `assert (" + check[:300] + ")`) before you "
+        "finish. Do not write a script that only prints or inspects data and leave the check "
+        "to the harness - do the whole step, including your own verification, in one script. "
+        "The harness will confirm, but you should already know it passes."
+    )
+
+
 _WB_OBS_MARK = "Elements (pass the number as element_id to browser_act):"
 _WB_POOR_MARKS = 2           # an observation with this many marks or fewer cannot be scripted
 _WB_SKELETON_MAX_LINES = 40
@@ -421,11 +523,186 @@ def _wb_browser_ground(conversation_id: str, execute, max_chars: int = _WB_BROWS
         return ""
 
 
-def _wb_brief(item) -> tuple:
+# Round 6 PROTOTYPE (2026-11-18, IRIS_WB_PAGE_SEED): fetch the task's page on a
+# side lane while the planner call runs, then seed its text into the worker at
+# node entry. Flag-gated: off = no fetch, no seed, no behaviour change. This is a
+# prototype to measure scripts/node; the manifest that tells the model the text
+# is in the worker is deliberately NOT wired yet.
+_PAGE_SEED: dict = {}          # conv -> {"done": Event, "pages": list, "urls": tuple}
+_PAGE_SEED_LOCK = threading.Lock()
+_PAGE_SEED_MAX_URLS = 3
+_PAGE_SEED_WAIT_S = 8.0
+
+
+def _page_seed_on() -> bool:
+    # The blind pair writes compute without seeing gather's result. Seeding the
+    # page text into the PROMPT makes the pair's compute phase informed while
+    # keeping it ONE model call (the bar needs calls <= 0.7x off).
+    return os.environ.get("IRIS_WB_PAGE_SEED") == "1" or _two_call_on()
+
+
+def page_seed_start(conversation_id: str, text: str) -> None:
+    """Start the side-lane page fetch for this conversation. Idempotent: a fetch
+    already running or done is not restarted. No-op unless the flag is on and the
+    task names a URL. Never raises - planning never waits on this."""
+    if not _page_seed_on() or not conversation_id:
+        return
+    try:
+        from urllib.parse import urljoin
+
+        from backend.agent.external_reference import _URL_RE
+
+        # The shared regex keeps trailing prose punctuation (a URL before a
+        # comma becomes "https://host,"). Strip it so browser_open gets a real URL.
+        raw = (_u.rstrip(".,;:!?)'\"") for _u in _URL_RE.findall(text or ""))
+        absolute = [u for u in dict.fromkeys(raw) if "://" in u]
+        if not absolute:
+            return
+        base = absolute[0]
+        # A task often names the site root plus the real target as a relative
+        # path (/page/1/) or a "page N" phrase. Resolve those against the base
+        # so the seed fetches the page that holds the data, not the homepage.
+        import re as _re
+
+        # Resolve ONLY paths the task actually names. Never guess a path from a
+        # "page N" phrase - that encodes one site's URL shape and is wrong on
+        # others. If the task names no path, seed the base URL it did name; the
+        # model uses browser tools for any other page it needs.
+        rel = _re.findall(r"/[\w./-]+/", text or "")
+        candidates = [urljoin(base, p) for p in rel]
+        # A bare host (scheme://host, no path) needs a trailing slash: many
+        # servers redirect the slashless form to a stub. Standard HTTP behavior.
+        if not candidates and base.count("/") == 2:
+            base = base + "/"
+        urls = tuple(dict.fromkeys(candidates or [base]))[:_PAGE_SEED_MAX_URLS]
+    except Exception:  # noqa: BLE001 - a seed never blocks planning
+        return
+    if not urls:
+        return
+    with _PAGE_SEED_LOCK:
+        if conversation_id in _PAGE_SEED:
+            return
+        state = {"done": threading.Event(), "pages": [], "urls": urls}
+        _PAGE_SEED[conversation_id] = state
+
+    def _work():
+        try:
+            from backend.agent.tools import browser_tools
+            from backend.agent.tool_decision import ToolDecisionBox
+
+            _run_async = ToolDecisionBox._run_async
+            for url in urls:
+                try:
+                    opened = _run_async(browser_tools.browser_open(conversation_id, url), timeout_s=30)
+                    if not isinstance(opened, dict) or opened.get("success") is False:
+                        continue
+                    read = _run_async(browser_tools.browser_read(conversation_id), timeout_s=30)
+                    if isinstance(read, dict) and read.get("success") is not False:
+                        state["pages"].append({
+                            "url": url,
+                            "text": str(read.get("text") or read.get("content") or ""),
+                        })
+                except Exception as exc:  # noqa: BLE001 - one bad URL does not stop the rest
+                    logger.warning("[page-seed] conv=%s url=%s fetch failed: %r", conversation_id, url, exc)
+        except Exception as exc:  # noqa: BLE001 - a seed never blocks the turn
+            logger.warning("[page-seed] conv=%s setup failed: %r", conversation_id, exc)
+        finally:
+            logger.info("[page-seed] conv=%s done: %d pages, chars=%s", conversation_id,
+                        len(state["pages"]), [len(p["text"]) for p in state["pages"]])
+            state["done"].set()
+
+    threading.Thread(target=_work, daemon=True, name="page-seed").start()
+
+
+def page_seed_collect(conversation_id: str, timeout_s: float = _PAGE_SEED_WAIT_S) -> list:
+    """Return the pages fetched for this conversation, waiting at most timeout_s
+    for the side lane. Empty when the flag is off, no fetch ran, or it did not
+    finish in time. The slot is removed after collection."""
+    if not _page_seed_on() or not conversation_id:
+        return []
+    with _PAGE_SEED_LOCK:
+        state = _PAGE_SEED.pop(conversation_id, None)
+    if state is None:
+        return []
+    state["done"].wait(timeout_s)
+    return list(state["pages"])
+
+
+def _wb_page_digest(pages: list, max_chars: int = 2400, sample: int = 500) -> str:
+    """A MINIMAL, prompt-visible digest of the seeded page text. The tool model
+    cannot read the worker namespace from its prompt, so without any sample it
+    spends scripts printing the page. Showing only the SHAPE (a short sample of
+    each page) is enough to write the parse; the FULL text stays in the worker
+    variable `page_text` for the script to process. Kept small so it does not
+    inflate prompt tokens - the bar penalizes prompt tokens."""
+    if not pages:
+        return ""
+    parts = ["PAGE DATA: `page_text` in the worker is a list of {url, text}; the FULL "
+             "text of each page is there. A short sample of each follows so you can "
+             "see its structure - parse the FULL `page_text[n]['text']` in your script:"]
+    used = len(parts[0])
+    for i, p in enumerate(pages[:_PAGE_SEED_MAX_URLS]):
+        url = str(p.get("url") or "")
+        text = " ".join(str(p.get("text") or "").split())
+        head = text[:sample]
+        block = f"\n- page_text[{i}] {url} ({len(text)} chars): {head}"
+        if used + len(block) > max_chars:
+            break
+        parts.append(block)
+        used += len(block)
+    return "\n".join(parts)
+
+
+def _wb_seed_pages(conversation_id: str, workdir: str, pages: list) -> bool:
+    """Put the side-lane page text into the worker under `page_text` through the
+    same policy path as _wb_seed. True when at least one page was admitted."""
+    if not pages:
+        return False
+    try:
+        from backend.agent.workbench.manager import get_manager
+        from backend.agent.workbench.policy import admit_put
+
+        client = get_manager().workbench_for(conversation_id, workdir)
+        if client is None:
+            return False
+        if not admit_put("page_text", pages)[0]:
+            return False
+        client.put("page_text", pages)
+        return True
+    except Exception as exc:  # noqa: BLE001 - counted; the node runs without the seed
+        _wb_stats["seed_failed"] += 1
+        logger.warning("[workbench] conv=%s page seed failed: %r", conversation_id, exc)
+        return False
+
+
+def _wb_brief(item, contract: dict = None) -> tuple:
     """(brief text, check) from the planner's step fields (Round 3 R2); ("", "")
-    for a step planned without them - it still runs (closes by STATUS)."""
+    for a step planned without them - it still runs (closes by STATUS).
+
+    Round 6 (goal contract as north star): when the page-seed flag is on, prepend
+    the turn's required facts, the agent-discovered ceiling, and the live open
+    facts so the tool model works toward the SAME contract the Brain and the
+    harness use. Flag-gated: off = byte-identical brief.
+    """
     check = str(getattr(item, "check", "") or "").strip()
     parts = []
+    if _page_seed_on():
+        _facts = list(getattr(getattr(item, "node_record", None), "required_facts", None) or [])
+        if _facts:
+            _lines = "\n".join(f"  - {str(f)[:160]}" for f in _facts[:8])
+            parts.append("REQUIRED FACTS (the goal contract - the answer must cover these):\n" + _lines)
+        # Live contract state from the kernel: ceiling (agent discoveries) and
+        # open facts (required but not yet covered). Both are advisory context,
+        # never a new floor - the floor stays immutable to the agent.
+        if contract:
+            _ceil = list(contract.get("ceiling") or ())
+            if _ceil:
+                _lines = "\n".join(f"  - {str(f)[:160]}" for f in _ceil[:6])
+                parts.append("DISCOVERED FACTS (ceiling - useful, not required):\n" + _lines)
+            _open = list(contract.get("open") or ())
+            if _open:
+                _lines = "\n".join(f"  - {str(f)[:160]}" for f in _open[:6])
+                parts.append("STILL OPEN (required facts not yet covered):\n" + _lines)
     for label, key in (("inputs", "inputs"), ("outputs", "outputs"),
                        ("approach", "approach"), ("tools", "tools")):
         val = getattr(item, key, None)
@@ -555,6 +832,29 @@ def _wb_slim_run_python(tools: list) -> list:
     return []
 
 
+def _wb_slim_run_python_pair(tools: list) -> list:
+    """Round 6 option 3: the run_python_pair schema - two code fields (gather,
+    compute) in ONE tool call. The model must supply both phases in one response."""
+    for t in tools or []:
+        fn = t.get("function") or {}
+        if fn.get("name") == "run_python":
+            return [{**t, "function": {
+                "name": "run_python_pair",
+                "description": (
+                    "Run TWO Python phases in ONE call in this conversation's persistent "
+                    "namespace. `gather` loads data into variables (no check); `compute` "
+                    "then uses those variables to assign every output and is checked. "
+                    "Both run in order in the same namespace."),
+                "parameters": {"type": "object",
+                               "properties": {
+                                   "gather": {"type": "string", "description": "Code that loads the data into variables."},
+                                   "compute": {"type": "string", "description": "Code that assigns every output from those variables."},
+                                   "purpose": {"type": "string"}},
+                               "required": ["gather", "compute"]},
+            }}]
+    return []
+
+
 def _wb_needed_tools(item, allowed) -> frozenset:
     """D6: the tools the brief names that a Python script cannot replace (not a reader or
     `run_command`) and that the node's menu offers. Empty = no `tools.<name>` note."""
@@ -654,7 +954,8 @@ def _wb_needs_fallback(result, sight_poor: bool = False) -> str:
     observation had too few marks - `sight_poor`), or two run_python calls in a row failed with
     the same exception type."""
     outs = [(bool(c.get("ok")), str(c.get("out") or ""))
-            for c in (getattr(result, "calls", None) or []) if c.get("tool") == "run_python"]
+            for c in (getattr(result, "calls", None) or [])
+            if c.get("tool") in ("run_python", "run_python_pair")]
     if any("workbench_unavailable" in o or "WorkbenchUnavailable" in o for _ok, o in outs):
         return "unavailable"
     if any("PermissionError" in o and "workbench" in o.lower() for ok, o in outs if not ok):
@@ -2233,11 +2534,34 @@ class DerNodeMixin:
                 if _wb_go and not _wb_seed(
                         self.conversation_id or "", workdir, task, goal, _prior_results, _step_facts):
                     _wb_go = False
+                # Round 6 PROTOTYPE: seed the side-lane page text into the worker.
+                # Only for a browser code node with the flag on.
+                _wb_seeded = False
+                _wb_pages = []
+                if _wb_go and _wb_browser and _page_seed_on():
+                    _wb_pages = page_seed_collect(self.conversation_id or "")
+                    if _wb_pages:
+                        _wb_seeded = _wb_seed_pages(self.conversation_id or "", workdir, _wb_pages)
                 if not _wb_go and "workbench" in _held:
                     _held.remove("workbench")   # a menu node does not keep the namespace
                     _der_release(self, "workbench")
             if _wb_go:
                 import dataclasses as _dc
+
+                # Round 6: the live goal-contract view for the brief (north star).
+                # Advisory only - never a new floor. Empty when no contract exists.
+                _wb_contract = {}
+                if _page_seed_on():
+                    try:
+                        _gc_st = getattr(self, "_goal_contract_state", None) or {}
+                        _gc_obj = _gc_st.get("contract")
+                        _wb_contract = {
+                            "ceiling": list(getattr(_gc_obj, "ceiling", None) or ()),
+                            "open": list(self._goal_contract_open_facts() or ()),
+                        }
+                    except Exception as exc:  # noqa: BLE001 - a contract view never blocks a node
+                        logger.debug("[workbench] conv=%s contract view skipped: %r",
+                                     self.conversation_id, exc)
 
                 # C3: the node's menu INTERSECTED with the tools it was offered (the web toggle
                 # holds); the browser tools (browser_read too) only for a browser code node.
@@ -2248,16 +2572,24 @@ class DerNodeMixin:
                 _wb_need = _wb_needed_tools(item, _wb_allowed)
                 _wb_cb_calls: list = []
                 _wb_node = uuid.uuid4().hex   # F2: this node's own callback slot
-                _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item)[1] else None
+                _wb_rr = _wb_repair_tracker(self, _session) if _wb_brief(item, _wb_contract)[1] else None
                 # D3: the ground, ONCE per node - in the first message, and in the repair prompt
                 _wb_ground = _wb_ground_text(workdir, profile=True, max_chars=_wb_ground_chars(_node_ctx.window),
                                              text=f"{task}\n{goal}")
                 # Round 6 fix (b): a browser code node gets the ALREADY-OPEN page's shape up
                 # front (no browser_open), so its script does not spend runs exploring it.
-                if _wb_browser:
+                if _wb_browser and not _wb_seeded:
                     _wb_page = _wb_browser_ground(self.conversation_id or "", _execute)
                     if _wb_page:
                         _wb_ground = (_wb_ground + "\n\n" + _wb_page) if _wb_ground else _wb_page
+                # Round 6 page-seed: the model cannot read the worker namespace from
+                # its prompt. Show a bounded digest of the seeded page text so it can
+                # write the parse in ONE script instead of spending look scripts.
+                if _wb_seeded and _wb_pages:
+                    _digest = (_wb_page_digest(_wb_pages, max_chars=8000, sample=8000)
+                               if _two_call_on() else _wb_page_digest(_wb_pages))
+                    if _digest:
+                        _wb_ground = (_wb_ground + "\n\n" + _digest) if _wb_ground else _digest
                 _wb_hold: list = []
                 try:
                     from backend.agent.decision_engine import scope_now as _scope_now
@@ -2269,7 +2601,7 @@ class DerNodeMixin:
                     # a real tool call earns the card (kernel.surface counter); no Oracle labels
                     # in code. A finished run_python starts the browser-call count again (C1).
                     self._der_count_tool_call(item)
-                    if name == "run_python" and _wb_hold:
+                    if name in ("run_python", "run_python_pair") and _wb_hold:
                         _wb_hold[0].new_exec()
 
                 def _wb_browser_row(args, ok, page_text, history):
@@ -2287,7 +2619,9 @@ class DerNodeMixin:
                     workdir=workdir,
                     ground=_wb_ground,
                     memory_facts="",      # D3: in code mode the MEMORY text is the `memory` variable only
-                    tools=_wb_slim_run_python(_full_tools),
+                    tools=(_wb_slim_run_python_pair(_full_tools)
+                           if _two_call_on() and not _see_gather_on()
+                           else _wb_slim_run_python(_full_tools)),
                     # the tagged generate: a code node's model calls read "code_node" in the
                     # baseline rows (the closure tags every other node call "node")
                     generate=lambda role, messages, **kw: _generate(
@@ -2295,18 +2629,24 @@ class DerNodeMixin:
                     stats={},
                     # Round 3 R1: the TOOL MODEL writes and runs the code; the
                     # Brain briefs (plan time) and steps in once on escalation.
-                    role="tool_execution", helper_role=None, max_tokens=1024, max_calls=6,
-                    system=_WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_need)
-                                         if _wb_need else "")
-                    + (_WB_BROWSER_NOTE if _wb_browser else ""),
+                    role="tool_execution", helper_role=None, max_tokens=1024,
+                    max_calls=(2 if _see_gather_on() else (1 if _two_call_on() else 6)),
+                    system=(_WB_SEE_GATHER_SYSTEM if _see_gather_on() else
+                            _WB_TWO_CALL_SYSTEM if _two_call_on() else
+                            _WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_need)
+                                          if _wb_need else "")
+                            + (_WB_BROWSER_NOTE if _wb_browser else "")
+                            + (_WB_PAGE_SEED_NOTE if _wb_seeded else "")
+                            + (_wb_self_verify_note(_wb_brief(item, _wb_contract)[1])
+                               if _wb_self_verify_on() else "")),
                     choose_tool=None, on_call=None,
                     on_result=_wb_on_result,
-                    brief=_wb_brief(item)[0], check=_wb_brief(item)[1],
+                    brief=_wb_brief(item, _wb_contract)[0], check=_wb_brief(item, _wb_contract)[1],
                     wb_outputs=_wb_output_names(item), wb_node=_wb_node,
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
-                                                  *_wb_brief(item), tracker=_wb_rr,
+                                                  *_wb_brief(item, _wb_contract), tracker=_wb_rr,
                                                   ground=_wb_ground)
-                                     if _wb_brief(item)[1] else None),
+                                     if _wb_brief(item, _wb_contract)[1] else None),
                     # T7.15: shadow rows only - the rule above still decides
                     on_check=((lambda a, ok, et, ce: _wb_rr.passed() if ok
                                else _wb_rr.failed(a, et or "CheckFailed", ce))

@@ -128,6 +128,20 @@ def main() -> int:
     ap.add_argument("--tasks", nargs="*", default=None, help="override task ids (bare or full)")
     ap.add_argument("--no-web-toggle", action="store_true",
                     help="leave web mode as-is (runner sets it per browser cohort by default)")
+    ap.add_argument("--page-seed", action="store_true",
+                    help="Round 6 prototype: toggle IRIS_WB_PAGE_SEED per arm (on=1, off=0). "
+                         "Off by default so the standard gate is unchanged.")
+    ap.add_argument("--self-verify", action="store_true",
+                    help="Round 6 option 1: toggle IRIS_WB_SELF_VERIFY per arm (on=1, off=0). "
+                         "Off by default so the standard gate is unchanged.")
+    ap.add_argument("--two-call", action="store_true",
+                    help="Round 6 option 3: toggle IRIS_WB_TWO_CALL per arm (on=1, off=0). "
+                         "One model response with two run_python calls (gather + compute). "
+                         "Off by default so the standard gate is unchanged.")
+    ap.add_argument("--see-gather", action="store_true",
+                    help="Round 6 option 3b: toggle IRIS_WB_SEE_GATHER per arm (on=1, off=0). "
+                         "Model sees the gather result before writing compute (two model calls). "
+                         "Off by default so the standard gate is unchanged.")
     args = ap.parse_args()
 
     if not _backend_alive():
@@ -145,11 +159,29 @@ def main() -> int:
 
     # Baseline logging on for the whole gate; workbench flag flips per arm.
     _set_flag("IRIS_CLM_BASELINE", "1")
+    if args.page_seed:
+        _set_flag("IRIS_WB_PAGE_SEED", "1")
+    if args.self_verify:
+        _set_flag("IRIS_WB_SELF_VERIFY", "1")
+    if args.two_call:
+        _set_flag("IRIS_WB_TWO_CALL", "1")
+    if args.see_gather:
+        _set_flag("IRIS_WB_SEE_GATHER", "1")
     blocks = []
     try:
         for rep in range(1, args.reps + 1):
             for arm in ARMS:
                 _set_flag("IRIS_WORKBENCH", "1" if arm == "on" else "0")
+                if args.page_seed:
+                    # The seed only fires in code mode (on arm); keep it off on the
+                    # off arm so the baseline is byte-for-byte the standard gate.
+                    _set_flag("IRIS_WB_PAGE_SEED", "1" if arm == "on" else "0")
+                if args.self_verify:
+                    _set_flag("IRIS_WB_SELF_VERIFY", "1" if arm == "on" else "0")
+                if args.two_call:
+                    _set_flag("IRIS_WB_TWO_CALL", "1" if arm == "on" else "0")
+                if args.see_gather:
+                    _set_flag("IRIS_WB_SEE_GATHER", "1" if arm == "on" else "0")
                 result_file = _run_block(task_ids, out_dir, arm, rep)
                 blocks.append({"arm": arm, "rep": rep, "results": [str(result_file)]})
     finally:
@@ -158,6 +190,26 @@ def main() -> int:
             _set_flag("IRIS_WORKBENCH", "0")
         except Exception as exc:
             print(f"[gate] WARN could not restore IRIS_WORKBENCH=0: {exc}", file=sys.stderr)
+        if args.page_seed:
+            try:
+                _set_flag("IRIS_WB_PAGE_SEED", "0")
+            except Exception as exc:
+                print(f"[gate] WARN could not restore IRIS_WB_PAGE_SEED=0: {exc}", file=sys.stderr)
+        if args.self_verify:
+            try:
+                _set_flag("IRIS_WB_SELF_VERIFY", "0")
+            except Exception as exc:
+                print(f"[gate] WARN could not restore IRIS_WB_SELF_VERIFY=0: {exc}", file=sys.stderr)
+        if args.two_call:
+            try:
+                _set_flag("IRIS_WB_TWO_CALL", "0")
+            except Exception as exc:
+                print(f"[gate] WARN could not restore IRIS_WB_TWO_CALL=0: {exc}", file=sys.stderr)
+        if args.see_gather:
+            try:
+                _set_flag("IRIS_WB_SEE_GATHER", "0")
+            except Exception as exc:
+                print(f"[gate] WARN could not restore IRIS_WB_SEE_GATHER=0: {exc}", file=sys.stderr)
 
     blocks_file = out_dir / "blocks.json"
     blocks_file.write_text(json.dumps(blocks, indent=1), encoding="utf-8")

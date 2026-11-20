@@ -1255,11 +1255,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.on_call(name, params)
                         except Exception as exc:  # noqa: BLE001 — advisory only
                             logger.debug("[run_node] shadow hook failed: %r", exc)
-                    if name == "run_python" and isinstance(params, dict):
+                    if name in ("run_python", "run_python_pair") and isinstance(params, dict):
                         # the harness injects these; the model never writes them
                         params = {k: v for k, v in params.items()
                                   if k not in ("outputs", "_wb_node", "stdout_max")}
-                        ctx.stats["scripts"] = ctx.stats.get("scripts", 0) + 1
+                        ctx.stats["scripts"] = ctx.stats.get("scripts", 0) + (2 if name == "run_python_pair" else 1)
                         if ctx.check:
                             params["check"] = ctx.check
                         if ctx.wb_outputs:
@@ -1391,7 +1391,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 })
                 if _rid and _blk is not None:
                     _blk.ref = Ref(kind="tool_result", id=_rid)
-                if name == "run_python" and ctx.check and isinstance(raw, dict):
+                if name in ("run_python", "run_python_pair") and ctx.check and isinstance(raw, dict):
                     if raw.get("check_ok") is True:
                         _observe_check(ctx, check_failures + 1, True, raw)
                         # R3: the harness ran the check and it passed - the step is

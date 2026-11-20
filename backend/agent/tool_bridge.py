@@ -395,7 +395,12 @@ def clear_workbench_dispatch(conversation_id: str, handler=None, node: str = "")
 
 
 _WB_OUTPUTS_MAX = 8
-_WB_OUTPUT_SHOW = 600       # D5: an output <= this many chars is shown whole; longer = this head + a ref
+# D5: an output <= this many chars is shown whole; longer = this head + a ref.
+# Round 6 (2026-11-20): raised from 600 to 2400. A structured output (e.g. a list
+# of 5 book dicts) was cut at 600 chars, so synthesis saw only 2 of 5 items and
+# reported the total as unconfirmed even though the check passed. 2400 chars
+# holds a small structured result whole; larger values still get a wb: ref.
+_WB_OUTPUT_SHOW = 2400
 
 
 def _wb_outputs_text(client, names) -> str:
@@ -450,6 +455,86 @@ def _record_code_row(conv: str, code: str, purpose: str, rep: dict, elapsed_ms: 
         logger.warning("[ToolBridge][%s] run_python code row failed: %r", conv, exc)
 
 
+def _wb_assigns_output(code: str, outputs: List[str]) -> Optional[str]:
+    """Round 6 universal fix: CONSERVATIVE pre-execution check. Return a short
+    reason when we can PROVE the script assigns none of the brief's outputs;
+    None when it might assign one (so a valid script is never rejected).
+
+    We only reject when the code parses, has no dynamic/exec/import-star escape,
+    and contains no assignment (Assign/AnnAssign/AugAssign/NamedExpr/for/with/
+    except target/del) to any output name. Anything we cannot prove -> None.
+    """
+    if not outputs or not code or not code.strip():
+        return None
+    try:
+        import ast
+
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None  # let the worker report the syntax error as a real attempt
+    names = {n for n in outputs if isinstance(n, str) and n.isidentifier()}
+    if not names:
+        return None
+    # Dynamic assignment we cannot see statically -> never reject.
+    for node in ast.walk(tree):
+        # An explicit raise / needs-sight signal is legitimate control flow -
+        # never reject it (the needs_sight fallback depends on it).
+        if isinstance(node, (ast.Raise, ast.Assert)):
+            return None
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Name) and fn.id in ("exec", "eval", "globals", "locals", "vars", "setattr"):
+                return None
+            if isinstance(fn, ast.Attribute) and fn.attr in ("update", "setdefault", "popitem"):
+                return None
+            # A browser tool call can produce a needs_sight signal from its
+            # observation - never reject it before it runs.
+            if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name) \
+                    and fn.value.id == "tools" and fn.attr.startswith("browser_"):
+                return None
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return None
+        if isinstance(node, ast.Starred):
+            return None
+    # Collect every name that is bound anywhere in the script.
+    bound = set()
+
+    def _target(t):
+        for n in ast.walk(t):
+            if isinstance(n, ast.Name):
+                bound.add(n.id)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                _target(t)
+        elif isinstance(node, (ast.AugAssign, ast.AnnAssign)):
+            _target(node.target)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            _target(node.target)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if item.optional_vars is not None:
+                    _target(item.optional_vars)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.NamedExpr):
+            _target(node.target)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.comprehension):
+            _target(node.target)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                bound.add((a.asname or a.name.split(".")[0]))
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                bound.add((a.asname or a.name))
+    if names & bound:
+        return None  # at least one output is provably assigned
+    return "assigns none of: " + ", ".join(sorted(names))
+
+
 async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> dict:
     """run_python(code, purpose, timeout_s[, fresh, close]) -> the digest as `text`, plus
     structured fields. A Python exception is a RESULT (success True, ok False), like a
@@ -471,6 +556,12 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
     outputs = params.get("outputs")
     outputs = [n for n in outputs if isinstance(n, str)][:_WB_OUTPUTS_MAX] if isinstance(outputs, list) else []
     node_token = str(params.get("_wb_node") or "")
+    # Round 6 universal fix: the first "look" (a script that assigns no output)
+    # is legitimate - it lets the model inspect data with a larger stdout budget
+    # (K1a). Excess looks are bounded in run_node via explore_count, which counts
+    # the 2nd+ look as a real failure. We do NOT reject here: that would kill the
+    # legitimate first look. _wb_assigns_output stays available as a conservative
+    # helper for callers that need it, but is not used to block execution.
     # K1a: the harness's stdout budget for a look script (run_node injects it; a bad value = none)
     stdout_max = params.get("stdout_max")
     stdout_max = stdout_max if isinstance(stdout_max, int) and not isinstance(stdout_max, bool) and stdout_max > 0 else None
@@ -533,6 +624,84 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         return out
     except Exception as exc:  # noqa: BLE001 - a named result, never an exception into the turn
         logger.warning("[ToolBridge][%s] run_python failed: %r", session_id, exc)
+        return {"success": False, "case": "workbench_error", "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+
+async def _run_python_pair_tool(bridge, params: dict, session_id: str, cwd: str) -> dict:
+    """Round 6 option 3: run two code phases in ONE tool call / ONE model generate.
+
+    `gather` runs first with NO check (it only loads data into the namespace);
+    `compute` then runs in the SAME namespace with the harness check. The model
+    writes both in one response, so the compute phase is not a second model call.
+    The returned digest is the compute phase's, with the check result appended.
+    """
+    gather = params.get("gather")
+    compute = params.get("compute")
+    if not isinstance(gather, str) or not gather.strip():
+        return {"success": False, "error": "gather code is required"}
+    if not isinstance(compute, str) or not compute.strip():
+        return {"success": False, "error": "compute code is required"}
+    purpose = " ".join(str(params.get("purpose") or "").split())[:200]
+    check = params.get("check")
+    check = check.strip()[:_WB_CHECK_MAX] if isinstance(check, str) and check.strip() else None
+    outputs = params.get("outputs")
+    outputs = [n for n in outputs if isinstance(n, str)][:_WB_OUTPUTS_MAX] if isinstance(outputs, list) else []
+    node_token = str(params.get("_wb_node") or "")
+    conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
+    try:
+        from backend.agent.workbench import digest as wbd
+        from backend.agent.workbench.manager import WorkbenchCapReached, get_manager
+
+        mgr = get_manager()
+        try:
+            client = await asyncio.to_thread(mgr.workbench_for, conv, cwd)
+        except WorkbenchCapReached as exc:
+            return {"success": False, "case": "workbench_cap", "error": str(exc)}
+        if client is None:
+            return {"success": False, "case": "workbench_unavailable",
+                    "error": "no Python interpreter is available for the workbench"}
+        handler = _wb_dispatch.get(_wb_key(conv, node_token))
+        # Phase 1: gather, no check. A failure here is a real result the model sees.
+        rep1 = await asyncio.to_thread(client.exec, gather, 120, None, handler)
+        wbd.remember_origin(rep1, purpose + " [gather]")
+        err1 = rep1.get("error") or None
+        if err1:  # gather failed: report it, do not pretend compute ran
+            out = {"success": not (err1 and err1.get("type") in _WB_INFRA_ERRORS),
+                   "text": wbd.digest(rep1, await asyncio.to_thread(client.rss_mb), outputs),
+                   "ok": bool(rep1.get("ok")), "phase": "gather",
+                   "error": f"{err1.get('type')}: {err1.get('message')}",
+                   "error_type": err1.get("type")}
+            return out
+        # Phase 2: compute, with the check, in the SAME namespace.
+        rep2 = await asyncio.to_thread(client.exec, compute, 120, check, handler)
+        wbd.remember_origin(rep2, purpose + " [compute]")
+        chk = (rep2.get("check") or {"ok": False, "error": "check was not run"}) if check else {}
+        wbd.remember_named(rep2, outputs, passed=bool(check and chk.get("ok")))
+        _record_code_row(conv, gather, purpose + " [gather]", rep1, 0)
+        _record_code_row(conv, compute, purpose + " [compute]", rep2, 0)
+        err = rep2.get("error") or None
+        got = wbd.assigned(rep2, outputs)
+        out = {
+            "success": not (err and err.get("type") in _WB_INFRA_ERRORS),
+            "text": wbd.digest(rep2, await asyncio.to_thread(client.rss_mb), outputs),
+            "assigned_outputs": got, "ok": bool(rep2.get("ok")), "phase": "compute",
+            "incarnation": rep2.get("incarnation", ""), "vars": rep2.get("vars") or [],
+            "wb_refs": wbd.refs(rep2, outputs), "returncode": 0 if rep2.get("ok") else 1,
+        }
+        if err:
+            out["error"] = f"{err.get('type')}: {err.get('message')}"
+            out["error_type"] = err.get("type")
+        if check:
+            out["check_ok"] = bool(chk.get("ok"))
+            if chk.get("ok") and outputs:
+                out["outputs_text"] = await asyncio.to_thread(_wb_outputs_text, client, outputs)
+            if not chk.get("ok"):
+                out["check_error"] = str(chk.get("error") or "")[:300]
+            out["text"] += ("\ncheck: passed" if chk.get("ok")
+                            else f"\ncheck: failed - {out['check_error']}")
+        return out
+    except Exception as exc:  # noqa: BLE001 - a named result, never an exception into the turn
+        logger.warning("[ToolBridge][%s] run_python_pair failed: %r", session_id, exc)
         return {"success": False, "case": "workbench_error", "error": f"{type(exc).__name__}: {exc}"[:300]}
 
 
@@ -3166,7 +3335,7 @@ class AgentToolBridge:
                 "git_status", "git_diff", "git_log",
                 "git_commit", "git_create_branch", "git_checkout",
                 "git_push", "run_command", "read_command_output", "stop_command",
-                "run_python",
+                "run_python", "run_python_pair",
             }
             if tool_name in git_tools:
                 result = await self._execute_dev_tool(tool_name, params, session_id)
@@ -4272,6 +4441,12 @@ class AgentToolBridge:
         # ── run_python (CLM-11): the conversation's persistent Workbench ──
         if tool_name == "run_python":
             return await _run_python_tool(self, params, session_id, cwd)
+        # ── run_python_pair (Round 6 option 3): two code phases in ONE tool call.
+        # The gather phase runs first (no check), then the compute phase runs in the
+        # SAME namespace with the check. Both are one model generate; the second
+        # execution is not a second model call. Flag-gated by the caller's tool menu.
+        if tool_name == "run_python_pair":
+            return await _run_python_pair_tool(self, params, session_id, cwd)
 
         return {"error": f"Unknown dev tool: {tool_name}"}
 
