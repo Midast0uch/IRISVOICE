@@ -590,6 +590,18 @@ def page_seed_start(conversation_id: str, text: str) -> None:
     with _PAGE_SEED_LOCK:
         if conversation_id in _PAGE_SEED:
             return
+        # Round 6 (2026-11-20): hold the pooled Chromium warm for the whole
+        # seed->collect window. The browser code-node path never declared a
+        # browser run (the crawler does, orchestrator.py:454), so the pool's idle
+        # watchdog could stop Chromium mid-planning and the seed's browser_open
+        # cold-started it (~19.5s, 9/49 timeouts). Declaring here keeps the pool
+        # warm; page_seed_collect releases it. Best-effort, never raises.
+        try:
+            from backend.vision import browser_pool as _bp
+
+            _bp.declare_browser_run()
+        except Exception:  # noqa: BLE001 - warmth is best-effort
+            pass
         state = {"done": threading.Event(), "pages": [], "urls": urls}
         _PAGE_SEED[conversation_id] = state
 
@@ -649,8 +661,19 @@ def page_seed_collect(conversation_id: str, timeout_s: float = _PAGE_SEED_WAIT_S
         state = _PAGE_SEED.pop(conversation_id, None)
     if state is None:
         return []
-    state["done"].wait(timeout_s)
-    return list(state["pages"])
+    try:
+        state["done"].wait(timeout_s)
+        return list(state["pages"])
+    finally:
+        # Release the warmth hold taken in page_seed_start. The code node reuses
+        # this session, and the pool's idle TTL (180s) keeps it alive through the
+        # node; releasing here avoids leaking a permanent hold.
+        try:
+            from backend.vision import browser_pool as _bp
+
+            _bp.release_browser_run()
+        except Exception:  # noqa: BLE001 - warmth is best-effort
+            pass
 
 
 def _wb_page_digest(pages: list, max_chars: int = 2400, sample: int = 500) -> str:
