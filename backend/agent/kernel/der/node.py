@@ -600,18 +600,35 @@ def page_seed_start(conversation_id: str, text: str) -> None:
 
             _run_async = ToolDecisionBox._run_async
             for url in urls:
-                try:
-                    opened = _run_async(browser_tools.browser_open(conversation_id, url), timeout_s=30)
-                    if not isinstance(opened, dict) or opened.get("success") is False:
-                        continue
-                    read = _run_async(browser_tools.browser_read(conversation_id), timeout_s=30)
-                    if isinstance(read, dict) and read.get("success") is not False:
-                        state["pages"].append({
-                            "url": url,
-                            "text": str(read.get("text") or read.get("content") or ""),
-                        })
-                except Exception as exc:  # noqa: BLE001 - one bad URL does not stop the rest
-                    logger.warning("[page-seed] conv=%s url=%s fetch failed: %r", conversation_id, url, exc)
+                # Round 6 (2026-11-20): bounded retry. A single browser_open
+                # timeout used to abandon the URL (9/49 seeds failed), forcing
+                # the code node to fetch inline (~19.5s) on the reply's critical
+                # path. Retry once with a fresh session (a wedged session is the
+                # usual cause of a transient timeout). Both attempts stay in the
+                # side lane, off the reply clock.
+                for attempt in range(2):
+                    try:
+                        if attempt == 1:
+                            # Drop the possibly-wedged session so the retry opens
+                            # a fresh browser context rather than reusing a dead one.
+                            try:
+                                _run_async(browser_tools.close_conversation_browser(conversation_id),
+                                           timeout_s=10)
+                            except Exception:  # noqa: BLE001 - best effort
+                                pass
+                        opened = _run_async(browser_tools.browser_open(conversation_id, url), timeout_s=30)
+                        if not isinstance(opened, dict) or opened.get("success") is False:
+                            continue
+                        read = _run_async(browser_tools.browser_read(conversation_id), timeout_s=30)
+                        if isinstance(read, dict) and read.get("success") is not False:
+                            state["pages"].append({
+                                "url": url,
+                                "text": str(read.get("text") or read.get("content") or ""),
+                            })
+                            break  # success: no retry for this URL
+                    except Exception as exc:  # noqa: BLE001 - retry once, then move on
+                        logger.warning("[page-seed] conv=%s url=%s attempt=%d failed: %r",
+                                       conversation_id, url, attempt, exc)
         except Exception as exc:  # noqa: BLE001 - a seed never blocks the turn
             logger.warning("[page-seed] conv=%s setup failed: %r", conversation_id, exc)
         finally:
