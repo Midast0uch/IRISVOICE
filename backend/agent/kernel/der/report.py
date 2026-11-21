@@ -556,7 +556,13 @@ class DerReportMixin:
             # and the synthesis saw "per_row = [... 'sprocket', ...15.0}," with the total and
             # "check: passed" cut off (TG-7 v2 full, c51 2/5 and x02 1/5 failed "truncated";
             # call dump conv-8235, 2026-11-17).
-            _wide = AgentKernel._DER_GATHER_TOOLS | AgentKernel._DER_READ_TOOLS | {"run_python"}
+            # Round 6 option 3: run_python_pair is the two-phase code node. Like
+            # run_python, its result IS the outputs manifest - the step's payload.
+            # Without it here the pair step fell through to content_summary[:300],
+            # so synthesis saw "top5 = [... 'Scott Pilgrim's" cut mid-title and
+            # reported "the tool didn't return the complete top five" (d03, 2/12).
+            _wide = (AgentKernel._DER_GATHER_TOOLS | AgentKernel._DER_READ_TOOLS
+                     | {"run_python", "run_python_pair"})
             if any(str(c.get("tool") or "").lower() in _wide for c in _step_calls(item)):
                 _raw_gather = getattr(item, "result", "") or ""
                 if _raw_gather:
