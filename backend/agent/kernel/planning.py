@@ -120,6 +120,58 @@ def _plan_step_brief(raw_step: dict) -> dict:
         "wb_browser_single": bool(raw_step.get("wb_browser_single", False)),
     }
 
+
+# Round 6 (2026-11-21): a COMPUTED browser task asks for a derived value, not a
+# single fact. These are the tasks that failed pass when the planner omitted a
+# brief (d03 "5 most expensive ... total"). A lookup ("birth date", "what it
+# says") stays on the menu path - forcing it into code mode raised calls/reply
+# without helping accuracy (gate 134913). Narrow cue set, lowercase word-boundary
+# match; a miss just leaves the planner's own choice untouched.
+_COMPUTE_CUES = _re_plan.compile(
+    r"\b(count|how many|total|sum|most expensive|cheapest|top\s*\d+|"
+    r"how often|compare|average|rank)\b", _re_plan.I,
+)
+
+
+def _ensure_browser_brief(brief: dict, request: str) -> dict:
+    """Round 6 (2026-11-21): narrow structural backstop for the planner's soft
+    brief rule.
+
+    The planner is told to give browser COMPUTED steps a brief, but it is a
+    stochastic model: in the 5-rep gate 2 d03 runs had no brief, so the workbench
+    never engaged and those computed tasks ran on the menu path and failed pass.
+    The rule cannot be forced by rewording (pin_8dec80b57ef3).
+
+    Fire ONLY when: workbench flag on, request names a URL, request asks for a
+    computation (count/sum/total/rank), and the planner emitted no brief. Leave
+    lookups and already-briefed steps byte-identical. Never raises.
+    """
+    import os
+
+    if os.environ.get("IRIS_WORKBENCH") != "1":
+        return brief
+    if brief.get("outputs") and str(brief.get("check") or "").strip():
+        return brief  # planner complied
+    if brief.get("wb_browser_single") is True:
+        return brief  # planner deliberately kept a single-page lookup on menu path
+    if not _COMPUTE_CUES.search(request or ""):
+        return brief  # not a computed task - leave on the menu path
+    try:
+        from backend.agent.external_reference import _URL_RE
+
+        if not _URL_RE.findall(request or ""):
+            return brief  # not a browser task
+    except Exception:  # noqa: BLE001 - a backstop never blocks planning
+        return brief
+    # Minimal brief: one string output, a non-empty check, browser tools. The
+    # two-call system prompt tells the model to assign every output named here.
+    return {
+        **brief,
+        "outputs": list(brief.get("outputs") or ["answer: str"]),
+        "check": str(brief.get("check") or "len(answer) > 0"),
+        "tools": list(brief.get("tools") or ["browser_open", "browser_read"]),
+    }
+
 # A spoken turn reaches the agent as text, so nothing told the planner or a step that IRIS heard it. Live
 # 2026-10-25 22:15: "Okay. Can you hear me?" planned "Verify audio input", every step answered "I cannot
 # process audio", the goal contract never covered and the Explorer added 7 steps - 99 s to the first word.
@@ -1056,6 +1108,16 @@ class PlanningMixin:
         if _planner_brief_on():
             full_prompt += _planner_rules(self, session_id, text)
 
+        # Round 6 PROTOTYPE (IRIS_WB_PAGE_SEED): start the side-lane page fetch
+        # BEFORE the planner call so it overlaps the model latency. No-op when
+        # the flag is off or the task names no URL. Never raises.
+        try:
+            from backend.agent.kernel.der.node import page_seed_start
+
+            page_seed_start(getattr(self, "conversation_id", "") or "", text)
+        except Exception as exc:  # noqa: BLE001 - a seed never blocks planning
+            logger.debug("[plan] page seed start skipped: %r", exc)
+
         plan_raw: Optional[str] = None
         try:
             # Primary path: route planning through the unified InferenceRouter so
@@ -1178,7 +1240,10 @@ class PlanningMixin:
                                 depends_on=_plan_step_deps(raw_step, steps),
                                 # CLM-11 T7.13: brief fields, defensive like
                                 # expected_output (absent / wrong type -> empty).
-                                **_plan_step_brief(raw_step),
+                                # Round 6: structural backstop - if the planner
+                                # omitted a brief for a browser task, synthesize
+                                # a minimal one so the workbench engages.
+                                **_ensure_browser_brief(_plan_step_brief(raw_step), text),
                                 # T5 (KD-9): planner-declared criticality,
                                 # validated to the locked vocabulary.
                                 criticality=(
