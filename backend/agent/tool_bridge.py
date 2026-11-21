@@ -396,11 +396,12 @@ def clear_workbench_dispatch(conversation_id: str, handler=None, node: str = "")
 
 _WB_OUTPUTS_MAX = 8
 # D5: an output <= this many chars is shown whole; longer = this head + a ref.
-# Round 6 (2026-11-20): raised from 600 to 2400. A structured output (e.g. a list
-# of 5 book dicts) was cut at 600 chars, so synthesis saw only 2 of 5 items and
-# reported the total as unconfirmed even though the check passed. 2400 chars
-# holds a small structured result whole; larger values still get a wb: ref.
-_WB_OUTPUT_SHOW = 2400
+# Round 6 (2026-11-20): raised from 600 to 2400, then to 8000. A structured
+# output (e.g. a list of book dicts) was cut at 600 chars (synthesis saw 2 of 5)
+# and again at 2400 (a model assigned all 20 books; synthesis saw 3 and reported
+# "truncated"). 8000 chars holds a full listing whole; larger values still get a
+# wb: ref. This is eval-only display text, bounded and off the hot path.
+_WB_OUTPUT_SHOW = 8000
 
 
 def _wb_outputs_text(client, names) -> str:
