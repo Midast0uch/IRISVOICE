@@ -6533,7 +6533,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function is_even to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6541,7 +6541,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function is_odd to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6549,7 +6549,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function double to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6557,7 +6557,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function triple to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6565,7 +6565,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function square to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6573,7 +6573,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function cube to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6581,7 +6581,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function negate to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6589,7 +6589,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function absolute to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6597,7 +6597,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function add_one to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6605,7 +6605,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function subtract_one to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6613,7 +6613,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function multiply_by_ten to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6621,7 +6621,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function divide_by_two to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6629,7 +6629,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function is_positive to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6637,7 +6637,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function is_negative to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6645,7 +6645,7 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function max_of_two to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
@@ -6653,14 +6653,14 @@
       "group": "calibration",
       "mode": "developer",
       "prompt": "Work in the project directory {workdir}. In the project, add a function min_of_two to calculator.py. Then run the tests in the project. Then report the result in one sentence.",
-      "path": "evals/fixtures/_calibration/repo",
+      "path": "dev_cli",
       "timeout_s": 300
     },
     {
       "id": "cal_bb01_multi_is_even",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function is_even(n) -> bool to calculator.py. The function True when n is even. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6669,7 +6669,7 @@
       "id": "cal_bb02_multi_is_odd",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function is_odd(n) -> bool to calculator.py. The function True when n is odd. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6678,7 +6678,7 @@
       "id": "cal_bb03_multi_double",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function double(n) -> int to calculator.py. The function Twice n. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6687,7 +6687,7 @@
       "id": "cal_bb04_multi_triple",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function triple(n) -> int to calculator.py. The function Three times n. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6696,7 +6696,7 @@
       "id": "cal_bb05_multi_square",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function square(n) -> int to calculator.py. The function n times n. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6705,7 +6705,7 @@
       "id": "cal_bb06_multi_cube",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function cube(n) -> int to calculator.py. The function n times n times n. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6714,7 +6714,7 @@
       "id": "cal_bb07_multi_negate",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function negate(n) -> int to calculator.py. The function The opposite sign of n. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6723,7 +6723,7 @@
       "id": "cal_bb08_multi_absolute",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function absolute(n) -> int to calculator.py. The function The distance of n from zero. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6732,7 +6732,7 @@
       "id": "cal_bb09_multi_add",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function add(a, b) -> int to calculator.py. The function The sum of a and b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6741,7 +6741,7 @@
       "id": "cal_bb10_multi_subtract",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function subtract(a, b) -> int to calculator.py. The function a minus b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6750,7 +6750,7 @@
       "id": "cal_bb11_multi_multiply",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function multiply(a, b) -> int to calculator.py. The function The product of a and b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6759,7 +6759,7 @@
       "id": "cal_bb12_multi_divide",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function divide(a, b) -> float to calculator.py. The function a divided by b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6768,7 +6768,7 @@
       "id": "cal_bb13_multi_modulo",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function modulo(a, b) -> int to calculator.py. The function The remainder of a divided by b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6777,7 +6777,7 @@
       "id": "cal_bb14_multi_power",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function power(a, b) -> int to calculator.py. The function a raised to b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6786,7 +6786,7 @@
       "id": "cal_bb15_multi_smallest",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function smallest(a, b) -> int to calculator.py. The function The smaller of a and b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700
@@ -6795,7 +6795,7 @@
       "id": "cal_bb16_multi_largest",
       "group": "calibration",
       "mode": "developer",
-      "path": "calibration",
+      "path": "dev_cli",
       "prompt": "Work in the project directory {workdir}. Add a function largest(a, b) -> int to calculator.py. The function The larger of a and b. Then run the test suite and report the result.",
       "reply_patterns": [],
       "timeout_s": 700

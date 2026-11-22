@@ -180,6 +180,23 @@ def _repo_status() -> set:
     return paths
 
 
+def _workdir_problem(task: dict) -> str | None:
+    """Why this task cannot run, or None. A prompt that names ``{workdir}`` must run
+    where a workdir is BOUND, and only the dev_cli path binds one.
+
+    2026-11-22: 32 calibration tasks had path "calibration" or
+    "evals/fixtures/_calibration/repo"; they got no workdir, ``{workdir}`` became ""
+    ("Work in the project directory . Add a function largest..."), and in developer
+    mode the agent found the task file IN THE IRIS REPO and edited the tracked
+    fixture (evals/fixtures/cal_bb16_multi_largest/repo/calculator.py). The leak
+    check did not run either: it ran only when a workdir was bound."""
+    texts = [str(task.get("prompt") or "")] + [str(p) for p in task.get("seed_prompts") or []]
+    if any("{workdir}" in t for t in texts) and task.get("path") != "dev_cli":
+        return (f"{task.get('id')}: the prompt needs {{workdir}} but path is "
+                f"{task.get('path')!r} - only dev_cli binds a workdir")
+    return None
+
+
 # A command the agent's shell could not parse or find (owner 2026-10-02: count
 # them every run; a rise means the agent writes for the wrong shell).
 _SHELL_SYNTAX_RE = re.compile(
@@ -201,6 +218,9 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
         "permissions": 0, "questions": 0, "timed_out": False, "ws_error": None,
         "shell_syntax_errors": 0, "turn_id": None,
     }
+    if "{workdir}" in task["prompt"] and workdir is None:
+        # never "" - an empty project path sends a developer-mode agent into the IRIS repo
+        raise ValueError(_workdir_problem(task) or f"{task['id']}: no workdir bound")
     prompt = task["prompt"].replace("{workdir}", str(workdir) if workdir else "")
 
     # ping_interval=None: the library's own keepalive closed the socket (1011)
@@ -660,6 +680,9 @@ def _preflight(tasks: list, check_model: bool) -> str | None:
                if t["group"] == "coding" and not (FIXTURES_DIR / t["id"] / "repo").is_dir()]
     if missing:
         return f"fixtures missing for: {', '.join(missing)}"
+    bad = [p for p in (_workdir_problem(t) for t in tasks) if p]
+    if bad:
+        return f"{len(bad)} task(s) cannot be run safely: {'; '.join(bad[:5])}"
     return None
 
 
@@ -729,7 +752,10 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
             # that binds a workdir can touch the repo, so the baseline is the repo
             # status before THAT task. With an empty baseline the check reported
             # the whole repo status as a leak (measured 2026-11-02: 4990 files).
-            before = _repo_status() if workdir is not None else set()
+            # Developer mode can edit the repo with or without a bound workdir (2026-11-22).
+            check_leaks = workdir is not None or task.get("mode") == "developer"
+            before = _repo_status() if check_leaks else set()
+            leaks: list = []
 
             # Memory-group hygiene (2026-10-28, from the first A/B): each run
             # teaches a FRESH fact. Repeated runs against the live store taught
@@ -869,6 +895,8 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 ok, detail = _run_hidden_tests(task, workdir)
                 notes.append(f"hidden: {detail}")
                 passed = passed and ok
+            if check_leaks:
+                # Counted, not failed: the owner's own edits during a run show up here too.
                 leaks = sorted(_repo_status() - before)
                 if leaks:
                     notes.append(f"LEAK into IRIS repo: {leaks[:5]}")
@@ -899,6 +927,7 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 "permissions": rec["permissions"], "questions": rec["questions"],
                 "reply_head": rec["reply"][:400], "event_counts": rec["event_counts"],
                 "shell_syntax_errors": rec.get("shell_syntax_errors", 0),
+                "repo_leaks": leaks,
             })
             log.info("    %s in %.0fs (reply at %ss, ask %ss)  %s",
                      "PASS" if passed else "FAIL", seconds, reply_s, reply_s_ask,
@@ -1035,6 +1064,8 @@ def main() -> int:
     for group, g in summary.items():
         print(f"{group:<10} {g['passed']}/{g['total']}")
     print(f"shell syntax errors: {sum(r.get('shell_syntax_errors', 0) for r in results)}")
+    _leaky = [r["id"] for r in results if r.get("repo_leaks")]
+    print(f"repo leaks: {len(_leaky)} task(s)" + (f" - {', '.join(_leaky[:8])}" if _leaky else ""))
 
     out = RESULTS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
     _write_results(results, out)
