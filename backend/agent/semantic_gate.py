@@ -1029,6 +1029,7 @@ def evaluate_continuation(
     memory_interface=None,
     embedding_service=None,
     failed_step_ids: Optional[List[str]] = None,
+    session_id: str = "",
 ) -> ContinuationVerdict:
     """Evaluate a follow-up turn against the active task (REQ-4 AC1-AC5).
 
@@ -1094,7 +1095,8 @@ def evaluate_continuation(
             conn = resolve_mycelium_conn(memory_interface)
             if conn is not None:
                 for step_id in failed[:3]:
-                    verdict.avoid_rows.extend(recall_failed_like(conn, step_id, limit=3))
+                    verdict.avoid_rows.extend(recall_failed_like(
+                        conn, step_id, limit=3, session_id=session_id))
         return verdict
 
     # AC3 — re-target / reorder -> MORPH (edge changes; deeper rework is
@@ -1317,6 +1319,7 @@ class SemanticLogicGate:
                 task_lifecycle,
                 director_queue,
                 self._memory_interface,
+                session_id=session_id or "",
             )
 
         graph = self._compose(text, verdict, t2, cont, web_mode, continuation_consulted=(task_lifecycle is not None))

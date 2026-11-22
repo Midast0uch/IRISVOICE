@@ -137,22 +137,61 @@ async def _bind(instance_id: str, model: str) -> int:
     return 1
 
 
+_router = None
+
+
+def _get_router():
+    """A router in THIS process, resolving tool_execution to the bound local model.
+    The backend persists the binding to config, so load_config() sees it."""
+    global _router
+    if _router is None:
+        from backend.agent.inference.router import InferenceRouter
+        from backend.iris_config import load_config
+
+        _router = InferenceRouter(load_config())
+    return _router
+
+
+def _generate_script(task: dict, level: int) -> str:
+    """Ask the BOUND tool model to write a Python script from the brief.
+    level 0: brief = contract + approach. level 1: brief + a known skeleton.
+    Returns the model's code (fenced blocks stripped), or "" on failure."""
+    import re
+
+    brief = (
+        "Write a short Python script that solves this step. Outputs and check:\n"
+        f"  outputs: {task['check']}\n"
+        f"  approach: {task['approach']}\n"
+        "The input variables are already in your namespace. Assign every output "
+        "variable. Reply with ONLY a ```python fenced block of code."
+    )
+    if level == 1:
+        brief += ("\n\nA correct starting script is below. You may run it as-is "
+                  "(exec(skeleton)) or correct it:\n```python\n" + task["skeleton"] + "\n```")
+    text, _think, _tools = _get_router().generate(
+        "tool_execution", [{"role": "user", "content": brief}],
+        max_tokens=1024, temperature=0.0, thinking=False, call_kind="code_node")
+    m = re.search(r"```python\n(.*?)```", text or "", re.S)
+    return (m.group(1) if m else (text or "")).strip()
+
+
 def _run_one(task: dict, level: int) -> bool:
-    """Run one brief-to-script task through the real workbench worker and check."""
+    """Run one brief-to-script task: the BOUND model writes the script from the
+    brief, then a real workbench worker runs it and evaluates the check."""
     from backend.agent.workbench.client import WorkbenchClient
-    from backend.agent.workbench.manager import get_manager
     import tempfile
 
+    code = _generate_script(task, level)
+    if not code:
+        return False
     workdir = tempfile.mkdtemp(prefix="t70b-")
     client = WorkbenchClient(common_python(), workdir)
     client.start()
     try:
-        # Seed the inputs the brief's approach refers to.
         for name, value in _inputs(task).items():
             client.put(name, value)
         if level == 1:
             client.put("skeleton", task["skeleton"])
-        code = task["body"] if level == 0 else "exec(skeleton)"
         reply = client.exec(code, check=task["check"])
         return bool(reply.get("check", {}).get("ok"))
     finally:

@@ -1766,7 +1766,7 @@ async def set_launcher_mode(request: dict):
 # inference/clm_baseline.py:59). The gate driver toggles them between arms in one
 # backend process instead of restarting 10 times. Whitelisted to these two flags
 # and to "1"/"0" only - never a general env setter. Test/eval tooling only.
-_EVAL_FLAG_NAMES = frozenset({"IRIS_WORKBENCH", "IRIS_CLM_BASELINE", "IRIS_WB_PAGE_SEED", "IRIS_WB_SELF_VERIFY", "IRIS_WB_TWO_CALL", "IRIS_WB_SEE_GATHER"})
+_EVAL_FLAG_NAMES = frozenset({"IRIS_WORKBENCH", "IRIS_CLM_BASELINE", "IRIS_WB_PAGE_SEED", "IRIS_WB_SELF_VERIFY", "IRIS_WB_TWO_CALL", "IRIS_WB_SEE_GATHER", "IRIS_CLM_OFFLOAD"})
 
 
 @app.post("/api/eval-flag")
@@ -1778,7 +1778,7 @@ async def set_eval_flag(request: dict):
     value = request.get("value")
     if name not in _EVAL_FLAG_NAMES or str(value) not in ("1", "0"):
         return FastAPIResponse(
-            content=json.dumps({"error": "name must be IRIS_WORKBENCH, IRIS_CLM_BASELINE, IRIS_WB_PAGE_SEED, IRIS_WB_SELF_VERIFY, IRIS_WB_TWO_CALL or IRIS_WB_SEE_GATHER; value 1 or 0"}),
+            content=json.dumps({"error": "name must be one of " + ", ".join(sorted(_EVAL_FLAG_NAMES)) + "; value 1 or 0"}),
             status_code=422, media_type="application/json",
         )
     os.environ[name] = str(value)

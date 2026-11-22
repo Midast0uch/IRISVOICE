@@ -352,6 +352,24 @@ of the node thread (empty on the callback thread); the browser runs in the backe
   Brain calls <= off; browser_next rows per script browser_act on an on-list element = 1.0 and
   on-arm rows per task >= off; claim waits >= 0.5 s inside a script 0; latch hits 0; browser
   timeouts <= off; vision steps lost 0; code-node fallbacks <= 20 %; planner retries <= off.
+- **Gate CLEARED 2026-11-22 for `browser_goal` + `browser_data`, cloud arm only.**
+  `evals/results/wb_gate-20261122-084556` (8 tasks x 5 reps x 2 arms
+  = 80 runs, `evals/wb_gate_driver.py --reps 5 --tasks g01 g02 g03 g04 d01 d02 d03 d04 --two-call`).
+  All six numeric metrics pass both cohorts: goal pass 20/20 = off 20/20, reply x0.67, calls x0.53,
+  prompt x0.32; data pass 20/20 = off 20/20, reply x0.38, calls x0.47, prompt x0.24. Fallbacks 0,
+  escalations 0, planner retries off 23 -> on 0, Brain calls median off 4 -> on 3, wb_wait 0.
+  NOT YET RUN on the final code (audit 2026-11-22): the `browser` cohort b01-b10 (its bar is
+  <= off; it failed at x1.12 calls on 2026-11-19), the small-model arm ("cloud first"), and the
+  re-check cohorts; the 2026-11-20 note named "a full 5-rep 18-task gate" as the confirmation
+  before the flag goes on. The bar's other clauses (claim waits, latch hits, browser timeouts,
+  vision steps lost) are not reported by `evals/wb_ab_analysis.py`. The two non-numeric conditions from the
+  handoff are resolved: (a) the g01 pass miss was a system gap, not noise - the pair path had
+  `max_calls=1`, so one failed check closed the node with no retry; it now gets one corrected retry;
+  (b) browser_next rows on 0 vs off 7 is correct - the pair uses browser_open/read and never
+  browser_act on a numbered element, so there is no shadow row to write (owner decision 2026-11-21).
+  A computed browser task whose planner brief names search/crawler_query is forced to browser tools
+  so the entry rule sends it to code mode (d01 variance fix). Flags on: `IRIS_WORKBENCH=1`,
+  `IRIS_WB_TWO_CALL=1`. Standard S169.
 
 ### Round 4 (2026-11-16, CURRENT; advisor after TG-7 run 1): make the Workbench win on every metric
 

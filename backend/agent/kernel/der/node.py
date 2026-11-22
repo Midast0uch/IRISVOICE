@@ -41,8 +41,8 @@ def _clm_offload_on() -> bool:
 
 _CLM_EXPAND_PARAMS = {
     "expand": {"type": "string", "description": (
-        "A reference from a set-aside or cut result, e.g. tool_result:<id>. "
-        "Returns that result's exact text; query is then not needed.")},
+        "A reference from a set-aside or cut result, e.g. tool_result:<id>, or an "
+        "earlier thread's thread:<id>. Returns the exact text; query is then not needed.")},
     "offset": {"type": "integer", "description": (
         "With expand: the character to start from (default 0); the reply gives "
         "next_offset when more text follows.")},
@@ -93,6 +93,62 @@ def _clm_dead_ends(kernel, session: str, turn_id) -> list:
     except Exception as exc:  # noqa: BLE001 - no ledger, logged
         logger.warning("[clm] dead ends unreadable (%r): ledger empty", exc)
         return []
+
+
+# CLM-5 AC6 (T4.4): a FIXED-SIZE header of the proven claims of the step's topic.
+# The topic is the registry rule the sectors use (resolve_topic_domain); a goal in
+# "general" or a sector with no proven claim gets an empty header - never padded.
+# A stale claim is shown AS stale (re-check before relying on it).
+_CLM_HEADER_MAX = 3
+_CLM_HEADER_CHARS = 160
+
+
+_CLM_EVENT_ROW = {"OFFLOADED": "offloaded", "RESTRETCHED": "restretched",
+                  "PREMATURE_EVICTION": "premature_eviction"}
+
+
+def _clm_measure(conv: str, label: str, payload: dict) -> None:
+    """T5.2: the view decision as a baseline row (values only; off unless IRIS_CLM_BASELINE=1)."""
+    event = _CLM_EVENT_ROW.get(label)
+    if not event:
+        return
+    from backend.agent.inference import clm_baseline as _cb
+
+    p = payload or {}
+    _cb.record_event(conv, event, actor=str(p.get("by") or "harness"),
+                     trigger=str(p.get("trigger") or ""), tokens=int(p.get("saving") or 0),
+                     units=len(p.get("refs") or []))
+
+
+def _clm_landmark_header(kernel, goal: str) -> list:
+    """Up to _CLM_HEADER_MAX claim lines for the goal's sector ([] when none)."""
+    try:
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+        from backend.memory.mycelium.extractor import resolve_topic_domain
+
+        sector = resolve_topic_domain(goal or "")
+        if sector == "general":
+            return []
+        conn = resolve_mycelium_conn(getattr(kernel, "_memory_interface", None))
+        if conn is None:
+            return []
+        # idx_landmark_sectors_sector (sector_key), then the landmark PK per row.
+        rows = conn.execute(
+            "SELECT l.label, l.tier FROM mycelium_landmark_sectors s "
+            "JOIN mycelium_landmarks l ON l.landmark_id = s.landmark_id "
+            "WHERE s.sector_key = ? AND l.tier IN ('landmark', 'stale') "
+            "AND COALESCE(l.absorbed, 0) = 0 "
+            "ORDER BY COALESCE(l.activation_count, 0) DESC, l.cumulative_score DESC LIMIT ?",
+            (sector, _CLM_HEADER_MAX)).fetchall()
+    except Exception as exc:  # noqa: BLE001 - no header, logged
+        logger.warning("[clm] landmark header unreadable (%r): header empty", exc)
+        return []
+    out = []
+    for label, tier in rows:
+        text = " ".join(str(label or "").split())[:_CLM_HEADER_CHARS]
+        if text:
+            out.append(text + (" (stale: re-check before relying on it)" if tier == "stale" else ""))
+    return out
 
 
 # CLM (small-model gate 2026-11-15): on a small window the tool menu is a
@@ -1021,7 +1077,8 @@ def _wb_needs_fallback(result, sight_poor: bool = False) -> str:
     return ""
 
 
-def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session: str = "") -> dict:
+def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session: str = "",
+                    goal: str = "") -> dict:
     """record_result / ref_readable / on_clm_event / window for one node."""
     from backend import conversation_store as _cs
     from backend.agent.kernel.base import _emit_event
@@ -1045,6 +1102,7 @@ def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session
 
     def on_clm_event(label, payload):
         _emit_event(kernel, label, payload=dict(payload, step=step, turn=turn_id or ""))
+        _clm_measure(conv, label, payload)
 
     def write_pin(summary, refs):
         from backend.agent.ontology_recall import resolve_mycelium_conn
@@ -1076,9 +1134,16 @@ def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session
     except Exception as exc:  # noqa: BLE001 - no window = no in-node shrink, logged
         logger.warning("[clm] conv=%s window for %s unknown (%r): in-node shrink off", conv, role, exc)
         window = 0
+    landmarks = _clm_landmark_header(kernel, goal)
+    if landmarks:
+        from backend.agent.inference import clm_baseline as _cb
+
+        _cb.record_event(conv, "landmark_header", n=len(landmarks),
+                         stale=sum(1 for s in landmarks if "(stale:" in s))
     return {"record_result": record_result, "ref_readable": ref_readable,
             "on_clm_event": on_clm_event, "window": window, "write_pin": write_pin,
-            "dead_ends": _clm_dead_ends(kernel, session, turn_id)}
+            "dead_ends": _clm_dead_ends(kernel, session, turn_id),
+            "landmarks": landmarks}
 
 
 from backend.agent.kernel.planning import (
@@ -2543,7 +2608,8 @@ class DerNodeMixin:
             review_note=str(getattr(item, "review_feedback", "") or ""),
             parallel_ok=_node_call_parallel_ok if _DER_PARALLEL else None,  # one off switch
             close_probe=_close_probe,
-            **(_clm_node_hooks(self, item, _turn_id, session=_session) if _clm_offload_on() else {}),
+            **(_clm_node_hooks(self, item, _turn_id, session=_session, goal=goal)
+               if _clm_offload_on() else {}),
             )
             _node_state["ctx"] = _node_ctx
             _full_tools = self._get_openai_tools() if _wb_on() else []
@@ -2639,6 +2705,11 @@ class DerNodeMixin:
                     if _digest:
                         _wb_ground = (_wb_ground + "\n\n" + _digest) if _wb_ground else _digest
                 _wb_hold: list = []
+                # 2026-11-22 (CLM audit, c12 A/B): the PAIR path (gather + compute in one
+                # response) was built and gated on BROWSER code nodes only; flag-wide it also
+                # took coding nodes (c12 on: 2/3, reply median 128 s vs 59 s off). A non-browser
+                # code node keeps the single-script path the TG-7 full re-run measured.
+                _wb_pair = _two_call_on() and _wb_browser
                 try:
                     from backend.agent.decision_engine import scope_now as _scope_now
                     _wb_scope = _scope_now()    # C4: captured HERE, on the node thread
@@ -2668,7 +2739,7 @@ class DerNodeMixin:
                     ground=_wb_ground,
                     memory_facts="",      # D3: in code mode the MEMORY text is the `memory` variable only
                     tools=(_wb_slim_run_python_pair(_full_tools)
-                           if _two_call_on() and not _see_gather_on()
+                           if _wb_pair and not _see_gather_on()
                            else _wb_slim_run_python(_full_tools)),
                     # the tagged generate: a code node's model calls read "code_node" in the
                     # baseline rows (the closure tags every other node call "node")
@@ -2678,9 +2749,15 @@ class DerNodeMixin:
                     # Round 3 R1: the TOOL MODEL writes and runs the code; the
                     # Brain briefs (plan time) and steps in once on escalation.
                     role="tool_execution", helper_role=None, max_tokens=1024,
-                    max_calls=(2 if _see_gather_on() else (1 if _two_call_on() else 6)),
+                    # Round 6 (2026-11-21): the pair path used max_calls=1, so a single
+                    # failed check closed the node success=False with no retry (g01 r1:
+                    # the script used a relative author URL and the node never recovered).
+                    # Give it ONE corrected retry. Passing runs still close on their first
+                    # check, so calls/prompt/reply medians are unchanged; only failing runs
+                    # pay the extra call. _see_gather already uses 2 for the same reason.
+                    max_calls=(2 if (_see_gather_on() or _wb_pair) else 6),
                     system=(_WB_SEE_GATHER_SYSTEM if _see_gather_on() else
-                            _WB_TWO_CALL_SYSTEM if _two_call_on() else
+                            _WB_TWO_CALL_SYSTEM if _wb_pair else
                             _WB_SYSTEM + (_WB_TOOLS_NOTE + _wb_tool_lines(_full_tools, _wb_need)
                                           if _wb_need else "")
                             + (_WB_BROWSER_NOTE if _wb_browser else "")

@@ -12,6 +12,66 @@ Method for every wave: the measured loop (app-testing skill, Mode A). Backend
 detached, `/health` 200, tool model loaded, quiet machine, targeted tests only,
 same-conditions A/B, numbers named with their cohort.
 
+> ## AUDIT 2026-11-22 - status of every open item (MCM pin_b836f1e749a4, pin_1a2c002d8889)
+> The 2026-11-22 handoff called the spec complete; it was not. Only the Round 6 Workbench
+> gate (browser_goal + browser_data, cloud) had cleared. State after the audit:
+> - **Already done, boxes were stale:** TG-0 (Q-A/Q-B/Q-C answered, requirements "Owner
+>   answers 2026-11-11 - locked"); T0.2 (Q3 provider facts stay open -> T5.3 records
+>   them now); T0.3; T2.1-T2.4, T2.6 (built; CT-2/CT-3/CT-5/CT-8 in
+>   test_view_offload_gate_contract.py, test_clm_record_expand_contract.py); T2.7
+>   (x01-x05; x05 redesigned in adeb6d3b - direct path, the paste/timeout problem is gone;
+>   passes 11-15 both arms); T2.8 table (Wave 2-4 results 2026-11-15 below); T3.1-T3.3
+>   (built, CT-10 in test_clm_pin_provenance_contract.py); T4.1-T4.3 (BT-4 in
+>   test_clm_zones_ledger_behavior.py); T7.0b on LFM3-1.7B (2026-11-18,
+>   evals/results/t70b-LFM3-1.7B-Q8_0-20261118-201646.json: level 0 20/20, level 1 12/20).
+> - **Built 2026-11-22 (each guard fails on the committed code, proven by copy-back):**
+>   T4.4 claims header + L1 live writer/reader + `thread:` expand
+>   (test_clm_landmark_header_l1_contract.py); `scripts/validate_view_replay.py` (TG-2 step 1)
+>   and two node-loop blind-drop gaps it found - the closing call skipped the shrink, and one
+>   wide model turn could exceed the budget as the never-leaving newest unit
+>   (test_clm_replay_findings_contract.py; replay 151 nodes: 6 over-budget calls at 8,192 ->
+>   0); CLM-2 AC4 named cases `pruned` (tool_results_gone tombstone) and `forgotten`;
+>   BT-1 + BT-3 (behavioral/test_clm_pressure_restretch_behavior.py; without the hooks the
+>   router cut 21 of 25 calls); T5.1 x06_timeframe_recall + x07_domain_recall; T5.2 one
+>   counter report (evals/context_report.py --all --api, rows from clm_baseline.record_event);
+>   T5.3 cached tokens + prefix_hash/node_key/asides + scripts/clm_baseline_report.py
+>   "edit cost" (test_clm_counter_report_contract.py); the direct-path offload after TG-2
+>   (Q-C: one `history:<conversation>` slip + expand; test_clm_direct_history_offload_contract.py).
+> - **T7.0b on LFM2.5-2.6B (2026-11-22, t70b-LFM2.5-2.6B-QAD-Q4_0-20261122-114732.json):**
+>   level 0 12/20, level 1 14/20. ALL 14 misses are "Empty response": the model reasons
+>   regardless of `enable_thinking: false` and of llama-server `--reasoning off`, reaches the
+>   1,024-token limit inside reasoning_content (finish_reason=length) and never writes
+>   content. Not a level effect. **Default start level = 0** (from LFM3, the model whose
+>   misses are real). LFM2.5-2.6B-QAD is not a usable tool model at this budget.
+> - **Pre-existing failures (baselined on HEAD, not caused here):**
+>   behavioral/test_context_engineering.py x3 - the stand-in kernel has no `_mcm_orch`.
+> - **Gates still to run:** TG-2 cloud + small model, the direct-path offload live, the
+>   Round 6 full gate (browser b01-b10 + re-checks, 5 reps) and its small-model arm, TG-4, TG-5.
+>
+> ### VERDICTS 2026-11-22 (late) - the spec is NOT finished
+> - **TG-2 cloud arm** (wb_gate-20261122-115101, opencodego / deepseek-v4.1-flash, cohort
+>   tg2 21 + context x01-x07, IRIS_CLM_OFFLOAD off/on, 1 rep each): off 23/28, on 24/28.
+>   Fails off: c12 x04 x05 x06 x07; on: x03 x04 x05 x06. Coding/research/memory counts not
+>   lower with the flag on. x06 is INVALID in both arms (the web-off gate bug below).
+> - **TG-2 small arm** (wb_gate-20261122-170743, LFM3-1.7B-Q8_0 on :8091, 8,192 tokens/slot,
+>   x01-x07, off/on x2): 5/14 both arms (x01 2/2, x02 2/2, x05 1/2 each; x03 x04 x07 0/2;
+>   x06 invalid). CLM edits on the on arm: OFFLOADED 9, RESTRETCHED 0, PREMATURE_EVICTION 0;
+>   off arm 0 (the flag works). Offload changes no pass and breaks none.
+> - **TG-2 is NOT closed:** the blind-drop count per arm (evals/context_report.py) and the
+>   standards row per arm are not read yet, and x06 must be re-run in both arms.
+>   `IRIS_CLM_OFFLOAD` stays OFF until then (CLAUDE.md step 8: written here, 2026-11-22).
+> - **Found and fixed during TG-2:** the internet gate (kernel/turn.py) refused a memory
+>   question on the Oracle web_intent guess (yes 0.844 to "which auth provider did we pick
+>   FIRST?"); now `_web_off_reply` refuses only an explicit web ask. Live: x06 PASS
+>   (evals/results/20261122-182316.json, ask 37.3 s, standards no regression). Guard
+>   test_web_off_gate_explicit_only_contract.py.
+> - **Coding A/B after the WRITE+RUN class fix** (wb_gate-20261122-164917, Workbench off/on
+>   x3): 24/24. reply_s median off/on c08 28.2/35.3, c10 19.3/27.1, c12 24.5/38.9,
+>   c15 49.5/25.8 (standards c08 33.6, c10 15.9, c12 22.4, c15 50.5, set on Mercury at
+>   1-3 s a call; deepseek is 3-7 s). The c10 repair step is gone.
+> - **Still open:** direct-path offload live (x05 off/on), Round 6 full gate + small arm,
+>   TG-4, TG-5.
+
 > ### GATE G-KERNEL (before Wave 1)
 > The kernel context domain is extracted (`docs/architecture/KERNEL_DECOMPOSITION.md`
 > Stage A guards + move M3 "context"). CLM code is written in `context_view.py`,

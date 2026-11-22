@@ -142,3 +142,19 @@ CLM's baseline, view parity and offload results are in
 [`specs/clm-memory/tasks.md`](../../specs/clm-memory/tasks.md) (Waves 0-6, TG-0 .. TG-6).
 The Workbench's A/B results are in [`WORKBENCH.md`](./WORKBENCH.md#3-measured-results).
 
+## 3. Status (2026-11-22) - the spec is not finished
+
+- **Built and guarded:** Waves 0-6 code (view, gauge, offload gate, expand by reference with
+  the named failure cases, the three events, pins with provenance, zones, the dead-end
+  ledger, re-stretch, the landmark header, the counter report, the direct-path offload).
+- **TG-2:** cloud arm off 23/28, on 24/28; small-model arm (LFM3-1.7B, 8,192 tokens) 5/14
+  both arms, 9 `OFFLOADED` on the on arm, 0 `RESTRETCHED`. Offload changes no pass and
+  breaks none. Not closed: blind drops per arm, the standards row per arm and an x06
+  re-run are still to read. **`IRIS_CLM_OFFLOAD` stays off** until TG-2 closes.
+- **Fixed on the way (2026-11-22):** the internet gate no longer refuses a memory question
+  on the Oracle's `web_intent` guess (`kernel/turn.py:_web_off_reply`; x06 passes live);
+  DER links in the shared link store are named `node:<session>:<step>`, written once
+  (unique index `idx_pin_links_unique`) and bounded (`der_links.DER_LINKS_MAX_ROWS`).
+- **Still to run:** the direct-path offload live, the Round 6 full gate and its small-model
+  arm, TG-4, TG-5. The verdicts are kept in the tasks status block.
+

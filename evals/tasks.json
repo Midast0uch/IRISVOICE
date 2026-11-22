@@ -6917,6 +6917,62 @@
       }
     },
     {
+      "id": "x06_timeframe_recall",
+      "group": "context",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 600,
+      "seed_timeout_s": 300,
+      "seed_gap_s": 60,
+      "seed_prompts": [
+        "Decision log for project quill-{run}: we picked {fact} as the auth provider. Just acknowledge it briefly.",
+        "Update for project quill-{run}: we dropped the earlier choice and switched the auth provider to {fact2}. Just acknowledge it briefly."
+      ],
+      "prompt": "For project quill-{run}, which auth provider did we pick FIRST, before the switch? Reply with the provider name only.",
+      "reply_patterns": [
+        "{fact}"
+      ],
+      "reject_patterns": [
+        "{fact2}"
+      ],
+      "fact": "keyrock-{run}",
+      "fact2": "zitadel-{run}",
+      "pressure": {
+        "reads": 0,
+        "read_chars": 0,
+        "kind": "time_frame",
+        "needs": "two earlier threads, the older one is the answer (CLM-7 AC2)"
+      }
+    },
+    {
+      "id": "x07_domain_recall",
+      "group": "context",
+      "mode": "personal",
+      "path": "text_message",
+      "timeout_s": 600,
+      "seed_timeout_s": 300,
+      "seed_gap_s": 5,
+      "seed_prompts": [
+        "For the quill-{run} postgres database pipeline, the retention class is {fact}. Just acknowledge it briefly.",
+        "For the quill-{run} frontend web app sessions, the retention class is {fact2}. Just acknowledge it briefly."
+      ],
+      "prompt": "What retention class did I set for the quill-{run} database pipeline? Reply with the class only.",
+      "reply_patterns": [
+        "{fact}"
+      ],
+      "reject_patterns": [
+        "{fact2}"
+      ],
+      "fact": "amber-{run}",
+      "fact2": "cobalt-{run}",
+      "pressure": {
+        "reads": 0,
+        "read_chars": 0,
+        "kind": "domain",
+        "needs": "the same setting in two domains (data vs web), the data one is the answer (CLM-7 AC2)"
+      }
+    },
+    {
       "id": "d01_einstein_quote_count",
       "group": "browser_data",
       "mode": "personal",

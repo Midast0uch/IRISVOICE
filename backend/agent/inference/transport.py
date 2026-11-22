@@ -500,11 +500,25 @@ def _extract_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
         return None
     if _total <= 0:
         return None
-    return {
+    out = {
         "prompt_tokens": _prompt,
         "completion_tokens": _completion,
         "total_tokens": _total,
     }
+    # CLM-10 AC3 (T5.3): the prompt tokens the server took from its cache, when it says
+    # (OpenAI prompt_tokens_details.cached_tokens, DeepSeek prompt_cache_hit_tokens,
+    # llama.cpp timings.cache_n). Absent = the provider does not report it - never 0.
+    try:
+        _details = _usage.get("prompt_tokens_details")
+        _timings = payload.get("timings") if isinstance(payload.get("timings"), dict) else {}
+        for _v in ((_details or {}).get("cached_tokens") if isinstance(_details, dict) else None,
+                   _usage.get("prompt_cache_hit_tokens"), _timings.get("cache_n")):
+            if _v is not None:
+                out["cached_tokens"] = int(_v)
+                break
+    except (TypeError, ValueError):
+        pass
+    return out
 
 
 def _extract_ollama_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:

@@ -118,6 +118,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_events_domain ON memory_events(topic_domai
 -- turns). On (family, label) alone the read took every row of the label and sorted it - 12.4k recall rows, 156 s
 -- cold on the hard disk (2026-10-26, [memory_snapshot] recall_events). With ts it reads only what it keeps.
 CREATE INDEX IF NOT EXISTS idx_memory_events_label_ts ON memory_events(family, label, ts);
+CREATE INDEX IF NOT EXISTS idx_memory_events_label_thread ON memory_events(label, thread_id);
 """
 
 
@@ -184,6 +185,11 @@ def ensure_schema(conn) -> None:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_domain ON memory_events(topic_domain)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_label_ts ON memory_events(family, label, ts)")
+            # chunk_decay._outcome_multipliers (label IN (HELPED, MISLED) GROUP BY thread_id) runs
+            # on EVERY chunk recall; without a label-first index it scanned all 106k events by
+            # thread (164 ms warm per DER step, 2026-11-22). Covering: reads ~9.8k index entries.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_events_label_thread "
+                         "ON memory_events(label, thread_id)")
             conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[memory_events] idx_memory_events_thread_ts not created: %s", exc)

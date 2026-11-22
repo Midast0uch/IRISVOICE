@@ -17,6 +17,46 @@ from backend.agent.kernel.base import (
     logger,
 )
 from backend.agent.inference import clm_baseline as _clm_baseline
+
+logger = __import__("logging").getLogger(__name__)
+
+
+def _clm_history_slip(kernel, dropped: int, session_id) -> Optional[tuple]:
+    """CLM direct-path offload (requirements "Owner answers" Q-C: after TG-2): the
+    history messages the trim takes out leave ONE placeholder slip that names the
+    chat record, ``history:<conversation>``, so recall_memory(expand=...) returns
+    them. (message, Ref) or None: flag off, nothing dropped, or no conversation id
+    (no address - the old cut stands). Emits OFFLOADED once per assembly. Never raises.
+    """
+    import os
+
+    if os.environ.get("IRIS_CLM_OFFLOAD") != "1" or dropped <= 0:
+        return None
+    conv = str(getattr(kernel, "conversation_id", "") or "")
+    if not conv:
+        return None
+    try:
+        from backend.agent.context_view import Block, Ref, render_placeholder
+
+        ref = Ref(kind="history", id=conv)
+        line = render_placeholder(
+            Block(block_id="", ref=ref, kind=_HISTORY, messages=[], tokens=0, ts=time.time()),
+            f"{dropped} earlier message(s) left the window; expand=history:{conv} returns "
+            "the conversation from its start", domain="earlier turns")
+    except ValueError as exc:   # an id a placeholder cannot carry: the old cut stands, logged
+        logger.info("[clm] direct history slip not placeable conv=%s: %s", conv, exc)
+        return None
+    try:
+        from backend.agent.event_emit import emit
+
+        emit(None, "OFFLOADED", thread_id=session_id or conv, conversation_id=conv,
+             payload={"refs": [f"history:{conv}"], "units": dropped, "by": "harness",
+                      "trigger": "direct_history"})
+        _clm_baseline.record_event(conv, "offloaded", actor="harness",
+                                   trigger="direct_history", units=dropped)
+    except Exception as exc:  # noqa: BLE001 - an event never changes the view
+        logger.warning("[clm] direct history OFFLOADED not emitted conv=%s: %r", conv, exc)
+    return {"role": "system", "content": line}, ref
 from backend.agent.context_view import (
     CURRENT_USER as _CURRENT_USER,
     HISTORY as _HISTORY,
@@ -1138,6 +1178,7 @@ class ContextMixin:
             and history[-1].get("content") == text
         ):
             history = history[:-1]
+        _n_hist_full = len(history)   # CLM direct-path offload: what the trims start from
         # Both trims pop from the FRONT, so a copy and two lengths name
         # exactly what left (CLM-0 baseline only).
         _clm_hist0 = list(history) if _clm_on else None
@@ -1269,6 +1310,9 @@ class ContextMixin:
                 refs=tuple(_chunk_refs),
                 ref_reason="; ".join(dict.fromkeys(_chunk_gaps)),
             )
+            _slip = _clm_history_slip(self, _n_hist_full - len(history_block), session_id)
+            if _slip is not None:
+                _view.admit(_HISTORY, [_slip[0]], ref=_slip[1])
             _view.admit(
                 _HISTORY,
                 history_block,

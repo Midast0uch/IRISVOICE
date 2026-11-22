@@ -130,8 +130,9 @@ def test_failed_like_links_to_prior_same_class_failures():
     row = conn.execute(
         "SELECT source_id, target_id, relationship FROM mycelium_pin_links"
     ).fetchone()
-    assert row[0] == "node:s3"
-    assert row[1] == "node:s1"
+    # 2026-11-22: node ids are session-scoped (node:<session>:<step>, der_links._node_id)
+    assert row[0] == "node:sess1:s3"
+    assert row[1] == "node:sess1:s1"
     assert row[2] == "failed_like"
 
 
@@ -149,4 +150,4 @@ def test_failed_like_walk_via_write_node_links():
         "WHERE relationship='failed_like'"
     ).fetchall()
     targets = sorted(r[0] for r in rows)
-    assert targets == ["node:s1"]
+    assert targets == ["node:sess2:s1"]   # session-scoped id (2026-11-22)

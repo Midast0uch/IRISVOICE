@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -206,6 +207,19 @@ class TaskLifecycle:
         return cls(**{k: v for k, v in data.items() if k in _known})
 
 
+# 2026-11-22 (CLM audit, coding cohort under its standards): ONE file holds every
+# conversation's ledger and it was rewritten WHOLE, indented, inline, on every step
+# finish - 22.4 MB (31,212 attempts, 9,504 tasks) and the top frame of the step loop
+# in 13 of 33 stack samples of _der_post_step. Now: a bounded file (the newest
+# _PERSIST_TASKS_MAX tasks), compact JSON, written on ONE ordered lane, coalesced per
+# instance; a new instance waits (bounded) for a queued write of the same file before
+# it loads, so read-after-write in one process still holds.
+_PERSIST_TASKS_MAX = 1000
+_LOAD_WAIT_S = 5.0
+_pending_lock = threading.Lock()
+_pending: Dict[str, threading.Event] = {}   # data file -> set when its queued write landed
+
+
 class ExecutionLedger:
     """Per-conversation semantic authority for attempts, failures, and lifecycle.
 
@@ -220,10 +234,16 @@ class ExecutionLedger:
         self._failures: List[FailureEvidence] = []             # append-only
         self._tasks: Dict[str, TaskLifecycle] = {}             # task_id -> lifecycle
         self._storage_path: Optional[Path] = None
+        self._queued = False
         if storage_path:
             self._storage_path = Path(storage_path)
             self._storage_path.mkdir(parents=True, exist_ok=True)
+            with _pending_lock:
+                _ev = _pending.get(str(self._data_file()))
+            if _ev is not None:
+                _ev.wait(_LOAD_WAIT_S)
             self._load()
+            self._trim()
 
     # ── attempts ─────────────────────────────────────────────────────────
     def open_attempt(self, task_id: str, step_id: str,
@@ -353,19 +373,61 @@ class ExecutionLedger:
             except Exception:
                 pass
             return True  # in-memory only — nothing to persist
+        self._trim()
+        key = str(self._data_file())
+        with _pending_lock:
+            if self._queued:
+                return True          # this instance's queued write will serialize the newest state
+            ev = threading.Event()
+            _pending[key] = ev
+            self._queued = True
         try:
+            from backend.utils.durability_queue import lane
+
+            if lane("der_ledger").submit("ledger_persist", self._write_now, ev):
+                return True
+        except Exception:  # noqa: BLE001 - no lane: write here (the old path)
+            pass
+        return self._write_now(ev)
+
+    def _trim(self) -> None:
+        """Keep the newest _PERSIST_TASKS_MAX tasks and only their attempts/failures."""
+        if len(self._tasks) <= _PERSIST_TASKS_MAX:
+            return
+        keep = list(self._tasks)[-_PERSIST_TASKS_MAX:]
+        kept = set(keep)
+        self._tasks = {t: self._tasks[t] for t in keep}
+        self._attempts = {k: a for k, a in self._attempts.items() if a.task_id in kept}
+        self._failures = [f for f in self._failures if f.task_id in kept]
+
+    def _write_now(self, ev: Optional[threading.Event] = None) -> bool:
+        """Serialize and write atomically (runs on the der_ledger lane). Never raises."""
+        with _pending_lock:
+            self._queued = False
+        try:
+            attempts, failures, tasks = (list(self._attempts.values()), list(self._failures),
+                                         list(self._tasks.items()))
             payload = {
                 "conversation_id": self.conversation_id,
-                "attempts": [a.to_dict() for a in self._attempts.values()],
-                "failures": [f.to_dict() for f in self._failures],
-                "tasks": {tid: t.to_dict() for tid, t in self._tasks.items()},
+                "attempts": [a.to_dict() for a in attempts],
+                "failures": [f.to_dict() for f in failures],
+                "tasks": {tid: t.to_dict() for tid, t in tasks},
             }
             _tmp = self._data_file().with_suffix(".json.tmp")
-            _tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                            encoding="utf-8")
             os.replace(_tmp, self._data_file())
             return True
         except Exception:
+            try:
+                from backend.agent import write_counters as _wc
+                _wc.bump("ledger.persist_failed")
+            except Exception:
+                pass
             return False
+        finally:
+            if ev is not None:
+                ev.set()
 
     def _load(self) -> None:
         try:

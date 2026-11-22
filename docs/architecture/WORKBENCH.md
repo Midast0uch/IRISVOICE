@@ -250,7 +250,7 @@ slimmed to `code` + `purpose` (`_wb_slim_run_python`).
 
 | Flag | Read at | State |
 |---|---|---|
-| `IRIS_WORKBENCH=1` | `kernel/der/node.py:_wb_on`, `kernel/planning.py:_planner_brief_on` | **Off.** Flag off: node and planner prompt are byte for byte today's (parity suites). After TG-7 v2 stage 1 the verdict was "stays OFF until the owner decides on the failing rows" (section 3) |
+| `IRIS_WORKBENCH=1` | `kernel/der/node.py:_wb_on`, `kernel/planning.py:_planner_brief_on` | **On in the app's `.env`** (and `.env.example`) since the Round 6 browser_goal + browser_data cloud gate cleared; the code default is still off. Flag off: node and planner prompt are byte for byte the old ones (parity suites). Coding cost with it on: section 3, "Coding A/B 2026-11-22". The Round 6 full gate (b01-b10 + re-checks) and its small-model arm are still to run |
 | `IRIS_WB_CONFINE=1` | set by the client for a personal-mode worker | Internal; not a user flag |
 | `IRIS_CLM_OFFLOAD`, `IRIS_CLM_BASELINE`, `IRIS_CLM_DUMP_DIR` | [`CLM.md`](./CLM.md) section 1.5 | |
 
@@ -397,6 +397,23 @@ hidden reasoning (4,846-5,988 tokens) was cut and resent up to 4 times, each res
 generating from the start; the repair budget is now 16,384 (one send). Not a Workbench
 fault: x04 1/5 a dollars-vs-cents model error; x05 1/5 a WebSocket handshake timeout.
 
+### Coding A/B 2026-11-22 (wb_gate-20261122-164917, c08 c10 c12 c15, off/on x3)
+
+After the tool-class fix (a WRITE step keeps the RUN tools, `tool_decision.py`; guard
+`test_tool_choice_class_write_keeps_run_contract.py`): **24/24 pass**, and the c10 repair
+step ("no command-execution tool available") is gone. reply_s median off / on:
+
+| task | off | on | standard |
+|---|---|---|---|
+| c08 | 28.2 | 35.3 | 33.6 |
+| c10 | 19.3 | 27.1 | 15.9 |
+| c12 | 24.5 | 38.9 | 22.4 |
+| c15 | 49.5 | 25.8 | 50.5 |
+
+The standards were set on Mercury (1-3 s a call); deepseek-v4.1-flash takes 3-7 s a call.
+With the Workbench on, c10 and c12 make more tool-model calls (the slowest c12 run: 7 calls
+in one step, edit then run the tests, ~3 s each) - a per-call cost, not a stall. c15 is 24 s
+faster. Not closed: the Round 6 full gate and its small-model arm.
 
 ---
 

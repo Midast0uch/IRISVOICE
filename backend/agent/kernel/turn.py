@@ -41,6 +41,36 @@ _LIVE_BROWSER_RE = re.compile(
     r"\b(?:live|in-app)\s+browser\b|\bin\s+the\s+browser\b", re.IGNORECASE,
 )
 
+_WEB_OFF_REPLY = (
+    "Web search is currently disabled. You can toggle internet "
+    "access on via the dashboard (the web button) to enable "
+    "web features."
+)
+
+
+def _web_off_reply(text: str, web_on: bool) -> Optional[str]:
+    """The internet-access gate: the canned reply, or None to go on with the turn.
+
+    It answers ONLY an EXPLICIT web request (the trigger phrases, or the live
+    browser named) while the web is off. The Oracle's web_intent verdict ("this
+    goal needs the web") is a different question and never refuses a turn:
+    2026-11-22 it said yes (0.844) to "which auth provider did we pick FIRST?" - a
+    question about earlier chats - and x06_timeframe_recall failed 4/4 on this
+    reply. A goal with no explicit ask goes on to the turn without web tools; an
+    empty result still advises the toggle (_empty_der_fallback_message)."""
+    if web_on:
+        return None
+    try:
+        from backend.agent.explorer import _is_web_intent
+        explicit = _is_web_intent(text or "", engine=None)   # keywords only
+    except Exception as exc:  # noqa: BLE001 - a failed check is "no ask": the turn goes on
+        logger.warning("[AgentKernel] web-off gate check failed, turn goes on: %r", exc)
+        explicit = False
+    if explicit or _LIVE_BROWSER_RE.search(text or ""):
+        return _WEB_OFF_REPLY
+    return None
+
+
 _TURN_END_FOLD_WAIT_S = 20.0
 
 def _turn_end_settle(owner) -> None:
@@ -442,6 +472,12 @@ class TurnMixin:
         # SourceRegistry._extract_topics. None keeps the historical behaviour,
         # so no existing caller changes.
         _tools = self._get_openai_tools(text) if tools is not False else []
+        # CLM direct-path offload: a set-aside history slip is expanded with
+        # recall_memory(expand=history:<id>) - the node menu's builder adds expand.
+        if _tools and __import__("os").environ.get("IRIS_CLM_OFFLOAD") == "1":
+            from backend.agent.kernel.der.node import _clm_recall_menu
+
+            _tools = _clm_recall_menu(_tools, self._get_openai_tools())
 
         # Local dispatch wrapper â€” routes to the correct backend provider and
         # returns (response_text, thinking_text, tool_calls).
@@ -1733,14 +1769,9 @@ class TurnMixin:
         # internet off the node menu has no browser tool, and the turn spent
         # 90 s on curl via an unknown run_command, memory lookups and grafts
         # (live conv-1574, 2026-10-12).
-        if not get_global_internet_access() and (
-            self._is_web_search_request(text) or _LIVE_BROWSER_RE.search(text or "")
-        ):
-            return (
-                "Web search is currently disabled. You can toggle internet "
-                "access on via the dashboard (the web button) to enable "
-                "web features."
-            )
+        _web_off = _web_off_reply(text, get_global_internet_access())
+        if _web_off:
+            return _web_off
 
         # â”€â”€ Thinking feedback: emit a filler utterance so the user hears â”€â”€
         # audio feedback while the agent is "thinking" (DER/ReAct path).
@@ -2036,11 +2067,21 @@ class TurnMixin:
                         )
                         # T14: beats 2..N admit as pending narration with
                         # pre-synthesized buffers (degrades to on-admission).
-                        self._admit_planned_beats(
-                            _plan,
-                            turn_id=getattr(self, "_current_turn_id", None),
-                            session_id=session_id or self.session_id,
-                        )
+                        # ON A LANE (2026-11-22): the pre-synthesis waits for the
+                        # TTS worker (~1.8 s per held beat), and it ran HERE, on
+                        # the turn thread, before the task card and the first DER
+                        # step (c10 timeline: plan done 19.28 -> card 21.10).
+                        # These beats speak later; this reply never needs them.
+                        from backend.utils.durability_queue import lane as _lane
+
+                        _beats_args = (_plan,)
+                        _beats_kw = {"turn_id": getattr(self, "_current_turn_id", None),
+                                     "session_id": session_id or self.session_id}
+                        if not _lane("narration_presynth").submit(
+                                "planned_beats",
+                                lambda: self._admit_planned_beats(*_beats_args, **_beats_kw)):
+                            logger.info("[AgentKernel] planned beats not queued (lane full): "
+                                        "on-admission synthesis instead")
                     except Exception:
                         pass
                     try:

@@ -308,6 +308,10 @@ def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
     block. Emits RESTRETCHED for a successful expand. Never raises."""
     ref = str(params.get("expand") or "").strip()
     kind, _, rid = ref.partition(":")
+    if kind == "thread" and rid:
+        return _expand_thread(bridge, session_id, ref, rid, params)
+    if kind == "history" and rid:
+        return _expand_history(bridge, session_id, ref, rid, params)
     if kind != "tool_result" or not rid:
         return {"success": False, "ref": ref, "case": "malformed_ref",
                 "error": "expand takes a reference such as tool_result:<id>"}
@@ -322,10 +326,18 @@ def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
     except Exception as exc:  # noqa: BLE001 - a named failure, not an empty block
         logger.warning("[recall_memory] expand %s failed: %r", ref, exc)
         return {"success": False, "ref": ref, "case": "unreadable", "error": str(exc)[:200]}
+    if row and _strand_forgotten(bridge, row.get("conversation_id")):
+        # CLM-2 edge case: a forgotten strand's result never comes back by reference.
+        return {"success": False, "ref": ref, "case": "forgotten",
+                "error": "you told IRIS to forget what it learned in that conversation"}
     if not row:
+        gone = _cs.tool_result_gone(rid)
+        if gone:
+            return {"success": False, "ref": ref, "case": "pruned",
+                    "error": "the record's size budget removed this result (oldest first)"}
         return {"success": False, "ref": ref, "case": "not_found",
                 "error": "no stored result under this reference (deleted with its "
-                         "conversation, evicted, or never written)"}
+                         "conversation, or never written)"}
     content = row.get("content") or ""
     page = content[offset:offset + _EXPAND_PAGE_CHARS]
     nxt = offset + len(page)
@@ -335,6 +347,10 @@ def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
         conv = getattr(bridge, "_active_conversation_id", {}).get(session_id)
         emit(None, "RESTRETCHED", thread_id=session_id or None, conversation_id=conv or None,
              payload={"ref": ref, "tool": row.get("tool"), "offset": offset, "chars": len(page)})
+        from backend.agent.inference import clm_baseline as _cb
+
+        _cb.record_event(conv or session_id or "", "restretched", actor="model",
+                         trigger="expand", chars=len(page))
     except Exception:  # noqa: BLE001 - an event never changes the result
         pass
     out = {"success": True, "ref": ref, "tool": row.get("tool"), "target": row.get("target"),
@@ -344,6 +360,106 @@ def _expand_tool_result(bridge, session_id: str, params: dict) -> dict:
     if row.get("cut"):
         out["note"] = "the stored text was cut at the record's size limit"
     return out
+
+
+def _memory_conn(bridge):
+    """The app memory connection this bridge reads (None when memory is off)."""
+    _mi = getattr(bridge, "_memory_interface", None)
+    if _mi is None:
+        from backend.memory import get_memory_interface
+
+        _mi = get_memory_interface()
+    return getattr(getattr(_mi, "episodic", None), "db", None)
+
+
+def _strand_forgotten(bridge, conversation_id) -> bool:
+    """Is this conversation a strand the user told IRIS to forget (and did not undo)?
+    corrections.forgotten_strands is the recall chokepoint's own reader; it never raises.
+    No memory connection = not known as forgotten (logged)."""
+    if not conversation_id:
+        return False
+    try:
+        conn = _memory_conn(bridge)
+        if conn is None:
+            return False
+        from backend.memory.corrections import forgotten_strands
+
+        return str(conversation_id) in forgotten_strands(conn)
+    except Exception as exc:  # noqa: BLE001 - recall must still answer
+        logger.warning("[recall_memory] forget check failed conv=%s: %r", conversation_id, exc)
+        return False
+
+
+def _expand_history(bridge, session_id: str, ref: str, conv: str, params: dict) -> dict:
+    """recall_memory(expand="history:<conversation>"[, offset]) -> one page of that
+    conversation's messages from the chat record, oldest first (the direct path's
+    set-aside turns). offset counts messages. A forgotten strand: `forgotten`.
+    Emits RESTRETCHED on success. Never raises."""
+    try:
+        offset = max(0, int(params.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    if _strand_forgotten(bridge, conv):
+        return {"success": False, "ref": ref, "case": "forgotten",
+                "error": "you told IRIS to forget what it learned in that conversation"}
+    from backend import conversation_store as _cs
+
+    page = _cs.history_page(conv, offset)
+    if page.get("case"):
+        return {"success": False, "ref": ref, "case": page["case"],
+                "error": "no message of this conversation at that position (deleted, or past its end)"}
+    try:
+        from backend.agent.event_emit import emit
+        from backend.agent.inference import clm_baseline as _cb
+
+        emit(None, "RESTRETCHED", thread_id=session_id or None, conversation_id=conv,
+             payload={"ref": ref, "offset": offset, "chars": len(page["content"])})
+        _cb.record_event(conv, "restretched", actor="model", trigger="expand_history",
+                         chars=len(page["content"]))
+    except Exception:  # noqa: BLE001 - an event never changes the result
+        pass
+    return {"success": True, "ref": ref, **page}
+
+
+def _expand_thread(bridge, session_id: str, ref: str, tid: str, params: dict) -> dict:
+    """recall_memory(expand="thread:<id>"[, offset]) -> one page of that thread's
+    chunks in time order (CLM-5 AC7), or a NAMED failure. offset counts chunks.
+    Emits RESTRETCHED on success. Never raises."""
+    try:
+        offset = max(0, int(params.get("offset") or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    if _strand_forgotten(bridge, tid):
+        return {"success": False, "ref": ref, "case": "forgotten",
+                "error": "you told IRIS to forget what it learned in that conversation"}
+    try:
+        from backend.memory import levels
+
+        conn = _memory_conn(bridge)
+        if conn is None:
+            return {"success": False, "ref": ref, "case": "unreadable",
+                    "error": "memory is not available"}
+        page = levels.thread_page(conn, tid, offset)
+    except Exception as exc:  # noqa: BLE001 - a named failure, not an empty block
+        logger.warning("[recall_memory] expand %s failed: %r", ref, exc)
+        return {"success": False, "ref": ref, "case": "unreadable", "error": str(exc)[:200]}
+    if page.get("case"):
+        return {"success": False, "ref": ref, "case": "not_found",
+                "error": "no chunk of this thread is left at that position (forgotten, "
+                         "deleted, or past its end)"}
+    try:
+        from backend.agent.event_emit import emit
+
+        conv = getattr(bridge, "_active_conversation_id", {}).get(session_id)
+        emit(None, "RESTRETCHED", thread_id=session_id or None, conversation_id=conv or None,
+             payload={"ref": ref, "offset": offset, "chars": len(page["content"])})
+        from backend.agent.inference import clm_baseline as _cb
+
+        _cb.record_event(conv or session_id or "", "restretched", actor="model",
+                         trigger="expand_thread", chars=len(page["content"]))
+    except Exception:  # noqa: BLE001 - an event never changes the result
+        pass
+    return {"success": True, "ref": ref, **page}
 
 
 # ── CLM-11 Workbench: run_python and the `wb:` expand ─────────────────────────
@@ -1035,7 +1151,7 @@ def _is_tool_result_envelope(content: str) -> bool:
 
 def _recall_memory_payload(episodic, query: str, since=None, until=None,
                            tool_name=None, limit: int = 5,
-                           min_score: float = 0.40) -> Dict:
+                           min_score: float = 0.40, exclude_thread: str = "") -> Dict:
     """REQ-13 AC1: the three memory layers for one `recall_memory` call.
 
     chunks  - episodic text, bounded by the time/tool filters
@@ -1081,8 +1197,43 @@ def _recall_memory_payload(episodic, query: str, since=None, until=None,
             pins.append(entry)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[ToolBridge] recall_memory pins failed: %s", exc)
-    return {"success": True, "chunks": chunks, "chain": chain,
-            "episodes": episodes, "pins": pins, "results": episodes}
+    out = {"success": True, "chunks": chunks, "chain": chain,
+           "episodes": episodes, "pins": pins, "results": episodes}
+    if os.environ.get("IRIS_CLM_OFFLOAD") == "1":
+        out["threads"] = _thread_placeholders(episodic, query, exclude_thread)
+    return out
+
+
+def _thread_placeholders(episodic, query: str, exclude_thread: str = "") -> List[str]:
+    """CLM-5 AC7 (T4.4): a whole earlier thread that matches the question, as ONE
+    placeholder line per thread from its L1 row; expand=thread:<id> returns its
+    chunks. [] when none matches (never padded). Never raises."""
+    try:
+        from backend.agent.context_view import Block, Ref, render_placeholder
+        from backend.memory import levels
+
+        from backend.memory.corrections import forgotten_strands
+
+        vec = episodic._embed.encode_with_meta(query).vector
+        gone = forgotten_strands(episodic.db)        # a forgotten strand is never offered
+        lines = []
+        for m in levels.thread_matches(episodic.db, vec, exclude=exclude_thread,
+                                       limit=levels.THREAD_MATCH_MAX + len(gone)):
+            if m["thread_id"] in gone:
+                continue
+            if len(lines) >= levels.THREAD_MATCH_MAX:
+                break
+            try:
+                blk = Block(block_id="", ref=Ref(kind="thread", id=str(m["thread_id"])),
+                            kind="thread", messages=[], tokens=0, ts=float(m["last_ts"] or 0))
+                lines.append(render_placeholder(
+                    blk, f"{m['n_chunks']} chunks, match {m['score']}", domain="earlier thread"))
+            except ValueError as exc:   # an id a placeholder cannot carry: skipped, logged
+                logger.info("[recall_memory] thread %r not placeable: %s", m.get("thread_id"), exc)
+        return lines
+    except Exception as exc:  # noqa: BLE001 - no L1 = no thread line, logged
+        logger.warning("[recall_memory] thread placeholders failed: %r", exc)
+        return []
 
 
 def _remember_memory_payload(conn, attribute: str, value: str,
@@ -3431,7 +3582,9 @@ class AgentToolBridge:
                 return _recall_memory_payload(
                     _episodic, query, since=since, until=until,
                     tool_name=tool_filter, limit=_retrieval_limit,
-                    min_score=_retrieval_score)
+                    min_score=_retrieval_score,
+                    exclude_thread=(getattr(self, "_active_conversation_id", {}).get(session_id)
+                                    or session_id or ""))
 
             if tool_name == "remember":
                 attribute = str(params.get("attribute") or "").strip()

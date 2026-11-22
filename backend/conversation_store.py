@@ -172,6 +172,16 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         )
     """
     )
+    # CLM-2 AC4: an expand of an evicted row names the case `pruned`. Tool-result
+    # ids are random (uuid4), so the record keeps one small tombstone per row its
+    # budget evicted (no content); bounded by TOOL_RESULTS_GONE_MAX, oldest first.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_results_gone ("
+        "id TEXT PRIMARY KEY, conversation_id TEXT, why TEXT NOT NULL, at REAL NOT NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tool_results_gone_conv ON tool_results_gone(conversation_id)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tool_results_conv ON tool_results(conversation_id, turn_id)"
     )
@@ -497,6 +507,10 @@ def delete_conversation(conversation_id: str) -> bool:
                 (conversation_id, *children),
             )
             conn.execute(
+                f"DELETE FROM tool_results_gone WHERE conversation_id IN ({marks})",
+                (conversation_id, *children),
+            )
+            conn.execute(
                 "DELETE FROM conversations WHERE id = ? OR parent_id = ?",
                 (conversation_id, conversation_id),
             )
@@ -654,6 +668,10 @@ TOOL_RESULTS_PER_CONVERSATION = 200
 # caps the worst case at ~64 MB.
 TOOL_RESULTS_MAX_ROWS = 4000
 TOOL_RESULTS_MAX_CHARS = 64_000_000
+# Tombstones of evicted rows (id, conversation, why, time; ~100 bytes each): 5x the
+# live row budget, so an expand of anything evicted in the last ~5 table turnovers
+# still says `pruned`; older ones fall back to `not_found`.
+TOOL_RESULTS_GONE_MAX = 20_000
 #   * Worst case per conversation: 200 x 128,000 = 25.6 M chars (about 25.6 MB of ASCII text; up
 #     to 3x for non-ASCII). Typical: 200 x ~7k = 1.4 MB. The whole store is bounded by the number
 #     of conversations x that, and rows leave with their conversation, so no store-wide budget.
@@ -715,7 +733,14 @@ def _write_tool_result(
                     (conversation_id,),
                 ).fetchone()[0] - TOOL_RESULTS_PER_CONVERSATION
                 evicted = 0
+                now = time.time()
                 if over > 0:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tool_results_gone (id, conversation_id, why, at) "
+                        "SELECT id, conversation_id, 'evicted', ? FROM tool_results "
+                        "WHERE conversation_id = ? ORDER BY rowid ASC LIMIT ?",
+                        (now, conversation_id, over),
+                    )
                     evicted = conn.execute(
                         "DELETE FROM tool_results WHERE rowid IN (SELECT rowid FROM tool_results "
                         "WHERE conversation_id = ? ORDER BY rowid ASC LIMIT ?)",
@@ -725,11 +750,20 @@ def _write_tool_result(
                     "SELECT COUNT(*), COALESCE(SUM(chars), 0) FROM tool_results").fetchone()
                 while n_rows > TOOL_RESULTS_MAX_ROWS or n_chars > TOOL_RESULTS_MAX_CHARS:
                     old = conn.execute(
-                        "SELECT rowid, chars FROM tool_results ORDER BY rowid ASC LIMIT 1").fetchone()
+                        "SELECT rowid, chars, id, conversation_id FROM tool_results "
+                        "ORDER BY rowid ASC LIMIT 1").fetchone()
                     if old is None:
                         break
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tool_results_gone (id, conversation_id, why, at) "
+                        "VALUES (?, ?, 'evicted', ?)", (old[2], old[3], now))
                     conn.execute("DELETE FROM tool_results WHERE rowid = ?", (old[0],))
                     n_rows, n_chars, evicted = n_rows - 1, n_chars - int(old[1] or 0), evicted + 1
+                if evicted:
+                    conn.execute(
+                        "DELETE FROM tool_results_gone WHERE rowid IN (SELECT rowid FROM "
+                        "tool_results_gone ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+                        (TOOL_RESULTS_GONE_MAX,))
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -840,6 +874,51 @@ def get_tool_result(result_id: str, wait_s: float = 2.0) -> dict[str, Any] | Non
         return None
     except Exception as exc:  # noqa: BLE001
         logger.warning("[conversation_store] get_tool_result failed id=%s: %s", result_id, exc)
+        return None
+
+
+def history_page(conversation_id: str, offset: int = 0, page_chars: int = 6000) -> dict[str, Any]:
+    """One page of a conversation's messages, oldest first (CLM direct-path expand,
+    ``history:<conversation>``). ``offset`` counts MESSAGES. Index: idx_messages_conv
+    (conversation_id, timestamp). {"messages", "offset", "content"[, "next_offset"]},
+    or {"case": "not_found"} past the end / for an unknown conversation. Never raises."""
+    offset = max(0, int(offset or 0))
+    try:
+        with _lock:
+            conn = _get_conn()
+            total = int(conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?",
+                                     (conversation_id,)).fetchone()[0] or 0)
+            rows = conn.execute(
+                "SELECT role, text FROM messages WHERE conversation_id = ? "
+                "ORDER BY timestamp, id LIMIT 64 OFFSET ?", (conversation_id, offset)).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[conversation_store] history_page failed conv=%s: %s", conversation_id, exc)
+        return {"case": "unreadable", "messages": 0}
+    if not rows:
+        return {"case": "not_found", "messages": total}
+    parts, used = [], 0
+    for role, text in rows:
+        piece = f"{role}: {text or ''}"
+        if parts and used + len(piece) > page_chars:
+            break
+        parts.append(piece[:page_chars])
+        used += len(parts[-1])
+    out: dict[str, Any] = {"messages": total, "offset": offset, "content": "\n\n".join(parts)}
+    if offset + len(parts) < total:
+        out["next_offset"] = offset + len(parts)
+    return out
+
+
+def tool_result_gone(result_id: str) -> dict[str, Any] | None:
+    """The tombstone of an evicted row ({conversation_id, why, at}), or None. Never raises."""
+    try:
+        with _lock:
+            row = _get_conn().execute(
+                "SELECT conversation_id, why, at FROM tool_results_gone WHERE id = ?",
+                (result_id,)).fetchone()
+        return {"conversation_id": row[0], "why": row[1], "at": row[2]} if row else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[conversation_store] tool_result_gone failed id=%s: %s", result_id, exc)
         return None
 
 

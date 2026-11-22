@@ -162,6 +162,134 @@ def backfill(conn, *, dry_run: bool = True, episodes: bool = False) -> dict:
     return rep
 
 
+# -- L1 live: the writer and the reader (CLM-5 AC7, specs/clm-memory T4.4) ---------
+# Before 2026-11-22 L1 had no live writer (only backfill, offline) and no reader:
+# its newest row was 2026-11-01 while chunks grew by ~18k (requirements.md
+# "Inherited Ground" finding 1). note_chunks keeps a thread's row current as its
+# chunks are stored; thread_matches is L1's first production reader.
+
+THREAD_MATCH_MIN = 0.45   # cosine floor for "this whole earlier thread is relevant"
+THREAD_MATCH_MAX = 3      # placeholders per recall (a fixed-size slice, never padded)
+THREAD_PAGE_CHARS = 6000  # one expand page (tool_bridge._EXPAND_PAGE_CHARS)
+_THREAD_SCAN_MAX = 5000   # rows scanned per match (3,168 live 2026-11-12); newest first
+
+
+def note_chunks(conn, thread_id: str, codes) -> None:
+    """Fold newly stored chunk vectors into the thread's L1 row (upsert).
+
+    ``codes`` = [(vec_i8, vec_scale), ...] of the rows just written. The centroid
+    is updated as a running mean of the stored direction weighted by the old
+    count - an approximation of backfill's exact mean (L1 is derived and
+    rebuildable: backfill recomputes it exactly). The count is incremented in SQL
+    so two queued writes cannot lose one. Never raises; a failure is logged.
+    """
+    if not thread_id or not codes:
+        return
+    try:
+        ensure_schema(conn)
+        new = [vector_quant.decompress(i8, sc) for i8, sc in codes if i8 is not None and sc is not None]
+        new = [np.asarray(v, dtype=np.float32) for v in new if v is not None]
+        if not new:
+            return
+        row = conn.execute(
+            "SELECT n_chunks, centroid_i8, centroid_scale FROM thread_context WHERE thread_id = ?",
+            (thread_id,)).fetchone()
+        acc = np.sum(new, axis=0)
+        if row and row[1] is not None and row[2] is not None:
+            old = vector_quant.decompress(row[1], row[2])
+            if old is not None:
+                acc = acc + np.asarray(old, dtype=np.float32) * float(row[0] or 0)
+        norm = float(np.linalg.norm(acc)) or 1.0
+        fp, i8, scale = vector_quant.compress((acc / norm).tolist())
+        now = time.time()
+        _write(conn,
+               """INSERT INTO thread_context
+                    (thread_id, first_ts, last_ts, n_chunks, centroid_i8, centroid_fp,
+                     centroid_scale, updated_at)
+                  VALUES (?,?,?,?,?,?,?,?)
+                  ON CONFLICT(thread_id) DO UPDATE SET
+                    last_ts = excluded.last_ts,
+                    n_chunks = thread_context.n_chunks + ?,
+                    centroid_i8 = excluded.centroid_i8, centroid_fp = excluded.centroid_fp,
+                    centroid_scale = excluded.centroid_scale, updated_at = excluded.updated_at""",
+               (thread_id, now, now, len(new), i8, fp, scale, now, len(new)))
+    except Exception as exc:  # noqa: BLE001 - L1 is derived; the chunk write already stands
+        logger.warning("[levels] L1 update failed thread=%s: %r", str(thread_id)[:12], exc)
+
+
+def thread_matches(conn, query_vec, exclude: str = "", limit: int = THREAD_MATCH_MAX,
+                   min_sim: float = THREAD_MATCH_MIN) -> list:
+    """The earlier threads whose L1 centroid matches the query (cosine >= min_sim).
+
+    Returns [{"thread_id", "score", "n_chunks", "first_ts", "last_ts"}], best first,
+    at most ``limit``; [] when none matches (never padded). Reads only
+    thread_context (one row per thread). Never raises.
+    """
+    try:
+        q = np.asarray(query_vec, dtype=np.float32)
+        qn = float(np.linalg.norm(q))
+        if not qn:
+            return []
+        q = q / qn
+        rows = conn.execute(
+            "SELECT thread_id, centroid_i8, centroid_scale, n_chunks, first_ts, last_ts "
+            "FROM thread_context WHERE centroid_i8 IS NOT NULL AND thread_id != ? "
+            "ORDER BY updated_at DESC LIMIT ?", (exclude or "", _THREAD_SCAN_MAX)).fetchall()
+    except Exception as exc:  # noqa: BLE001 - no L1 = no thread placeholders, logged
+        logger.warning("[levels] L1 scan failed: %r", exc)
+        return []
+    out = []
+    for tid, i8, sc, n, first, last in rows:
+        try:
+            v = vector_quant.decompress(i8, sc)
+            if v is None:
+                continue
+            v = np.asarray(v, dtype=np.float32)
+            if v.shape != q.shape:
+                continue   # another embedding space: not comparable
+            sim = float(np.dot(q, v) / (float(np.linalg.norm(v)) or 1.0))
+        except Exception:  # noqa: BLE001 - one bad row must not lose the scan
+            continue
+        if sim >= min_sim:
+            out.append({"thread_id": tid, "score": round(sim, 3), "n_chunks": int(n or 0),
+                        "first_ts": first, "last_ts": last})
+    out.sort(key=lambda r: -r["score"])
+    return out[:limit]
+
+
+def thread_page(conn, thread_id: str, offset: int = 0, page: int = THREAD_PAGE_CHARS) -> dict:
+    """One page of a thread's chunk texts in time order (expand=thread:<id>).
+
+    {"thread_id", "chunks", "offset", "content"[, "next_offset"]}, or
+    {"case": "not_found"} when the thread has no chunk at that position.
+    ``offset`` counts CHUNKS (a thread can hold thousands; a page reads at most
+    the chunks that fit). Folded rows are skipped (the filter recall uses), so a
+    forgotten value stays out. Index: idx_chunk_session (session_id), then a
+    sort of that thread's rows only.
+    """
+    offset = max(0, int(offset or 0))
+    total = int(conn.execute(
+        "SELECT COUNT(*) FROM context_chunks WHERE session_id = ? AND folded_into IS NULL",
+        (thread_id,)).fetchone()[0] or 0)
+    rows = conn.execute(
+        "SELECT content FROM context_chunks WHERE session_id = ? AND folded_into IS NULL "
+        "ORDER BY timestamp ASC LIMIT 64 OFFSET ?", (thread_id, offset)).fetchall()
+    if not rows:
+        return {"thread_id": thread_id, "case": "not_found", "chunks": total}
+    parts, used = [], 0
+    for (content,) in rows:
+        piece = str(content or "")
+        if parts and used + len(piece) > page:
+            break
+        parts.append(piece[:page])
+        used += len(parts[-1])
+    out = {"thread_id": thread_id, "chunks": total, "offset": offset,
+           "content": "\n---\n".join(parts)}
+    if offset + len(parts) < total:
+        out["next_offset"] = offset + len(parts)
+    return out
+
+
 def report(conn) -> dict:
     try:
         rows = conn.execute("SELECT COUNT(*), SUM(n_chunks) FROM thread_context").fetchone()

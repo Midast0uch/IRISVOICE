@@ -316,7 +316,8 @@ class PinStore:
         for ln in links:
             app_write(
                 self._conn,
-                "INSERT INTO mycelium_pin_links (link_id, source_type, source_id, target_type, "
+                # OR IGNORE: idx_pin_links_unique - a link that is back already stays one row
+                "INSERT OR IGNORE INTO mycelium_pin_links (link_id, source_type, source_id, target_type, "
                 "target_id, relationship, weight, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (ln["link_id"], ln["source_type"], ln["source_id"], ln["target_type"],
                  ln["target_id"], ln["relationship"], ln["weight"], ln["created_at"]),
@@ -351,10 +352,17 @@ class PinStore:
             )
             return 0
         now = time.time()
+        # A link that exists is not written again (2026-11-22): the table held 56,325
+        # rows for 301 distinct links (one DER link 9,029 times); weight is constant
+        # and every reader reads DISTINCT, so a copy carried nothing. The check uses
+        # idx_pin_links_source (source_type, source_id).
         _sql = ("INSERT INTO mycelium_pin_links "
                 "(source_type, source_id, target_type, target_id, relationship, weight, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)")
-        _params = (source_type, source_id, target_type, target_id, relationship, weight, now)
+                "SELECT ?, ?, ?, ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM mycelium_pin_links "
+                "WHERE source_type = ? AND source_id = ? AND target_type = ? AND target_id = ? "
+                "AND relationship = ?)")
+        _params = (source_type, source_id, target_type, target_id, relationship, weight, now,
+                   source_type, source_id, target_type, target_id, relationship)
         if owns_store(self._conn):
             # One writer: queued; the row id is assigned on the writer thread.
             # Callers count links by truthiness, so a queued link reports 1.
@@ -362,7 +370,54 @@ class PinStore:
             return 1
         cur = self._conn.execute(_sql, _params)
         self._conn.commit()
-        return int(cur.lastrowid or 0)
+        if cur.rowcount:
+            return int(cur.lastrowid or 0)
+        row = self._conn.execute(
+            "SELECT link_id FROM mycelium_pin_links WHERE source_type = ? AND source_id = ? "
+            "AND target_type = ? AND target_id = ? AND relationship = ?",
+            (source_type, source_id, target_type, target_id, relationship)).fetchone()
+        return int(row[0]) if row else 0
+
+    def remove_duplicate_links(self, dry_run: bool = True) -> dict:
+        """One-off repair (2026-11-22): drop the copies ``link`` used to write. Keeps the
+        NEWEST row of each (source_type, source_id, target_type, target_id, relationship)
+        - recall orders by created_at DESC. Idempotent. Returns {rows, distinct, removed}."""
+        rows = int(self._conn.execute("SELECT COUNT(*) FROM mycelium_pin_links").fetchone()[0])
+        distinct = int(self._conn.execute(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM mycelium_pin_links GROUP BY source_type, "
+            "source_id, target_type, target_id, relationship)").fetchone()[0])
+        out = {"rows": rows, "distinct": distinct, "removed": rows - distinct}
+        if dry_run:
+            return out
+        from backend.memory.db import PIN_LINKS_UNIQUE_INDEX_SQL
+
+        _sql = ("DELETE FROM mycelium_pin_links WHERE link_id NOT IN (SELECT MAX(link_id) FROM "
+                "mycelium_pin_links GROUP BY source_type, source_id, target_type, target_id, relationship)")
+        # then the store refuses any later copy (the index the schema builds on a clean store)
+        for sql in ((_sql,) if rows != distinct else ()) + (PIN_LINKS_UNIQUE_INDEX_SQL,):
+            if owns_store(self._conn):
+                app_write(self._conn, sql, ())
+                app_flush(120.0)
+            else:
+                self._conn.execute(sql)
+                self._conn.commit()
+        out["unique_index"] = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_pin_links_unique'"
+        ).fetchone() is not None
+        return out
+
+    def prune_node_links(self, cap: int) -> None:
+        """Growth budget for DER structural links (source_type 'node'): keep the
+        newest ``cap``, drop the oldest in one statement. Pins, landmarks and
+        episodes are never touched. On the one writer when it owns the store."""
+        _sql = ("DELETE FROM mycelium_pin_links WHERE link_id IN (SELECT link_id FROM "
+                "mycelium_pin_links WHERE source_type = 'node' ORDER BY link_id LIMIT MAX(0, "
+                "(SELECT COUNT(*) FROM mycelium_pin_links WHERE source_type = 'node') - ?))")
+        if owns_store(self._conn):
+            app_write(self._conn, _sql, (int(cap),))
+            return
+        self._conn.execute(_sql, (int(cap),))
+        self._conn.commit()
 
     def checkpoint(
         self,

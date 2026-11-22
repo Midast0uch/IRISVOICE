@@ -102,6 +102,20 @@ def _append(row: Dict[str, Any]) -> None:
         fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
 
+def record_event(conversation_id: str, event: str, **fields: Any) -> None:
+    """CLM-8 AC4 / T5.2: one ``event`` row per view decision, for evals/context_report.py.
+
+    ``event`` in {offloaded, restretched, premature_eviction, landmark_header}; ``fields``
+    are VALUES only (actor harness|model, trigger, tokens, chars, n, stale) - never
+    content. Off unless IRIS_CLM_BASELINE=1; the write runs on the instrument lane.
+    """
+    if not enabled():
+        return
+    row = {"event": event, "conversation_id": conversation_id or "", "seq": _next_seq(),
+           "ts": time.time(), **{k: v for k, v in fields.items() if isinstance(v, (int, float, str, bool))}}
+    _submit("clm_event", _append, row)
+
+
 def _owner_of(resolver: Any) -> Any:
     """The kernel behind the router's window resolver (a bound method), or None."""
     return getattr(resolver, "__self__", None)
@@ -166,6 +180,21 @@ def _write_call(row: Dict[str, Any], messages: List[Dict[str, Any]], tools: Any,
             blocks["tools_schema"] = [int(len(str(tools)) / 3.5) + 1]
         row["blocks"] = blocks
         row["blocks_unit"] = "router_3_5"
+        # CLM-10 (T5.3): the prefix (system + tool menu) must stay byte-stable across a
+        # node's calls; a node is keyed by its step message. `asides` = set-aside slips in
+        # the input, so the report can tell an edit call (count grew) from an append.
+        import hashlib as _hl
+
+        _sys = next((str(m.get("content") or "") for m in messages if m.get("role") == "system"), "")
+        _step = next((str(m.get("content") or "") for m in messages if m.get("role") == "user"), "")
+        row["prefix_hash"] = _hl.sha1((_sys + "\x00" + json.dumps(tools, sort_keys=True, default=str)
+                                       ).encode("utf-8", "replace")).hexdigest()[:16]
+        row["node_key"] = _hl.sha1((_sys[:2000] + "\x00" + _step).encode("utf-8", "replace")).hexdigest()[:16]
+        # the two prefix parts apart, so an unstable prefix names its cause
+        row["sys_hash"] = _hl.sha1(_sys.encode("utf-8", "replace")).hexdigest()[:12]
+        row["tools_hash"] = _hl.sha1(json.dumps(tools, sort_keys=True, default=str)
+                                     .encode("utf-8", "replace")).hexdigest()[:12]
+        row["asides"] = sum(str(m.get("content") or "").count("[[SET ASIDE") for m in messages)
 
         # The messages themselves, for "was the needed fact still in the model's
         # input?" (evals/context_report.py --dumps). Off unless a dump dir is

@@ -602,6 +602,12 @@ from typing import Union
 Connection = Union["sqlcipher3.Connection", "sqlite3.Connection"]
 
 
+PIN_LINKS_UNIQUE_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_pin_links_unique ON mycelium_pin_links"
+    "(source_type, source_id, target_type, target_id, relationship)"
+)
+
+
 def initialise_mycelium_schema(conn) -> None:
     """
     Create all Mycelium coordinate-graph tables and indexes in the encrypted database.
@@ -940,6 +946,16 @@ def initialise_mycelium_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_bridges_remote
             ON mycelium_landmark_bridges(remote_instance_id);
     """)
+
+    # A link is ONE row (2026-11-22): the store refuses a copy, whatever code writes it.
+    # Measured before: 56,325 rows for 301 distinct links. An old store that still holds
+    # copies cannot build the index - it logs and keeps working; the offline cleanup
+    # (scripts/dedup_pin_links.py) removes the copies and builds it.
+    try:
+        conn.execute(PIN_LINKS_UNIQUE_INDEX_SQL)
+    except Exception as e:
+        logger.warning(f"[db] Could not create idx_pin_links_unique (copies in the store? "
+                       f"run scripts/dedup_pin_links.py): {e}")
 
     # -------------------------------------------------------------------------
     # Block 4 — Compound indexes for query optimization

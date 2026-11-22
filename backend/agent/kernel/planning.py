@@ -143,17 +143,18 @@ def _ensure_browser_brief(brief: dict, request: str) -> dict:
     The rule cannot be forced by rewording (pin_8dec80b57ef3).
 
     Fire ONLY when: workbench flag on, request names a URL, request asks for a
-    computation (count/sum/total/rank), and the planner emitted no brief. Leave
-    lookups and already-briefed steps byte-identical. Never raises.
+    computation (count/sum/total/rank). Leave lookups byte-identical. Never raises.
+
+    Round 6 (2026-11-22): a computed task whose brief names search/crawler_query
+    (or carries wb_browser_single) is refused by the entry rule (_wb_browser_step)
+    and takes the slow menu path. Measured on d01: 8-13 node calls instead of one
+    code node, which pushed the data-cohort calls metric over the bar. Force
+    browser tools and clear the single-page marker for computed browser tasks.
     """
     import os
 
     if os.environ.get("IRIS_WORKBENCH") != "1":
         return brief
-    if brief.get("outputs") and str(brief.get("check") or "").strip():
-        return brief  # planner complied
-    if brief.get("wb_browser_single") is True:
-        return brief  # planner deliberately kept a single-page lookup on menu path
     if not _COMPUTE_CUES.search(request or ""):
         return brief  # not a computed task - leave on the menu path
     try:
@@ -163,13 +164,19 @@ def _ensure_browser_brief(brief: dict, request: str) -> dict:
             return brief  # not a browser task
     except Exception:  # noqa: BLE001 - a backstop never blocks planning
         return brief
+    named = {str(n).strip() for n in (brief.get("tools") or []) if isinstance(n, str)}
+    if (brief.get("outputs") and str(brief.get("check") or "").strip()
+            and named & {"browser_open", "browser_read"}
+            and not brief.get("wb_browser_single")):
+        return brief  # planner fully complied - byte-identical
     # Minimal brief: one string output, a non-empty check, browser tools. The
     # two-call system prompt tells the model to assign every output named here.
     return {
         **brief,
         "outputs": list(brief.get("outputs") or ["answer: str"]),
         "check": str(brief.get("check") or "len(answer) > 0"),
-        "tools": list(brief.get("tools") or ["browser_open", "browser_read"]),
+        "tools": ["browser_open", "browser_read"],
+        "wb_browser_single": False,
     }
 
 # A spoken turn reaches the agent as text, so nothing told the planner or a step that IRIS heard it. Live
@@ -1100,8 +1107,16 @@ class PlanningMixin:
         # still follows a CHANGE (the goal contract needs that run).
         "- Do NOT plan a step that only tallies, restates or reports what an "
         "earlier step already produced; the final reply does that from the "
-        "earlier result. Plan a separate check step only after a step that "
-        "CHANGES a file. When the answer is the exact output of code (what a "
+        # PLAN SHAPE (2026-11-22, coding standards with the Workbench on): c10's
+        # 1-step plans replied in 16 s, its 2-step plans (write, then a separate
+        # "run a short script exercising it" step) in 35-40 s - the second step
+        # paid a step gap, a new step prompt, a memory lookup, an envelope and the
+        # first step's own closing call. The check still runs (goal contract,
+        # 2026-10-02 c12 lesson); for ONE changed file it runs in the SAME step.
+        "earlier result. A step that CHANGES one file also checks it in the "
+        "same step (write it, then run a short check and read the output); plan "
+        "a separate check step only after steps that change several files. "
+        "When the answer is the exact output of code (what a "
         "function returns, what a script prints), plan a step that RUNS it "
         "and reads the output; do not work the value out by reading.\n"
     )
@@ -2457,6 +2472,7 @@ Respond with a JSON object:
                     _writer.link_derives_from(
                         f"contract-v{int(_new.version)}",
                         f"contract-v{_from_v}",
+                        getattr(self, "session_id", "") or "",   # every chat's v2 is not one node
                     )
             except Exception:
                 pass

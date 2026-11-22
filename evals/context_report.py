@@ -60,7 +60,7 @@ def _rows(path: Path) -> dict:
         kind = r.get("event")
         if kind in ("call", "direct"):
             by_conv[conv][kind].append(r)
-        elif kind in ("offloaded", "restretched"):
+        elif kind in ("offloaded", "restretched", "premature_eviction", "landmark_header"):
             by_conv[conv]["event"].append(r)
     return by_conv
 
@@ -83,37 +83,68 @@ def _last_call_text(dumps: Path, conv: str) -> str | None:
 
 
 def _offload(calls: list, events: list) -> dict | None:
-    """Counts the backend reported, or None when it reported nothing."""
-    best = {"offloaded": 0, "restretched": 0, "model_set_aside": 0, "model_expand": 0}
+    """The CLM-7 AC3 counter set from the backend's event rows (clm_baseline.record_event),
+    or None when it reported nothing. re-recall cost = tokens brought back by expand
+    (chars / 3.5); repeated dead ends = harness re-stretches whose trigger is a ledger
+    match; stale-landmark use = stale lines shown in claims headers."""
+    best = {"offloaded": 0, "restretched": 0, "model_set_aside": 0, "model_expand": 0,
+            "premature_eviction": 0, "re_recall_tokens": 0, "repeated_dead_ends": 0,
+            "headers": 0, "stale_landmarks_shown": 0}
     seen = False
     for c in calls:
         o = c.get("offload")
         if isinstance(o, dict):
             seen = True
-            for k in best:
+            for k in ("offloaded", "restretched", "model_set_aside", "model_expand"):
                 best[k] = max(best[k], int(o.get(k) or 0))
     for e in events:
         seen = True
-        if e.get("event") == "offloaded":
+        kind = e.get("event")
+        if kind == "offloaded":
             best["offloaded"] += 1
             if e.get("actor") == "model":
                 best["model_set_aside"] += 1
-        elif e.get("event") == "restretched":
+        elif kind == "restretched":
             best["restretched"] += 1
             if e.get("actor") == "model":
                 best["model_expand"] += 1
+            best["re_recall_tokens"] += int(int(e.get("chars") or 0) / CHARS_PER_TOKEN)
+            if e.get("trigger") == "dead_end_match":
+                best["repeated_dead_ends"] += 1
+        elif kind == "premature_eviction":
+            best["premature_eviction"] += 1
+        elif kind == "landmark_header":
+            best["headers"] += 1
+            best["stale_landmarks_shown"] += int(e.get("stale") or 0)
     return best if seen else None
 
 
-def report(results_path: Path, log_path: Path, dumps: Path | None, target: float = 1.5) -> list:
+def _claim_labels(api: str, conv: str) -> dict | None:
+    """RECALL_USED / RECALL_MISLED of one strand from the running app's read-only memory API
+    (wrong-landmark rate = misled / used). None when the app does not answer."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"{api.rstrip('/')}/api/memory/strand/{conv}", timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 - a missing strand or a stopped app: no number, said so
+        return None
+    labels = [e.get("label") for e in (data.get("events") or []) if isinstance(e, dict)]
+    used, misled = labels.count("RECALL_USED"), labels.count("RECALL_MISLED")
+    return {"used": used, "misled": misled,
+            "wrong_rate": round(misled / used, 3) if used else None}
+
+
+def report(results_path: Path, log_path: Path, dumps: Path | None, target: float = 1.5,
+           all_groups: bool = False, api: str | None = None) -> list:
     results = json.loads(results_path.read_text(encoding="utf-8"))["results"]
     rows = _rows(log_path)
     answers = json.loads(ANSWERS.read_text(encoding="utf-8")) if ANSWERS.is_file() else {}
     tasks = {t["id"]: t for t in json.loads(TASKS.read_text(encoding="utf-8"))["tasks"]
-             if t.get("group") == "context"}
+             if all_groups or t.get("group") == "context"}
     out = []
     for res in results:
-        if res.get("group") != "context":
+        if not all_groups and res.get("group") != "context":
             continue
         conv = res.get("conversation_id")
         calls = rows[conv]["call"] if conv in rows else []
@@ -142,7 +173,10 @@ def report(results_path: Path, log_path: Path, dumps: Path | None, target: float
         needles = None
         if dumps is not None:
             text = _last_call_text(dumps, conv)
-            wanted = (answers.get(res["id"].split("_")[0]) or {}).get("needles") or []
+            # a task with per-run facts (T5.1) is graded on THIS run's first fact (the
+            # right answer); the fixed-needle tasks keep answers.json
+            wanted = (res.get("facts") or [])[:1] or \
+                (answers.get(res["id"].split("_")[0]) or {}).get("needles") or []
             if text is not None and wanted:
                 needles = f"{sum(1 for n in wanted if n in text)}/{len(wanted)}"
         read_chars = ((tasks.get(res["id"]) or {}).get("pressure") or {}).get("read_chars")
@@ -165,6 +199,7 @@ def report(results_path: Path, log_path: Path, dumps: Path | None, target: float
                 "budget_for_history": last_direct.get("budget_for_history"),
             },
             "needles_in_last_call": needles,
+            "claims": _claim_labels(api, conv) if (api and conv) else None,
         })
     return out
 
@@ -177,8 +212,12 @@ def main() -> int:
     ap.add_argument("--target", type=float, default=1.5,
                     help="declared pressure ratio a task must reach at the window in use (default 1.5)")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--all", action="store_true", help="every group in the run, not only `context`")
+    ap.add_argument("--api", default=None,
+                    help="the running app (e.g. http://127.0.0.1:8090): wrong-landmark rate per strand")
     a = ap.parse_args()
-    rows = report(Path(a.results), Path(a.log), Path(a.dumps) if a.dumps else None, a.target)
+    rows = report(Path(a.results), Path(a.log), Path(a.dumps) if a.dumps else None, a.target,
+                  all_groups=a.all, api=a.api)
     if a.json:
         print(json.dumps(rows, indent=2))
         return 0
@@ -192,7 +231,11 @@ def main() -> int:
               f"{r['blind_drop_calls']}/{r['blind_drop_messages']}/{r['blind_drop_tokens']}  "
               + ("offload=n/a" if o is None else
                  f"offloaded={o['offloaded']} restretched={o['restretched']} "
-                 f"model_set_aside={o['model_set_aside']} model_expand={o['model_expand']}")
+                 f"model_set_aside={o['model_set_aside']} model_expand={o['model_expand']} "
+                 f"premature={o['premature_eviction']} re_recall_tok={o['re_recall_tokens']} "
+                 f"repeated_dead_ends={o['repeated_dead_ends']} stale_shown={o['stale_landmarks_shown']}")
+              + ("" if not r.get("claims") else
+                 f"  claims used/misled={r['claims']['used']}/{r['claims']['misled']}")
               + f"  needles_in_last_call={r['needles_in_last_call'] or 'n/a'}"
               + (f"  direct[{d['branch']}] history_msgs={d['history_messages_sent']} "
                  f"cut recency/budget/align={d['recency_cut_messages']}/{d['budget_trim_messages']}/{d['align_pop_messages']}"

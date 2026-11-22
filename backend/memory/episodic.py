@@ -480,6 +480,15 @@ class EpisodicStore:
             -- order in one index: the walk stops at the 50th match.
             CREATE INDEX IF NOT EXISTS idx_chunks_session_type_ts
                 ON context_chunks(session_id, chunk_type, timestamp);
+            -- retrieve_context_chunks' "newest 200" leg with NO session
+            -- (chunk_type IN (?) AND zone IN (?) ORDER BY timestamp DESC
+            -- LIMIT 200) - every DER step's memory facts run it. The planner
+            -- used idx_chunk_zone: zone 'trusted' holds 59.7k rows (57.5k
+            -- document_data), all read with their blobs and sorted to keep
+            -- 200 context_fragment rows: 1,199 ms warm per step, ~1.5-1.9 s of
+            -- the step prelude (2026-11-22, c10/c15 under their standards).
+            CREATE INDEX IF NOT EXISTS idx_chunks_type_zone_ts
+                ON context_chunks(chunk_type, zone, timestamp);
         """)
         self.db.commit()
         self._migrate_chunk_schema()
@@ -1215,6 +1224,14 @@ class EpisodicStore:
                     logger.warning(
                         "[EpisodicStore] supersede fold failed new=%s: %r",
                         new_id[:8], exc)
+
+        # CLM-5 AC7 (T4.4): keep the thread's L1 row current - L1 had no live
+        # writer, so its rows froze on 2026-11-01. The vectors are the ones just
+        # written; note_chunks never raises.
+        if batch_rows and session_id:
+            from backend.memory import levels as _levels
+
+            _levels.note_chunks(self.db, session_id, [(r[9], r[10]) for r in batch_rows])
 
         logger.debug(
             f"[EpisodicStore] fragment_and_store: {len(stored_ids)} chunks "

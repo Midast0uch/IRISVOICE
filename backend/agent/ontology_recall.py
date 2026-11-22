@@ -305,7 +305,7 @@ def filtered_chain_recall(
 
 
 def recall_failed_like(
-    conn, step_id: str, limit: int = 5
+    conn, step_id: str, limit: int = 5, session_id: str = ""
 ) -> List[dict]:
     """REQ-19 AC3 / REQ-20: AVOID recall as a graph walk.
 
@@ -313,9 +313,16 @@ def recall_failed_like(
     (source=this node, target=prior same-class failure), newest first.
     This is the AVOID path: "what failed like this before?" is a walk over
     the shared link store, not a free-text scan. Never raises.
+
+    ``session_id`` names the node (``node:<session>:<step>``, der_links._node_id):
+    a plan-local step id alone matched every plan's step of that name.
     """
     try:
-        node_id = f"node:{step_id}" if not str(step_id).startswith("node:") else step_id
+        if str(step_id).startswith("node:"):
+            node_id = step_id
+        else:
+            from backend.agent.der_links import DerLinkWriter
+            node_id = DerLinkWriter._node_id(step_id, session_id)
         rows = conn.execute(
             "SELECT target_id FROM mycelium_pin_links "
             "WHERE source_id = ? AND relationship = 'failed_like' "

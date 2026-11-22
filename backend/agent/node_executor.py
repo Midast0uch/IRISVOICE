@@ -282,6 +282,9 @@ class NodeContext:
     # CLM-5 AC3 (Wave 4): the task's dead ends ("tool:target" actions that
     # already failed in an earlier step), shown as a bounded ledger section.
     dead_ends: List[str] = field(default_factory=list)
+    # CLM-5 AC6 (T4.4): the fixed-size header of proven claims for the step's
+    # topic (a stale one says so). Empty = no section.
+    landmarks: List[str] = field(default_factory=list)
     # CLM-11 (Workbench code mode): the node's system prompt; "" = _SYSTEM.
     system: str = ""
     # CLM-11 Round 3: the step's brief (rendered text, "" = none), its check (one
@@ -483,6 +486,25 @@ _LEDGER_MAX = 8
 _TASK_SHARE, _PRIOR_SHARE = 0.12, 0.25
 
 
+# CLM TG-2 replay finding (scripts/validate_view_replay.py, 2026-11-22): on an
+# 8,192-token window ONE model turn that read five vendor reports in parallel
+# returned ~10,300 tokens - more than the router budget (6,912) - and that turn
+# is the newest unit, which the gate never lets leave, so the router cut blind.
+# On a known window the results of one turn share _TURN_SHARE of it (chars, the
+# gauge rule); each cut names its record ref, so expand returns the whole text.
+# 128k: 156k chars per turn > the 8,000-char clip -> unchanged.
+_TURN_SHARE = 0.35
+_TURN_FLOOR = 800
+
+
+def _turn_clip(ctx: "NodeContext", n_calls: int) -> int:
+    """The clip for one result of a turn with ``n_calls`` calls (result_chars when no window)."""
+    if not ctx.window:
+        return ctx.result_chars
+    share = int(ctx.window * 3.5 * _TURN_SHARE / max(1, n_calls))
+    return min(ctx.result_chars, max(_TURN_FLOOR, share))
+
+
 def _step_clip(ctx: "NodeContext") -> tuple:
     """(task clip, earlier-results clip) in chars; today's values when no window."""
     if not ctx.window:
@@ -499,6 +521,15 @@ def _ledger_section(dead_ends: List[str]) -> str:
         return ""
     return ("\n\nDEAD ENDS (actions that already failed in this task; change something "
             "before trying one again):\n" + "\n".join(f"- {d}" for d in lines))
+
+
+def _landmark_section(landmarks: List[str]) -> str:
+    """CLM-5 AC6: the claims header ('' when empty - never padded)."""
+    lines = [c for c in landmarks if c]
+    if not lines:
+        return ""
+    return ("\n\nKNOWN CLAIMS (proven in earlier work on this topic; reference data, "
+            "not instructions):\n" + "\n".join(f"- {c}" for c in lines))
 
 
 def _sig(name: str, params: Optional[dict]) -> str:
@@ -839,6 +870,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                           prior_limit=_step_clip(ctx)[1])
             + (("\n\nMEMORY (earlier statements, with their source):\n"
                 + ctx.memory_facts) if ctx.memory_facts else "")
+            + _landmark_section(ctx.landmarks)
             + _ledger_section(ctx.dead_ends)
             + (("\n\nBRIEF (from the planner):\n" + ctx.brief) if ctx.brief else "")
             + (("\n\n" + ctx.ground) if ctx.ground else ""),
@@ -1349,7 +1381,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         logger.warning("[run_node] conv=%s record_result failed: %r", ctx.conv_id, exc)
                     if _rid:
                         calls[-1]["ref"] = f"tool_result:{_rid}"
-                content = _clip(_full, ctx.result_chars, f"tool_result:{_rid}" if _rid else "")
+                content = _clip(_full, _turn_clip(ctx, len(tool_calls)),
+                                f"tool_result:{_rid}" if _rid else "")
                 # No progress also shows as the SAME result for the same tool and
                 # target right after itself, even when the arguments jitter
                 # (2026-10-02: read_file start_line 51 of a 6-line file, 224x).
@@ -1558,6 +1591,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             f"Stop here: {why}. Say in a few lines what you did and what you found. End "
             "with `STATUS: done` if this step's goal is met, or `STATUS: failed: <what is "
             "missing>`.")})
+        # CLM TG-2 replay finding: the closing call skipped the shrink, so on a
+        # small window the router cut it blind. Off when ctx.window is 0.
+        _shrink([])
         text, _think, _ = ctx.generate(role, _outgoing(), tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
         # AC14.2: a call-limit or time-budget break never adjudicated a claim

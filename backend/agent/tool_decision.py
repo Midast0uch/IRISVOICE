@@ -1943,8 +1943,14 @@ class ToolDecisionBox:
                 if (_top_class in (READ, WRITE, RUN)
                         and _class_margin is not None
                         and _class_margin >= CLASS_MARGIN_MIN):
+                    # A WRITE step also keeps the RUN tools (2026-11-22): a change
+                    # is checked by running it, in the SAME step (planning.py plan
+                    # shape, the 2026-10-02 c12 rule). Narrowed to WRITE only, c10
+                    # closed "no command-execution tool available" and paid a repair
+                    # step. Widening only - the class label and its rows are unchanged.
+                    _keep = {WRITE, RUN} if _top_class == WRITE else {_top_class}
                     _class_tools = [n for n in names
-                                    if classify_tool(n) == _top_class]
+                                    if classify_tool(n) in _keep]
                     if _class_tools:
                         _short = _class_tools
                         _class_decided = _top_class

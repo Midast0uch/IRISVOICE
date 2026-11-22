@@ -24,7 +24,7 @@ import datetime as _dt
 import json
 import os
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -178,6 +178,50 @@ def integrity(rows: List[Dict[str, Any]], unparsable: int) -> Dict[str, Any]:
     }
 
 
+def edit_cost(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """CLM-10 AC1/AC3 (T5.3): prefix stability per node, and tokens re-processed after an
+    edit vs after an append, per (provider, model) that reports cached prompt tokens.
+
+    A node = the calls sharing a ``node_key`` (its system + step message). Its prefix
+    (system + tool menu) is UNSTABLE when ``prefix_hash`` changes between its calls - a
+    finding (CLM-10 edge case: a volatile value belongs in the tail). A call is an EDIT
+    when its ``asides`` count grew since the node's previous call, else an APPEND; its
+    re-processed tokens = prompt_tokens - cached_tokens (only where cached_tokens exists).
+    """
+    nodes: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in rows:
+        if r.get("event") == "call" and r.get("node_key"):
+            nodes[r["node_key"]].append(r)
+    multi = {k: sorted(v, key=lambda r: r.get("seq") or 0) for k, v in nodes.items() if len(v) > 1}
+    unstable = {k: v for k, v in multi.items() if len({r.get("prefix_hash") for r in v}) > 1}
+    per_pair: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: {"edit": [], "append": []})
+    reporting = Counter()
+    for calls in multi.values():
+        for prev, cur in zip(calls, calls[1:]):
+            usage = cur.get("usage") or {}
+            pair = f"{cur.get('provider')}/{cur.get('model')}"
+            if "cached_tokens" not in usage:
+                reporting[pair + " (no cached field)"] += 1
+                continue
+            reporting[pair] += 1
+            kind = "edit" if int(cur.get("asides") or 0) > int(prev.get("asides") or 0) else "append"
+            per_pair[pair][kind].append(int(usage.get("prompt_tokens") or 0) - int(usage["cached_tokens"]))
+    reproc = {pair: {k: {"n": len(v), "median": _q(sorted(v), 0.5), "p95": _q(sorted(v), 0.95)}
+                     for k, v in d.items()} for pair, d in per_pair.items()}
+    by_part = Counter()
+    for v in unstable.values():
+        if len({r.get("sys_hash") for r in v}) > 1:
+            by_part["system"] += 1
+        if len({r.get("tools_hash") for r in v}) > 1:
+            by_part["tools"] += 1
+    return {"nodes_with_2plus_calls": len(multi), "prefix_unstable_nodes": len(unstable),
+            "prefix_unstable_by_part": dict(by_part),
+            "prefix_unstable_examples": [
+                {"node": k, "calls": len(v), "distinct_prefixes": len({r.get('prefix_hash') for r in v})}
+                for k, v in list(unstable.items())[:5]],
+            "calls_by_reporting": dict(reporting), "reprocessed_tokens": reproc}
+
+
 def _fmt(v: Any) -> str:
     if v is None:
         return "-"
@@ -214,6 +258,13 @@ def print_table(rep: Dict[str, Any]) -> None:
     for key, s in rep["blocks"].items():
         print(f"   {key:42} n={s['n']:5} min={s['min']} median={s['median']} "
               f"p95={s['p95']} max={s['max']}")
+    e = rep.get("edit_cost") or {}
+    print("\n-- 4. edit cost (CLM-10, T5.3) --")
+    print(f"   nodes with 2+ calls {e.get('nodes_with_2plus_calls')}  prefix UNSTABLE {e.get('prefix_unstable_nodes')}"
+          f"  {e.get('prefix_unstable_examples') or ''}")
+    print(f"   calls by cached-token reporting: {e.get('calls_by_reporting')}")
+    for pair, d in (e.get("reprocessed_tokens") or {}).items():
+        print(f"   {pair}: re-processed after edit {d.get('edit')}  after append {d.get('append')}")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -238,6 +289,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "cuts": cuts(rows, task_map(args.evals)),
         "estimators": estimator_error(rows),
         "blocks": block_sizes(rows),
+        "edit_cost": edit_cost(rows),
         "not_knowable_at_router": [
             "recalled chunk vs user turn (both role=user at the router; sized per kind "
             "only on the direct path, event=direct)",

@@ -238,10 +238,49 @@ _STOP = frozenset(
     "you're that's what's".split())
 
 
+# A word in GENERIC_ROOTS or more root sectors says nothing about any one of them
+# (measured 2026-11-22 on the live store, roots holding a term's landmarks: look 7,
+# project 7, name 7, search 7, iris 7, year 6, live 6, list 5 - every one of them a
+# child sector before this rule). Absolute, not a share: a store with one busy root
+# still grows children.
+GENERIC_ROOTS = 4
+# Recurrence counts DISTINCT task texts as well as sessions: an eval that repeats one
+# task in 25 sessions is one question, not a topic (hardware/https: 25 sessions, 1 label).
+BIRTH_MIN_LABELS = BIRTH_MIN_SESSIONS
+
+
+def _clean_label(label: Optional[str]) -> str:
+    """The task text without addresses: a token holding a path or URL separator is a
+    place (c:\\users\\...\\appdata\\local\\temp\\iris-evals\\..., https://...), not a word.
+    Measured: those tokens were the source of appdata/local/evals/iris/https children."""
+    return " ".join(t for t in (label or "").lower().split()
+                    if "/" not in t and "\\" not in t)
+
+
 def _terms(label: Optional[str]) -> set:
     """The distinguishing words of a task label (a sector key segment: [a-z0-9_])."""
-    words = re.findall(r"[a-z][a-z0-9_]{3,23}", (label or "").lower())
+    words = re.findall(r"[a-z][a-z0-9_]{3,23}", _clean_label(label))
     return {w for w in words if w not in _STOP and w not in DOMAIN_IDS}
+
+
+def term_can_name_child(parent: str, term: str, labels: int, roots: int,
+                        min_labels: int = BIRTH_MIN_LABELS) -> bool:
+    """The one rule a child sector's word must pass (birth, split and the repair):
+    it is not already a segment of the parent's path (data/https/https), it recurs
+    in ``min_labels`` distinct task texts, and it is not a word of GENERIC_ROOTS or
+    more roots. A split keeps its own 2-landmark floor (``min_labels=2``)."""
+    return (term not in parent.split("/") and labels >= min_labels
+            and roots < GENERIC_ROOTS)
+
+
+def _term_roots(lms: Dict[str, dict], primary: Dict[str, str]) -> Dict[str, set]:
+    """term -> the root sectors whose landmarks (by primary sector) hold it."""
+    out: Dict[str, set] = {}
+    for lid, key in primary.items():
+        root = key.split("/", 1)[0]
+        for t in lms[lid]["terms"]:
+            out.setdefault(t, set()).add(root)
+    return out
 
 
 def _default_can_write(channel: int) -> bool:
@@ -271,32 +310,11 @@ def _emit_sector_event(conn, label: str, payload: dict, root: str) -> None:
         logger.warning("[sectors] counter event_skipped label=%s: %s", label, exc)
 
 
-def run_sector_lifecycle(conn, *, now: Optional[float] = None,
-                         can_write: Optional[Callable[[int], bool]] = None) -> Dict[str, list]:
-    """Backfill, then one pass of birth -> closure -> split -> merge -> dissolve.
-    COMPUTED and LOGGED: the decisions update the shadow tables and emit SECTOR_*
-    events; no reader consumes them. Idempotent: a second pass over the same rows
-    makes no transition. Run from maintenance - never on the answer path.
-
-    ``can_write(channel) -> bool`` is the ``domain`` write lock (default: the seeded
-    registry's)."""
+def _snapshot(conn) -> Tuple[Dict[str, dict], Dict[str, dict], Dict[str, set], Dict[str, str]]:
+    """One read of the sector state: (sectors, live landmarks, members, primary sector).
+    The lifecycle pass decides on it and updates it as it goes; the repair reads it."""
     from .landmark import OUTSIDE_EVIDENCE   # the landmark-promotion evidence kinds
-    from .kyudo import LANDMARK_TRUST_CAP
 
-    now = time.time() if now is None else now
-    can_write = can_write or _default_can_write
-    out: Dict[str, list] = {k: [] for k in ("born", "proven", "split", "merged", "dissolved")}
-    out["backfill"] = [backfill_landmark_sectors(conn)]   # type: ignore[assignment]
-    # Events leave AFTER the pass's own writes: the event lane commits on this
-    # connection, and a commit in the middle of the pass would split its writes.
-    pending: List[Tuple[str, dict, str]] = []
-
-    def emit(label: str, payload: dict, root: str) -> None:
-        pending.append((label, payload, root))
-
-    app_flush()
-
-    # -- snapshot (one read; the pass decides on it and updates it as it goes) ----------
     sectors: Dict[str, dict] = {r[0]: {"parent": r[1], "depth": r[2], "status": r[3], "created": r[4]}
                                 for r in conn.execute(
         "SELECT sector_key, parent_key, depth, status, created_at FROM mycelium_sectors")}
@@ -317,6 +335,7 @@ def run_sector_lifecycle(conn, *, now: Optional[float] = None,
             kinds = set()
         lms[lid] = {"label": label, "session": ref or "", "tier": tier or "candidate",
                     "outside": bool(kinds & OUTSIDE_EVIDENCE), "terms": _terms(label),
+                    "text": _clean_label(label),
                     "channel": channel_of.get(ref or "", _LEGACY_CHANNEL)}
     members: Dict[str, set] = {}
     primary: Dict[str, str] = {}
@@ -328,6 +347,40 @@ def run_sector_lifecycle(conn, *, now: Optional[float] = None,
         members.setdefault(key, set()).add(lid)
         if w > best_w.get(lid, -1.0) or (w == best_w.get(lid) and key < primary.get(lid, "~")):
             best_w[lid], primary[lid] = w, key
+    return sectors, lms, members, primary
+
+
+def run_sector_lifecycle(conn, *, now: Optional[float] = None,
+                         can_write: Optional[Callable[[int], bool]] = None) -> Dict[str, list]:
+    """Backfill, then one pass of birth -> closure -> split -> merge -> dissolve.
+    COMPUTED and LOGGED: the decisions update the shadow tables and emit SECTOR_*
+    events; no reader consumes them. Idempotent: a second pass over the same rows
+    makes no transition. Run from maintenance - never on the answer path.
+
+    ``can_write(channel) -> bool`` is the ``domain`` write lock (default: the seeded
+    registry's)."""
+    from .kyudo import LANDMARK_TRUST_CAP
+
+    now = time.time() if now is None else now
+    can_write = can_write or _default_can_write
+    out: Dict[str, list] = {k: [] for k in ("born", "proven", "split", "merged", "dissolved")}
+    out["backfill"] = [backfill_landmark_sectors(conn)]   # type: ignore[assignment]
+    # Events leave AFTER the pass's own writes: the event lane commits on this
+    # connection, and a commit in the middle of the pass would split its writes.
+    pending: List[Tuple[str, dict, str]] = []
+
+    def emit(label: str, payload: dict, root: str) -> None:
+        pending.append((label, payload, root))
+
+    app_flush()
+
+    # -- snapshot (one read; the pass decides on it and updates it as it goes) ----------
+    sectors, lms, members, primary = _snapshot(conn)
+    term_roots = _term_roots(lms, primary)
+
+    def word_ok(parent: str, term: str, ids: Iterable[str], min_labels: int = BIRTH_MIN_LABELS) -> bool:
+        return term_can_name_child(parent, term, len({lms[i]["text"] for i in ids}),
+                                   len(term_roots.get(term, ())), min_labels)
 
     def root_of(key: str) -> str:
         return key.split("/", 1)[0]
@@ -383,6 +436,8 @@ def run_sector_lifecycle(conn, *, now: Optional[float] = None,
         for sessions, term in ranked:
             if sessions < BIRTH_MIN_SESSIONS or taken >= BIRTHS_PER_PARENT:
                 break
+            if not word_ok(parent, term, by_term[term]):
+                continue   # a path segment, one repeated task, or a word of every root
             taken += 1
             key = make_candidate(parent, term, f"recurrence:{sessions}sessions", by_term[term])
             if key:
@@ -423,7 +478,8 @@ def run_sector_lifecycle(conn, *, now: Optional[float] = None,
             if o == minority:
                 for t in lms[i]["terms"]:
                     by_term.setdefault(t, set()).add(i)
-        for term in sorted((t for t, ids in by_term.items() if len(ids) >= 2),
+        for term in sorted((t for t, ids in by_term.items()
+                            if len(ids) >= 2 and word_ok(key, t, ids, min_labels=2)),
                            key=lambda t: (-len(by_term[t]), t)):
             child = make_candidate(key, term, "split", by_term[term])
             if child:
@@ -470,3 +526,53 @@ def run_sector_lifecycle(conn, *, now: Optional[float] = None,
                     len(out["born"]), len(out["proven"]), len(out["split"]),
                     len(out["merged"]), len(out["dissolved"]))
     return out
+
+
+def fold_noise_children(conn, *, dry_run: bool = True, now: Optional[float] = None) -> List[dict]:
+    """Repair (offline, human-run): fold every live child sector whose word fails
+    ``term_can_name_child`` back into its parent - status ``dissolved`` with
+    ``alias_of`` = the parent, the dissolve path the lifecycle already uses, so an old
+    address still resolves. No row is deleted. Deepest first, so a grandchild that
+    repeats its parent's word goes with it. Idempotent: a second run finds nothing.
+
+    Returns the plan: ``[{sector, parent, status, labels, roots, why}]``. With
+    ``dry_run`` nothing is written."""
+    ensure_sector_tables(conn)
+    app_flush()
+    now = time.time() if now is None else now
+    sectors, lms, members, primary = _snapshot(conn)
+    term_roots = _term_roots(lms, primary)
+    plan: List[dict] = []
+    for key in sorted((k for k, s in sectors.items()
+                       if s["depth"] > 0 and s["status"] in ("candidate", "proven")),
+                      key=lambda k: (-sectors[k]["depth"], k)):
+        parent, term = key.rsplit("/", 1)
+        # only the members that hold the word, as at birth (by_term): a word taken from a
+        # path segment is held by none of them once the path is cleaned away
+        ids = {i for i in members.get(key, ()) if i in lms and term in lms[i]["terms"]}
+        labels = len({lms[i]["text"] for i in ids})
+        roots = len(term_roots.get(term, ()))
+        if term_can_name_child(parent, term, labels, roots):
+            continue
+        why = ("repeats its parent's word" if term in parent.split("/")
+               else f"a word of {roots} roots" if roots >= GENERIC_ROOTS
+               else f"{labels} distinct task text(s)")
+        plan.append({"sector": key, "parent": parent, "status": sectors[key]["status"],
+                     "labels": labels, "roots": roots, "why": why})
+    if dry_run or not plan:
+        return plan
+    for row in plan:
+        app_write(conn, "UPDATE mycelium_sectors SET status = 'dissolved', alias_of = ?, updated_at = ?"
+                        " WHERE sector_key = ?", (row["parent"], now, row["sector"]))
+    app_flush()
+    for row in plan:
+        _emit_sector_event(conn, "SECTOR_DISSOLVED", {
+            "sector": row["sector"], "folded_into": row["parent"], "why": "repair: " + row["why"]},
+            row["sector"].split("/", 1)[0])
+    # A script exits right after this call: wait for the queued events, or they are lost
+    # (measured 2026-11-22: the first real run folded 22 rows and wrote 0 events).
+    from backend.utils.durability_queue import lane
+    if not lane("memory_events").flush(60.0):
+        logger.warning("[sectors] repair events not all written within 60 s")
+    logger.info("[sectors] repair folded=%d noise children", len(plan))
+    return plan

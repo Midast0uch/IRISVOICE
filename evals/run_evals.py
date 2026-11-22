@@ -206,7 +206,11 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
     # ping_interval=None: the library's own keepalive closed the socket (1011)
     # while the backend was busy mid-turn. The server runs its own heartbeat,
     # which is answered below, so liveness is still checked.
-    async with websockets.connect(url, max_size=16 * 1024 * 1024, ping_interval=None) as ws:
+    # open_timeout=60 (2026-11-22, TG-2): the library default is 10 s, and twice the
+    # backend answered the handshake late right after the harness's own store retire
+    # hit "database is locked" - a harness fault that read as a failed recall task.
+    async with websockets.connect(url, max_size=16 * 1024 * 1024, ping_interval=None,
+                                  open_timeout=60) as ws:
         await ws.send(json.dumps({"type": "new_conversation",
                                   "payload": {"conversation_id": conv_id}}))
         # browser_goal too: its prompts only state a goal on a web page. Left
@@ -575,6 +579,11 @@ def _check_patterns(task: dict, text: str) -> list:
     for pattern in task.get("reply_patterns") or []:
         if not re.search(pattern, text, re.IGNORECASE):
             missing.append(pattern)
+    # CLM T5.1: a recall that names the OTHER time frame's / domain's value is wrong,
+    # even when the right one is also in the reply.
+    for pattern in task.get("reject_patterns") or []:
+        if re.search(pattern, text, re.IGNORECASE):
+            missing.append(f"rejected: {pattern}")
     return missing
 
 
@@ -732,14 +741,25 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
             # pattern. The task's REQUIREMENT is unchanged - recall the taught
             # fact - only the fact's identity is per-run.
             if task.get("fact"):
-                _fact = str(task["fact"]).replace("{run}", uuid.uuid4().hex[:4])
+                _run_tag = uuid.uuid4().hex[:4]
+                _fact = str(task["fact"]).replace("{run}", _run_tag)
+                _fact2 = str(task.get("fact2") or "").replace("{run}", _run_tag)
+
+                def _sub(s: str) -> str:
+                    return s.replace("{fact}", _fact).replace("{fact2}", _fact2).replace("{run}", _run_tag)
+
                 task = {
                     **task,
-                    "seed_prompt": task["seed_prompt"].replace("{fact}", _fact),
-                    "reply_patterns": [
-                        p.replace("{fact}", _fact) for p in task.get("reply_patterns", [])
-                    ],
+                    "prompt": _sub(task["prompt"]),
+                    "reply_patterns": [_sub(p) for p in task.get("reply_patterns", [])],
+                    "reject_patterns": [_sub(p) for p in task.get("reject_patterns", [])],
                 }
+                if task.get("seed_prompt"):
+                    task["seed_prompt"] = _sub(task["seed_prompt"])
+                if task.get("seed_prompts"):
+                    task["seed_prompts"] = [_sub(s) for s in task["seed_prompts"]]
+                # the run's own facts, for grading from the view (context_report --dumps)
+                task["_facts"] = [f for f in (_fact, _fact2) if f]
                 log.info("    fresh fact for %s", task["id"])
                 _retired = _retire_taught_facts(str(task["fact"]))
                 if _retired:
@@ -760,13 +780,22 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 # this NEW one. The only way to answer is memory: the facts are
                 # invented for the task and exist nowhere else. A failed seed
                 # fails the task - the fact was never taught.
-                if task.get("seed_prompt"):
+                # CLM T5.1: `seed_prompts` = several EARLIER threads in order (time frame:
+                # the order is the point; domain: similar words in two domains), each in
+                # its own conversation, `seed_gap_s` apart so their timestamps differ.
+                _seeds = ([task["seed_prompt"]] if task.get("seed_prompt") else []) \
+                    + list(task.get("seed_prompts") or [])
+                for _si, _sp in enumerate(_seeds):
+                    if seed_note and seed_note != "seeded":
+                        break
+                    if _si and task.get("seed_gap_s"):
+                        await asyncio.sleep(float(task["seed_gap_s"]))
                     try:
                         seed_conv = _http("POST", "/api/conversations",
                                           {"title": f"[eval-seed] {task['id']}"}, timeout=90)
                         seed_conv_id = seed_conv.get("id") or seed_conv.get("conversation_id")
-                        seed_task = {**task, "id": f"{task['id']}-seed",
-                                     "prompt": task["seed_prompt"]}
+                        seed_task = {**task, "id": f"{task['id']}-seed{_si + 1 if _si else ''}",
+                                     "prompt": _sp}
                         seed_rec = await _run_turn(seed_task, seed_conv_id, None,
                                                    float(task.get("seed_timeout_s", 300)))
                         # An [IRIS error] reply is NOT a taught fact: the first
@@ -864,6 +893,7 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 "notes": notes, "conversation_id": conv_id,
                 "turn_id": rec.get("turn_id"),
                 "seed": seed_note,
+                "facts": task.get("_facts"),
                 "workdir": str(workdir) if workdir else None,
                 "tools": rec["tools"], "web_used": web_used,
                 "permissions": rec["permissions"], "questions": rec["questions"],

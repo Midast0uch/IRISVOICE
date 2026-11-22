@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 # this index is only the write-time lookup.
 _MAX_FAILURE_INDEX = 256
 
+# Growth budget for the DER links in the shared link store (2026-11-22). Measured
+# before the fix: 1,352-3,285 rows/day (copies included; 301 distinct links in all).
+# With session-scoped ids every run adds its own links, so the store needs a bound:
+# 20,000 rows keeps >= 6 days at the measured peak; the readers take <= 3 rows (AVOID
+# walk) and <= 256 (relationship neighbourhood). ~200 bytes a row: ~4 MB. The oldest
+# go first, checked every DER_LINKS_PRUNE_EVERY written links (one COUNT on the
+# source index), on the der_node_links lane - never the answer path.
+DER_LINKS_MAX_ROWS = 20_000
+DER_LINKS_PRUNE_EVERY = 500
+
 
 class DerLinkWriter:
     """Writes DER structural links to the shared mycelium link store.
@@ -56,6 +66,7 @@ class DerLinkWriter:
         # session link failed_like to prior same-class failures in OLDER
         # conversations (the shared store spans threads). FIFO-bounded.
         self._global_failure_index: dict[str, list[tuple[str, str]]] = {}
+        self._written = 0   # links written by this writer (drives the prune check)
 
     # ── internals ─────────────────────────────────────────────────────────
 
@@ -79,13 +90,17 @@ class DerLinkWriter:
             return None
 
     @staticmethod
-    def _node_id(step_id: str) -> str:
-        """Stable link-store identifier for a DER node."""
-        return f"node:{step_id}"
+    def _node_id(step_id: str, session_id: str = "") -> str:
+        """Stable link-store identifier for a DER node: ``node:<session>:<step>``.
+
+        Step ids are PLAN-LOCAL (s1, s2, ...): without the session every plan's s1
+        was ONE node (measured 2026-11-22: 56,325 link rows on 48 targets, 301
+        distinct links). An id with no session known keeps the old form."""
+        return f"node:{session_id}:{step_id}" if session_id else f"node:{step_id}"
 
     # ── structural links ──────────────────────────────────────────────────
 
-    def link_part_of(self, child_step_id: str, parent_step_id: str) -> bool:
+    def link_part_of(self, child_step_id: str, parent_step_id: str, session_id: str = "") -> bool:
         """REQ-19 AC1 (sub-loop containment): child ``part_of`` parent.
 
         Canonical direction ONLY: source=child, target=parent, predicate
@@ -100,8 +115,8 @@ class DerLinkWriter:
         try:
             return bool(
                 ps.link(
-                    self._node_id(child_step_id),
-                    self._node_id(parent_step_id),
+                    self._node_id(child_step_id, session_id),
+                    self._node_id(parent_step_id, session_id),
                     relationship="part_of",
                     source_type="node",
                     target_type="node",
@@ -112,7 +127,7 @@ class DerLinkWriter:
             logger.debug("[der_links] part_of link failed: %s", exc)
             return False
 
-    def link_depends_on(self, step_id: str, prereq_id: str) -> bool:
+    def link_depends_on(self, step_id: str, prereq_id: str, session_id: str = "") -> bool:
         """REQ-19 AC1 (plan dependency): ``step depends_on prereq``."""
         if not step_id or not prereq_id:
             return False
@@ -122,8 +137,8 @@ class DerLinkWriter:
         try:
             return bool(
                 ps.link(
-                    self._node_id(step_id),
-                    self._node_id(prereq_id),
+                    self._node_id(step_id, session_id),
+                    self._node_id(prereq_id, session_id),
                     relationship="depends_on",
                     source_type="node",
                     target_type="node",
@@ -134,7 +149,8 @@ class DerLinkWriter:
             logger.debug("[der_links] depends_on link failed: %s", exc)
             return False
 
-    def link_relevant_to(self, node_step_id: str, branch_node_id: str) -> bool:
+    def link_relevant_to(self, node_step_id: str, branch_node_id: str,
+                         session_id: str = "") -> bool:
         """REQ-5 AC1 / REQ-19 AC2b rule 2: a coupling DECISION is provenance.
 
         Written ONLY when the branch was actually surfaced to the decision —
@@ -150,7 +166,7 @@ class DerLinkWriter:
         try:
             return bool(
                 ps.link(
-                    self._node_id(node_step_id),
+                    self._node_id(node_step_id, session_id),
                     branch_node_id,  # branch ids are already store node ids
                     relationship="relevant_to",
                     source_type="node",
@@ -162,7 +178,7 @@ class DerLinkWriter:
             logger.debug("[der_links] relevant_to link failed: %s", exc)
             return False
 
-    def link_derives_from(self, new_step_id: str, prior_step_id: str) -> bool:
+    def link_derives_from(self, new_step_id: str, prior_step_id: str, session_id: str = "") -> bool:
         """Goal-contract forward amendment (specs/goal-contract-coverage T8).
 
         Canonical direction: source=new contract state, target=prior (frozen)
@@ -177,8 +193,8 @@ class DerLinkWriter:
         try:
             return bool(
                 ps.link(
-                    self._node_id(new_step_id),
-                    self._node_id(prior_step_id),
+                    self._node_id(new_step_id, session_id),
+                    self._node_id(prior_step_id, session_id),
                     relationship="derives_from",
                     source_type="node",
                     target_type="node",
@@ -219,12 +235,12 @@ class DerLinkWriter:
             # ── part_of: sub-loop containment (child -> parent) ─────────
             _parent = getattr(record, "parent_step_id", "") or ""
             if _parent and getattr(item, "is_subloop", False):
-                if self.link_part_of(_step_id, _parent):
+                if self.link_part_of(_step_id, _parent, _sid):
                     written += 1
 
             # ── depends_on: explicit plan dependencies ──────────────────
             for _prereq in getattr(item, "depends_on", None) or []:
-                if _prereq and self.link_depends_on(_step_id, _prereq):
+                if _prereq and self.link_depends_on(_step_id, _prereq, _sid):
                     written += 1
 
             # ── relevant_to: coupling provenance (REQ-5 AC1) ────────────
@@ -235,10 +251,10 @@ class DerLinkWriter:
                 if isinstance(c, dict)
             ]
             for _cid in _cand_ids:
-                if _cid and self.link_relevant_to(_step_id, _cid):
+                if _cid and self.link_relevant_to(_step_id, _cid, _sid):
                     written += 1
             if _chosen and _chosen not in _cand_ids:
-                if self.link_relevant_to(_step_id, _chosen):
+                if self.link_relevant_to(_step_id, _chosen, _sid):
                     written += 1
 
             # ── failed_like: failure-class graph walk (REQ-19 AC3) ──────
@@ -254,10 +270,25 @@ class DerLinkWriter:
                 self.record_failure_class(_sid, _step_id, _fc)
                 written += self.link_failed_like(_sid, _step_id, _fc)
 
+            self._budget(written)
             return written
         except Exception as exc:
             logger.debug("[der_links] write_node_links failed: %s", exc)
             return written
+
+    def _budget(self, written: int) -> None:
+        """Every DER_LINKS_PRUNE_EVERY links, hold the store at DER_LINKS_MAX_ROWS."""
+        before = self._written
+        self._written += max(0, int(written))
+        if self._written // DER_LINKS_PRUNE_EVERY == before // DER_LINKS_PRUNE_EVERY:
+            return
+        ps = self._ensure_store()
+        if ps is None:
+            return
+        try:
+            ps.prune_node_links(DER_LINKS_MAX_ROWS)
+        except Exception as exc:  # noqa: BLE001 - a budget miss is logged, the step is not failed
+            logger.warning("[der_links] link budget prune failed: %r", exc)
 
     # ── failure-class links (REQ-19 AC3) ──────────────────────────────────
 
@@ -298,7 +329,7 @@ class DerLinkWriter:
         if ps is None:
             return 0
         try:
-            _prior: set = set()
+            _prior: set = set()   # (session, step): a step id alone names no node
             for prior_id, prior_class in self._failure_index.get(
                 session_id, []
             ):
@@ -306,19 +337,19 @@ class DerLinkWriter:
                     continue
                 if prior_class != failure_class:
                     continue
-                _prior.add(prior_id)
+                _prior.add((session_id, prior_id))
             # cross-conversation prior same-class failures
             for _psess, _pid in self._global_failure_index.get(
                 failure_class, []
             ):
-                if _pid == step_id:
+                if (_psess, _pid) == (session_id, step_id):
                     continue
-                _prior.add(_pid)
-            for prior_id in sorted(_prior):
+                _prior.add((_psess, _pid))
+            for prior_sess, prior_id in sorted(_prior):
                 try:
                     if ps.link(
-                        self._node_id(step_id),
-                        self._node_id(prior_id),
+                        self._node_id(step_id, session_id),
+                        self._node_id(prior_id, prior_sess),
                         relationship="failed_like",
                         source_type="node",
                         target_type="node",

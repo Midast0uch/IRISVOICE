@@ -51,7 +51,16 @@ COHORT_TASKS = {
     "browser_goal": [f"g{i:02d}" for i in range(1, 5)],
     "browser_data": [f"d{i:02d}" for i in range(1, 5)],
 }
-ARMS = ("off", "on")  # IRIS_WORKBENCH 0 / 1
+ARMS = ("off", "on")  # the arm flag 0 / 1 (--arm-flag, default IRIS_WORKBENCH)
+# CLM TG-2 (specs/clm-memory tasks.md): the no-regression cohort of every CLM gate
+# (coding 8 + research 10 + memory 3, the T0.1 cohort, evals/results/20261111-175400)
+# plus the `context` group (x01-x07), with IRIS_CLM_OFFLOAD flipped per arm.
+NAMED_COHORTS = {
+    "tg2": ["c01", "c03", "c05", "c08", "c10", "c11", "c12", "c15"]
+           + [f"r{i:02d}" for i in range(1, 11)] + ["m01", "m02", "m03"]
+           + [f"x{i:02d}" for i in range(1, 8)],
+    "round6": sum(COHORT_TASKS.values(), []),
+}
 
 
 def _http(method: str, path: str, body: dict | None = None, timeout: float = 30) -> dict:
@@ -126,6 +135,10 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=5, help="rounds per arm (bar needs >= 5)")
     ap.add_argument("--quick", action="store_true", help="1 representative task per cohort")
     ap.add_argument("--tasks", nargs="*", default=None, help="override task ids (bare or full)")
+    ap.add_argument("--cohort", choices=sorted(NAMED_COHORTS), default=None,
+                    help="a named task set (tg2 = the CLM no-regression cohort + context group)")
+    ap.add_argument("--arm-flag", default="IRIS_WORKBENCH",
+                    help="the flag set 0 (off arm) / 1 (on arm); e.g. IRIS_CLM_OFFLOAD for TG-2")
     ap.add_argument("--no-web-toggle", action="store_true",
                     help="leave web mode as-is (runner sets it per browser cohort by default)")
     ap.add_argument("--page-seed", action="store_true",
@@ -149,7 +162,16 @@ def main() -> int:
               file=sys.stderr)
         return 2
 
-    task_ids = _task_ids(args.tasks or sum(COHORT_TASKS.values(), []), args.quick)
+    task_ids = _task_ids(args.tasks or NAMED_COHORTS[args.cohort or "round6"], args.quick)
+    # The values before the gate, restored after it: the flags are ON by default since
+    # 2026-11-22, and the old finally left IRIS_WORKBENCH / IRIS_WB_TWO_CALL at 0.
+    try:
+        before_flags = {k: v for k, v in _http("GET", "/api/eval-flag").items()}
+    except Exception as exc:
+        print(f"[gate] cannot read the flags ({exc}); refusing to run without a restore point",
+              file=sys.stderr)
+        return 2
+    print(f"[gate] arm flag {args.arm_flag}; flags before: {before_flags}", flush=True)
     print(f"[gate] {len(task_ids)} tasks, {args.reps} reps x {len(ARMS)} arms "
           f"= {len(task_ids) * args.reps * len(ARMS)} runs", flush=True)
 
@@ -171,7 +193,7 @@ def main() -> int:
     try:
         for rep in range(1, args.reps + 1):
             for arm in ARMS:
-                _set_flag("IRIS_WORKBENCH", "1" if arm == "on" else "0")
+                _set_flag(args.arm_flag, "1" if arm == "on" else "0")
                 if args.page_seed:
                     # The seed only fires in code mode (on arm); keep it off on the
                     # off arm so the baseline is byte-for-byte the standard gate.
@@ -185,32 +207,12 @@ def main() -> int:
                 result_file = _run_block(task_ids, out_dir, arm, rep)
                 blocks.append({"arm": arm, "rep": rep, "results": [str(result_file)]})
     finally:
-        # Restore the off state so a later manual session is not left in code mode.
-        try:
-            _set_flag("IRIS_WORKBENCH", "0")
-        except Exception as exc:
-            print(f"[gate] WARN could not restore IRIS_WORKBENCH=0: {exc}", file=sys.stderr)
-        if args.page_seed:
+        # Restore every flag to its value before the gate ("" = unset -> "0").
+        for name, value in before_flags.items():
             try:
-                _set_flag("IRIS_WB_PAGE_SEED", "0")
+                _set_flag(name, value if value in ("0", "1") else "0")
             except Exception as exc:
-                print(f"[gate] WARN could not restore IRIS_WB_PAGE_SEED=0: {exc}", file=sys.stderr)
-        if args.self_verify:
-            try:
-                _set_flag("IRIS_WB_SELF_VERIFY", "0")
-            except Exception as exc:
-                print(f"[gate] WARN could not restore IRIS_WB_SELF_VERIFY=0: {exc}", file=sys.stderr)
-        if args.two_call:
-            try:
-                _set_flag("IRIS_WB_TWO_CALL", "0")
-            except Exception as exc:
-                print(f"[gate] WARN could not restore IRIS_WB_TWO_CALL=0: {exc}", file=sys.stderr)
-        if args.see_gather:
-            try:
-                _set_flag("IRIS_WB_SEE_GATHER", "0")
-            except Exception as exc:
-                print(f"[gate] WARN could not restore IRIS_WB_SEE_GATHER=0: {exc}", file=sys.stderr)
-
+                print(f"[gate] WARN could not restore {name}={value!r}: {exc}", file=sys.stderr)
     blocks_file = out_dir / "blocks.json"
     blocks_file.write_text(json.dumps(blocks, indent=1), encoding="utf-8")
     print(f"\n[gate] blocks: {blocks_file}")

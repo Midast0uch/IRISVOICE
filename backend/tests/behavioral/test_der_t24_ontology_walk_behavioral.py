@@ -157,8 +157,10 @@ def test_failed_node_reachable_via_failed_like_walk_over_real_task(shared_store)
 
     # ── THE BEHAVIOR: AVOID recall is a graph walk, not a scan ─────────
     # walk from run 2's node: MUST reach run 1 (same failure class, other thread)
-    prior = recall_failed_like(conn, "s2")
-    assert any(p.get("node_id") == "node:s1" for p in prior), (
+    # 2026-11-22: a node is named by its session (node:<session>:<step>); the walk
+    # still crosses conversations: run 2 (session-B) reaches run 1 (session-A).
+    prior = recall_failed_like(conn, "s2", session_id="session-B")
+    assert any(p.get("node_id") == "node:session-A:s1" for p in prior), (
         f"failed_like walk from s2 must reach s1, got: {prior}"
     )
 
@@ -198,7 +200,7 @@ def test_failed_like_walk_is_class_discriminating(shared_store):
     _chain_row(conn, "f_perm", "t1", "permanent fail", "step", "ai", "der")
     _chain_row(conn, "f_rate", "t1", "rate fail", "step", "ai", "der")
 
-    prior_perm = recall_failed_like(conn, "f_perm")
+    prior_perm = recall_failed_like(conn, "f_perm", session_id="sess1")   # session-scoped id (2026-11-22)
     assert all(p.get("target_id") != "node:f_rate" for p in prior_perm), (
         "different-class failure must not be in the permanent walk"
     )
@@ -235,8 +237,9 @@ def test_depends_on_and_part_of_links_land_in_same_store(shared_store):
         "SELECT source_id, target_id, relationship FROM mycelium_pin_links"
     ).fetchall()
     rels = {(s, t, r) for s, t, r in rows}
-    assert ("node:child1", "node:task_root", "part_of") in rels
-    assert ("node:child1", "node:prereq_a", "depends_on") in rels
+    # 2026-11-22: session-scoped node ids (der_links._node_id)
+    assert ("node:sess1:child1", "node:sess1:task_root", "part_of") in rels
+    assert ("node:sess1:child1", "node:sess1:prereq_a", "depends_on") in rels
 
 
 def test_failed_like_with_no_prior_failure_is_skipped_not_error(shared_store):
