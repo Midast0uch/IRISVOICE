@@ -1,6 +1,7 @@
 # Live context, strand contents, and the galaxy cortex — design plan (proposal)
 
-Status: PROPOSAL for the owner, 2026-11-22. Nothing here is built. It extends
+Status: **FINAL DESIGN** - owner decisions 2026-11-22 (§7 resolved, §8-§10). Nothing here is
+built yet; the build order is §6. Where an earlier section and §8-§10 differ, §8-§10 win. It extends
 `MEMORY-INTERFACE.md` (the final interface design) and `specs/clm-memory/` (CLM, the live view of
 the model's context). Every visual below is tied to a real value; nothing is decoration.
 
@@ -33,11 +34,14 @@ The owner's asks (2026-11-22):
   lists what was asked and the steps: tool, what it acted on, its purpose line, success or failure.
   That record already exists in the memory and survives. The exact output of a step opens on
   click, while the chat record still keeps it.
-- **The orb becomes a small universe.** Each territory (topic) becomes a galaxy of points. The
-  claims are its bright star clusters. Where two territories share claims, a tidal stream of stars
-  joins them: the galaxies intertwine. A new claim is a knot of stars that brightens as it forms
-  (emerging). Fading memory drifts out to the halo. At the centre, the nucleus is what IRIS has on
-  its mind right now: the live context, the same blocks the corridor band shows.
+- **The orb becomes a small universe ("A + C", §8).** The whole memory is one spiral galaxy;
+  each root sector is an arm, and young or side sectors are satellite galaxies fed by tidal
+  streams of the claims they share. The claims are bright star clusters on the arms. They are
+  joined by curved, branching hyphae that follow the arm and light up only when a recall uses
+  them - the mycelium inside the galaxy. A new claim is a knot of stars that brightens as it
+  forms (emerging); fading memory drifts out; pins are the one thing that stays still (§10).
+  At the centre, the nucleus is what IRIS has on its mind right now: the live context, the same
+  blocks the corridor band shows. The coordinate spaces sit inside each sector (§9.2).
 
 ---
 
@@ -160,9 +164,14 @@ Note for the design doc: §2 says "no organic silhouettes". A galaxy is a form, 
 vine; it is drawn only from points and lines, so it keeps the rule's intent. The owner's ask
 overrides the letter; §2 gets one line when this is accepted.
 
-### 4.2 Three concepts
+### 4.2 Three concepts (the record of what was weighed)
 
-**Option 1 — Interacting galaxies (recommended).** One galaxy per territory, placed where the
+**Decided: "A + C" (§8)** - the one spiral of Option 2 with the satellites and tidal streams of
+Option 1, and the living links of the constellation option as arm-following hyphae lit by use.
+The data-to-visual mapping below still holds per galaxy and per stream; §8-§9 add the hyphae,
+the sector halos and the event grammar. The shader approach of §4.4 is unchanged.
+
+**Option 1 — Interacting galaxies.** One galaxy per territory, placed where the
 territory sits on the skin today, tilted to face outward.
 
 | Memory | Galaxy |
@@ -189,10 +198,11 @@ not meet except at the nucleus.
 stars; their evidence links are thin constellation lines; territories are soft nebula tints behind.
 Closest to today's line work and the cheapest on the GPU. It is the least alive of the three.
 
-Recommendation: **Option 1.** It is the only one where the structure of the memory (topics that
-share knowledge) becomes the drama of the picture (galaxies that pull on each other). It keeps the
-"inside a territory" dive: you dive into a galaxy and the room scale (§3.2 of the interface) makes
-its star field almost infinite.
+The first recommendation was Option 1; after three rounds of moving mockups the owner chose
+A + C. It keeps what Option 1 was for - topics that share knowledge pull on each other through
+streams - and adds the clarity of one spiral and links that show use. The "inside a sector"
+dive stays: you dive into an arm region and the room scale (§3.2 of the interface) makes its
+star field almost infinite.
 
 ### 4.3 The nucleus: the live context
 
@@ -252,27 +262,32 @@ It becomes the nucleus:
 | W1 | (B) strand steps: `surface_queries.strand()` and the snapshot's episode rows carry `{tool, target ≤ 80, description ≤ 120, success}` (from `tool_sequence`, ≤ 12 per episode); strand card, braid hover, corridor task cards show the step lines; `GET /api/memory/tool-result` for the click | yes (read only) | hovering a strand on the timeline names its steps without opening chat; cold snapshot time unchanged within S121 | tool output in the snapshot; a summariser model call; search over tool output |
 | W2 | (A data) `fill` in the three CLM payloads; `ctx_tokens`, `ctx_window` on `der_fan_traces` (lane write) + the same ALTER in the inheritance migration; `context_gauge` live tap; the strand's `context` series | yes | a TG-2 small-model run records per-step fill with real variance (not one constant, not all at a clamp) and its edits carry `fill` | storing the view's contents; new event labels; a `live_view` table |
 | W3 | (A visual) the corridor band, shards, return sparks, glitch, calm line; timeline fill rings and notches; the nucleus motes fed live | no | a replay of a TG-2 small conversation draws its edits at the right steps; a cloud conversation draws the calm band and its true line; fps within budget | per-token detail; animating every block in a long run |
-| W4 | (C) the galaxy cortex, Option 1 (or the owner's choice), first behind `?cortex=galaxy` on the REAL memory so the owner can compare, then the default; the old forest/mist/arbor code removed in the same change that makes it default | no | the owner chooses after seeing it on real memory; ≥ 28 fps at DPR 1.6 on this machine; brightness flat over 10 minutes; the old tissue code gone | a second engine; a bloom pipeline; stars that stand for nothing |
+| W4 | (C) the galaxy cortex "A + C" (§8): one spiral (an arm per root sector), satellite galaxies with tidal streams, arm-following hyphae lit by use, sector halos of the seven spaces (§9.2), pins (§10); first behind `?cortex=galaxy` on the REAL memory so the owner can compare, then the default; the old forest/mist/arbor code removed in the same change that makes it default | no | the owner chooses after seeing it on real memory; ≥ 28 fps at DPR 1.6 on this machine; brightness flat over 10 minutes; the old tissue code gone | a second engine; a bloom pipeline; stars that stand for nothing |
 
 W1 is the cheapest and most useful now. W2 needs the TG-2 small-model runs (they are the only runs
 that make CLM edits) to prove its values.
 
 ---
 
-## 7. Open questions for the owner
+## 7. Questions - resolved (2026-11-22)
 
-1. **Galaxy concept:** Option 1 interacting galaxies, Option 2 one spiral, or Option 3
-   constellations? Recommended: 1.
-2. **Store the fill per step** (two columns on `der_fan_traces`, plus the payload float)?
-   Recommended: yes; without it the band exists only at the 7 edits.
-3. **Show the exact tool output on click** (plaintext `conversations.db`)? Recommended: yes, on
-   click only, with the one-line plaintext note.
-4. **Eval runs evict the user's tool outputs** (4,000 rows store-wide, ~4 days). Evict eval and
-   dev conversations first? Recommended: yes (a change to the eviction order, same caps).
-5. **Inside the orb:** replace the neuron forest, the mist and the arbors, and keep the skin, wire,
-   rings and pupil? Recommended: yes.
-6. **Order:** W0 → W1 first (strand contents), then W2 → W3 (context), then W4 (galaxy)?
-   Recommended: yes; W4 can start in parallel after the owner picks the concept.
+1. **Galaxy concept:** RESOLVED by the owner - "A + C" with arm-following hyphae lit by use (§8).
+2. **Store the fill per step:** RESOLVED - yes. The owner asked for the progression of the
+   context edits per strand over time, which needs the per-step fill (W2).
+3. **Show the exact tool output on click:** RESOLVED - yes, on click only, with the one-line
+   "stored as plain text on this machine" note. The owner asked to see what a strand was about
+   without the chat dropdown; the output is already on this machine, shown only to its owner.
+4. **Eval runs evict the user's tool outputs:** TAKEN AS RECOMMENDED - eval and dev
+   conversations are evicted first, same caps (part of W1; the owner may reverse it).
+5. **Inside the orb:** RESOLVED - replace the neuron forest, mist and arbors; keep the skin,
+   wire, rings, pupil and the claim crystal (the owner: keep the overall aesthetic).
+6. **Order:** TAKEN AS RECOMMENDED - W0 → W1 (strand contents), W2 → W3 (context), W4 (galaxy);
+   W4 may start in parallel now that the concept is chosen.
+7. **No spaces lens** (owner): the spaces are drawn inside each sector (§9.2).
+
+Done since this plan was written: the DER step links are session-scoped, written once and
+bounded, so pin tethers can be read from `mycelium_pin_links` again (only rows whose source is
+a real `pin_id`, §10); the noise child sectors are folded (§8.6).
 
 ---
 
@@ -376,6 +391,8 @@ topic by `resolve_topic_domain(title)`, else the nucleus side of `general`.
   surface hides eval pins by default like eval strands, so a real store shows "no pins yet".
 - `mycelium_pin_links`: 56,325 rows and NONE has a pin as its source. They are the DER step
   lineage links of §F13.3 (`node:s1`, `node:s2`, … - plan-local step ids with no session
-  scope), grown from 16,578 (2026-10-19) to 56,325, onto 48 distinct targets. Tethers must not
-  be read from this table until the lineage ids are session-scoped and the table has a growth
-  budget; the view draws a pin's tethers only from links whose source is a real `pin_id`.
+  scope), grown from 16,578 (2026-10-19) to 56,325, onto 48 distinct targets.
+- **Fixed the same day:** DER links are `node:<session>:<step>`, a link is written once (unique
+  index `idx_pin_links_unique`), DER links have a 20,000-row budget, and the 56,024 copies were
+  removed (306 distinct rows left). The view still draws a pin's tethers only from links whose
+  source is a real `pin_id`.
