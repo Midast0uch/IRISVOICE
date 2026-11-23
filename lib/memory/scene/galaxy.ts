@@ -120,37 +120,66 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {   // l
   const groups = new Map();
   claims.forEach((c, i) => { const gg = groups.get(c.reg) || []; gg.push(i); groups.set(c.reg, gg); });
   const linkW = new Map(); links.forEach(l => { if (l.a !== l.b) linkW.set(l.a + '|' + l.b, (linkW.get(l.a + '|' + l.b) || 0) + 0.3 + (l.w || 0)); });
+  // STAR SYSTEMS (owner, 2026-11-23: "some organisation of how things are clustered - I just see dots everywhere"):
+  // the suns of a galaxy that link to each other form a system (weighted label propagation on the link graph, heavy
+  // suns first, at most 7 systems; a small group joins the system it links to most, else its suns stay loose in the
+  // outskirts). The heaviest system sits at the core, the others outward on a golden spiral by mass; inside a system
+  // its heaviest sun is the centre and the rest settle round it (links pull, mass pushes). Loose suns: the outskirts.
+  const systems = arms.map(() => []);
   for (const [reg, idx] of groups) {
     const a = reg >= 0 && reg < arms.length ? arms[reg] : null;
     if (!a) { idx.forEach(ci => { pos[ci] = new V3(gauss(), gauss(), gauss()).multiplyScalar(R * 0.05); place[ci] = { halo: true }; }); continue; }
     const n = idx.length, at = new Map(idx.map((ci, i) => [ci, i]));
-    const m = idx.map(ci => Math.max(0.5, claims[ci].mass || 1)), mMax = Math.max(...m);
-    const order = idx.map((_, i) => i).sort((p, q) => (claims[idx[q]].born || 0) - (claims[idx[p]].born || 0));
+    const m = idx.map(ci => Math.max(0.5, claims[ci].mass || 1)), mMax = Math.max(...m), totalM = m.reduce((x, y) => x + y, 0);
+    const E = [], adj = idx.map(() => []);
+    linkW.forEach((w, key) => { const [x, y] = key.split('|').map(Number), ia = at.get(x), ib = at.get(y);
+      if (ia != null && ib != null && ia !== ib) { E.push([ia, ib, w]); adj[ia].push([ib, w]); adj[ib].push([ia, w]); } });
+    const lab = idx.map((_, i) => i), ord = idx.map((_, i) => i).sort((p, q) => m[q] - m[p]);
+    for (let it = 0; it < 20; it++) { let ch = 0;
+      ord.forEach(i => { if (!adj[i].length) return; const sc = new Map();
+        adj[i].forEach(([j, w]) => sc.set(lab[j], (sc.get(lab[j]) || 0) + w * (0.5 + m[j] / mMax)));
+        let best = lab[i], bs = sc.get(lab[i]) || 0; sc.forEach((v, l) => { if (v > bs + 1e-9) { bs = v; best = l; } });
+        if (best !== lab[i]) { lab[i] = best; ch++; } });
+      if (!ch) break; }
+    const byL = new Map(); idx.forEach((_, i) => { const gg = byL.get(lab[i]) || []; gg.push(i); byL.set(lab[i], gg); });
+    const big = [...byL.values()].map(mem => ({ mem, mass: mem.reduce((x, i) => x + m[i], 0) })).sort((p, q) => q.mass - p.mass)
+      .filter((s0, k) => k < 7 && s0.mem.length >= 3);
+    const sysOf = new Array(n).fill(-1); big.forEach((s0, k) => s0.mem.forEach(i => { sysOf[i] = k; }));
+    for (let i = 0; i < n; i++) if (sysOf[i] < 0) { const sc = new Array(big.length).fill(0);
+      adj[i].forEach(([j, w]) => { if (sysOf[j] >= 0) sc[sysOf[j]] += w; }); let bk = -1, bs = 0; sc.forEach((v, k) => { if (v > bs) { bs = v; bk = k; } });
+      if (bk >= 0) { sysOf[i] = bk; big[bk].mem.push(i); } }
+    const NS0 = big.length;
+    big.forEach((s0, k) => { const r = k === 0 ? 0 : 0.32 + 0.58 * Math.sqrt(k / Math.max(1, NS0 - 1)), th = a.ph + k * 2.399963;
+      s0.cx = Math.cos(th) * r; s0.cz = Math.sin(th) * r; s0.r = 0.1 + 0.28 * Math.sqrt(s0.mass / totalM);
+      s0.sun = s0.mem.reduce((bb, i) => (m[i] > m[bb] ? i : bb), s0.mem[0]); });
     const P = new Array(n);
-    order.forEach((i, k) => { const t = n > 1 ? k / (n - 1) : 0, r = 0.06 + 0.9 * Math.sqrt(t), th = k * 2.399963 + a.ph;
-      P[i] = new V3(Math.cos(th) * r, gauss() * 0.06, Math.sin(th) * r); });
-    const E = []; linkW.forEach((w, key) => { const [x, y] = key.split('|').map(Number), ia = at.get(x), ib = at.get(y); if (ia != null && ib != null) E.push([ia, ib, w]); });
-    const flat = 0.25 + 0.6 * (a.n ? (stat[reg].proven / Math.max(1, stat[reg].n)) : 0.3), F = P.map(() => new V3());
-    for (let it = 0; it < (n > 150 ? 70 : 110); it++) {
-      F.forEach(f => f.set(0, 0, 0));
-      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-        const dx = P[i].x - P[j].x, dy = P[i].y - P[j].y, dz = P[i].z - P[j].z, L2 = Math.max(dx * dx + dy * dy + dz * dz, 4e-4);
-        const k = 0.0016 * (0.6 + (m[i] * m[j]) / (mMax * mMax) * 2.2) / L2;   // heavy suns keep their space
-        F[i].x += dx * k; F[i].y += dy * k; F[i].z += dz * k; F[j].x -= dx * k; F[j].y -= dy * k; F[j].z -= dz * k;
+    big.forEach(s0 => {
+      const mem = s0.mem, mm = new Map(mem.map((i, k) => [i, k])), nn = mem.length, mx = Math.max(...mem.map(i => m[i]));
+      const L = mem.map((i, k) => (i === s0.sun ? new V3() : new V3(Math.cos(k * 2.4) * Math.sqrt(k / nn), gauss() * 0.08, Math.sin(k * 2.4) * Math.sqrt(k / nn))));
+      const EE = E.filter(([i, j]) => mm.has(i) && mm.has(j)).map(([i, j, w]) => [mm.get(i), mm.get(j), w]), F = L.map(() => new V3());
+      for (let it = 0; it < (nn > 120 ? 50 : 80); it++) {
+        F.forEach(f => f.set(0, 0, 0));
+        for (let p2 = 0; p2 < nn; p2++) for (let q = p2 + 1; q < nn; q++) {
+          const dx = L[p2].x - L[q].x, dy = L[p2].y - L[q].y, dz = L[p2].z - L[q].z, L2 = Math.max(dx * dx + dy * dy + dz * dz, 4e-4);
+          const k2 = 0.004 * (0.6 + (m[mem[p2]] * m[mem[q]]) / (mx * mx) * 2) / L2;
+          F[p2].x += dx * k2; F[p2].y += dy * k2; F[p2].z += dz * k2; F[q].x -= dx * k2; F[q].y -= dy * k2; F[q].z -= dz * k2; }
+        EE.forEach(([p2, q, w]) => { const d = L[q].clone().sub(L[p2]), l = d.length() || 1e-3, f = 0.06 * Math.min(3, w) * (l - 0.15) / l;
+          F[p2].addScaledVector(d, f); F[q].addScaledVector(d, -f); });
+        for (let p2 = 0; p2 < nn; p2++) { if (mem[p2] === s0.sun) { L[p2].set(0, 0, 0); continue; }
+          F[p2].addScaledVector(L[p2], -0.03); F[p2].y -= L[p2].y * 0.15; const l = F[p2].length(); if (l > 0.05) F[p2].multiplyScalar(0.05 / l); L[p2].add(F[p2]); }
       }
-      E.forEach(([i, j, w]) => { const d = P[j].clone().sub(P[i]), L = d.length() || 1e-3, f = 0.05 * Math.min(3, w) * (L - 0.1) / L;
-        F[i].addScaledVector(d, f); F[j].addScaledVector(d, -f); });
-      for (let i = 0; i < n; i++) { const g0 = 0.018 * (0.4 + 1.2 * m[i] / mMax);   // the heavy sink to the core
-        F[i].x -= P[i].x * g0; F[i].z -= P[i].z * g0; F[i].y -= P[i].y * (g0 + 0.12 * flat);
-        const L = F[i].length(); if (L > 0.05) F[i].multiplyScalar(0.05 / L); P[i].add(F[i]); }
-    }
-    const rs = P.map(v => Math.hypot(v.x, v.z)).sort((p, q) => p - q), r90 = rs[Math.floor(rs.length * 0.9)] || 1;
-    for (let i = 0; i < n; i++) {
-      const v = P[i].multiplyScalar(1 / Math.max(0.05, r90)), r = Math.hypot(v.x, v.z), tw = a.tight * 0.55 * r;   // the differential turn
-      const c = Math.cos(tw), sn = Math.sin(tw), x = (v.x * c - v.z * sn) * a.rad * 0.9, z = (v.x * sn + v.z * c) * a.rad * 0.9, y = v.y * a.rad * 0.9;
-      const ci = idx[i]; pos[ci] = toWorld(a, x, y, z);
-      place[ci] = { arm: reg, j: 0, r: clamp(Math.hypot(x, z) / a.rad, 0, 1.4), th: Math.atan2(z, x), y, x, z, mass: m[i] / mMax };
-    }
+      const rmax = Math.max(0.05, ...L.map(v => v.length()));
+      L.forEach((v, k) => { v.multiplyScalar(s0.r / rmax); P[mem[k]] = new V3(s0.cx + v.x, v.y, s0.cz + v.z); });
+    });
+    const loose = idx.map((_, i) => i).filter(i => sysOf[i] < 0).sort((p, q) => (claims[idx[q]].born || 0) - (claims[idx[p]].born || 0));
+    loose.forEach((i, k) => { const r = 0.72 + 0.3 * (loose.length > 1 ? k / (loose.length - 1) : 0.5), th = a.ph + k * 2.399963 + 1.1;
+      P[i] = new V3(Math.cos(th) * r, gauss() * 0.05, Math.sin(th) * r); });
+    const flatK = 1.1 - 0.6 * (stat[reg].n ? stat[reg].proven / stat[reg].n : 0.3), turn = v => { const r = Math.hypot(v.x, v.z), tw = a.tight * 0.4 * r, c = Math.cos(tw), sn = Math.sin(tw);
+      return [(v.x * c - v.z * sn) * a.rad * 0.92, v.y * a.rad * 0.92 * flatK, (v.x * sn + v.z * c) * a.rad * 0.92]; };
+    for (let i = 0; i < n; i++) { const [x, y, z] = turn(P[i]), ci = idx[i]; pos[ci] = toWorld(a, x, y, z);
+      place[ci] = { arm: reg, j: 0, r: clamp(Math.hypot(x, z) / a.rad, 0, 1.4), th: Math.atan2(z, x), y, x, z, mass: m[i] / mMax, sys: sysOf[i], sun: sysOf[i] >= 0 && big[sysOf[i]].sun === i }; }
+    big.forEach((s0, k) => { const [x, , z] = turn(new V3(s0.cx, 0, s0.cz));
+      systems[reg].push({ id: k, reg, x, z, c: toWorld(a, x, 0, z), r: s0.r * a.rad * 0.92, members: s0.mem.map(i => idx[i]), sun: idx[s0.sun], mass: s0.mass / totalM }); });
   }
   // §9.2 a domain's halo: seven orbits in its galaxy's plane, beside it; reg -1 = the nucleus side
   const HALO_R = R * 0.05;
@@ -182,7 +211,7 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {   // l
   return { GR, HH, R, arms, sats: [], pos, place, tilt: new THREE.Quaternion(), posWorld: pos.map(p => (p ? p.clone() : p)),
     shellR, toWorld, spiralLocal, HALO_R, hasHalo, haloCentre: reg => haloFrame(reg).c, haloOrbit: orbit, haloOrbitLocal: orbit,
     haloQ: reg => { const a = galOf(reg); return a ? a.q.clone() : new THREE.Quaternion(); },
-    pinAt, labelAt, viewOf, pathBetween, related, S, DIAL_R, seq };
+    pinAt, labelAt, viewOf, pathBetween, related, S, DIAL_R, seq, systems };
 }
 
 const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(reg-foc)<.5?1.2:(reg<-.5?.55:.22));}
@@ -210,7 +239,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   const { GR, HH, arms, pos, place, shellR, toWorld, spiralLocal } = layout;
   const sats = [];
   const g = new THREE.Group();
-  const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 },
+  const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 }, uIso: { value: 0 },
     uNearZ: { value: 0 }, uSpan: { value: R * 2 } };
   const disposables = [];
   const W = new THREE.Color('#ffffff'), WARM = new THREE.Color('#ffe2b8'), COOL = new THREE.Color('#bfe0ff');
@@ -306,6 +335,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
             for (let j = 0; j < 48; j++) { const th = j / 48 * TAU; put(toWorld(a, pl.x + Math.cos(th) * rr, pl.y, pl.z + Math.sin(th) * rr), col.clone().lerp(W, 0.4), 0.09, 0.8, a.reg); } } }
         if (i === 0) spikes.push({ p: p.clone(), c: col.clone().lerp(W, 0.5), a: 0.35, sz: a.rad / R * 6, reg: a.reg }); });
       glow(a.c, a.col, 0.04, a.rad / R * 24, a.reg);   // the faint light of the whole galaxy
+      (layout.systems[a.reg] || []).forEach(sy => glow(sy.c, sunCol(a, sy.sun).lerp(a.col, 0.5), 0.05 + 0.09 * Math.sqrt(sy.mass), sy.r / R * 14, a.reg));   // a system's light
     });
     addPoints(P, C, A, PH, SZ, RG);
   }
@@ -334,30 +364,31 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
 
   // ── the claims ARE stars of their galaxy: a core in the domain's tint; a ring = proven (solid) or still learning
   //    (dashed); brightness = sync; they grow as you go inside (uIn); hover and focus ring them white ──────────────
-  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel;attribute float aIdx,aProven,aSync,aReg,aPh,aMass;attribute vec3 aC;
+  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso;attribute float aIdx,aProven,aSync,aReg,aPh,aMass,aState;attribute vec3 aC;
     varying vec3 vC;varying float vA,vP,vH,vS;
     ${FOCUS_GLSL}
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
       vC=aC;vP=aProven;vH=h;vS=sel;float tw=.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
-      vA=(.3+.55*aSync)*tw*uVis*focusDim(aReg,uFoc)*(1.+.6*max(h,sel));
+      float iso=uIso<.5?1.:(abs(aState-uIso)<.5?1.4:.08);
+      vA=(.3+.55*aSync)*mix(.4,1.,aMass)*tw*uVis*focusDim(aReg,uFoc)*iso*(1.+.6*max(h,sel));
       float sz=(1.3+1.3*aSync)*(.75+1.1*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel));
       gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(8.+5.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
   const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     float core=smoothstep(.17,.0,d),glow=smoothstep(.5,.0,d)*.28,ang=atan(c.y,c.x);
-    float ring=smoothstep(.045,.0,abs(d-.36))*mix(step(0.,sin(ang*10.))*.55,1.,vP);
-    float hi=max(vH,vS);vec3 col=mix(vC,vec3(1.),.35+.4*hi);
-    gl_FragColor=vec4(col,(core*.95+glow+ring*(.45+.55*hi))*vA);}`;
+    float hi=max(vH,vS),ring=smoothstep(.045,.0,abs(d-.38))*hi;   // the ring: only on hover / focus
+    vec3 col=mix(vC,vec3(1.),.3+.4*hi);
+    gl_FragColor=vec4(col,(core*.95+glow*1.3+ring*.9)*vA);}`;
   {
-    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [];
+    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [], ST = [];
     pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {}, info = claimInfo[k] || {}, a = pl.arm != null ? arms[pl.arm] : null;
-      const col = a ? sunCol(a, k) : new THREE.Color('#cfe9f5'); MS.push(pl.mass || 0.3);
+      const col = a ? sunCol(a, k) : new THREE.Color('#cfe9f5'); MS.push(pl.mass || 0.3); ST.push(info.young ? 3 : info.fading ? 4 : info.proven ? 1 : 2);
       P.push(p.x, p.y, p.z); C.push(col.r, col.g, col.b); IX.push(k); PR.push(info.proven ? 1 : 0); SY.push(clamp(info.sync ?? 0.4, 0, 1)); RG.push(a ? a.reg : -1); PH.push(rng()); });
     if (P.length) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
       geo.setAttribute('aIdx', new THREE.Float32BufferAttribute(IX, 1)); geo.setAttribute('aProven', new THREE.Float32BufferAttribute(PR, 1));
       geo.setAttribute('aSync', new THREE.Float32BufferAttribute(SY, 1)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG, 1));
-      geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1)); geo.setAttribute('aMass', new THREE.Float32BufferAttribute(MS, 1));
+      geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1)); geo.setAttribute('aMass', new THREE.Float32BufferAttribute(MS, 1)); geo.setAttribute('aState', new THREE.Float32BufferAttribute(ST, 1));
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: CLAIM_VS, fragmentShader: CLAIM_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
       const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.renderOrder = 2; g.add(o); disposables.push(geo, mat);
     }
@@ -666,5 +697,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   function dispose() { disposables.forEach(d => d.dispose && d.dispose()); }
   function focus(reg) { uni.uFoc.value = reg == null ? -1 : reg; uni.uFocArm.value = reg == null || reg < 0 || !arms[reg] ? -1 : reg; }
   function mark(hov, sel) { uni.uHov.value = hov == null ? -1 : hov; uni.uSel.value = sel == null ? -1 : sel; }
-  return { group: g, update, pulse, dispose, arms, sats, focus, mark };
+  /** the key isolates one landmark state: 1 proven, 2 still learning, 3 new this week, 4 fading; 0 = all */
+  function isolate(k) { uni.uIso.value = k || 0; }
+  return { group: g, update, pulse, dispose, arms, sats, focus, mark, isolate };
 }

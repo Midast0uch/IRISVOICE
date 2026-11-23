@@ -2475,6 +2475,23 @@ function placeDial(show){
     D.el.style.opacity=here?.45:lit===D.reg?1:lit>=0?.3:.78;
     const wd=D.el.offsetWidth;D.el.style.textAlign=right?'left':'right';
     D.el.style.left=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4)+'px';D.el.style.top=y+'px'})}
+// W4 (owner, 2026-11-23: where to look inside a galaxy): its star systems, named from their suns' kind of work (else
+// the heaviest sun's words), at the centre of each system's light; a click goes to that system
+let sysEls=[],sysFor=-2;
+function sysName(sy){const by={};sy.members.forEach(k=>{const w=CLUSTER_WORD[LM[k].cls];if(w)by[w]=(by[w]||0)+1});
+  const top=Object.entries(by).sort((x,y)=>y[1]-x[1])[0];if(top&&top[1]>=sy.members.length*.4)return top[0];
+  const t=String(LM[sy.sun].claim||'').split(/\s+/).slice(0,5).join(' ');return t.length>34?t.slice(0,33)+'…':t+'…'}
+function placeSystems(reg){
+  if(reg!==sysFor){sysEls.forEach(L=>L.el.remove());sysEls=[];sysFor=reg;
+    if(reg>=0&&GAL_LAYOUT&&GAL_LAYOUT.systems[reg])sysEls=GAL_LAYOUT.systems[reg].map(sy=>{const el=document.createElement('div');el.className='rlabel gsys';
+      Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0});
+      el.innerHTML=`<span style="color:#e8f6ff">✦ ${esc(sysName(sy))}</span> <span style="opacity:.55">${fmt(sy.members.length)}</span>`;
+      el.title='a star system: landmarks that link to each other · click to go there';
+      el.addEventListener('click',e=>{e.stopPropagation();setFocusSoma(-1);clearAnno('focus');satellites(-1);cam.targetT.copy(sy.c);cam.distT=clamp(sy.r*3.6,R*.05,R*1.2);cam.idle=0});
+      labelsEl.appendChild(el);return {el,sy}})}
+  const items=[];sysEls.forEach(L=>{const a=project(L.sy.c.clone().add(new V3(0,L.sy.r*.6,0)));if(!a.front){L.el.style.opacity=0;L.el.style.pointerEvents='none';return}items.push({L,a,y:a.y-8})});
+  items.sort((p,q)=>p.y-q.y);for(let i=1;i<items.length;i++)if(Math.abs(items[i].a.x-items[i-1].a.x)<140)items[i].y=Math.max(items[i].y,items[i-1].y+15);
+  items.forEach(({L,a,y})=>{L.el.style.pointerEvents='auto';L.el.style.opacity=.9;const w=L.el.offsetWidth;L.el.style.left=clamp(a.x-w/2,4,innerWidth-w-4)+'px';L.el.style.top=y+'px'})}
 function placeHaloLabels(reg){
   if(!haloLabelEls)haloLabelEls=SPACES.map(sp=>{const el=document.createElement('div');el.className='rlabel';labelsEl.appendChild(el);return {el,sp:sp.id,n:-1}});
   if(!readerEl.parentNode)labelsEl.appendChild(readerEl);
@@ -2556,10 +2573,20 @@ let hintT=null;
 function showHint(){const h=$('hint');h.classList.add('fresh');clearTimeout(hintT);hintT=setTimeout(()=>h.classList.remove('fresh'),7000)}
 function hint(t){const h=$('hint');if(h.innerHTML!==t){h.innerHTML=t;showHint()}}
 // THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
-const KEY=[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
+const KEY=GALAXY?[['claim','a sun · proven'],['learning','a sun · still learning'],['young','a sun · new this week'],['fading','a sun · fading'],
+    ['system','a system · suns that link'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a halo dot · a space it touches']]
+  :[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
 function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
   g.lineWidth=1.6;
+  // the galaxy's own marks: a star in its state's colour, a system's soft light, a halo dot on its orbit
+  const STAR_KEY={claim:['#ffffff','#bfe0ff',1],learning:['#9fe6ff','#3a8fb0',.75],young:['#ffd0e6','#ff8fc4',1],fading:['#ffd9a8','#ffb46b',.85]};
+  if(GALAXY&&STAR_KEY[kind]){const [c0,c1,al]=STAR_KEY[kind],gr=g.createRadialGradient(0,0,0,0,0,13);gr.addColorStop(0,c0);gr.addColorStop(.22,c1);gr.addColorStop(1,'rgba(0,0,0,0)');
+    g.globalAlpha=al;g.fillStyle=gr;g.beginPath();g.arc(0,0,13,0,7);g.fill();g.globalAlpha=.9*al;g.fillStyle=c0;g.beginPath();g.arc(0,0,2.4,0,7);g.fill();return c}
+  if(GALAXY&&kind==='system'){const gr=g.createRadialGradient(0,0,0,0,0,15);gr.addColorStop(0,'rgba(191,224,255,.35)');gr.addColorStop(1,'rgba(191,224,255,0)');
+    g.fillStyle=gr;g.beginPath();g.arc(0,0,15,0,7);g.fill();g.fillStyle='#fff';for(const [x,y,r] of [[0,0,2.6],[-7,4,1.4],[6,-5,1.2],[5,6,1]]){g.beginPath();g.arc(x,y,r,0,7);g.fill()}return c}
+  if(GALAXY&&kind==='node'){g.globalAlpha=.35;g.strokeStyle='#bfe0ff';g.lineWidth=1;g.beginPath();g.arc(0,0,10,0,7);g.stroke();
+    g.globalAlpha=.9;g.fillStyle='#cfe7f2';for(let k=0;k<7;k++){const a=k/7*Math.PI*2;g.beginPath();g.arc(Math.cos(a)*10,Math.sin(a)*10,k%3?1.2:2,0,7);g.fill()}return c}
   if(kind==='claim'||kind==='learning'){const cols=['#ffffff','#5dffb0','#5dffb0','#7fe8ff','#7fe8ff','#8aa3b0'];
     if(kind==='claim')for(let k=0;k<6;k++){const a0=k/6*Math.PI*2,a1=(k+1)/6*Math.PI*2;g.beginPath();g.moveTo(0,0);g.lineTo(Math.cos(a0)*13,Math.sin(a0)*13);g.lineTo(Math.cos(a1)*13,Math.sin(a1)*13);
       g.closePath();g.globalAlpha=.28+.2*Math.cos(k-2.4);g.fillStyle=cols[k];g.fill()}
@@ -2571,7 +2598,11 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
   else{g.globalAlpha=.85;g.strokeStyle='#9fd0e6';g.beginPath();g.arc(0,0,6,0,7);g.stroke();g.fillStyle='#cfe7f2';g.beginPath();g.arc(0,0,1.8,0,7);g.fill()}
   return c}
 let keyFocus=null;
-function setKindFocus(k){keyFocus=k;const kind=k==='learning'?'claim':k;
+const GAL_ISO={claim:1,learning:2,young:3,fading:4};
+function setKindFocus(k){
+  if(galaxy){galaxy.isolate(GAL_ISO[k]||0);if(k in GAL_ISO||k==='system'){keyFocus=k;$('key').classList.toggle('iso',true);
+    document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}}
+  keyFocus=k;const kind=k==='learning'?'claim':k;
   for(const [kk,objs] of Object.entries(KIND_OBJ))for(const o of objs)o.visible=!kind||kk===kind;
   // the rest of the organism steps back while one kind is singled out
   mist.visible=moteObj.visible=!kind;skinMat.uniforms.uSkin.value=kind?.3:1;
@@ -2579,6 +2610,7 @@ function setKindFocus(k){keyFocus=k;const kind=k==='learning'?'claim':k;
   somaCellMat.uniforms.uTier.value=k==='claim'?1:k==='learning'?0:-1;
   $('key').classList.toggle('iso',!!k);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k))}
 const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.filter(l=>l.tier==='candidate').length,pin:PINS.length,
+  young:LM.filter(l=>l.born&&nowS()-l.born<7*86400).length,fading:LM.filter(l=>l.fading).length,system:GAL_LAYOUT?GAL_LAYOUT.systems.reduce((x,y)=>x+y.length,0):0,
   moment:M.meta?.counts?.events||M.events.length,node:NDS.length};
 KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
   a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:fmt(KEY_COUNT[k]||0)}),keyIcon(k));
@@ -3758,6 +3790,7 @@ const _frame=()=>{
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(!galaxy&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
   if(galaxy){placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader();
+    placeSystems(state.lens==='cortex'&&state.inside&&!state.diving&&!cam.tween?state.diveReg:-1);
     placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!cam.tween)}
   else placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
