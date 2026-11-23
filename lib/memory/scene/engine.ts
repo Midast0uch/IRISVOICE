@@ -1479,7 +1479,7 @@ if(PINS.length){
 // W4: the galaxy (its own module); links = the landmark edges, lit by their traversals and by live recalls
 const galaxy=GALAXY&&GAL_LAYOUT?createGalaxy({R,U,layout:GAL_LAYOUT,seed:11,
   links:M.edges.filter(e=>e.a<NL&&e.b<NL).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),
-  claimNodes:CLAIM_NODES,pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
+  claimNodes:CLAIM_NODES,claimInfo:LM.map(l=>({proven:l.tier!=='candidate',sync:syncClaim(l)})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
   halos:[...new Set([...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg),...HALO_COUNTS.keys()])].map(reg=>({reg,counts:HALO_COUNTS.get(reg)||{}}))}):null;
 if(galaxy)cortex.add(galaxy.group);
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
@@ -2311,10 +2311,10 @@ function updateCamera(dt){
     camera.lookAt(cam.look);camera.updateProjectionMatrix();tw.onT&&tw.onT(e);
     if(tw.t>=1){cam.tween=null;tw.done&&tw.done()}return}
   if(cam.mode==='orbit'){
-    cam.idle+=dt;if(!REDUCED&&cam.idle>4&&state.lens==='cortex'&&!state.diving)cam.azT+=dt*.035;
+    cam.idle+=dt;if(!REDUCED&&cam.idle>4&&state.lens==='cortex'&&!state.diving&&!(galaxy&&(state.inside||state.focusSoma>=0||dialHover>=0||state.hoverReg>=0)))cam.azT+=dt*.035;
     const k=1-Math.pow(.0015,dt);cam.az=lerp(cam.az,cam.azT,k);cam.el=lerp(cam.el,cam.elT,k);cam.dist=lerp(cam.dist,cam.distT,k);cam.target.lerp(cam.targetT,k);
     cam.par=Math.min(1,(cam.par??1)+dt*.6); // mouse parallax eases back in after a flight
-    const az=cam.az+mouse.nx*.08*cam.par,el=cam.el+mouse.ny*.05*cam.par;
+    const par=galaxy&&state.inside?0:cam.par,az=cam.az+mouse.nx*.08*par,el=cam.el+mouse.ny*.05*par;
     camera.position.set(cam.target.x+Math.sin(az)*Math.cos(el)*cam.dist,cam.target.y+Math.sin(el)*cam.dist,cam.target.z+Math.cos(az)*Math.cos(el)*cam.dist);
     cam.look.copy(cam.target);camera.lookAt(cam.look)}
   else if(cam.mode==='fly'){
@@ -2454,6 +2454,23 @@ const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
 // W4 (§9.2): inside a sector its halo opens - each space that holds something here names itself (short)
 let haloLabelEls=null;
+let dialHover=-1,dialEls=null;
+function placeDial(show){
+  if(!GAL_LAYOUT)return;
+  if(!dialEls)dialEls=[...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg)].map(reg=>{const el=document.createElement('div');el.className='rlabel gdial';
+    Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0});
+    el.innerHTML=`<span style="color:${domCol(REG[reg])};font-weight:600">● ${esc(domWord(REG[reg]))}</span> <span style="opacity:.6">${fmt((somaByReg[reg]||[]).length)}</span>`;
+    el.title=`${fmt((somaByReg[reg]||[]).length)} claims · ${fmt(M.domCounts[REG[reg]]||0)} moments · click to go in`;
+    el.addEventListener('pointerenter',()=>{dialHover=reg});el.addEventListener('pointerleave',()=>{if(dialHover===reg)dialHover=-1});
+    el.addEventListener('click',e=>{e.stopPropagation();dialHover=-1;dive(reg)});labelsEl.appendChild(el);return {el,reg}});
+  const lit=dialHover>=0?dialHover:state.hoverReg;
+  // names never overlap: per side, in screen order, each at least one line below the one above it
+  const items=[];dialEls.forEach(D=>{const w=show?GAL_LAYOUT.labelAt(D.reg):null,a=w&&project(w);
+    if(!a||!a.front){D.el.style.opacity=0;D.el.style.pointerEvents='none';return}items.push({D,a,right:a.x>innerWidth/2,y:a.y-8})});
+  for(const side of [false,true]){const col=items.filter(o=>o.right===side).sort((p,q)=>p.y-q.y);for(let i=1;i<col.length;i++)col[i].y=Math.max(col[i].y,col[i-1].y+15)}
+  items.forEach(({D,a,right,y})=>{D.el.style.pointerEvents='auto';D.el.style.opacity=lit===D.reg?1:lit>=0?.3:.78;
+    const wd=D.el.offsetWidth;D.el.style.textAlign=right?'left':'right';
+    D.el.style.left=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4)+'px';D.el.style.top=y+'px'})}
 function placeHaloLabels(reg){
   if(!haloLabelEls)haloLabelEls=SPACES.map(sp=>{const el=document.createElement('div');el.className='rlabel';labelsEl.appendChild(el);return {el,sp:sp.id,n:-1}});
   if(!readerEl.parentNode)labelsEl.appendChild(readerEl);
@@ -2743,7 +2760,21 @@ function setLens(l){
     oracle:'hover a sector · what IRIS is learning to decide'}[l]);
 }
 function regionWorld(i,s=R){return regC[i].clone().multiplyScalar(s)}
+// W4 (owner, 2026-11-23: inside, the camera seemed stuck): in the galaxy you ORBIT a pivot - the sector's centre, then
+// the claim you pick. Drag turns round it, the wheel goes closer or further (past the far limit it leaves the sector),
+// shift- or right-drag moves the pivot; the nav bar does the same with buttons.
+function sectorPivot(i){const ks=somaByReg[i]||[];if(!ks.length)return regC[i].clone().multiplyScalar(R*.4);
+  const c=new V3();ks.forEach(k=>c.add(somaPos[k]));return c.multiplyScalar(1/ks.length)}
+function diveGalaxy(i){
+  if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');dialHover=-1;
+  const P=sectorPivot(i),out=P.clone().setY(0).normalize(),end=P.clone().addScaledVector(out,R*.34).add(new V3(0,R*.2,0));
+  const arc=arcTo(camera.position,end.clone().normalize(),Math.max(R*1.6,end.length()),3);
+  tweenPath([camera.position.clone(),...arc,end],[cam.look.clone(),P.clone().multiplyScalar(.3),P.clone().multiplyScalar(.7),P.clone(),P.clone()],
+    52,REDUCED?.01:1.3,{kick:5,done:()=>{cam.mode='orbit';orbitFrom(camera.position,P);state.inside=true;state.diving=false;cam.idle=0;
+      hint('drag · turn round &nbsp; wheel · closer / further &nbsp; shift-drag · move<br>click a claim · read it &nbsp; ← → · walk the arm &nbsp; esc · back out');
+      const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1}})}
 function dive(i){
+  if(galaxy){diveGalaxy(i);return}
   if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');
   const c=regC[i].clone(),lookIn=c.clone().multiplyScalar(-R*.25);
   // one flight: swing round to the region, the cells open as we near, pass through, settle inside
@@ -2894,13 +2925,25 @@ function readStep(dir){if(!state.inside||cam.tween||state.diving)return;const o=
   let i=o.indexOf(state.focusSoma);
   if(i<0){let bd=1e9;o.forEach((k,j)=>{const d=somaPos[k].distanceTo(camera.position);if(d<bd){bd=d;i=j}});i-=dir}   // start beside you
   flyToSoma(o[(i+dir+o.length)%o.length])}
-const readerEl=document.createElement('div');readerEl.className='rlabel';
-Object.assign(readerEl.style,{left:'50%',top:'14px',bottom:'auto',transform:'translateX(-50%)',textAlign:'center',opacity:0,pointerEvents:'none'});
+const readerEl=document.createElement('div');readerEl.className='rlabel gnav';
+Object.assign(readerEl.style,{left:'auto',right:'14px',top:'44px',bottom:'auto',textAlign:'right',opacity:0,pointerEvents:'none',
+  display:'flex',gap:'6px',alignItems:'center',whiteSpace:'nowrap'});
+readerEl.innerHTML=`<button data-g="prev" title="the newer claim (←)">‹</button><b data-g="n"></b><button data-g="next" title="the older claim (→)">›</button>`+
+  `<span style="opacity:.4">|</span><button data-g="in" title="closer (wheel)">+</button><button data-g="out" title="further (wheel)">−</button>`+
+  `<span style="opacity:.4">|</span><button data-g="up" title="back to the whole galaxy (esc)">⤒ galaxy</button>`;
+readerEl.querySelectorAll('button').forEach(b=>Object.assign(b.style,{background:'rgba(127,232,255,.08)',border:'1px solid rgba(127,232,255,.28)',
+  color:'#cdefff',borderRadius:'6px',padding:'1px 8px',font:'inherit',cursor:'pointer'}));
+readerEl.addEventListener('click',e=>{const g=e.target.closest('[data-g]')?.dataset.g;if(!g)return;e.stopPropagation();cam.idle=0;
+  if(g==='prev'||g==='next')readStep(g==='next'?1:-1);
+  else if(g==='in')cam.distT=clamp(cam.distT*.65,R*.025,R*1.7);else if(g==='out')cam.distT=clamp(cam.distT*1.5,R*.025,R*1.7);
+  else if(g==='up'){setFocusSoma(-1);clearAnno('focus');satellites(-1);exitInterior()}});
 let readerKey='';
-function placeReader(){const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex';readerEl.style.opacity=on?.85:0;if(!on)return;
+function placeReader(){const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex';readerEl.style.opacity=on?.92:0;readerEl.style.pointerEvents=on?'auto':'none';if(!on)return;
   const o=readOrder(state.diveReg),i=o.indexOf(state.focusSoma),key=state.diveReg+':'+i;if(key===readerKey)return;readerKey=key;
-  readerEl.innerHTML=`<b>${i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims here`}</b><i>← → walk the arm, newest to oldest · click a claim · esc · back out</i>`}
+  readerEl.querySelector('[data-g="n"]').textContent=i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims · newest → oldest`}
 function flyToSoma(k){
+  if(galaxy&&cam.mode==='orbit'){setFocusSoma(k);cam.targetT.copy(somaWorld(k));cam.distT=clamp(cam.distT,R*.05,R*.14);cam.idle=0;
+    setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');satellites(k);return}
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
   setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
   setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');
@@ -3258,6 +3301,7 @@ function hover(x,y){
     if(coreHit(x,y)){state.hoverCore=true;canvas.style.cursor='help';showMind(true);lingerClear('hover');return}
     state.hoverCore=false;showMind(false);
     if(hoverThing(x,y))return;
+    if(galaxy){const k=nearestScreen(LM.map((_,i)=>somaWorld(i)),x,y,26);state.hoverReg=k>=0?LM[k].dom:-1;canvas.style.cursor=k>=0?'pointer':'default';return}
     const r=regionAt(x,y);state.hoverReg=r;skinMat.uniforms.uHoverReg.value=r;if(r>=0)canvas.style.cursor='pointer';return}
   if(state.lens==='timeline'&&state.turnZoom){const ti=nearestScreen(TURNS.map(t=>t.world),x,y,10);state.hoverTurn=ti;
     if(ti>=0){canvas.style.cursor='pointer';beadMat.uniforms.uHover.value=-1;state.hoverBead=-1;setAnno('hover','turn'+ti,()=>project(TURNS[ti].world),turnHTML(TURNS[ti]));return}}
@@ -3328,7 +3372,9 @@ function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on&&m.state==='o
 canvas.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);mouse.nx=_px(e)/innerWidth*2-1;mouse.ny=-(_py(e)/innerHeight*2-1);
   if(mouse.down&&e.buttons===0)mouse.down=false; // a lost pointerup must not turn hovering into dragging
   if(mouse.down){const dx=_px(e)-mouse.lx,dy=_py(e)-mouse.ly;mouse.dragged+=Math.abs(dx)+Math.abs(dy);mouse.lx=_px(e);mouse.ly=_py(e);cam.idle=0;
-    if(cam.mode==='orbit'){cam.azT-=dx*.005;cam.elT=clamp(cam.elT+dy*.004,-1.2,1.2)}
+    if(cam.mode==='orbit'&&galaxy&&state.inside&&(e.shiftKey||(e.buttons&2))){const rt=new V3(1,0,0).applyQuaternion(camera.quaternion),up=new V3(0,1,0).applyQuaternion(camera.quaternion),f=cam.dist*.0016;
+      cam.targetT.addScaledVector(rt,-dx*f).addScaledVector(up,dy*f)}
+    else if(cam.mode==='orbit'){cam.azT-=dx*.005;cam.elT=clamp(cam.elT+dy*.004,-1.2,1.2)}
     else if(cam.mode==='fly'){cam.yawT-=dx*.004;cam.pitchT=clamp(cam.pitchT+dy*.004,-1.4,1.4)}}
   else hover(_px(e),_py(e))});
 tcv.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);hover(_px(e),_py(e))});
@@ -3385,6 +3431,7 @@ function click(x,y){
   if(cam.mode==='tunnel'&&tunnel){if(state.hoverStar>=0)selectThread(tunnel.stars[state.hoverStar].li);
     else if(state.hoverDoor==='door')throughDoor();else if(/^fork\d+$/.test(state.hoverDoor||''))forkDoor(+state.hoverDoor.slice(4));else if(state.hoverDoor==='back'){selectThread(-1);cam.tpT=.012;cam.idle=-6}return}
   if(state.lens==='cortex'&&slots.hover?.on&&/^pin\d+$/.test(slots.hover.key||'')){focusPin(+slots.hover.key.slice(3));return}   // a pin: its card
+  if(state.inside&&galaxy){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1)}return}
   if(state.inside){if(state.hoverSoma>=0)flyToSoma(state.hoverSoma);else{setFocusSoma(-1);clearAnno('focus');satellites(-1);
       // click into open space: glide that way and turn toward it
       const d=new V3(x/innerWidth*2-1,-(y/innerHeight*2-1),.5).unproject(camera).sub(camera.position).normalize();
@@ -3396,7 +3443,10 @@ function click(x,y){
         const it=tunnel.items.find(n=>n.type==='msg'&&n.m.ts===t.user.ts);if(it){cam.tpT=Math.max(0,it.u-.02);cam.idle=-9}},150);setTimeout(()=>clearInterval(w),8000);return}
     if(state.hoverBead>=0)enterTunnel(sess[state.hoverBead]);else if(state.hoverNew&&liveNew){window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:liveNew.tid}}))}else if(state.hoverBraid){setFan(fan.root===state.hoverBraid?null:state.hoverBraid);clearAnno('hover')}else syncClick()}
 }
+canvas.addEventListener('contextmenu',e=>{if(galaxy&&state.inside)e.preventDefault()});
 canvas.addEventListener('wheel',e=>{e.preventDefault();cam.idle=0;landFlight();
+  if(cam.mode==='orbit'&&galaxy&&state.inside){const nd=cam.distT*(1+clamp(e.deltaY,-120,120)*.0014);
+    if(nd>R*1.7&&e.deltaY>0){stepOut();return}cam.distT=clamp(nd,R*.025,R*1.7);return}
   if(cam.mode==='orbit'){if(state.lens==='timeline'&&e.ctrlKey){cam.distT=clamp(cam.distT*(1+e.deltaY*.0015),R*1.1,R*9)}   // turn zoom
     else if(state.lens==='timeline'){cam.targetT.y=clamp(cam.targetT.y-e.deltaY*.02,-HELIX_H,HELIX_H)}else cam.distT=clamp(cam.distT*(1+e.deltaY*.001),R*2.2,R*9)}
   else if(cam.mode==='fly'){cam.vel.addScaledVector(dirOf(cam.yaw+cam.lean.x,cam.pitch+cam.lean.y),-clamp(e.deltaY,-120,120)*.03*(cam.f||1)/innerK())}
@@ -3571,9 +3621,11 @@ const _frame=()=>{
   simulate(dt);
   if(galaxy){const on=state.lens==='cortex';galaxy.group.visible=on;
     for(const o of [skin,wire,cells,xur,mist,arbors])o.visible=!on;rings.forEach(r=>{r.visible=!on});
-    {const inside=(state.insideK||0)>.05;forest.visible=!on||inside;somaCells.visible=!on||inside}
+    forest.visible=!on;somaCells.visible=!on;   // the claims are the galaxy's own stars (galaxy.ts)
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=!on;else if(o.userData.tracts)o.visible=!on||(state.insideK||0)>.05})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
-    if(on)galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9)}
+    if(on){galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9);
+      galaxy.mark(state.hoverSoma,state.focusSoma);
+      galaxy.focus(state.inside||state.diving?state.diveReg:dialHover>=0?dialHover:state.hoverReg>=0?state.hoverReg:null)}}
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
   const sx=Math.sin(t*.13)+.4*Math.sin(t*.31),su=.5+.5*Math.sin(t*.07);
   // morph the organism
@@ -3680,8 +3732,9 @@ const _frame=()=>{
   // HUD
   calmLiveBead();
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
-  placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
-  if(galaxy){placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader()}
+  placeRegionLabels(!galaxy&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
+  if(galaxy){placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader();
+    placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.inside&&!state.diving&&!cam.tween)}
   else placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);

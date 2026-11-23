@@ -114,7 +114,13 @@ export function layoutGalaxy({ R, regs, claims, seed = 7 }) {
   const world = v => v.applyQuaternion(tilt);
   return { GR, arms, sats, pos, place, tilt, posWorld: pos.map(p => (p ? p.clone().applyQuaternion(tilt) : p)),
     HALO_R, hasHalo, haloCentre: reg => world(haloLocal(reg)), haloOrbit: (reg, space) => world(orbitLocal(reg, space)),
-    haloOrbitLocal: orbitLocal, pinAt: (reg, j) => world(pinLocal(reg, j)) };
+    haloOrbitLocal: orbitLocal, pinAt: (reg, j) => world(pinLocal(reg, j)),
+    // the sector dial: where a sector's name sits - past the arm's outer end, or above its satellite
+    labelAt: reg => { const ai = armOfReg.get(reg);
+      const DR = GR * 1.5;   // on the dial ring (galaxy.ts createGalaxy DIAL_R)
+      if (ai != null) { const th = arms[ai].ang + TIGHT + 0.12; return world(new V3(Math.cos(th) * DR, 0, Math.sin(th) * DR)); }
+      const si = satOfReg.get(reg); if (si != null) { const sa = sats[si], th = Math.atan2(sa.pos.z, sa.pos.x); return world(new V3(Math.cos(th) * DR, 0, Math.sin(th) * DR)); }
+      return null; } };
 }
 
 function satPoint(s, r, th, h) {
@@ -124,9 +130,11 @@ function satPoint(s, r, th, h) {
   return new V3(s.pos.x + x2, s.pos.y + y2, s.pos.z + z1);
 }
 
-const STAR_VS = `uniform float uTime,uPix,uVis;attribute float aA,aPh,aSz;attribute vec3 aC;varying vec3 vC;varying float vA;
+const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(reg-foc)<.5?1.2:(reg<-.5?.55:.22));}`;
+const STAR_VS = `uniform float uTime,uPix,uVis,uFoc;attribute float aA,aPh,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
+  ${FOCUS_GLSL}
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.78+.22*sin(uTime*(.6+aPh*.9)+aPh*40.);
-    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
+    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
 const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
   gl_FragColor=vec4(vC,(smoothstep(.5,.0,d)*.55+smoothstep(.18,.0,d)*.6)*vA);}`;
 
@@ -134,17 +142,18 @@ const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoo
  * The scene objects. `links`: [{a, b, w}] claim-index pairs with a use weight 0..1 (traversals, log-scaled).
  * `cloudW`: per arm, the share of moments (the inner star cloud's tint). Returns {group, update, pulse, dispose}.
  */
-export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [], pins = [], seed = 11 }) {
+export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [], pins = [], claimInfo = [], seed = 11 }) {
   const rng = rngOf(seed);
   const gauss = () => (rng() + rng() + rng() + rng()) / 2 - 1;
   const { GR, arms, sats, pos, place } = layout;
   const g = new THREE.Group();
   if (layout.tilt) g.quaternion.copy(layout.tilt);
-  const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 } };
+  const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 } };
   const HH = R * 0.72;
   const disposables = [];
-  const addPoints = (P, C, A, PH, SZ) => {
+  const addPoints = (P, C, A, PH, SZ, RG = null) => {
     const geo = new THREE.BufferGeometry();
+    geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG || new Array(P.length / 3).fill(-1), 1));
     geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
     geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
     geo.setAttribute('aA', new THREE.Float32BufferAttribute(A, 1));
@@ -158,7 +167,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
 
   // ── the disc: arm stars (count by sector size), the bulge, the inner cloud up to the poles ───────────────
   {
-    const P = [], C = [], A = [], PH = [], SZ = [];
+    const P = [], C = [], A = [], PH = [], SZ = [], RG = [];
     const total = 11000, wsum = arms.reduce((s, a) => s + a.size, 0) || 1;
     arms.forEach(a => {
       const n = Math.round(total * a.size / wsum);
@@ -167,49 +176,76 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
         const h = a.lift * R * 0.12 * r * r + gauss() * R * (0.02 + 0.09 * Math.pow(r, 1.4));
         const p = armPoint(a, r, dth, h); P.push(p.x, p.y, p.z);
         const c = a.col.clone().lerp(new THREE.Color('#ffffff'), 0.25 * (1 - r)); C.push(c.r, c.g, c.b);
-        A.push(0.06 + 0.15 * (1 - r)); PH.push(rng()); SZ.push(1.0 + rng() * 0.8);   // tuned to the engine's bloom
+        A.push(0.06 + 0.15 * (1 - r)); PH.push(rng()); SZ.push(1.0 + rng() * 0.8); RG.push(a.reg);   // tuned to the engine's bloom
       }
     });
     for (let i = 0; i < 1600; i++) {   // the bulge: warm, round, at the centre (the live context's home)
       const rr = Math.pow(rng(), 0.6) * R * 0.13, u = rng() * 2 - 1, ph = rng() * TAU, q = Math.sqrt(1 - u * u);
       P.push(Math.cos(ph) * q * rr, u * rr * 0.85, Math.sin(ph) * q * rr); C.push(1, 0.94, 0.85);
-      A.push(0.03); PH.push(rng()); SZ.push(1.0);
+      A.push(0.03); PH.push(rng()); SZ.push(1.0); RG.push(-1);
     }
     for (let i = 0; i < 9000; i++) {   // the inner cloud: fills the woven shell up to the poles, tinted by the nearest arm
       const y = (rng() * 2 - 1) * HH * 0.92, rm = GR * 1.08 * Math.pow(Math.max(0, 1 - Math.pow(Math.abs(y) / HH, 2)), 0.6) * 0.9;
       const rho = rm * Math.pow(rng(), 0.55), th = rng() * TAU;
       let best = 0, bd = 9; arms.forEach((a, k) => { const d = Math.abs(Math.atan2(Math.sin(th - (a.ang + Math.min(1, rho / GR) * TIGHT)), Math.cos(th - (a.ang + Math.min(1, rho / GR) * TIGHT)))); if (d < bd) { bd = d; best = k; } });
       const c = (arms[best] ? arms[best].col : new THREE.Color('#9fd6ee')); P.push(Math.cos(th) * rho, y, Math.sin(th) * rho); C.push(c.r, c.g, c.b);
-      A.push(0.012 + 0.03 * rng()); PH.push(rng()); SZ.push(0.8);
+      A.push(0.012 + 0.03 * rng()); PH.push(rng()); SZ.push(0.8); RG.push(arms[best] ? arms[best].reg : -1);
     }
-    addPoints(P, C, A, PH, SZ);
+    addPoints(P, C, A, PH, SZ, RG);
   }
 
-  // ── the claims as star clusters in the overview (the crystal glyphs show inside a sector, engine.ts) ──────
+  // ── the claims ARE stars of the galaxy (owner, 2026-11-23: the old crystal glyphs did not read as part of it): a
+  // core in the sector's tint; a ring = proven (solid) or still learning (dashed); brightness = sync (how strongly it
+  // is proven). They grow as you go inside (uIn); hover and focus ring them white. Picking reads the same positions.
+  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel;attribute float aIdx,aProven,aSync,aReg,aPh;attribute vec3 aC;
+    varying vec3 vC;varying float vA,vP,vH,vS;
+    ${FOCUS_GLSL}
+    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
+      vC=aC;vP=aProven;vH=h;vS=sel;float tw=.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
+      vA=(.3+.55*aSync)*tw*uVis*focusDim(aReg,uFoc)*(1.+.6*max(h,sel));
+      float sz=(1.6+1.6*aSync)*(1.+2.2*uIn)*(1.+.7*max(h,sel));
+      gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(9.+10.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
+  const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    float core=smoothstep(.17,.0,d),glow=smoothstep(.5,.0,d)*.28,ang=atan(c.y,c.x);
+    float ring=smoothstep(.045,.0,abs(d-.36))*mix(step(0.,sin(ang*10.))*.55,1.,vP);
+    float hi=max(vH,vS);vec3 col=mix(vC,vec3(1.),.35+.4*hi);
+    gl_FragColor=vec4(col,(core*.95+glow+ring*(.45+.55*hi))*vA);}`;
   {
-    const P = [], C = [], A = [], PH = [], SZ = [];
-    pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {};
-      const col = pl.arm != null ? arms[pl.arm].col.clone().lerp(new THREE.Color('#ffffff'), 0.6) : pl.sat != null ? sats[pl.sat].col.clone().lerp(new THREE.Color('#ffffff'), 0.5) : new THREE.Color('#cfe9f5');
-      for (let j = 0; j < 3; j++) { P.push(p.x + gauss() * R * 0.006, p.y + gauss() * R * 0.006, p.z + gauss() * R * 0.006); C.push(col.r, col.g, col.b);
-        A.push(j ? 0.06 : 0.16); PH.push(rng()); SZ.push(j ? 1.1 : 1.8); } });
-    if (P.length) addPoints(P, C, A, PH, SZ);
+    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [];
+    const dP = [], dC = [], dA = [], dPH = [], dSZ = [], dRG = [];
+    pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {}, info = claimInfo[k] || {};
+      const reg = pl.arm != null ? arms[pl.arm].reg : pl.sat != null ? sats[pl.sat].reg : -1;
+      const col = pl.arm != null ? arms[pl.arm].col.clone().lerp(new THREE.Color('#ffffff'), 0.45) : pl.sat != null ? sats[pl.sat].col.clone().lerp(new THREE.Color('#ffffff'), 0.4) : new THREE.Color('#cfe9f5');
+      P.push(p.x, p.y, p.z); C.push(col.r, col.g, col.b); IX.push(k); PR.push(info.proven ? 1 : 0); SY.push(clamp(info.sync ?? 0.4, 0, 1)); RG.push(reg); PH.push(rng());
+      for (let j = 0; j < 2; j++) { dP.push(p.x + gauss() * R * 0.007, p.y + gauss() * R * 0.007, p.z + gauss() * R * 0.007); dC.push(col.r, col.g, col.b);
+        dA.push(0.06); dPH.push(rng()); dSZ.push(1.1); dRG.push(reg); } });
+    if (dP.length) addPoints(dP, dC, dA, dPH, dSZ, dRG);   // a little dust round each claim
+    if (P.length) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
+      geo.setAttribute('aIdx', new THREE.Float32BufferAttribute(IX, 1)); geo.setAttribute('aProven', new THREE.Float32BufferAttribute(PR, 1));
+      geo.setAttribute('aSync', new THREE.Float32BufferAttribute(SY, 1)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG, 1));
+      geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1));
+      const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: CLAIM_VS, fragmentShader: CLAIM_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+      const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.renderOrder = 2; g.add(o); disposables.push(geo, mat);
+    }
   }
 
   // ── satellites: tilted 3D galaxies, and the tidal stream into their nearest arm ───────────────────────────
   const streams = [];
   {
-    const P = [], C = [], A = [], PH = [], SZ = [];
+    const P = [], C = [], A = [], PH = [], SZ = [], RG = [];
     sats.forEach(s => {
       for (let i = 0; i < 700; i++) {
         const r = Math.pow(rng(), 0.65), th = Math.floor(rng() * 2) * Math.PI + r * 3.4 + gauss() * 0.45;
         const p = satPoint(s, r, th, gauss() * R * 0.02 * (1.4 - r)); P.push(p.x, p.y, p.z);
-        C.push(s.col.r, s.col.g, s.col.b); A.push(0.05 + 0.12 * (1 - r)); PH.push(rng()); SZ.push(0.9);
+        C.push(s.col.r, s.col.g, s.col.b); A.push(0.05 + 0.12 * (1 - r)); PH.push(rng()); SZ.push(0.9); RG.push(s.reg);
       }
       // stream: toward the arm whose rim point is nearest
       let best = 0, bd = 1e9; arms.forEach((a, k) => { const q = armPoint(a, 0.85, 0, 0); const d = q.distanceTo(s.pos); if (d < bd) { bd = d; best = k; } });
-      if (arms[best]) streams.push({ from: s.pos.clone(), to: armPoint(arms[best], 0.85, 0, 0), col: s.col, parts: Array.from({ length: 140 }, () => ({ u: rng(), o: new V3(gauss(), gauss(), gauss()).multiplyScalar(R * 0.015) })) });
+      if (arms[best]) streams.push({ reg: s.reg, from: s.pos.clone(), to: armPoint(arms[best], 0.85, 0, 0), col: s.col, parts: Array.from({ length: 140 }, () => ({ u: rng(), o: new V3(gauss(), gauss(), gauss()).multiplyScalar(R * 0.015) })) });
     });
-    if (P.length) addPoints(P, C, A, PH, SZ);
+    if (P.length) addPoints(P, C, A, PH, SZ, RG);
   }
   const streamGeo = new THREE.BufferGeometry(), sCount = streams.reduce((n, s) => n + s.parts.length, 0);
   const sP = new Float32Array(Math.max(1, sCount) * 3), sC = new Float32Array(Math.max(1, sCount) * 3), sA = new Float32Array(Math.max(1, sCount));
@@ -219,6 +255,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     streamGeo.setAttribute('aA', new THREE.BufferAttribute(sA, 1));
     streamGeo.setAttribute('aPh', new THREE.Float32BufferAttribute(new Array(Math.max(1, sCount)).fill(0).map(() => rng()), 1));
     streamGeo.setAttribute('aSz', new THREE.Float32BufferAttribute(new Array(Math.max(1, sCount)).fill(1.2), 1));
+    streamGeo.setAttribute('aReg', new THREE.Float32BufferAttribute(streams.flatMap(st => st.parts.map(() => st.reg)), 1));
     const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: STAR_VS, fragmentShader: STAR_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const o = new THREE.Points(streamGeo, mat); o.frustumCulled = false; g.add(o); disposables.push(streamGeo, mat);
   }
@@ -280,22 +317,24 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   }
 
   // ── the woven shell: every arm runs past the rim and splits into strands to the two poles ─────────────────
+  const DIAL_R = GR * 1.5;   // the sector dial ring sits just outside the shell, at the equator
+  const shellR = (h, size) => GR * (1.2 + 0.1 * size) * Math.pow(Math.max(0, 1 - Math.pow(h / HH, 2)), 0.85) + R * 0.02;   // a lemon: pointed poles
   const NS = 40, strands = [];
   arms.forEach((a, ai) => { for (let f = -1; f <= 1; f++) for (const dir of [1, -1]) strands.push({ ai, f, dir }); });
   const strandPt = (sd, s) => {
-    const a = arms[sd.ai], rimTh = a.ang + TIGHT + sd.f * 0.2, th = rimTh + sd.dir * 1.1 * s + sd.f * 0.15 * s, rimR = GR * (1.02 + 0.1 * a.size);
-    let rho = rimR * (1 + 0.32 * Math.sin(s * Math.PI * 0.9) * (0.6 + 0.6 * a.size)) * Math.pow(Math.max(0, 1 - Math.pow(s, 2.2)), 0.6) + R * 0.02;
+    const a = arms[sd.ai], rimTh = a.ang + TIGHT + sd.f * 0.2, th = rimTh + sd.dir * 1.1 * s + sd.f * 0.15 * s;
+    const y0 = a.lift * R * 0.12, h = y0 * (1 - s) + sd.dir * HH * Math.pow(Math.sin(s * Math.PI / 2), 1.15);
+    let rho = shellR(h, a.size);
     sats.forEach(sa => { if (Math.sign(sa.pos.y) !== sd.dir) return; const sAng = Math.atan2(sa.pos.z, sa.pos.x);
       rho += R * 0.06 * Math.exp(-Math.pow(Math.atan2(Math.sin(th - sAng), Math.cos(th - sAng)), 2) / 0.12) * Math.sin(s * Math.PI); });
-    const y0 = a.lift * R * 0.12; const h = y0 * (1 - s) + sd.dir * HH * Math.pow(Math.sin(s * Math.PI / 2), 1.15);
     return new V3(Math.cos(th) * rho, h, Math.sin(th) * rho);
   };
   const SAMPLES = strands.map(sd => Array.from({ length: NS + 1 }, (_, j) => strandPt(sd, j / NS)));
   // the arm leg (owner, 2026-11-22: the shell must be the same threads as the hyphae): three filaments leave the
   // bulge together, run along the arm, fan out and, at the rim, ARE the strands. armLeg(sd, 1) === strandPt(sd, 0).
   const ARM_NS = 28;
-  const armLeg = (sd, u) => { const a = arms[sd.ai], rimR = GR * (1.02 + 0.1 * a.size), rr = lerp(0.16, 1, u);
-    const th = a.ang + rr * TIGHT + sd.f * 0.2 * Math.pow(u, 1.6), rho = lerp(0.16 * GR, rimR + R * 0.02, u);
+  const armLeg = (sd, u) => { const a = arms[sd.ai], rr = lerp(0.16, 1, u);
+    const th = a.ang + rr * TIGHT + sd.f * 0.2 * Math.pow(u, 1.6), rho = lerp(0.16 * GR, shellR(a.lift * R * 0.12, a.size), Math.pow(u, 1.3));
     return new V3(Math.cos(th) * rho, a.lift * R * 0.12 * rr * rr, Math.sin(th) * rho); };
   // the arm's middle filament at radius r (fraction of GR): where claims, halos and pins attach
   const fil = (ai, r) => { const a = arms[ai], rr = clamp(r, 0.16, 1), th = a.ang + rr * TIGHT;
@@ -303,13 +342,13 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   // the strands as STAR STREAMS (owner, 2026-11-23: 1-px lines read as wires; the agreed mockup is soft threads of
   // stars with dust flowing to the poles): stars along each strand and its arm leg, a little spread, thinning toward
   // the poles; the cross-hyphae are short star bridges. A recall lights them as before (uSP).
-  const STRAND_VS = `uniform float uTime,uPix,uVis,uIn;uniform vec3 uSP[4];attribute float aS,aArm,aDir,aPh,aSz;attribute vec3 aC;varying vec3 vC;varying float vA;
+  const STRAND_VS = `uniform float uTime,uPix,uVis,uIn,uFocArm;uniform vec3 uSP[4];attribute float aS,aArm,aDir,aPh,aSz;attribute vec3 aC;varying vec3 vC;varying float vA;
     void main(){float lit=0.;for(int i=0;i<4;i++){vec3 p=uSP[i];float age=uTime-p.z;if(age<0.||age>4.)continue;
       if(age<.9&&p.x==aArm&&aS<0.){float s=age/.9-1.;lit=max(lit,exp(-pow(aS-s,2.)/.004));}
       if(age>=.9&&age<2.1&&p.x==aArm&&p.y==aDir){float s=(age-.9)/1.2;lit=max(lit,exp(-pow(aS-s,2.)/.004));}
       if(age>=2.1&&p.y==aDir){float e=age-2.1;float back=max(0.,1.-e/1.6);lit=max(lit,.55*back*exp(-pow((1.-aS)-e*.8,2.)/.006));}}
       vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.7+.3*sin(uTime*(.5+aPh*.8)+aPh*40.);
-      float base=aS<0.?.07+.16*pow(1.+aS,1.5):.3*(1.-.5*aS);
+      float base=(aS<0.?.07+.16*pow(1.+aS,1.5):.3*(1.-.5*aS))*(uFocArm<-.5?1.:(abs(aArm-uFocArm)<.5?1.3:.3));
       vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(base*tw*(1.-.85*uIn)+.9*lit)*uVis*smoothstep(.4,3.,-mv.z);
       gl_PointSize=clamp((aSz+1.4*lit)*uPix*(60./-mv.z),1.4*uPix,(4.+3.*lit)*uPix);gl_Position=projectionMatrix*mv;}`;
   const STRAND_FS = `varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`;   // (the threads use it too)
@@ -361,6 +400,36 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   dustGeo.setAttribute('aSz', new THREE.Float32BufferAttribute(new Array(Math.max(1, dCount)).fill(1.1), 1));
   { const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: STAR_VS, fragmentShader: STAR_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const o = new THREE.Points(dustGeo, mat); o.frustumCulled = false; g.add(o); disposables.push(dustGeo, mat); }
+  {
+    const prof = [];
+    for (let j = 0; j <= 40; j++) { const y = HH * j / 40; prof.push(new THREE.Vector2(Math.max(0.001, shellR(y, 0.6) * 0.99), y)); }
+    const full = [...prof.slice(1).reverse().map(v => new THREE.Vector2(v.x, -v.y)), ...prof];
+    const geo = new THREE.LatheGeometry(full, 72);
+    const angs = arms.map(a => a.ang + TIGHT), cols = arms.map(a => a.col);
+    const C = [], pa = geo.attributes.position;
+    for (let i = 0; i < pa.count; i++) { const th = Math.atan2(pa.getZ(i), pa.getX(i)); let best = 0, bd = 9;
+      angs.forEach((an, k) => { const d = Math.abs(Math.atan2(Math.sin(th - an), Math.cos(th - an))); if (d < bd) { bd = d; best = k; } });
+      const c = (cols[best] || new THREE.Color('#9fd6ee')).clone().lerp(new THREE.Color('#bfe9f5'), 0.35); C.push(c.r, c.g, c.b); }
+    geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
+    const mat = new THREE.ShaderMaterial({ uniforms: uni, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      vertexShader: `attribute vec3 aC;varying vec3 vC,vN,vV,vP;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aC;vP=position;
+        vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
+      fragmentShader: `uniform float uTime,uVis,uIn;varying vec3 vC,vN,vV,vP;void main(){float f=pow(1.-abs(dot(vN,vV)),2.6);
+        float ph=atan(vP.z,vP.x),y=vP.y*${(4 / HH).toFixed(4)};
+        float w=pow(abs(sin(ph*9.+y*1.6+uTime*.05)*sin(ph*9.-y*1.6-uTime*.04)),.35);
+        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-.85*uIn));}` });
+    const o = new THREE.Mesh(geo, mat); o.frustumCulled = false; o.renderOrder = -1; g.add(o); disposables.push(geo, mat);
+  }
+  {
+    const P = [], C = [], A = [], PH = [], SZ = [], RG = [];
+    for (let i = 0; i < 520; i++) { const th = i / 520 * TAU; P.push(Math.cos(th) * DIAL_R, 0, Math.sin(th) * DIAL_R);
+      C.push(0.7, 0.86, 0.95); A.push(0.05); PH.push(rng()); SZ.push(0.9); RG.push(-1); }
+    const tick = (th, col, reg) => { for (let i = -6; i <= 6; i++) { const t2 = th + i * 0.006;
+      P.push(Math.cos(t2) * DIAL_R, 0, Math.sin(t2) * DIAL_R); C.push(col.r, col.g, col.b); A.push(0.5 - Math.abs(i) * 0.03); PH.push(rng()); SZ.push(1.8); RG.push(reg); } };
+    arms.forEach(a => tick(a.ang + TIGHT + 0.12, a.col, a.reg));
+    sats.forEach(sa => tick(Math.atan2(sa.pos.z, sa.pos.x), sa.col, sa.reg));
+    addPoints(P, C, A, PH, SZ, RG);
+  }
   // the poles: where the strands meet; they flash once when a recall pulse arrives
   const poleGeo = new THREE.BufferGeometry();
   poleGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, HH, 0, 0, -HH, 0], 3));
@@ -521,5 +590,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   }
 
   function dispose() { disposables.forEach(d => d.dispose && d.dispose()); }
-  return { group: g, update, pulse, dispose, arms, sats };
+  function focus(reg) { uni.uFoc.value = reg == null ? -1 : reg; uni.uFocArm.value = reg == null || reg < 0 ? -1 : arms.findIndex(a => a.reg === reg); }
+  function mark(hov, sel) { uni.uHov.value = hov == null ? -1 : hov; uni.uSel.value = sel == null ? -1 : sel; }
+  return { group: g, update, pulse, dispose, arms, sats, focus, mark };
 }
