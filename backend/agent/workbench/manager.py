@@ -49,7 +49,8 @@ class StoreSink:
         from backend import conversation_store as cs
 
         rid = spill_id(incarnation, name)
-        ok = cs.add_tool_result(rid, conversation_id, None, None, None, SPILL_TOOL,
+        turn_id, step_id = _digest.step_of(incarnation, name)   # the turn that MADE the value
+        ok = cs.add_tool_result(rid, conversation_id, turn_id or None, step_id or None, None, SPILL_TOOL,
                                 _digest.make_ref(incarnation, name), text or "(empty)", min_chars=0)
         return rid if ok else None
 

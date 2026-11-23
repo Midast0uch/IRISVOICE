@@ -304,6 +304,10 @@ class NodeContext:
     # node's token (F2: its own callback slot). Both are injected into run_python params.
     wb_outputs: tuple = ()
     wb_node: str = ""
+    # W0 (2026-11-22): the turn and step this node runs in; injected as _wb_turn / _wb_step so
+    # the tool_results rows of its scripts and spills can be placed on a strand's turn.
+    wb_turn: str = ""
+    wb_step: str = ""
     # D3 (Round 4): the PROJECT FILES text (workbench.ground) a code node gets in its FIRST user
     # message, right after the BRIEF. "" = nothing (the fine-grained path is byte-equal).
     ground: str = ""
@@ -1290,7 +1294,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     if name in ("run_python", "run_python_pair") and isinstance(params, dict):
                         # the harness injects these; the model never writes them
                         params = {k: v for k, v in params.items()
-                                  if k not in ("outputs", "_wb_node", "stdout_max")}
+                                  if k not in ("outputs", "_wb_node", "stdout_max", "_wb_turn", "_wb_step")}
                         ctx.stats["scripts"] = ctx.stats.get("scripts", 0) + (2 if name == "run_python_pair" else 1)
                         if ctx.check:
                             params["check"] = ctx.check
@@ -1298,6 +1302,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             params["outputs"] = list(ctx.wb_outputs)
                         if ctx.wb_node:
                             params["_wb_node"] = ctx.wb_node
+                            params["_wb_turn"] = ctx.wb_turn
+                            params["_wb_step"] = ctx.wb_step
                             params["stdout_max"] = _stdout_budget(ctx.window)   # K1a
                     if (name == "recall_memory" and params.get("set_aside")
                             and ctx.window and view is not None):

@@ -2768,6 +2768,7 @@ class DerNodeMixin:
                     on_result=_wb_on_result,
                     brief=_wb_brief(item, _wb_contract)[0], check=_wb_brief(item, _wb_contract)[1],
                     wb_outputs=_wb_output_names(item), wb_node=_wb_node,
+                    wb_turn=str(_turn_id or ""), wb_step=str(getattr(item, "step_id", "") or ""),
                     on_check_failed=(_wb_escalate(self, self.conversation_id or "", workdir,
                                                   *_wb_brief(item, _wb_contract), tracker=_wb_rr,
                                                   ground=_wb_ground)

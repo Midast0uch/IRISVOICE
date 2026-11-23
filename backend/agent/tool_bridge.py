@@ -556,7 +556,8 @@ def _wb_flag(value) -> bool:
     return value is True or (isinstance(value, str) and value.strip().lower() in ("true", "1", "yes"))
 
 
-def _record_code_row(conv: str, code: str, purpose: str, rep: dict, elapsed_ms: int) -> None:
+def _record_code_row(conv: str, code: str, purpose: str, rep: dict, elapsed_ms: int,
+                     turn_id: str = "", step_id: str = "") -> None:
     """T7.8: ONE tool_results row per run_python execution - purpose, outcome, wall_ms, then
     the code. The existing add_tool_result queues it on lane("tool_results"); this never
     blocks and never raises. A crash or hard kill still leaves this row."""
@@ -566,7 +567,7 @@ def _record_code_row(conv: str, code: str, purpose: str, rep: dict, elapsed_ms: 
         err = rep.get("error") or None
         outcome = "ok" if rep.get("ok") else f"error {(err or {}).get('type')}: {str((err or {}).get('message') or '')[:200]}"
         head = f"# run_python | purpose: {purpose or '-'} | {outcome} | wall_ms: {rep.get('wall_ms', elapsed_ms)}"
-        _cs.add_tool_result(_cs.new_tool_result_id(), conv, None, None, None, "run_python",
+        _cs.add_tool_result(_cs.new_tool_result_id(), conv, turn_id or None, step_id or None, None, "run_python",
                             purpose or None, f"{head}\n{code}", min_chars=0)
     except Exception as exc:  # noqa: BLE001 - a record never fails the run
         logger.warning("[ToolBridge][%s] run_python code row failed: %r", conv, exc)
@@ -673,6 +674,7 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
     outputs = params.get("outputs")
     outputs = [n for n in outputs if isinstance(n, str)][:_WB_OUTPUTS_MAX] if isinstance(outputs, list) else []
     node_token = str(params.get("_wb_node") or "")
+    wb_turn, wb_step = str(params.get("_wb_turn") or ""), str(params.get("_wb_step") or "")
     # Round 6 universal fix: the first "look" (a script that assigns no output)
     # is legitimate - it lets the model inspect data with a larger stdout budget
     # (K1a). Excess looks are bounded in run_node via explore_count, which counts
@@ -701,12 +703,12 @@ async def _run_python_tool(bridge, params: dict, session_id: str, cwd: str) -> d
         rep = await asyncio.to_thread(client.exec, code, timeout_s, check,
                                      _wb_dispatch.get(_wb_key(conv, node_token)))
         mgr.touch(conv)
-        wbd.remember_origin(rep, purpose)
+        wbd.remember_origin(rep, purpose, wb_turn, wb_step)
         chk = (rep.get("check") or {"ok": False, "error": "check was not run"}) if check else {}
         # D8: the spill set = the brief's outputs once a check passes (+ the out<n> refs); no brief
         # -> this script's named values only. D6: the digest lists the outputs first.
         wbd.remember_named(rep, outputs, passed=bool(check and chk.get("ok")))
-        _record_code_row(conv, code, purpose, rep, int((time.monotonic() - t0) * 1000))
+        _record_code_row(conv, code, purpose, rep, int((time.monotonic() - t0) * 1000), wb_turn, wb_step)
         err = rep.get("error") or None
         # E1: which of the brief's outputs this run assigned; K1a: only a run that assigned none
         # of them (a look) gets the larger stdout budget - any other run keeps today's digest.
@@ -764,6 +766,7 @@ async def _run_python_pair_tool(bridge, params: dict, session_id: str, cwd: str)
     outputs = params.get("outputs")
     outputs = [n for n in outputs if isinstance(n, str)][:_WB_OUTPUTS_MAX] if isinstance(outputs, list) else []
     node_token = str(params.get("_wb_node") or "")
+    wb_turn, wb_step = str(params.get("_wb_turn") or ""), str(params.get("_wb_step") or "")
     conv = getattr(bridge, "_active_conversation_id", {}).get(session_id) or session_id
     try:
         from backend.agent.workbench import digest as wbd
@@ -780,7 +783,7 @@ async def _run_python_pair_tool(bridge, params: dict, session_id: str, cwd: str)
         handler = _wb_dispatch.get(_wb_key(conv, node_token))
         # Phase 1: gather, no check. A failure here is a real result the model sees.
         rep1 = await asyncio.to_thread(client.exec, gather, 120, None, handler)
-        wbd.remember_origin(rep1, purpose + " [gather]")
+        wbd.remember_origin(rep1, purpose + " [gather]", wb_turn, wb_step)
         err1 = rep1.get("error") or None
         if err1:  # gather failed: report it, do not pretend compute ran
             out = {"success": not (err1 and err1.get("type") in _WB_INFRA_ERRORS),
@@ -791,11 +794,11 @@ async def _run_python_pair_tool(bridge, params: dict, session_id: str, cwd: str)
             return out
         # Phase 2: compute, with the check, in the SAME namespace.
         rep2 = await asyncio.to_thread(client.exec, compute, 120, check, handler)
-        wbd.remember_origin(rep2, purpose + " [compute]")
+        wbd.remember_origin(rep2, purpose + " [compute]", wb_turn, wb_step)
         chk = (rep2.get("check") or {"ok": False, "error": "check was not run"}) if check else {}
         wbd.remember_named(rep2, outputs, passed=bool(check and chk.get("ok")))
-        _record_code_row(conv, gather, purpose + " [gather]", rep1, 0)
-        _record_code_row(conv, compute, purpose + " [compute]", rep2, 0)
+        _record_code_row(conv, gather, purpose + " [gather]", rep1, 0, wb_turn, wb_step)
+        _record_code_row(conv, compute, purpose + " [compute]", rep2, 0, wb_turn, wb_step)
         err = rep2.get("error") or None
         got = wbd.assigned(rep2, outputs)
         out = {

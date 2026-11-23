@@ -23,6 +23,8 @@ NAMED_INCARNATIONS = 64      # incarnations remembered
 
 _origins: "collections.OrderedDict[Tuple[str, str], str]" = collections.OrderedDict()
 _origins_lock = threading.Lock()
+# (incarnation, name) -> (turn_id, step_id); same bound as _origins (ORIGIN_MAX)
+_steps: "collections.OrderedDict[Tuple[str, str], Tuple[str, str]]" = collections.OrderedDict()
 
 
 def make_ref(incarnation: str, name: str) -> str:
@@ -133,25 +135,39 @@ def digest(reply: dict, rss_mb: Optional[float] = None, outputs: Optional[List[s
 
 
 # --- where a value came from (for the `workbench_gone` answer) -------------------
-def remember_origin(reply: dict, purpose: str) -> None:
-    """Record the purpose of an execution against the refs it created."""
+def remember_origin(reply: dict, purpose: str, turn_id: str = "", step_id: str = "") -> None:
+    """Record the purpose of an execution against the refs it created, and the turn and step
+    that made them (W0, 2026-11-22: a spill can happen turns later, at fresh/close/idle end,
+    and its tool_results row must still name the turn that MADE the value)."""
     inc = reply.get("incarnation") or ""
-    if not inc or not purpose:
+    if not inc or not (purpose or turn_id or step_id):
         return
     names = [v["name"] for v in (reply.get("vars") or [])]
     if reply.get("out_n") is not None:
         names.append(f"out{reply['out_n']}")
     with _origins_lock:
         for n in names:
-            _origins[(inc, n)] = purpose[:200]
-            _origins.move_to_end((inc, n))
+            if purpose:
+                _origins[(inc, n)] = purpose[:200]
+                _origins.move_to_end((inc, n))
+            if turn_id or step_id:
+                _steps[(inc, n)] = (turn_id or "", step_id or "")
+                _steps.move_to_end((inc, n))
         while len(_origins) > ORIGIN_MAX:
             _origins.popitem(last=False)
+        while len(_steps) > ORIGIN_MAX:
+            _steps.popitem(last=False)
 
 
 def origin_of(incarnation: str, name: str) -> Optional[str]:
     with _origins_lock:
         return _origins.get((incarnation, name))
+
+
+def step_of(incarnation: str, name: str) -> Tuple[str, str]:
+    """(turn_id, step_id) of the execution that made the value; ("", "") when unknown."""
+    with _origins_lock:
+        return _steps.get((incarnation, name), ("", ""))
 
 
 # --- which values a digest named (what the spill writes) -------------------------
