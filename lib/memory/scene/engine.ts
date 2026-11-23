@@ -29,6 +29,8 @@ export interface MemoryEngineOptions {
   uses?: (landmarkId: string) => Promise<any>;
   /** Corrections on pins and strands (pin / unpin / hold / release, forget_learned, purge). */
   correctTarget?: (action: string, target: string, extra?: Record<string, unknown>) => Promise<any>;
+  /** W1: the exact output of a strand's step, on click only (GET /api/memory/tool-result). Absent: step lines are text only. */
+  toolResult?: (conversation: string, tool: string, target: string) => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -99,6 +101,23 @@ function span(s){s=Math.max(1,s); if(s<60)return Math.round(s)+' s'; if(s<3600)r
   return Math.floor(s/3600)+' h '+Math.round((s%3600)/60)+' min'}
 const fmt=n=>n.toLocaleString('en-US');
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// W1 (memory cortex plan, 2026-11-22): what a strand DID, as step lines from the episodes' own record
+// (snapshot: up to 5 per episode, episode.step_count in all) - short text, never tool output. A line is a
+// link only when the real memory can read the output (opts.toolResult; the demo has none).
+const STEP_OUTPUT=opts.toolResult||null;   // per engine: (conversation, tool, target) => Promise
+function stepsHTML(eps,sid,max){const all=[];let total=0;
+  for(const ep of eps||[]){const st=ep&&ep.steps||[];total+=ep&&ep.step_count||st.length;for(const x of st)all.push(x)}
+  if(!all.length)return '';const shown=all.slice(0,max),more=total-shown.length;
+  return shown.map(st=>{const mark=st.ok===false?'<span class="w">✗</span>':st.ok?'✓':'·',name=esc(String(st.tool||'').replace(/_/g,' ')),
+    txt=esc(st.target||st.what||''),line=`${mark} ${name}${txt?' · '+txt:''}`;
+    return STEP_OUTPUT&&sid?`<span class="go step" data-step="${esc(sid)}" data-tool="${esc(st.tool||'')}" data-target="${esc(st.target||'')}">${line}</span>`:`<br>${line}`}).join('')
+    +(more>0?`<br>+${more} more`:'')}
+function showStepOutput(el){if(!STEP_OUTPUT||el.dataset.busy)return;el.dataset.busy='1';const base=el.innerHTML;el.innerHTML=base+' · reading…';
+  STEP_OUTPUT(el.dataset.step,el.dataset.tool,el.dataset.target).then(d=>{const r=(d&&d.rows||[])[0];
+    el.innerHTML=base+(r?`<span class="out">${esc(r.text)}${r.more?`\n… ${Math.max(0,(r.chars||0)-r.text.length)} more characters`:''}</span><span class="plain">stored as plain text on this machine</span>`
+      :d&&d.gone?'<br><span class="w">IRIS no longer keeps this output</span>':'<br>no output was recorded for this step')})
+    .catch(err=>{el.innerHTML=base+'<br><span class="w">the output could not be read</span>';console.warn('[memory] step output',el.dataset.step,err)})
+    .finally(()=>{delete el.dataset.busy})}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. the alphabet + translation table (MEMORY-DASHBOARD-DESIGN §4.2, §12)
@@ -2756,6 +2775,7 @@ annosEl.addEventListener('click',e=>{
   if(e.target.closest('[data-report]')){throughDoor();return}
   const fl=e.target.closest('[data-fan]');if(fl){setFan(fan.root===fl.dataset.fan?null:fl.dataset.fan);clearAnno('hover');return}
   const tc=e.target.closest('[data-claim]');if(tc){const l=LM[+tc.dataset.claim];if(l)focusRef('claim:'+l.id);return}   // a task's touched claim
+  const sp=e.target.closest('[data-step]');if(sp){showStepOutput(sp);return}   // W1: the step's exact output, on click
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
 function flyToSoma(k){
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
@@ -3082,7 +3102,7 @@ function hover(x,y){
       setAnno('hover','gate'+gt,()=>project(g.world),`<div class="k">task · ${ep.outcome==='running'?'running now':ep.outcome==='success'?'went well':ep.outcome==='partial'?'partly done':'did not work'}</div>
         <div class="t">${esc(ep.summary)}</div><div class="m">went well <em>${Math.round(ep.score*100)}</em> / 100 · took ${span(ep.duration/1)}
         ${ep.corrected?'<br><span class="u">you corrected IRIS here</span>':ep.confirmed?'<br>you confirmed this':''}
-        ${ep.failure_reason?`<br><span class="w">${esc(ep.failure_reason)}</span>`:''}<br>what IRIS did: ${(ep.tools||[]).map(t=>t.replace(/_/g,' ')).join(' → ')}</div>${touchedHTML(tunnel.session.id,ep.ts-60,ep.ts+Math.max(60,ep.duration||0)+60)}`,{hot:ep.corrected});return}
+        ${ep.failure_reason?`<br><span class="w">${esc(ep.failure_reason)}</span>`:''}<br>what IRIS did: ${(ep.steps||[]).length?stepsHTML([ep],tunnel.session.ghost?null:tunnel.session.id,5):(ep.tools||[]).map(t=>t.replace(/_/g,' ')).join(' → ')}</div>${touchedHTML(tunnel.session.id,ep.ts-60,ep.ts+Math.max(60,ep.duration||0)+60)}`,{hot:ep.corrected});return}
     lingerClear('hover');return}
   if(state.lens==='artifacts'&&tissue.t>.5&&!state.inside){const i=tissueHit(x,y),th=i<0?threadHit(x,y):-1,cr=crumbHit(x,y);
     tissue.hover=i;tissue.hoverThread=th;const pt=i>=0||th>=0||!!cr;canvas.style.cursor=tcv.style.cursor=pt?'pointer':'default';
@@ -3109,7 +3129,7 @@ function hover(x,y){
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(beadPos(k)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}</div><span class="go">click · step inside</span>${fanLinkHTML(s)}`)}
+        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}${(()=>{const h=stepsHTML(eps,s.ghost?null:s.id,5);return h?'<br>what IRIS did:'+h:''})()}</div><span class="go">click · step inside</span>${fanLinkHTML(s)}`)}
     else if(newBead.visible&&liveNew&&nearestScreen([newBead.position],x,y,18)===0){state.hoverNew=true;state.hoverBraid=null;canvas.style.cursor='pointer';
       setAnno('hover','newbead'+liveNew.tid,()=>project(newBead.position),`<div class="k">being written now · not in this view yet</div><div class="t">${esc(prettyThread(liveNew.tid))}</div><div class="m">it takes its place on the helix the next time the memory opens</div><span class="go">click · continue it in chat</span>`)}
     else{state.hoverNew=false;const bi=nearestScreen(braidPts.map(b=>b.p),x,y,12);state.hoverBraid=bi>=0?braidPts[bi].root:null;

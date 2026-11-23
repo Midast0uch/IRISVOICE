@@ -749,7 +749,16 @@ def _write_tool_result(
                 n_rows, n_chars = conn.execute(
                     "SELECT COUNT(*), COALESCE(SUM(chars), 0) FROM tool_results").fetchone()
                 while n_rows > TOOL_RESULTS_MAX_ROWS or n_chars > TOOL_RESULTS_MAX_CHARS:
+                    # Eval and dev rows go first (2026-11-22, memory cortex plan W1): measured,
+                    # all 4,000 rows were eval conversations, so a user's step output lasted
+                    # ~4 days. "Not a user conversation" = no conversations row (a dev_cli /
+                    # eval id) or an "[eval" title (the runner's). The oldest row overall is
+                    # the fallback, so the caps hold exactly as before.
                     old = conn.execute(
+                        "SELECT rowid, chars, id, conversation_id FROM tool_results t "
+                        "WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id = t.conversation_id "
+                        "AND COALESCE(c.title, '') NOT LIKE '[eval%') "
+                        "ORDER BY rowid ASC LIMIT 1").fetchone() or conn.execute(
                         "SELECT rowid, chars, id, conversation_id FROM tool_results "
                         "ORDER BY rowid ASC LIMIT 1").fetchone()
                     if old is None:

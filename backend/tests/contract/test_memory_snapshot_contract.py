@@ -46,8 +46,9 @@ SHAPES = {
     "landmarks": {"id", "claim", "cls", "tier", "permanent", "evidence", "evidence_counts", "activations", "contradictions",
                   "last_activated", "last_verified", "born", "session", "fams", "domain", "steps", "fading"},
     "edges": {"id", "a", "b", "score", "traversals", "hits", "misses", "last"},
+    # steps / step_count: W1 of the memory cortex plan (2026-11-22, owner-approved) - a strand's step lines
     "episodes": {"id", "session", "summary", "outcome", "score", "failure_reason", "corrected", "confirmed", "duration",
-                 "tools", "ts"},
+                 "tools", "steps", "step_count", "ts"},
     "artifacts": {"id", "kind", "name", "folder", "session", "ts", "weight", "seed"},
     "sectors": {"key", "parent", "label", "status", "members", "evidence", "last"},
     "pins": {"id", "title", "type", "created", "permanent", "held", "links", "refs", "tags", "domain"},

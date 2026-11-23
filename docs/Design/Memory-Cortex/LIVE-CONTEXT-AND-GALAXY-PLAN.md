@@ -258,8 +258,8 @@ It becomes the nucleus:
 
 | Wave | What | Backend? | DONE = | NOT THIS = |
 |---|---|---|---|---|
-| W0 | Workbench spills and run_python rows carry `turn_id` and `step_id` (`workbench/manager.py` `StoreSink.write`, `tool_bridge.py` `_record_code_row`) | yes, small | a live coding run writes rows with a turn id; a contract test fails on the old writers | a backfill of old rows; a new table |
-| W1 | (B) strand steps: `surface_queries.strand()` and the snapshot's episode rows carry `{tool, target ≤ 80, description ≤ 120, success}` (from `tool_sequence`, ≤ 12 per episode); strand card, braid hover, corridor task cards show the step lines; `GET /api/memory/tool-result` for the click | yes (read only) | hovering a strand on the timeline names its steps without opening chat; cold snapshot time unchanged within S121 | tool output in the snapshot; a summariser model call; search over tool output |
+| W0 **(built 2026-11-22)** | Workbench spills and run_python rows carry `turn_id` and `step_id` (`workbench/manager.py` `StoreSink.write`, `tool_bridge.py` `_record_code_row`) | yes, small | a live coding run writes rows with a turn id; a contract test fails on the old writers | a backfill of old rows; a new table |
+| W1 **(built 2026-11-22)** | (B) strand steps: `surface_queries.strand()` and the snapshot's episode rows carry `{tool, target ≤ 80, description ≤ 120, success}` (from `tool_sequence`, ≤ 12 per episode); strand card, braid hover, corridor task cards show the step lines; `GET /api/memory/tool-result` for the click | yes (read only) | hovering a strand on the timeline names its steps without opening chat; cold snapshot time unchanged within S121 | tool output in the snapshot; a summariser model call; search over tool output |
 | W2 | (A data) `fill` in the three CLM payloads; `ctx_tokens`, `ctx_window` on `der_fan_traces` (lane write) + the same ALTER in the inheritance migration; `context_gauge` live tap; the strand's `context` series | yes | a TG-2 small-model run records per-step fill with real variance (not one constant, not all at a clamp) and its edits carry `fill` | storing the view's contents; new event labels; a `live_view` table |
 | W3 | (A visual) the corridor band, shards, return sparks, glitch, calm line; timeline fill rings and notches; the nucleus motes fed live | no | a replay of a TG-2 small conversation draws its edits at the right steps; a cloud conversation draws the calm band and its true line; fps within budget | per-token detail; animating every block in a long run |
 | W4 | (C) the galaxy cortex "A + C" (§8): one spiral (an arm per root sector) that fills the volume, satellite galaxies with tidal streams, arm-following hyphae lit by use, the arm-woven shell with its recall pulse (§8.7-8.8), sector halos of the seven spaces (§9.2), pins (§10); first behind `?cortex=galaxy` on the REAL memory so the owner can compare, then the default; the old forest/mist/arbor code removed in the same change that makes it default | no | the owner chooses after seeing it on real memory; ≥ 28 fps at DPR 1.6 on this machine; brightness flat over 10 minutes; the old tissue code gone | a second engine; a bloom pipeline; stars that stand for nothing |
@@ -337,6 +337,25 @@ a real `pin_id`, §10); the noise child sectors are folded (§8.6).
    the disc its claims and their evidence; the shader approach of §4.4 is unchanged.
    Kept from today: the claim crystal glyph (at close range), the Oracle's pupil and lens,
    cards, HUD, tunnel, brand palette and the dark field.
+9. **The inside is endless (owner).** The woven shell is the edge of what you SEE, never a
+   limit on what the memory HOLDS or where you can go. It extends the interface's room rule
+   (MEMORY-INTERFACE §3.2, "treat the inside as almost infinite space", ×1-×24 by claim
+   spacing) to the whole galaxy:
+   - **Holding:** every row has a place; growth adds depth, not crowding. A sector that grows
+     gets more room inside its arm (the scale follows its content), so the whole view never
+     has to drop or merge things to fit.
+   - **Viewing:** diving in, you shrink and the room opens: the arm region you enter becomes
+     a galaxy of its own, then a claim cluster, then the claim and its evidence (the same
+     levels as §8.4, each one a step down in scale). Glyphs keep their size on screen
+     (`uRoom`), so gaps open instead of everything zooming; speed follows the nearest claim
+     (slow beside one, fast in empty space).
+   - **The shell stays the horizon:** from inside, the woven strands recede to a far, faint
+     horizon that keeps you oriented (the poles above and below, the sector strands around)
+     and never reads as a wall you hit. Esc rises one level and the shell comes back into
+     view.
+   - **Cost stays bounded:** only what is near the camera is drawn in detail (level of
+     detail by distance); far regions are their tinted star cloud. The star budget of §4.4
+     holds at every depth.
 
 ## 9. Landmarks in their sector, and every event family
 

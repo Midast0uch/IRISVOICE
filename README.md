@@ -162,10 +162,18 @@ Part I the interface, Part II the memory foundation — growth/decay law, Kyudo,
   user evidence and undoable for 10 minutes.
 - **Helper strands report back:** a strand can help another (strand map › "helps …"); "↩ report back" posts its result
   into the parent strand, and the corridor's arch walks to that moment.
+- **What a strand did, without opening the chat:** hover a strand on the timeline, or a task in its corridor, and the
+  card lists its steps (✓ / ✗, the tool, what it acted on; "+N more"), read from the episode's own record. Click a step
+  for its exact output from the chat record (plain text on this machine), or "IRIS no longer keeps this output".
 - **Live:** while IRIS works, inward sparks = remembering, outward = recording, rays = deciding; a new claim assembles;
   a finished turn settles. Tidy / full view switch for the HUD.
 - **Store:** the app memory lives at `D:/IRIS/store/memory.db` (SSD; `data/memory_config.json` `db_path`), always
   opened through `resolve_memory_store_path`; the surface only reads (`/api/memory/*`, LIMIT-bounded, indexed).
+- **Next design (decided, not built yet):** the cortex becomes a galaxy - one spiral with an arm per sector, satellite
+  galaxies for side sectors, curved hyphae that follow the arms and light up when a recall uses them, a shell woven from
+  the arms themselves, an endless inside, and the live context at the centre. Until that wave (W4) lands, the cortex
+  draws today's lattice. Plan and owner decisions:
+  **[docs/Design/Memory-Cortex/LIVE-CONTEXT-AND-GALAXY-PLAN.md](./docs/Design/Memory-Cortex/LIVE-CONTEXT-AND-GALAXY-PLAN.md)**.
 
 ### 🕸 DER-DAG Execution Model
 
@@ -181,11 +189,12 @@ DER no longer runs as a hardcoded Director→Explorer→Reviewer pipeline over a
 ### 🧩 Context Lifecycle (CLM) and the Workbench
 
 - **CLM** replaces the blind context cut with a live view over a record. A block leaves the model window only through a gate (`context_view.offload_decision`), leaves a one-line placeholder with its address, and returns byte for byte by reference (`recall_memory expand=<ref>`). One gauge (`context_gauge.py`) counts tokens; a router-cap drop the view did not make is a counted alarm.
-- **Record and events.** Long tool results are rows in `tool_results` (`conversations.db`). `OFFLOADED`, `RESTRETCHED` and `PREMATURE_EVICTION` go to `memory_events`. Model notes become pins with provenance; a dead-end ledger keeps failed actions in view.
-- **Workbench** (CLM-11) gives a DER node a persistent Python worker process per conversation (stdlib only, protocol v2). The planner writes a brief per step (outputs, check, approach, tools); the tool model writes the code; the harness runs the check; the Brain repairs once after two failed checks. The step result is the outputs manifest.
-- **Safety.** 512 MB per worker, 768 MB total (private bytes on Windows), idle end after 10 min, declared outputs spilled to the record, personal mode refuses the IRIS repo, and a personal-mode worker and its children run at Windows Low integrity.
-- **Flags:** `IRIS_CLM_OFFLOAD=1` (view hooks in the node loop; **off** until the TG-2 gate closes), `IRIS_WORKBENCH=1` (code mode; **on** in `.env` since the Round 6 browser cloud gate; code default off), `IRIS_CLM_BASELINE=1` + `IRIS_CLM_DUMP_DIR` (per-call measurement rows). Measure with `evals/wb_ab_analysis.py`.
-- **Status (2026-11-22):** the CLM spec is **not finished**. Built and guarded: Waves 0-6. TG-2 measured on the cloud model (off 23/28, on 24/28) and on a small local model (5/14 both arms, offload changes no pass); still to run: the direct-path offload live, the Round 6 full gate and its small-model arm, TG-4, TG-5. The verdicts are in `specs/clm-memory/tasks.md` (status block) and in the CLM and Workbench docs, section 3.
+- **Record and events.** Long tool results are rows in `tool_results` (`conversations.db`, plain text on this machine). Each row names its turn and step (Workbench scripts and spills too). Budget: 200 rows per conversation and 4,000 in all; eval and dev conversations are evicted first. `OFFLOADED`, `RESTRETCHED` and `PREMATURE_EVICTION` go to `memory_events`. Model notes become pins with provenance; a dead-end ledger keeps failed actions in view.
+- **Workbench** (CLM-11) gives a DER node a persistent Python worker process per conversation (stdlib only, protocol v2). The planner writes a brief per step (outputs, check, approach, tools); the tool model writes the code; the harness runs the check; after the second failed check the Brain sends one repair skeleton. The step result is the outputs manifest.
+- **Two-call mode** (`IRIS_WB_TWO_CALL=1`): the model sends two `run_python` calls in ONE response - the first gathers data into variables, the second computes the outputs from them - and both run in the same worker namespace: one model call, two executions.
+- **Safety.** 512 MB per worker, 768 MB total (private bytes on Windows), at most 2 live workers, idle end after 10 min, declared outputs spilled to the record, personal mode refuses the IRIS repo, and a personal-mode worker and its children run at Windows Low integrity.
+- **Flags:** `IRIS_CLM_OFFLOAD=1` (view hooks in the node loop; **off** until the TG-2 gate closes), `IRIS_WORKBENCH=1` and `IRIS_WB_TWO_CALL=1` (code mode and two-call mode; **on** in `.env` since the Round 6 browser cloud gate; code default off), `IRIS_CLM_BASELINE=1` + `IRIS_CLM_DUMP_DIR` (per-call measurement rows). Measure with `evals/wb_ab_analysis.py` (A/B) and `evals/wb_gate_driver.py` (gates).
+- **Status (2026-11-22):** the CLM spec is **not finished**. Built and guarded: Waves 0-6. TG-2 measured on the cloud model (off 23/28, on 24/28) and on a small local model (5/14 both arms, offload changes no pass); still to run: the direct-path offload live, the Round 6 full gate and its small-model arm, TG-4, TG-5. Coding A/B with the Workbench on (c08/c10/c12/c15 x3): 24/24 pass. The verdicts are in `specs/clm-memory/tasks.md` (status block) and in the CLM and Workbench docs, section 3.
 - Architecture and blueprint: **[`docs/architecture/CLM.md`](./docs/architecture/CLM.md)** (context lifecycle) and **[`docs/architecture/WORKBENCH.md`](./docs/architecture/WORKBENCH.md)** (the Workbench); specs in `specs/clm-memory/`.
 
 ### 👁 Vision Layer (LFM2.5-VL)
@@ -1295,6 +1304,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - **[Oracle — Decision Engine](./docs/architecture/oracle.md)**: the CPU-only calibrated scorer — jobs and their routing, the two-key enforcement chokepoint, the hardened bar, calibration (`fit_oracle_calibration.py`), the phase-domain concurrency model, and every measured number with its provenance
 - **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: *(historical)* the pre-DAG DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges. Superseded by DER-DAG above; the trailing director was deleted 2026-08-06.
 - **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
+- **[Memory cortex plan: live context, strand contents, galaxy](./docs/Design/Memory-Cortex/LIVE-CONTEXT-AND-GALAXY-PLAN.md)**: the final design of the next Memory surface (owner decisions 2026-11-22) and its build waves W0-W4 (W0-W1 built)
 - **[Memory interface + foundation](./docs/Design/Memory-Cortex/MEMORY-INTERFACE.md)**: the one design document of IRIS's memory — Part I the Memory surface (views, grammar, paths, live grammar, corrections, data path, budgets), Part II the memory foundation (growth/decay law, Kyudo self-cleaning, sectors and spaces, the integrity pass)
 - **[Recall-as-Cognition](./docs/architecture/RECALL_AS_COGNITION.md)**: Two-phase memory retrieval protocol — op grammar, iterative recall, streaming filter, episode feedback loop, skill genesis, and performance model
 - **[PiN System](./docs/architecture/PIN_SYSTEM.md)**: Primordial Information Nodes — pin data model, recall ops (`pin="title"`, `pin query="text"`, `pin file="X.md"`, `pin tags="a,b"`), auto-checkpoint heuristic, wiki link graph, tunable search weights
@@ -1327,7 +1337,7 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 - `GET /api/agent/status` - Agent status
 - `GET /docs` - Swagger UI
 - `GET /redoc` - ReDoc documentation
-- `GET /api/memory/snapshot` · `/overview` · `/claims` · `/claims/{id}` · `/claims/{id}/uses` · `/threads` · `/strand/{id}` · `/turn/{conversation}/{turn}` · `/search` · `/oracle` · `/corrections` - the Memory surface's read API (read-only)
+- `GET /api/memory/snapshot` · `/overview` · `/claims` · `/claims/{id}` · `/claims/{id}/uses` · `/threads` · `/strand/{id}` · `/turn/{conversation}/{turn}` · `/tool-result` · `/search` · `/oracle` · `/corrections` - the Memory surface's read API (read-only; `/tool-result` = a strand step's exact output, on click)
 - `POST /api/memory/correct` · `/api/memory/correct/undo` - corrections (user evidence, undoable)
 - `GET /api/threads` · `GET|POST /api/threads/{id}/strands` · `PATCH /api/strands/{id}` · `POST /api/strands/{id}/report` · `PATCH /api/threads/{id}` - threads, strands, helper report-back
 

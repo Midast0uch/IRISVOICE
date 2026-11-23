@@ -58,6 +58,10 @@ export const MEMORY_CSS = String.raw`
 .iris-memory .anno .m em{font-style:normal;color:var(--ink)}
 .iris-memory .anno .m .w{color:var(--warn)} .iris-memory .anno .m .u{color:var(--white)}
 .iris-memory .anno .go{display:inline-block;margin-top:.6em;font-size:10.5px;color:var(--brand);pointer-events:auto;cursor:pointer}
+.iris-memory .anno .go.step{display:block;margin-top:.2em;color:#b3c9d4}
+.iris-memory .anno .go.step:hover{color:var(--ink)}
+.iris-memory .anno .go.step .out{display:block;margin:.4em 0 .2em;max-height:160px;overflow:auto;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:10px;line-height:1.5;color:var(--ink);background:rgba(212,236,246,.05);padding:.4em .5em;border-radius:3px}
+.iris-memory .anno .go.step .plain{display:block;font-size:9.5px;color:#6c8796}
 .iris-memory .anno .go:hover{color:var(--white)}
 .iris-memory .anno .go+.go{margin-left:1.1em}   /* two paths on one card never run together */
 .iris-memory .anno.right{text-align:left} .iris-memory .anno.left{text-align:right}

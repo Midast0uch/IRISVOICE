@@ -196,6 +196,32 @@ def clip(v: Any, n: int = 80) -> Optional[str]:
     return None if v is None else str(v)[:n]
 
 
+# W1 (memory cortex plan, 2026-11-22): what a strand DID, from the episode's own durable record
+# (episodes.tool_sequence: tool, params, target, success, step, description). Short text only -
+# never tool output (that is the chat record's tool_results, read on click by tool_output()).
+STEP_TARGET_MAX = 80
+STEP_WHAT_MAX = 120
+STEPS_PER_EPISODE = 12        # the strand / corridor read
+SNAPSHOT_STEPS = 5            # the snapshot: the hover card shows 5 lines and "+N more"
+_STEP_PARAM_KEYS = ("path", "query", "command", "url", "file", "pattern")
+
+
+def episode_steps(raw: Any, limit: int = STEPS_PER_EPISODE) -> tuple[list, list, int]:
+    """(tool names <= 12, step lines <= limit, steps in all) of one episode's tool_sequence."""
+    seq = [s for s in jload(raw, []) if isinstance(s, dict) and s.get("tool")]
+    lines = []
+    for s in seq[:limit]:
+        target = s.get("target")
+        if not target and isinstance(s.get("params"), dict):
+            target = next((s["params"][k] for k in _STEP_PARAM_KEYS if s["params"].get(k)), None)
+        ok = s.get("success")
+        what = " ".join(str(s.get("description") or "").split())
+        lines.append({"tool": str(s["tool"])[:40], "target": clip(target, STEP_TARGET_MAX),
+                      "what": clip(what or None, STEP_WHAT_MAX),
+                      "ok": None if ok is None else bool(ok), "step": s.get("step")})
+    return [s["tool"] for s in seq][:12], lines, len(seq)
+
+
 def table_cols(con: sqlite3.Connection, name: str) -> set[str]:
     """Column names of a table, empty when it does not exist. `name` is always a constant of this module."""
     return {r[1] for r in con.execute(f"PRAGMA table_info({name})")}
@@ -901,12 +927,12 @@ def strand(strand_id: str) -> dict:
             for r in mem.execute("SELECT id, task_summary, outcome_type, outcome_score, failure_reason, user_corrected, "
                                  "user_confirmed, duration_ms, tool_sequence, timestamp FROM episodes WHERE session_id = ? "
                                  "ORDER BY timestamp DESC LIMIT ?", (strand_id, EPISODES_CAP)):
-                tools = [s.get("tool") for s in jload(r["tool_sequence"], []) if isinstance(s, dict) and s.get("tool")][:12]
+                tools, steps, n_steps = episode_steps(r["tool_sequence"], STEPS_PER_EPISODE)
                 episodes.append({"id": r["id"], "session": strand_id, "summary": (r["task_summary"] or "")[:160],
                                  "outcome": r["outcome_type"] or "partial", "score": r["outcome_score"] or 0.0,
                                  "failure_reason": clip(r["failure_reason"], 200), "corrected": bool(r["user_corrected"]),
                                  "confirmed": bool(r["user_confirmed"]), "duration": (r["duration_ms"] or 0) / 1000.0,
-                                 "tools": tools, "ts": ts_of(r["timestamp"])})
+                                 "tools": tools, "steps": steps, "step_count": n_steps, "ts": ts_of(r["timestamp"])})
 
         messages: list[dict] = []
         children: list[dict] = []
@@ -1428,12 +1454,12 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             for r in con.execute("SELECT id, session_id, task_summary, outcome_type, outcome_score, failure_reason, "
                                  "user_corrected, user_confirmed, duration_ms, tool_sequence, timestamp FROM episodes "
                                  "ORDER BY timestamp DESC LIMIT ?", (SNAPSHOT_EPISODES,)):
-                tools = [s.get("tool") for s in jload(r["tool_sequence"], []) if isinstance(s, dict) and s.get("tool")][:12]
+                tools, steps, n_steps = episode_steps(r["tool_sequence"], SNAPSHOT_STEPS)
                 episodes.append({"id": r["id"], "session": r["session_id"], "summary": (r["task_summary"] or "")[:160],
                                  "outcome": r["outcome_type"] or "partial", "score": r["outcome_score"] or 0.0,
                                  "failure_reason": r["failure_reason"], "corrected": bool(r["user_corrected"]),
                                  "confirmed": bool(r["user_confirmed"]), "duration": (r["duration_ms"] or 0) / 1000.0,
-                                 "tools": tools, "ts": ts_of(r["timestamp"])})
+                                 "tools": tools, "steps": steps, "step_count": n_steps, "ts": ts_of(r["timestamp"])})
         for s in sessions:
             s["episodes"] = [e["id"] for e in episodes if e["session"] == s["id"]]
         episodes = [e for e in episodes if e["session"] in sess_ids]
@@ -2695,3 +2721,46 @@ def search(q: str, kinds: Optional[str] = None, limit: int = SEARCH_LIMIT_DEFAUL
     out["notes"] = [n for k in plan.kinds if (n := _window_note(k, words.get(k, k + "s"), searched.get(k, {})))]
     out["elapsed_ms"] = round((time.perf_counter() - t0) * 1000, 1)
     return out
+
+
+# -- W1: the exact output of a step, on click only ------------------------------------------------
+TOOL_OUTPUT_CHARS = 4000
+TOOL_OUTPUT_ROWS = 3
+
+
+def tool_output(conversation_id: str, tool: Optional[str] = None, target: Optional[str] = None,
+                turn_id: Optional[str] = None, step_id: Optional[str] = None) -> dict:
+    """The recorded output of a strand's step: rows of `tool_results` (the chat record, PLAIN TEXT
+    on this machine) of one conversation, filtered by turn/step when known, else by tool and
+    target, newest first, the first TOOL_OUTPUT_CHARS of each. Read only on a click, never by the
+    snapshot. When nothing is kept, `gone` counts the rows IRIS evicted from this conversation
+    (tool_results_gone), so the card says "no longer kept" instead of nothing."""
+    if not conversation_id:
+        raise BadRequest("conversation is required")
+    with _optional_chat_store() as cdb:
+        if cdb is None or not table_cols(cdb, "tool_results"):
+            return {"rows": [], "gone": 0, "plaintext": True}
+        where, args = ["conversation_id = ?"], [conversation_id]
+        for col, val in (("turn_id", turn_id), ("step_id", step_id), ("tool", tool)):
+            if val:
+                where.append(col + " = ?")
+                args.append(val)
+        if target:
+            where.append("substr(target, 1, ?) = ?")
+            args += [STEP_TARGET_MAX, str(target)[:STEP_TARGET_MAX]]
+        # PLAN  SELECT ... FROM tool_results WHERE conversation_id = ? ... ORDER BY rowid DESC LIMIT 3
+        #       -> SEARCH tool_results USING INDEX idx_tool_results_conv (conversation_id=?)
+        rows = cdb.execute(
+            "SELECT tool, target, turn_id, step_id, chars, cut, substr(content, 1, ?) AS head, created_at "
+            "FROM tool_results WHERE " + " AND ".join(where) + " ORDER BY rowid DESC LIMIT ?",
+            (TOOL_OUTPUT_CHARS, *args, TOOL_OUTPUT_ROWS)).fetchall()
+        gone = 0
+        if not rows and table_cols(cdb, "tool_results_gone"):
+            # PLAN  SELECT COUNT(*) FROM tool_results_gone WHERE conversation_id = ?
+            #       -> SEARCH tool_results_gone USING COVERING INDEX idx_tool_results_gone_conv (conversation_id=?)
+            gone = int(cdb.execute("SELECT COUNT(*) FROM tool_results_gone WHERE conversation_id = ?",
+                                   (conversation_id,)).fetchone()[0])
+    return {"rows": [{"tool": r[0], "target": r[1], "turn": r[2], "step": r[3], "chars": int(r[4] or 0),
+                      "cut": bool(r[5]), "text": r[6] or "", "more": int(r[4] or 0) > TOOL_OUTPUT_CHARS,
+                      "ts": ts_of(r[7])} for r in rows],
+            "gone": gone, "plaintext": True}

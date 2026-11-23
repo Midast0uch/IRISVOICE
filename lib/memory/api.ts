@@ -159,3 +159,18 @@ export async function listCorrections(limit = 20): Promise<{ corrections: Array<
   if (!res.ok) throw new MemoryResting(res.status, "your corrections could not be read")
   return res.json()
 }
+
+/** W1: the exact output of one strand step, on click only (GET /api/memory/tool-result). The chat record keeps it
+ *  as plain text on this machine; `gone` > 0 means IRIS evicted this conversation's outputs (the card says so). */
+export async function fetchToolResult(conversation: string, tool: string, target: string): Promise<{
+  rows: Array<{ tool: string; target: string | null; turn: string | null; step: string | null; chars: number; cut: boolean; text: string; more: boolean; ts: number | null }>
+  gone: number
+  plaintext: boolean
+}> {
+  const q = new URLSearchParams({ conversation })
+  if (tool) q.set("tool", tool)
+  if (target) q.set("target", target)
+  const res = await fetch(`/api/memory/tool-result?${q.toString()}`, { signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) throw new MemoryResting(res.status, "the step's output could not be read")
+  return res.json()
+}

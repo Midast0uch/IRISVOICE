@@ -109,6 +109,13 @@ def memory_turn(conversation_id: str, turn_id: str):
     return _serve("turn", sq.turn, conversation_id, turn_id)
 
 
+@router.get("/tool-result")
+def memory_tool_result(conversation: str = "", tool: Optional[str] = None, target: Optional[str] = None,
+                       turn: Optional[str] = None, step: Optional[str] = None):
+    """W1: the exact output of one strand step, on click only (plain text on this machine)."""
+    return _serve("tool-result", sq.tool_output, conversation, tool, target, turn, step)
+
+
 def _read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
