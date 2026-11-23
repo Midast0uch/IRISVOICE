@@ -192,6 +192,11 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {   // l
   const hasHalo = reg => reg === -1 || !!galOf(reg);
   // §10 a pin: still, near its galaxy's core, every pin its own place
   const pinAt = (reg, j) => { const a = galOf(reg), fr = (j * 0.6180339) % 1, fz = (j * 0.7548777) % 1;
+    // a pin is a MOON of its galaxy's clusters (owner, 2026-11-23): pins shared out across the groups, each on a small
+    // still orbit beside its group (held, not drifting)
+    const sys = a ? systems[reg] || [] : [];
+    if (sys.length) { const sy = sys[j % sys.length], an = j * 2.399963, rr = sy.r * (1.15 + 0.35 * fr);
+      return toWorld(a, sy.x + Math.cos(an) * rr, a.rad * 0.05 * (fz - 0.5), sy.z + Math.sin(an) * rr); }
     if (a && a.kind === 'spiral') { const [x, z] = spiralLocal(a, j % a.nArms, 0.2 + 0.45 * fr, -0.35); return toWorld(a, x, a.rad * 0.06 * (fz - 0.5), z); }
     if (a) return toWorld(a, (fr - 0.5) * a.rad * 0.6, (fz - 0.5) * a.rad * 0.2, ((fr * 7) % 1 - 0.5) * a.rad * 0.6);
     const an = j * 2.399963, r = R * (0.06 + 0.012 * (j % 6)); return new V3(Math.cos(an) * r, -R * 0.1, Math.sin(an) * r); };
@@ -214,18 +219,20 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {   // l
     pinAt, labelAt, viewOf, pathBetween, related, S, DIAL_R, seq, systems };
 }
 
+const OFF_GLSL = `uniform vec3 uOff[12];vec3 offOf(float r){return r<-.5?vec3(0.):uOff[int(clamp(r,0.,11.))];}`;
 const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(reg-foc)<.5?1.2:(reg<-.5?.55:.22));}
+  uniform vec3 uOff[12];vec3 offOf(float r){return r<-.5?vec3(0.):uOff[int(clamp(r,0.,11.))];}
   uniform float uNearZ,uSpan;float depthK(float z){return clamp(1.3-(z-uNearZ)/uSpan,.3,1.3);}`;
 const STAR_VS = `uniform float uTime,uPix,uVis,uFoc,uIn;attribute float aA,aPh,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
-  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.78+.22*sin(uTime*(.6+aPh*.9)+aPh*40.);
+  void main(){vec4 mv=modelViewMatrix*vec4(position+offOf(aReg),1.);float tw=.78+.22*sin(uTime*(.6+aPh*.9)+aPh*40.);
     vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc)*depthK(-mv.z)*(aReg<-.5?1.-.9*uIn:1.-.55*uIn);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
 const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
   gl_FragColor=vec4(vC,(smoothstep(.5,.0,d)*.55+smoothstep(.18,.0,d)*.6)*vA);}`;
 // soft glows (galaxy cores and halos, nebula clumps, far galaxies): large, faint, gaussian
 const GLOW_VS = `uniform float uPix,uVis,uFoc,uIn;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
-  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aC;vA=aA*uVis*focusDim(aReg,uFoc)*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z)*(1.-.55*uIn);
+  void main(){vec4 mv=modelViewMatrix*vec4(position+offOf(aReg),1.);vC=aC;vA=aA*uVis*focusDim(aReg,uFoc)*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z)*(1.-.55*uIn);
     gl_PointSize=clamp(aSz*uPix*(300./-mv.z),2.*uPix,180.*uPix);gl_Position=projectionMatrix*mv;}`;
 const GLOW_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=dot(c,c)*4.;if(d>1.)discard;gl_FragColor=vec4(vC,exp(-d*3.2)*vA);}`;
 
@@ -240,7 +247,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   const sats = [];
   const g = new THREE.Group();
   const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 }, uIso: { value: 0 },
-    uNearZ: { value: 0 }, uSpan: { value: R * 2 } };
+    uNearZ: { value: 0 }, uSpan: { value: R * 2 }, uOff: { value: Array.from({ length: 12 }, () => new V3()) }, uIsoK: { value: 0 } };
   const disposables = [];
   const W = new THREE.Color('#ffffff'), WARM = new THREE.Color('#ffe2b8'), COOL = new THREE.Color('#bfe0ff');
   const bez = (A0, M0, B0, u) => { const q = 1 - u; return new V3(q * q * A0.x + 2 * q * u * M0.x + u * u * B0.x, q * q * A0.y + 2 * q * u * M0.y + u * u * B0.y, q * q * A0.z + 2 * q * u * M0.z + u * u * B0.z); };
@@ -365,28 +372,31 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
 
   // ── the claims ARE stars of their galaxy: a core in the domain's tint; a ring = proven (solid) or still learning
   //    (dashed); brightness = sync; they grow as you go inside (uIn); hover and focus ring them white ──────────────
-  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso;attribute float aIdx,aProven,aSync,aReg,aPh,aMass,aState;attribute vec3 aC;
-    varying vec3 vC;varying float vA,vP,vH,vS,vSt,vPh;
+  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso;attribute float aIdx,aProven,aSync,aReg,aPh,aMass,aState,aKind,aFam;attribute vec3 aC,aFamC;
+    uniform float uIsoK;varying vec3 vC,vFamC;varying float vA,vP,vH,vS,vSt,vPh,vKind,vFam;
     ${FOCUS_GLSL}
-    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
-      vC=aC;vP=aProven;vH=h;vS=sel;vSt=aState;vPh=aPh;float tw=abs(aState-4.)<.5?.55+.45*sin(uTime*2.6+aPh*20.):.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
-      float iso=uIso<.5?1.:(abs(aState-uIso)<.5?1.4:.08);
+    void main(){vec4 mv=modelViewMatrix*vec4(position+offOf(aReg),1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
+      vC=aC;vP=aProven;vH=h;vS=sel;vSt=aState;vPh=aPh;vKind=aKind;vFam=aFam;vFamC=aFamC;float tw=abs(aState-4.)<.5?.55+.45*sin(uTime*2.6+aPh*20.):.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
+      float iso=(uIso<.5?1.:(abs(aState-uIso)<.5?1.4:.08))*(uIsoK<.5?1.:(abs(aKind-uIsoK)<.5?1.4:.08));
       vA=(.55+.35*aSync)*mix(.6,1.,aMass)*tw*uVis*focusDim(aReg,uFoc)*iso*(1.+.6*max(h,sel));
-      float sz=(1.6+1.2*aSync)*(.8+1.*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel))*(abs(aState-1.)<.5?1.7:1.25);
+      float sz=(1.6+1.2*aSync)*(.8+1.*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel))*1.6;
       gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(8.+5.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
-  const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS,vSt,vPh;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-    vec2 q=abs(c*2.);float hi=max(vH,vS),a=0.,d2=d*d;
-    if(vSt<1.5){a=exp(-d2*170.)*1.5+exp(-d2*14.)*.28+(exp(-q.y*42.)*(1.-q.x)+exp(-q.x*42.)*(1.-q.y))*.6;}                 // proven: a brilliant star, photographic spikes
-    else if(vSt<2.5){float an=vPh*3.14;vec2 e=vec2(c.x*cos(an)-c.y*sin(an),(c.x*sin(an)+c.y*cos(an))*2.7);                  // still learning: a protostar in its dust disc
-      a=exp(-d2*90.)*.75+smoothstep(.07,.0,abs(length(e)-.3))*.55*smoothstep(.5,.25,abs(e.x))+exp(-d2*12.)*.1;}
-    else if(vSt<3.5){float lob=.75+.25*sin(atan(c.y,c.x)*3.+vPh*20.);a=exp(-d2*150.)*1.3+exp(-d2*7.)*.38*lob;}               // new this week: a newborn star in its nebula
-    else{a=smoothstep(.36,.14,d)*.5+exp(-d2*30.)*.25;}                                                                          // fading: a dim red giant
-    a+=smoothstep(.035,.0,abs(d-.46))*hi*.9;                                                                                  // hover / focus
-    gl_FragColor=vec4(mix(vC,vec3(1.),.25+.4*hi),a*vA);}`;
+  const CLAIM_FS = `uniform float uTime;varying vec3 vC,vFamC;varying float vA,vP,vH,vS,vSt,vPh,vKind,vFam;
+    void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    vec2 q=abs(c*2.);float hi=max(vH,vS),d2=d*d,core=exp(-d2*150.)*(vSt>1.5&&vSt<2.5?.8:1.3),halo=exp(-d2*12.)*.22,a=core+halo;
+    if(vKind>.5&&vKind<1.5){a+=smoothstep(.03,.0,abs(length(vec2(c.x,c.y*2.4))-.34))*.55;}                                   // a way of doing: a star with its orbit
+    else if(vKind<2.5&&vKind>1.5){a+=(exp(-q.y*40.)*(1.-q.x)+exp(-q.x*40.)*(1.-q.y))*.6;}                                     // a fact: a fixed star with spikes
+    else if(vKind<3.5&&vKind>2.5){vec2 o=vec2(.15,.0);a=exp(-dot(c-o,c-o)*220.)*1.1+exp(-dot(c+o,c+o)*220.)*.85+halo;}       // how you like it: a binary star
+    else if(vKind<4.5&&vKind>3.5){float tl=smoothstep(.0,.42,c.x-c.y)*exp(-abs(c.x+c.y)*22.)*.55;a=core+tl+halo*.5;}           // about when: a comet with its tail
+    else if(vKind>4.5){float an=atan(c.y,c.x);a+=pow(abs(cos(an*3.)),20.)*smoothstep(.5,.1,d)*.55;}                            // what IRIS can do: a nova with rays
+    float m=0.;if(vFam>.5){float an=uTime*.7+vPh*6.28;vec2 mp=vec2(cos(an),sin(an))*.4;m=exp(-dot(c-mp,c-mp)*700.);}           // its strongest event: an orbiting mote
+    a+=smoothstep(.035,.0,abs(d-.47))*hi*.9;                                                                                     // hover / focus
+    gl_FragColor=vec4(mix(mix(vC,vec3(1.),.25+.4*hi),vFamC,clamp(m*1.5,0.,1.)),(a+m*1.2)*vA);}`;
   {
-    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [], ST = [];
+    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [], ST = [], KD = [], FA = [], FC = [];
     pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {}, info = claimInfo[k] || {}, a = pl.arm != null ? arms[pl.arm] : null;
       const st = info.young ? 3 : info.fading ? 4 : info.proven ? 1 : 2, col = STATE_COL[st].clone(); MS.push(pl.mass || 0.3); ST.push(st);
+      const fc = new THREE.Color(info.famCol || '#ffffff'); KD.push(info.kind || 0); FA.push(info.famCol ? 1 : 0); FC.push(fc.r, fc.g, fc.b);
       P.push(p.x, p.y, p.z); C.push(col.r, col.g, col.b); IX.push(k); PR.push(info.proven ? 1 : 0); SY.push(clamp(info.sync ?? 0.4, 0, 1)); RG.push(a ? a.reg : -1); PH.push(rng()); });
     if (P.length) {
       const geo = new THREE.BufferGeometry();
@@ -394,6 +404,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       geo.setAttribute('aIdx', new THREE.Float32BufferAttribute(IX, 1)); geo.setAttribute('aProven', new THREE.Float32BufferAttribute(PR, 1));
       geo.setAttribute('aSync', new THREE.Float32BufferAttribute(SY, 1)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG, 1));
       geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1)); geo.setAttribute('aMass', new THREE.Float32BufferAttribute(MS, 1)); geo.setAttribute('aState', new THREE.Float32BufferAttribute(ST, 1));
+      geo.setAttribute('aKind', new THREE.Float32BufferAttribute(KD, 1)); geo.setAttribute('aFam', new THREE.Float32BufferAttribute(FA, 1)); geo.setAttribute('aFamC', new THREE.Float32BufferAttribute(FC, 3));
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: CLAIM_VS, fragmentShader: CLAIM_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
       const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.renderOrder = 2; g.add(o); disposables.push(geo, mat);
     }
@@ -404,7 +415,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   //    the nucleus. Light streams along them (a moving wave in the shader). ──────────────────────────────────────
   const FIL_VS = `uniform float uTime,uPix,uVis,uFoc;attribute float aA,aPh,aSz,aReg,aU,aRegB;attribute vec3 aC;varying vec3 vC;varying float vA;
     ${FOCUS_GLSL}
-    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float flow=.55+.45*sin(aU*38.-uTime*1.3+aPh*2.);
+    void main(){vec4 mv=modelViewMatrix*vec4(position+mix(offOf(aReg),offOf(aRegB),aU),1.);float flow=.55+.45*sin(aU*38.-uTime*1.3+aPh*2.);
       float fd=max(focusDim(aReg,uFoc),focusDim(aRegB,uFoc));
       vC=aC;vA=aA*flow*uVis*fd*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z);gl_PointSize=clamp(aSz*uPix*(60./-mv.z),1.3*uPix,5.*uPix);gl_Position=projectionMatrix*mv;}`;
   const S = layout.S || [];
@@ -434,7 +445,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     ${FOCUS_GLSL}
     void main(){float lit=0.;for(int i=0;i<${PULSE_SLOTS};i++){vec2 p=uPulse[i];if(p.x==aLink){float age=uTime-p.y;float head=age/1.1;
       lit=max(lit,smoothstep(.09,0.,abs(aU-head))*step(0.,age)*step(age,1.6)+.6*smoothstep(1.,0.,age)*step(0.,age));}}
-      vA=(step(.001,aW)*(.014+.05*aW)*(.3+.7*sin(aU*3.14159))*(1.-.5*uIn)*focusDim(aReg,uFoc)+lit*.75)*uVis;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+      vA=(step(.001,aW)*(.014+.05*aW)*(.3+.7*sin(aU*3.14159))*(1.-.8*uIn)*focusDim(aReg,uFoc)+lit*.75)*uVis*(aReg<-.5?1.-uIn:1.);   // inside: links between domains ride the web, not loose lines
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(position+offOf(aReg),1.);}`;
   const HYPHA_FS = `varying float vA;void main(){gl_FragColor=vec4(.8,.96,.92,vA);}`;
   const linkOf = new Map();
   {
@@ -546,11 +558,11 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     const o = new THREE.Points(dustGeo, mat); o.frustumCulled = false; o.userData.shell = true; g.add(o); disposables.push(dustGeo, mat); }
 
   // ── §9.2 the halos: seven dots per domain (strength = how many of its nodes sit in that space) and a faint ring ──
-  const HALO_VS = `uniform float uTime,uPix,uVis,uIn,uHalo;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
-    void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float mine=step(abs(aReg-uHalo),.5);
-      vC=aC;vA=aA*uVis*mix(1.-.55*uIn,1.+1.2*uIn,mine);gl_PointSize=min(aSz*uPix*(60./-mv.z),(5.+5.*mine*uIn)*uPix);gl_Position=projectionMatrix*mv;}`;
-  const RING_VS = `uniform float uVis,uIn,uHalo;attribute float aReg;varying float vA;
-    void main(){float mine=step(abs(aReg-uHalo),.5);vA=.025*uVis*mix(1.-.6*uIn,1.+2.*uIn,mine);gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+  const HALO_VS = `uniform float uTime,uPix,uVis,uIn,uHalo;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;${OFF_GLSL}
+    void main(){vec4 mv=modelViewMatrix*vec4(position+offOf(aReg),1.);float mine=step(abs(aReg-uHalo),.5);
+      vC=aC;vA=aA*uVis*mix(1.-.55*uIn,1.+1.2*uIn,mine)*(aReg<-.5?1.-uIn:1.);gl_PointSize=min(aSz*uPix*(60./-mv.z),(5.+5.*mine*uIn)*uPix);gl_Position=projectionMatrix*mv;}`;
+  const RING_VS = `uniform float uVis,uIn,uHalo;attribute float aReg;varying float vA;${OFF_GLSL}
+    void main(){float mine=step(abs(aReg-uHalo),.5);vA=.025*uVis*mix(1.-.6*uIn,1.+2.*uIn,mine)*(aReg<-.5?1.-uIn:1.);gl_Position=projectionMatrix*modelViewMatrix*vec4(position+offOf(aReg),1.);}`;
   const colOfReg = reg => (reg >= 0 && arms[reg] ? arms[reg].col : new THREE.Color(0.85, 0.9, 0.95));
   if (halos.length) {
     const P = [], C = [], A = [], SZ = [], RG = [], LP = [], LR = [];
@@ -577,30 +589,30 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
 
   // ── the threads that hold things to their galaxy: a spur from each claim to its arm's spine; hyphae from a claim to
   //    the nodes its steps walked (in the halo); a stalk from the galaxy to its halo; a straight tether per pin ──────
-  const THREAD_VS = `uniform float uTime,uVis,uIn;uniform vec2 uCP[${PULSE_SLOTS}];attribute float aClaim,aU,aA;attribute vec3 aC;varying vec3 vC;varying float vA;
+  const THREAD_VS = `uniform float uTime,uVis,uIn;uniform vec2 uCP[${PULSE_SLOTS}];attribute float aClaim,aU,aA,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;${OFF_GLSL}
     void main(){float lit=0.;for(int i=0;i<${PULSE_SLOTS};i++){vec2 p=uCP[i];if(p.x==aClaim){float age=uTime-p.y;
       lit=max(lit,smoothstep(.12,0.,abs(aU-age/.7))*step(0.,age)*step(age,1.)+.5*smoothstep(1.4,0.,age)*step(0.,age));}}
-      vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(aA*(1.+.6*uIn)+.75*lit)*uVis;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+      vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(aA*(1.+.6*uIn)+.75*lit)*uVis;gl_Position=projectionMatrix*modelViewMatrix*vec4(position+offOf(aReg),1.);}`;
   uni.uCP = { value: Array.from({ length: PULSE_SLOTS }, () => new THREE.Vector2(-1, -99)) };
   {
-    const P = [], CL = [], UU = [], AA = [], C = [];
-    const curve = (A0, B0, ctl, n, claim, a0, col) => { let prev = A0;
+    const P = [], CL = [], UU = [], AA = [], C = [], TR = [];
+    const curve = (A0, B0, ctl, n, claim, a0, col, reg = -1) => { let prev = A0;
       for (let k = 1; k <= n; k++) { const u = k / n, pt = bez(A0, ctl, B0, u);
-        P.push(prev.x, prev.y, prev.z, pt.x, pt.y, pt.z); CL.push(claim, claim); UU.push((k - 1) / n, u);
+        P.push(prev.x, prev.y, prev.z, pt.x, pt.y, pt.z); CL.push(claim, claim); UU.push((k - 1) / n, u); TR.push(reg, reg);
         const fa = a0 * (0.55 + 0.45 * Math.sin(u * Math.PI)); AA.push(fa, fa); C.push(col.r, col.g, col.b, col.r, col.g, col.b); prev = pt; } };
     claimNodes.slice(0, 3000).forEach(cn => { const p = pos[cn.k]; if (!p) return; const pl = place[cn.k] || {}, ctl = p.clone().lerp(cn.p, 0.5);
-      ctl.y = lerp(p.y, cn.p.y, 0.15); curve(p, cn.p, ctl, 8, cn.k, 0.008, colOfReg(pl.arm != null ? pl.arm : -1)); });
+      ctl.y = lerp(p.y, cn.p.y, 0.15); curve(p, cn.p, ctl, 8, cn.k, 0.008, colOfReg(pl.arm != null ? pl.arm : -1), pl.arm != null ? pl.arm : -1); });
     halos.forEach(h => { const c = layout.haloCentre(h.reg), a = h.reg >= 0 ? arms[h.reg] : null, base = a ? a.c.clone() : new V3();
-      const col = colOfReg(h.reg); curve(base, c, base.clone().lerp(c, 0.5).add(new V3(0, R * 0.01, 0)), 8, -1, 0.035, col);
+      const col = colOfReg(h.reg); curve(base, c, base.clone().lerp(c, 0.5).add(new V3(0, R * 0.01, 0)), 8, -1, 0.035, col, h.reg);
     });   // (no spokes: the orbit and its moons say it - spokes read as a diagram)
-    pins.forEach(pn => { const a = pn.reg >= 0 ? arms[pn.reg] : null;   // held to its arm: a short line into the disc beside it (to the core, 58 tethers made a starburst)
+    false && pins.forEach(pn => { const a = pn.reg >= 0 ? arms[pn.reg] : null;   // (moons beside their cluster need no tether)
       let to = new V3(); if (a) { const v = pn.p.clone().sub(a.c); to = toWorld(a, v.dot(a.ax) * 0.88, 0, v.dot(a.az2) * 0.88); }
-      P.push(pn.p.x, pn.p.y, pn.p.z, to.x, to.y, to.z); CL.push(-1, -1); UU.push(0, 1); AA.push(0.1, 0.1); C.push(1, 0.86, 0.62, 1, 0.86, 0.62); });
+      P.push(pn.p.x, pn.p.y, pn.p.z, to.x, to.y, to.z); CL.push(-1, -1); UU.push(0, 1); AA.push(0.1, 0.1); C.push(1, 0.86, 0.62, 1, 0.86, 0.62); TR.push(pn.reg, pn.reg); });
     if (P.length) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute('aClaim', new THREE.Float32BufferAttribute(CL, 1));
       geo.setAttribute('aU', new THREE.Float32BufferAttribute(UU, 1)); geo.setAttribute('aA', new THREE.Float32BufferAttribute(AA, 1));
-      geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
+      geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(TR, 1));
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: THREAD_VS, fragmentShader: LINE_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
       const o = new THREE.LineSegments(geo, mat); o.frustumCulled = false; g.add(o); disposables.push(geo, mat);
     }
@@ -681,7 +693,15 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     if (pulses.length > PULSE_SLOTS) pulses.shift();
   }
 
+  // the inner space: the galaxy you are in stays; every other moves away to SPACE_K x its distance. The centre eases
+  // to the galaxy you travel to, so the others drift apart and close in smoothly (never a jump).
+  const SPACE_K = 4, cen = new V3(); let cenSet = false, lastT = 0;
+  function offsetOf(reg) { return reg >= 0 && reg < 12 ? uni.uOff.value[reg].clone() : new V3(); }
   function update(t, vis, inside = 0, haloReg = -9, camD = R * 5.8) {
+    const dt = Math.min(0.1, Math.max(0, t - lastT)); lastT = t;
+    const tgt = haloReg >= 0 && arms[haloReg] ? arms[haloReg].c : null;
+    if (tgt) { if (!cenSet || inside < 0.05) { cen.copy(tgt); cenSet = true; } else cen.lerp(tgt, 1 - Math.pow(0.04, dt)); }
+    arms.forEach((a, i) => { if (i < 12) uni.uOff.value[i].copy(a.c).sub(cen).multiplyScalar((SPACE_K - 1) * inside * (cenSet ? 1 : 0)); });
     now = t; uni.uVis.value = vis; uni.uIn.value = inside; uni.uHalo.value = haloReg;
     uni.uNearZ.value = Math.max(0, camD - R); uni.uSpan.value = R * 2;   // the shell's near side is the brightest
     if (voidMat) { voidMat.opacity = inside; voidMat.visible = inside > 0.02; }
@@ -713,5 +733,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   function mark(hov, sel) { uni.uHov.value = hov == null ? -1 : hov; uni.uSel.value = sel == null ? -1 : sel; }
   /** the key isolates one landmark state: 1 proven, 2 still learning, 3 new this week, 4 fading; 0 = all */
   function isolate(k) { uni.uIso.value = k || 0; }
-  return { group: g, update, pulse, dispose, arms, sats, focus, mark, isolate, interior };
+  /** the key isolates one KIND of claim: 1 a way of doing, 2 a fact, 3 how you like it, 4 about when, 5 what IRIS can do */
+  function isolateKind(k) { uni.uIsoK.value = k || 0; }
+  return { group: g, update, pulse, dispose, arms, sats, focus, mark, isolate, isolateKind, interior, offsetOf };
 }

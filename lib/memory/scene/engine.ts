@@ -1378,16 +1378,24 @@ const nodePos=[],nodeSlot=new Map();
     nodePos.push(fib(Math.max(1,per[si]),cnt[si]++).applyQuaternion(rot[si]).multiplyScalar(spR[si]*(1+gauss()*.012)))})}
 // W4 (§9.2): in the galaxy a node sits in the halo of the sector whose claims touch it most, on its space's orbit
 // (claim -> node from the claim's steps, by node id); a node no live claim touches sits on the nucleus side (-1).
-const HALO_COUNTS=new Map();
+const HALO_COUNTS=new Map(),NODE_REG=[];
 if(GAL_LAYOUT){const touch=new Map();
   LM.forEach(l=>(l.steps||[]).forEach(st=>{if(!st.node)return;const m=touch.get(st.node)||new Map();m.set(l.dom,(m.get(l.dom)||0)+1);touch.set(st.node,m)}));
   const grp=new Map();
-  NDS.forEach((n,j)=>{let reg=-1,bn=0;(touch.get(n.id)||new Map()).forEach((c,r)=>{if(GAL_LAYOUT.hasHalo(r)&&c>bn){bn=c;reg=r}});
+  NDS.forEach((n,j)=>{let reg=-1,bn=0;(touch.get(n.id)||new Map()).forEach((c,r)=>{if(GAL_LAYOUT.hasHalo(r)&&c>bn){bn=c;reg=r}});NODE_REG[j]=reg;
     const key=reg+'|'+n.space,g=grp.get(key)||[];g.push(j);grp.set(key,g);
     const hc=HALO_COUNTS.get(reg)||{};hc[n.space]=(hc[n.space]||0)+1;HALO_COUNTS.set(reg,hc)});
   grp.forEach((js,key)=>{const cut=key.indexOf('|'),reg=+key.slice(0,cut),o=GAL_LAYOUT.haloOrbit(reg,key.slice(cut+1)),rad=R*(.006+.0035*Math.sqrt(js.length));
     js.forEach((j,i)=>{const a=i*2.399963,rr=rad*(.55+.45*Math.sqrt((i+.5)/js.length));
       nodePos[j].copy(new V3(Math.cos(a)*rr,R*.004*Math.sin(i*1.7),Math.sin(a)*rr).applyQuaternion(GAL_LAYOUT.haloQ(reg)).add(o))})})}
+// W4 (owner, 2026-11-23: layered icons): a claim's KIND = the coordinate space its steps walked most (a way of doing,
+// a fact, how you like it, when, what IRIS can do); its MOTE = the family of its most frequent real event (none, when
+// the snapshot holds no event on it - nothing is invented)
+const KIND_OF={toolpath:1,domain:2,conduct:3,style:3,chrono:4,capability:5};
+const claimKind=l=>{const by={};(l.steps||[]).forEach(st=>{const k=KIND_OF[st.space];if(k)by[k]=(by[k]||0)+1});
+  const top=Object.entries(by).sort((a,b)=>b[1]-a[1])[0];return top?+top[0]:0};
+const LM_FAM=(()=>{const by=new Map();for(const e of M.events)if(typeof e.landmark==='number'&&e.family){const m=by.get(e.landmark)||new Map();m.set(e.family,(m.get(e.family)||0)+1);by.set(e.landmark,m)}
+  const out=new Map();by.forEach((m,k)=>{const top=[...m.entries()].sort((a,b)=>b[1]-a[1])[0];if(top)out.set(k,top[0])});return out})();
 // W4 (section 9.2): a claim's hyphae run to the nodes its steps walked, in its sector's halo
 const CLAIM_NODES=[];
 if(GAL_LAYOUT){const nodeJ=new Map(NDS.map((n,j)=>[n.id,j]));
@@ -1447,8 +1455,9 @@ const PIN_VS=`uniform float uTime,uPix,uVis,uH,uMax;attribute vec3 aCol;attribut
     gl_PointSize=clamp(aSize*projectionMatrix[1][1]*uH/z,min(5.,uMax*.4)*uPix,uMax*uPix);gl_Position=projectionMatrix*mv;}`;
 const PIN_FRAG=`uniform float uTime,uMax;varying vec3 vC;varying float vA,vH;
   void main(){vec2 p=(gl_PointCoord-.5)*2.;vec2 q=abs(p);
-    if(uMax<20.){float d2=dot(p,p),an=uTime*.6,b=abs(p.x*cos(an)+p.y*sin(an));
-      float a=exp(-d2*28.)*1.2+exp(-b*22.)*(1.-sqrt(d2))*.55*step(d2,1.);gl_FragColor=vec4(mix(vec3(1.,.82,.5),vec3(1.),.3),a*vA);return;}   // a pulsar: held still
+    if(uMax<20.){float r=length(p)/.62;if(r>1.6)discard;vec3 n=vec3(p/.62,sqrt(max(0.,1.-r*r)));float sh=clamp(dot(n,normalize(vec3(-.6,.55,.6))),0.,1.);
+      float disc=smoothstep(1.,.92,r),rim=smoothstep(.08,.0,abs(r-1.))*vH;vec3 col=mix(vec3(.5,.5,.54),vec3(.96,.93,.86),sh);
+      gl_FragColor=vec4(col+rim*.6,(disc*(.18+.82*sh)+exp(-r*r*1.5)*.08+rim*.7)*vA);return;}   // a moon: held still, lit from one side
     float hx=max(q.x*.866+q.y*.5,q.y),shard=1.-smoothstep(.36,.4,hx),edge=smoothstep(.28,.36,hx)*shard;
     float facet=step(0.,p.x*p.y);                                                   // two lit facets, two in shade
     float bar=smoothstep(.06,.0,abs(q.x-.8))*step(q.y,.66),arm=smoothstep(.06,0.,abs(q.y-.64))*step(.62,q.x)*step(q.x,.84);
@@ -1463,7 +1472,7 @@ function pinSprites(list,uVis,max=26){ // list: {pos,col,held,s}
     transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:3})}
 const PINS=M.pins.slice(0,80);let pinArtTethers=null;const pinTethers=[];
 const cloudPt=id=>{let h=7;for(const ch of String(id))h=(h*31+ch.charCodeAt(0))>>>0;const r=mulberry32(h);return new V3(-2.3*R+(r()-.5)*1.6*R,(r()-.5)*1.6*R,(r()-.5)*.8*R)};
-const pinJ=new Map();
+const pinJ=new Map();let pinObjG=null;
 const pinInfo=PINS.map(p=>{let ri=REGI[p.domain]??0;
   if(GAL_LAYOUT){const by=new Map();for(const r of p.refs||[])if(r.t==='landmark'){const k=M.lmIndex.get(r.id);if(k!=null)by.set(LM[k].dom,(by.get(LM[k].dom)||0)+1)}
     let bn=0;by.forEach((n,r)=>{if(n>bn){bn=n;ri=r}});const reg=GAL_LAYOUT.hasHalo(ri)?ri:-1,j=pinJ.get(reg)||0;pinJ.set(reg,j+1);
@@ -1475,7 +1484,7 @@ const pinInfo=PINS.map(p=>{let ri=REGI[p.domain]??0;
   const base=dir.clone().multiplyScalar(R*.985);
   return {p,dir,base,s,tip:base.clone().addScaledVector(dir,-s*2.0),col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}});
 if(PINS.length){
-  const pinObj=pinSprites(pinInfo.map(q=>({pos:q.tip,col:q.col,held:q.held,s:q.s})),forestU.uVis,GAL_LAYOUT?9:26);cortex.add(pinObj);KIND_OBJ.pin.push(pinObj);
+  const pinObj=pinSprites(pinInfo.map(q=>({pos:q.tip,col:q.col,held:q.held,s:q.s})),forestU.uVis,GAL_LAYOUT?9:26);cortex.add(pinObj);pinObjG=pinObj;KIND_OBJ.pin.push(pinObj);
   // tethers: straight from the tip to what the pin references (a certainty, a node, a thing made)
   // (a tether to a thing made reaches out of the orb to where the artifact tissue settles, so it shows in that lens only)
   const tp=[],tc=[],ap=[],ac=[];
@@ -1492,7 +1501,8 @@ if(PINS.length){
 // W4: the galaxy (its own module); links = the landmark edges, lit by their traversals and by live recalls
 const galaxy=GALAXY&&GAL_LAYOUT?createGalaxy({R,U,layout:GAL_LAYOUT,seed:11,
   links:M.edges.filter(e=>e.a<NL&&e.b<NL).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),
-  claimNodes:CLAIM_NODES,claimInfo:LM.map(l=>({proven:l.tier!=='candidate',sync:syncClaim(l),young:!!(l.born&&nowS()-l.born<7*86400),fading:!!l.fading})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
+  claimNodes:CLAIM_NODES,claimInfo:LM.map((l,k)=>({proven:l.tier!=='candidate',sync:syncClaim(l),young:!!(l.born&&nowS()-l.born<7*86400),fading:!!l.fading,
+    kind:claimKind(l),famCol:LM_FAM.has(k)?(FAM[FAMI[LM_FAM.get(k)]]||{}).color||null:null})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
   halos:[...new Set([...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg),...HALO_COUNTS.keys()])].map(reg=>({reg,counts:HALO_COUNTS.get(reg)||{}}))}):null;
 if(galaxy)cortex.add(galaxy.group);
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
@@ -2545,11 +2555,11 @@ function placeDial(show){
     el.addEventListener('click',e=>{e.stopPropagation();dialHover=-1;goGalaxy(reg)});labelsEl.appendChild(el);return {el,reg}});
   const lit=dialHover>=0?dialHover:state.hoverReg;
   // names never overlap: per side, in screen order, each at least one line below the one above it
-  const items=[];dialEls.forEach(D=>{const ga=GAL_LAYOUT.arms[D.reg],w=!show||!ga?null:state.inside?ga.c.clone().add(new V3(0,ga.rad*1.15,0)):GAL_LAYOUT.labelAt(D.reg),a=w&&project(w);
+  const items=[];dialEls.forEach(D=>{const ga=GAL_LAYOUT.arms[D.reg],w=!show||!ga?null:state.inside?ga.c.clone().add(galaxy.offsetOf(D.reg)).add(new V3(0,ga.rad*1.15,0)):GAL_LAYOUT.labelAt(D.reg),a=w&&project(w);
     if(!a||!a.front){D.el.style.opacity=0;D.el.style.pointerEvents='none';return}items.push({D,a,right:a.x>innerWidth/2,y:a.y-8})});
   for(const side of [false,true]){const col=items.filter(o=>o.right===side).sort((p,q)=>p.y-q.y);for(let i=1;i<col.length;i++)col[i].y=Math.max(col[i].y,col[i-1].y+15)}
   items.forEach(({D,a,right,y})=>{const here=state.inside&&D.reg===state.diveReg;D.el.style.pointerEvents=here?'none':'auto';
-    const rv=state.inside?(dialHover===D.reg?1:reveal(a.x,a.y)):1;D.el.querySelectorAll('.nm').forEach(x=>{x.style.opacity=rv});
+    const rv=1;D.el.querySelectorAll('.nm').forEach(x=>{x.style.opacity=rv});   // tier 1: galaxy names always
     D.el.style.opacity=here?.45:lit===D.reg?1:lit>=0?.3:.78;
     const wd=D.el.offsetWidth;D.el.style.textAlign=right?'left':'right';
     D.el.style.left=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4)+'px';D.el.style.top=y+'px'})}
@@ -2567,18 +2577,19 @@ function placeSystems(reg){
       el.title='a group of claims that link to each other · click to go there';
       el.addEventListener('click',e=>{e.stopPropagation();setFocusSoma(-1);clearAnno('focus');satellites(-1);cam.targetT.copy(sy.c);cam.distT=clamp(sy.r*3.6,R*.05,R*1.2);cam.idle=0});
       labelsEl.appendChild(el);return {el,sy}})}
-  const items=[];sysEls.forEach(L=>{const a=project(L.sy.c.clone().add(new V3(0,L.sy.r*.6,0)));if(!a.front){L.el.style.opacity=0;L.el.style.pointerEvents='none';return}items.push({L,a,y:a.y-8})});
+  const items=[];sysEls.forEach(L=>{const a=project(L.sy.c.clone().add(galaxy.offsetOf(L.sy.reg)).add(new V3(0,L.sy.r*.6,0)));if(!a.front){L.el.style.opacity=0;L.el.style.pointerEvents='none';return}items.push({L,a,y:a.y-8})});
   items.sort((p,q)=>p.y-q.y);for(let i=1;i<items.length;i++)if(Math.abs(items[i].a.x-items[i-1].a.x)<140)items[i].y=Math.max(items[i].y,items[i-1].y+15);
   let mid=null,md=1e9;items.forEach(o=>{const dd=Math.hypot(o.a.x-innerWidth/2,o.a.y-innerHeight/2);if(dd<md){md=dd;mid=o}});
-  items.forEach(o=>{const {L,a,y}=o,rv=o===mid?1:reveal(a.x,a.y);L.el.style.pointerEvents=rv>.2?'auto':'none';L.el.style.opacity=.9*rv;const w=L.el.offsetWidth;L.el.style.left=clamp(a.x-w/2,4,innerWidth-w-4)+'px';L.el.style.top=y+'px'})}
+  const cardOpen=state.focusSoma>=0;
+  items.forEach(o=>{const {L,a,y}=o,rv=cardOpen?.18:o===mid?1:Math.max(.55,reveal(a.x,a.y));L.el.style.pointerEvents=rv>.2?'auto':'none';L.el.style.opacity=.9*rv;const w=L.el.offsetWidth;L.el.style.left=clamp(a.x-w/2,4,innerWidth-w-4)+'px';L.el.style.top=y+'px'})}
 function placeHaloLabels(reg){
   if(!haloLabelEls)haloLabelEls=SPACES.map(sp=>{const el=document.createElement('div');el.className='rlabel';labelsEl.appendChild(el);return {el,sp:sp.id,n:-1}});
   if(!readerEl.parentNode)labelsEl.appendChild(readerEl);
   const ok=reg>=-1&&GAL_LAYOUT&&GAL_LAYOUT.hasHalo(reg),hc=ok?HALO_COUNTS.get(reg)||{}:{};
-  haloLabelEls.forEach(L=>{const n=hc[L.sp]||0,pt=ok&&n?project(GAL_LAYOUT.haloOrbit(reg,L.sp)):null;
+  haloLabelEls.forEach(L=>{const n=hc[L.sp]||0,pt=ok&&n?project(GAL_LAYOUT.haloOrbit(reg,L.sp).add(galaxy.offsetOf(reg))):null;
     if(!pt||!pt.front){L.el.style.opacity=0;return}
     if(L.n!==n){L.n=n;L.el.innerHTML=`<b>${esc(SPACE_WORD[L.sp]||L.sp)}</b><i>${fmt(n)} here</i>`}
-    L.el.style.opacity=.8*reveal(pt.x,pt.y);L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
+    L.el.style.opacity=state.focusSoma>=0?0:.8*reveal(pt.x,pt.y);L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
   spaceLabelEls.forEach(L=>{L.el.style.opacity=0;L.p.setAttribute('d','')})}
 function placeSpaceLabels(show){
   const c=project(new V3()),e=project(new V3(R,0,0).applyQuaternion(camera.quaternion)),rs=Math.abs(e.x-c.x)||200;
@@ -2652,14 +2663,25 @@ let hintT=null;
 function showHint(){const h=$('hint');h.classList.add('fresh');clearTimeout(hintT);hintT=setTimeout(()=>h.classList.remove('fresh'),7000)}
 function hint(t){const h=$('hint');if(h.innerHTML!==t){h.innerHTML=t;showHint()}}
 // THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
-const KEY=GALAXY?[['claim','a claim · proven'],['learning','a claim · still learning'],['young','a claim · new this week'],['fading','a claim · fading'],
-    ['system','a group · claims that link'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a halo dot · a space it touches']]
+const KEY=GALAXY?[['k1','a way of doing a task'],['k2','a fact about the world'],['k3','how you like things'],['k4','about when'],['k5','what IRIS can do'],
+    ['states','colour · how sure it is'],['events','mote · what happened to it'],['system','a group · claims that link'],['pin','a moon · a pin, held on purpose'],['moment','a moment, as it happens']]
   :[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
 function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
   g.lineWidth=1.6;
   // the galaxy's own marks: a star in its state's colour, a system's soft light, a halo dot on its orbit
   const STAR_KEY={claim:['#eef6ff'],learning:['#86dcff'],young:['#ff80c4'],fading:['#ff8a4c']};
+  if(GALAXY&&/^k[1-5]$/.test(kind)){const n=+kind[1],W='#eef6ff';const glowAt=(x,y,r,a)=>{const gr=g.createRadialGradient(x,y,0,x,y,r);gr.addColorStop(0,W);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=a;g.fillStyle=gr;g.beginPath();g.arc(x,y,r,0,7);g.fill()};
+    g.strokeStyle=W;g.lineWidth=1.1;
+    if(n===1){glowAt(0,0,6,1);g.globalAlpha=.7;g.save();g.scale(1,.42);g.beginPath();g.arc(0,0,14,0,7);g.stroke();g.restore()}                         // a star with its orbit
+    else if(n===2){glowAt(0,0,6,1);g.globalAlpha=.8;g.beginPath();g.moveTo(-15,0);g.lineTo(15,0);g.moveTo(0,-15);g.lineTo(0,15);g.stroke()}            // a fixed star, spikes
+    else if(n===3){glowAt(-5,0,5,1);glowAt(5,0,4.4,.85)}                                                                                              // a binary star
+    else if(n===4){const gr=g.createLinearGradient(2,-2,-15,15);gr.addColorStop(0,'rgba(238,246,255,.7)');gr.addColorStop(1,'rgba(238,246,255,0)');g.globalAlpha=1;g.strokeStyle=gr;g.lineWidth=4;g.beginPath();g.moveTo(1,-1);g.lineTo(-14,14);g.stroke();glowAt(3,-3,6,1)}   // a comet
+    else{glowAt(0,0,6,1);g.globalAlpha=.75;for(let i=0;i<6;i++){const a=i/6*Math.PI*2;g.beginPath();g.moveTo(Math.cos(a)*5,Math.sin(a)*5);g.lineTo(Math.cos(a)*14,Math.sin(a)*14);g.stroke()}}   // a nova
+    return c}
+  if(GALAXY&&kind==='states'){[['#eef6ff',-12],['#86dcff',-4],['#ff80c4',4],['#ff8a4c',12]].forEach(([cc,x])=>{const gr=g.createRadialGradient(x,0,0,x,0,5);gr.addColorStop(0,cc);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=1;g.fillStyle=gr;g.beginPath();g.arc(x,0,5,0,7);g.fill()});return c}
+  if(GALAXY&&kind==='events'){const gr=g.createRadialGradient(0,0,0,0,0,7);gr.addColorStop(0,'#eef6ff');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.beginPath();g.arc(0,0,7,0,7);g.fill();
+    g.globalAlpha=.35;g.strokeStyle='#eef6ff';g.beginPath();g.arc(0,0,12,0,7);g.stroke();g.globalAlpha=1;g.fillStyle='#ffd36b';g.beginPath();g.arc(8.5,-8.5,2.6,0,7);g.fill();return c}
   if(GALAXY&&STAR_KEY[kind]){const [c0]=STAR_KEY[kind],glowAt=(r,cc,a)=>{const gr=g.createRadialGradient(0,0,0,0,0,r);gr.addColorStop(0,cc);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=a;g.fillStyle=gr;g.beginPath();g.arc(0,0,r,0,7);g.fill()};
     if(kind==='claim'){glowAt(10,c0,.5);g.globalAlpha=.9;g.strokeStyle=c0;g.lineWidth=1;g.beginPath();g.moveTo(-16,0);g.lineTo(16,0);g.moveTo(0,-16);g.lineTo(0,16);g.stroke();glowAt(3.2,'#ffffff',1)}   // proven: a brilliant star
     else if(kind==='learning'){g.save();g.rotate(-.5);g.scale(1,.36);g.globalAlpha=.75;g.strokeStyle=c0;g.lineWidth=2.6;g.beginPath();g.arc(0,0,10,0,7);g.stroke();g.restore();glowAt(4,c0,.85)}   // a protostar in its disc
@@ -2674,6 +2696,8 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
     if(kind==='claim')for(let k=0;k<6;k++){const a0=k/6*Math.PI*2,a1=(k+1)/6*Math.PI*2;g.beginPath();g.moveTo(0,0);g.lineTo(Math.cos(a0)*13,Math.sin(a0)*13);g.lineTo(Math.cos(a1)*13,Math.sin(a1)*13);
       g.closePath();g.globalAlpha=.28+.2*Math.cos(k-2.4);g.fillStyle=cols[k];g.fill()}
     g.globalAlpha=kind==='claim'?.95:.6;g.strokeStyle='#cfe7f2';hex(13);g.stroke();if(kind==='claim'){g.globalAlpha=.9;g.fillStyle='#fff';g.beginPath();g.arc(0,0,2.6,0,7);g.fill()}}
+  else if(kind==='pin'&&GALAXY){const gr=g.createRadialGradient(-3,-3,1,0,0,8);gr.addColorStop(0,'#f6efe0');gr.addColorStop(.7,'#8a8a92');gr.addColorStop(1,'rgba(40,40,48,.2)');
+    g.fillStyle=gr;g.beginPath();g.arc(0,0,8,0,7);g.fill();return c}   // a moon
   else if(kind==='pin'){g.globalAlpha=.55;g.fillStyle='#ffcf6b';hex(6.5,Math.PI/6);g.fill();g.globalAlpha=.95;g.strokeStyle='#ffe6b0';
     for(const sx of [-1,1]){g.beginPath();g.moveTo(sx*13,-11);g.lineTo(sx*16,-11);g.lineTo(sx*16,11);g.lineTo(sx*13,11);g.stroke()}}
   else if(kind==='moment'){const gr=g.createLinearGradient(-16,8,12,-6);gr.addColorStop(0,'rgba(127,232,255,0)');gr.addColorStop(1,'rgba(214,246,255,.95)');
@@ -2683,7 +2707,9 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
 let keyFocus=null;
 const GAL_ISO={claim:1,learning:2,young:3,fading:4};
 function setKindFocus(k){
-  if(galaxy){galaxy.isolate(GAL_ISO[k]||0);if(k in GAL_ISO||k==='system'){keyFocus=k;$('key').classList.toggle('iso',true);
+  if(galaxy&&k&&/^k[1-5]$/.test(k)){galaxy.isolateKind(+k[1]);keyFocus=k;$('key').classList.toggle('iso',true);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}
+  if(galaxy&&(k==='states'||k==='events'))return;   // a legend row, nothing to single out
+  if(galaxy){galaxy.isolate(GAL_ISO[k]||0);if(!k)galaxy.isolateKind(0);if(k in GAL_ISO||k==='system'){keyFocus=k;$('key').classList.toggle('iso',true);
     document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}}
   keyFocus=k;const kind=k==='learning'?'claim':k;
   for(const [kk,objs] of Object.entries(KIND_OBJ))for(const o of objs)o.visible=!kind||kk===kind;
@@ -2693,10 +2719,11 @@ function setKindFocus(k){
   somaCellMat.uniforms.uTier.value=k==='claim'?1:k==='learning'?0:-1;
   $('key').classList.toggle('iso',!!k);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k))}
 const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.filter(l=>l.tier==='candidate').length,pin:PINS.length,
-  young:LM.filter(l=>l.born&&nowS()-l.born<7*86400).length,fading:LM.filter(l=>l.fading).length,system:GAL_LAYOUT?GAL_LAYOUT.systems.reduce((x,y)=>x+y.length,0):0,
+  young:LM.filter(l=>l.born&&nowS()-l.born<7*86400).length,
+  ...(GALAXY?Object.fromEntries([1,2,3,4,5].map(n=>['k'+n,LM.filter(l=>claimKind(l)===n).length])):{}),fading:LM.filter(l=>l.fading).length,system:GAL_LAYOUT?GAL_LAYOUT.systems.reduce((x,y)=>x+y.length,0):0,
   moment:M.meta?.counts?.events||M.events.length,node:NDS.length};
 KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
-  a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:fmt(KEY_COUNT[k]||0)}),keyIcon(k));
+  a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:k==='states'||k==='events'?'':fmt(KEY_COUNT[k]||0)}),keyIcon(k));
   a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
 // THE CONTROL SHEET (UX-PLAN 3.3): `?` (or "? keys" at the foot of the key) lists the gestures of the view you are in.
 // Only bindings that exist (the keydown handler, click(), the wheel): a sheet that promises a key is worse than none.
@@ -2937,7 +2964,7 @@ function exitInterior(done){
       if(!done)hint('drag · turn the mind &nbsp; click a region · go inside<br>/ · search &nbsp; g · watch it grow &nbsp; s · coordinate layers &nbsp; t · theme')}});
 }
 function setFocusSoma(k){state.focusSoma=k;LM.forEach((_,j)=>{somaData[j*8+2]=j===k?1:(somaData[j*8+2]>0&&j!==k&&state.search?somaData[j*8+2]:0)});somaTex.needsUpdate=true}
-function somaWorld(k){return somaPos[k].clone()}
+function somaWorld(k){const p=somaPos[k].clone();return galaxy?p.add(galaxy.offsetOf(LM[k].dom)):p}   // W4: the inner space moves the other galaxies away
 // DRAG TO THE CHAT (UX-PLAN 4.6): a handle that carries an address + label (application/x-iris-ref) - the chat's drop
 // makes the same reference chip as "ask IRIS". Cards ignore the pointer except their links, so the handle is the grip.
 const dragHandle=(addr,label)=>`<span class="go drag" draggable="true" data-ref="${esc(addr)}" data-label="${esc(label.length>60?label.slice(0,59)+'…':label)}" title="drag onto the chat: a reference chip, never the content">⠿ drag to the chat</span>`;
@@ -3457,7 +3484,7 @@ function hover(x,y){
       setAnno('hover','art'+i,()=>({x:c.cx,y:c.cy,front:true}),`<div class="k">${KIND_WORD[c.a.kind]||c.a.kind} · ${esc(c.a.folder||'unsorted')} · ${ago(c.a.ts)}</div><div class="t">${esc(c.a.name)}</div>`)}
     else lingerClear('hover');return}
   if(state.inside){
-    const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaPos[i].distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
+    const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaWorld(i).distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
     if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),galaxy?claimTag(k):landmarkHTML(k,false),galaxy?{}:lmCell(k));
       for(let j=0;j<NL;j++)if(j!==state.focusSoma)somaData[j*8+2]=j===k?1:0;somaTex.needsUpdate=true}
     else{if(k<0){if(!hoverThing(x,y))lingerClear('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
@@ -3787,11 +3814,14 @@ const _frame=()=>{
   if(galaxy){const on=state.lens==='cortex';galaxy.group.visible=cam.mode!=='tunnel';galaxy.interior(on);   // owner, 2026-11-23: the new shell in every tab
     for(const o of [wire,cells,xur,mist,arbors])o.visible=false;skin.visible=state.lens==='oracle';rings.forEach(r=>{r.visible=false});
     forest.visible=false;somaCells.visible=false;   // the claims are the galaxy's own stars (galaxy.ts)
-    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=on&&(state.insideK||0)>.05;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
+    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=false;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
     {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
       state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
       galaxy.update(t,clamp(state.vis.forest,0,1),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
       galaxy.mark(state.hoverSoma,state.focusSoma);
+      if(Math.abs((state._offK??-1)-state.galIn)>.002||state.diving||(state._offT=(state._offT||0)+dt)<1.5){if(state.diving)state._offT=0;state._offK=state.galIn;   // pins and nodes follow their galaxy - only while the space opens or you travel
+        if(pinObjG){const pa=pinObjG.geometry.attributes.position;pinInfo.forEach((q,i)=>{const o=q.reg!=null&&q.reg>=0?galaxy.offsetOf(q.reg):null;pa.setXYZ(i,q.tip.x+(o?o.x:0),q.tip.y+(o?o.y:0),q.tip.z+(o?o.z:0))});pa.needsUpdate=true}
+        const na=nodeGeo.attributes.position;NDS.forEach((n,j)=>{const r=NODE_REG[j],o=r>=0?galaxy.offsetOf(r):null,b=nodePos[j];na.setXYZ(j,b.x+(o?o.x:0),b.y+(o?o.y:0),b.z+(o?o.z:0))});na.needsUpdate=true}
       galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null)}}   // inside: every galaxy stays visible
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
   const sx=Math.sin(t*.13)+.4*Math.sin(t*.31),su=.5+.5*Math.sin(t*.07);
