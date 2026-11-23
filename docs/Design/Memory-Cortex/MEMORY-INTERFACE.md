@@ -135,8 +135,21 @@ app, an MCP server). The **◇** control lists them with their claims; one choic
 constellations in every galaxy and dims the rest; nothing moves. IRIS's own work warms the nucleus. Recording began on
 2026-11-23 (§10.7): older claims mostly have none, and the list says so.
 
-**Not yet carried over from the orb** (§13): the health view's tint (`k`), the layers (`s`), the Kyudo membrane and the immune
-response.
+**Four readings of the same galaxies** (carried over from the orb, 2026-11-23; `k` and `s` are also in the key):
+
+- **Health (`k`).** Galaxies, filaments, strands and claims take their health colour: cyan holds → green partly proven → amber
+  learning, red contradicted; a domain with no claims is grey (nothing to judge, never amber). The blend runs by hue: amber into
+  cyan directly passes through grey and read as white. A one-line reading at the top; claims dissolved in the last 7 days are
+  **dashed ghost outlines in their own galaxy** (hover: the claim and why it went).
+- **Layers (`s`, outside).** The seven coordinate spaces as nested lemon shells, each its own colour; the nodes leave their galaxies
+  and sit on their layer; the galaxies dim. Each layer is named with its count ("nothing yet" when empty; hover: who may write
+  there). Measured: toolpath 549, chrono 46, domain 3, capability 2, the other three empty.
+- **Trust membrane (Kyudo).** A fine envelope round a claim: sealed and warm when it came from you or the system, broken and pale
+  from a weaker source (it only ever dims), none when the source is unknown. The card says it in words. Live: 124 from you, 265
+  unknown; the weak forms have no live claim to show yet.
+- **Immune response (Kyudo).** A counted signal tightens and flickers the galaxy it touched, a reset lets it relax; amplitudes only
+  decay toward 0. A shadow signal leaves a faint mark in its galaxy (all 80 live rows are shadow). Sparks and marks land in the
+  galaxy, no longer on the old orb's skin.
 
 ### 3.3 Timeline — the helix of conversations
 
@@ -533,9 +546,8 @@ The design is complete; the largest remaining gains are in the **data the design
    specified in `specs/memory-recall-reach/` and measured by `evals/memory_bench.py`.
 4. **The timeline holds the newest 48 threads**; any other conversation opens from a claim or a pin (2026-11-23). Older beads on the
    helix itself still wait for loading by scroll.
-5. **The galaxy does not yet show** the health tint (`k`), the layers (`s`), the Kyudo membrane and the immune response: they were
-   painted on the old orb's skin. The health line, the states and the ghosts' list remain.
-6. **The old orb** (`?cortex=tissue`) can go once item 5 is settled; the skin's points must stay (helix, artifact tissue).
+5. ~~The galaxy does not yet show health, layers, membrane and immune response~~ — done 2026-11-23 (§3.2).
+6. **The old orb** (`?cortex=tissue`) can go when the owner says so; the skin's points must stay (helix, artifact tissue).
 
 Polish beyond the plan, in a simpler form today: claim arches per use and frost-bridge walking; the focused object
 travelling between views (the camera flies instead); a recorded back stack (Esc steps one structural level); the

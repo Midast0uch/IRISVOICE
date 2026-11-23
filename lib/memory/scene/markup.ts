@@ -17,7 +17,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory svg#leaders{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
 .iris-memory svg#leaders path{fill:none;stroke:rgba(212,236,246,.38);stroke-width:1}
 .iris-memory svg#leaders path.hot{stroke:rgba(244,251,255,.8)}
-.iris-memory svg#leaders circle.ghost{fill:rgba(212,236,246,.04);stroke:rgba(212,236,246,.4);stroke-width:1;stroke-dasharray:2 2;pointer-events:auto;cursor:help}
+.iris-memory svg#leaders circle.ghost{fill:rgba(212,236,246,.04);stroke:rgba(226,242,250,.85);stroke-width:1.2;stroke-dasharray:2.5 2;pointer-events:auto;cursor:help}
 .iris-memory #labels,.iris-memory #annos{position:absolute;inset:0;pointer-events:none}
 .iris-memory .rlabel{position:absolute;white-space:nowrap;font-size:11px;letter-spacing:.04em;color:var(--dim);
   transition:opacity .35s,color .25s;opacity:0}
@@ -92,7 +92,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #mine .row .t{color:var(--dim)}.iris-memory #mine a[data-undo-id],.iris-memory #mine a[data-claim]{color:var(--brand);cursor:pointer}
 .iris-memory #crumb .strandact{display:block;width:max-content;margin-top:4px;color:var(--faint);cursor:pointer;pointer-events:auto;font-size:9.5px}
 .iris-memory #crumb .strandact:hover{color:var(--amber)}
-.iris-memory #health{position:absolute;left:50%;top:64px;transform:translateX(-50%);font-size:10px;letter-spacing:.06em;color:var(--dim);text-align:center;opacity:0;transition:opacity .4s;pointer-events:none}
+.iris-memory #health{position:absolute;left:50%;top:64px;transform:translateX(-50%);background:rgba(2,5,9,.6);border-radius:8px;padding:4px 10px;width:min(430px,84%);box-sizing:border-box;font-size:10px;letter-spacing:.06em;color:var(--dim);text-align:center;opacity:0;transition:opacity .4s;pointer-events:none}
 .iris-memory #health.on{opacity:1}.iris-memory #health em{font-style:normal;color:var(--ink)}.iris-memory #health .dim{color:var(--faint)}
 .iris-memory .rlabel.sub{font-size:9.5px;letter-spacing:.16em;text-transform:lowercase;color:var(--faint);transition:opacity .3s}
 .iris-memory .rlabel.near{font-size:10px;color:var(--dim);max-width:220px;white-space:nowrap;transition:opacity .3s}
@@ -139,6 +139,7 @@ export const MEMORY_CSS = String.raw`
 @media (prefers-reduced-motion:reduce){.iris-memory #follow .dot.on,.iris-memory #crumb .when.pulse{animation:none}}
 .iris-memory #ticker .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:.7em;vertical-align:1px}
 .iris-memory .rlabel.gsys,.iris-memory .rlabel.gdial{background:rgba(2,5,9,.74);border-radius:5px;padding:1px 6px}
+.iris-memory .rlabel.glay{background:rgba(2,5,9,.62);border-radius:6px;padding:1px 8px;font-size:10px;pointer-events:auto;cursor:help}.iris-memory .rlabel.glay span{opacity:.6}
 .iris-memory .gleg{position:absolute;left:50%;bottom:40px;transform:translateX(-50%);display:flex;flex-direction:column;gap:1px;align-items:center;white-space:nowrap;font-size:9.5px;color:var(--dim);transition:opacity .4s;pointer-events:none}
 .iris-memory .gleg div{display:flex;gap:9px;align-items:center;background:rgba(0,2,5,.66);border-radius:7px;padding:0 8px}.iris-memory .gleg a{display:flex;align-items:center;gap:3px;cursor:pointer;pointer-events:auto}.iris-memory .gleg a:hover,.iris-memory .gleg a.on{color:#fff}.iris-memory .gleg canvas{width:20px;height:20px}.iris-memory .gleg i{font-style:normal;opacity:.5}
 .iris-memory .anno.dock{left:auto!important;right:12px!important;top:72px!important;width:min(286px,56%);max-width:none;max-height:calc(100% - 178px);overflow-y:auto;overflow-x:hidden;background:rgba(2,6,10,.88);border:1px solid rgba(127,232,255,.16);border-radius:12px;padding:11px 13px 12px;text-shadow:none;pointer-events:auto;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);scrollbar-width:thin}
@@ -159,6 +160,9 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #key a:hover{color:var(--dim)}.iris-memory #key a .kn{font-style:normal;color:var(--dim);font-variant-numeric:tabular-nums;min-width:3.4em;text-align:right;opacity:.8}.iris-memory #key a.on{color:var(--white)}.iris-memory #key.iso a:not(.on){opacity:.35}.iris-memory #key canvas{width:22px;height:22px}
 .iris-memory #hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
 .iris-memory #key.gfold a:not(.kt){display:none}.iris-memory #key.gfold{gap:5px;flex-direction:row;right:14px;bottom:14px}.iris-memory #key.gopen{right:14px;bottom:14px;max-height:62%;overflow-y:auto}
+.iris-memory #key.gopen{background:rgba(2,5,9,.92)!important;gap:3px!important;scrollbar-width:thin;scrollbar-color:rgba(127,232,255,.25) transparent}
+.iris-memory #key.gopen a:not(.kt){color:#b9cfdb}.iris-memory #key.gopen a:not(.kt):hover{color:#fff}.iris-memory #key.gopen a:not(.kt) span{max-width:none!important;opacity:1!important}
+.iris-memory #key.gopen a.kt{order:-1;align-self:flex-end;position:sticky;top:0}.iris-memory #key.gopen a.kt.pj{display:none}
 .iris-memory #key.gopen{background:rgba(0,0,0,.72);border:1px solid rgba(127,232,255,.14);border-radius:10px;padding:10px 12px}
 .iris-memory #key a.kt{color:var(--dim);border:1px solid rgba(127,232,255,.22);border-radius:6px;padding:1px 6px;font-size:10px;line-height:15px;min-width:20px;justify-content:center;background:rgba(2,6,10,.5)}
 .iris-memory #key a.helpk{margin-top:4px;color:var(--dim)}.iris-memory #key a.helpk:hover{color:#cfe3ee}

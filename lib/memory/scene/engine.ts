@@ -1367,6 +1367,7 @@ const SPACES=M.spaces.filter(s=>s.active!==false).sort((a,b)=>(a.render_order??9
 const spR=SPACES.map((s,i)=>R*(.36+.5*(i+.5)/SPACES.length));
 const spI=new Map(SPACES.map((s,i)=>[s.id,i]));
 const spCol=SPACES.map((s,i)=>new THREE.Color().setHSL((.52+i*.11)%1,.45,.64));
+const LAY_COL=['#7fe8ff','#ffd98a','#b79bff','#8dffbe','#ff9fd0','#9db8ff','#ffb37a'];   // the layers view: each layer its own colour (its lock is said in words)
 const spaceU={uShow:{value:0}};
 SPACES.forEach((s,i)=>{const m=new THREE.Mesh(new THREE.IcosahedronGeometry(spR[i],2),new THREE.ShaderMaterial({
   uniforms:{uShow:spaceU.uShow,uVis:forestU.uVis,uTint:{value:new THREE.Color(chanTint(s.write_lock)).lerp(spCol[i],.4)},uLock:{value:s.write_lock==null?2:s.write_lock}},
@@ -1514,9 +1515,13 @@ if(PINS.length){
 const galaxy=GALAXY&&GAL_LAYOUT?createGalaxy({R,U,layout:GAL_LAYOUT,seed:11,
   links:M.edges.filter(e=>e.a<NL&&e.b<NL).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),
   claimNodes:CLAIM_NODES,claimInfo:LM.map((l,k)=>({proven:l.tier!=='candidate',sync:syncClaim(l),young:!!(l.born&&nowS()-l.born<7*86400),fading:!!l.fading,
-    kind:claimKind(l),famCol:LM_FAM.has(k)?(FAM[FAMI[LM_FAM.get(k)]]||{}).color||null:null,proj:PROJI.has(l.project)?PROJI.get(l.project):-1})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
+    kind:claimKind(l),famCol:LM_FAM.has(k)?(FAM[FAMI[LM_FAM.get(k)]]||{}).color||null:null,proj:PROJI.has(l.project)?PROJI.get(l.project):-1,chan:l.channel,bad:(l.contradictions||0)>0})),
+  layers:SPACES.map((s,i)=>({col:LAY_COL[i%LAY_COL.length],n:NDS.filter(n=>n.si===i).length})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
   halos:[...new Set([...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg),...HALO_COUNTS.keys()])].map(reg=>({reg,counts:HALO_COUNTS.get(reg)||{}}))}):null;
 if(galaxy)cortex.add(galaxy.group);
+// the layers (s) in the galaxy: each node's place on its layer's lemon shell, spread evenly (golden angle); nodeAt = where it is now
+const nodeLay=galaxy?(()=>{const per=SPACES.map(()=>0),n=SPACES.map(()=>0);NDS.forEach(x=>per[x.si]++);return NDS.map(x=>{const i=n[x.si]++,m=Math.max(1,per[x.si]),v=-.92+1.84*(i+.5)/m;return galaxy.layPoint(x.si,i*2.399963,v)})})():null;
+const _nv=new V3(),nodeAt=(j,out=new V3())=>{const r=NODE_REG[j],o=galaxy&&r>=0?galaxy.offsetOf(r):null;out.copy(nodePos[j]);if(o)out.add(o);return nodeLay&&(state.layK||0)>.001?out.lerp(nodeLay[j],state.layK):out};
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
   return `<div class="k">pin · ${t.word} · ${p.held?'held in context right now':'resting'}${p.permanent?' · permanent':''}</div><div class="t">${esc(p.title)}</div>
     <div class="m">tied to <em>${p.links}</em> thing${p.links===1?'':'s'}${th?` · used in <em>${th}</em> thread${th===1?'':'s'}`:''} · pinned ${ago(p.created)}<br>pins do not fade: they are held, not earned</div>`};
@@ -2610,6 +2615,10 @@ function placeHaloLabels(reg){
     if(L.n!==n){L.n=n;L.el.innerHTML=`<b>${esc(SPACE_WORD[L.sp]||L.sp)}</b><i>${fmt(n)} here</i>`}
     L.el.style.opacity=state.focusSoma>=0||pt.x<0||lblTaken(pt.x+8,pt.y-8,L.el.offsetWidth)?0:.8*reveal(pt.x,pt.y);L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
   spaceLabelEls.forEach(L=>{L.el.style.opacity=0;L.p.setAttribute('d','')})}
+const layNameEls=galaxy?SPACES.map((s,i)=>{const el=document.createElement('div');el.className='rlabel glay';const n=NDS.filter(x=>x.si===i).length;
+  el.title=LOCK_WORD[s.write_lock]||'';el.innerHTML=`<b style="color:${LAY_COL[i%LAY_COL.length]};${n?'':'opacity:.5'}">${esc(SPACE_WORD[s.id]||s.id)}</b><span>${n?fmt(n):'nothing yet'}</span>`;labelsEl.appendChild(el);return el}):[];
+function placeLayers(show){layNameEls.forEach((el,i)=>{const k=SPACES.length,a=.95-1.9*(i/Math.max(1,k-1));el.style.opacity=show?.92*(state.layK||0):0;if(!show)return;
+  el.style.right='12px';el.style.left='auto';el.style.textAlign='right';el.style.top=(112+(k-1-i)*19)+'px'})}   // outermost layer first
 function placeSpaceLabels(show){
   const c=project(new V3()),e=project(new V3(R,0,0).applyQuaternion(camera.quaternion)),rs=Math.abs(e.x-c.x)||200;
   const right=new V3(1,0,0).applyQuaternion(camera.quaternion),up=new V3(0,1,0).applyQuaternion(camera.quaternion);
@@ -2669,11 +2678,12 @@ const ghostEls=M.ghosts.map((g,k)=>{const c=document.createElementNS('http://www
   const v=regC[g.dom]||regC[0],t1=new V3(Math.abs(v.y)>.9?1:0,Math.abs(v.y)>.9?0:1,0).cross(v).normalize(),t2=v.clone().cross(t1);
   const a=(h%360)*Math.PI/180,r=.08+((h>>>9)%100)/100*.22;
   g.pos=v.clone().addScaledVector(t1,Math.cos(a)*r).addScaledVector(t2,Math.sin(a)*r).normalize().multiplyScalar(R*1.01);
+  const gaG=GAL_LAYOUT&&GAL_LAYOUT.arms[g.dom];if(gaG)g.pos=gaG.c.clone().add(new V3(Math.cos(a),((h>>>4)%100)/100-.5,Math.sin(a)).multiplyScalar(gaG.rad*(.45+.5*((h>>>9)%100)/100)));   // a ghost stays in its galaxy
   c.addEventListener('mouseenter',()=>setAnno('hover','ghost'+k,()=>project(g.pos),ghostCard(g)));
   c.addEventListener('mouseleave',()=>lingerClear('hover'));c.style.display='none';svg.appendChild(c);return c});
 function ghostCard(g){return `<div class="k">dissolved ${esc(ago(g.dissolved))} · its outline stays a week</div><div class="t">${esc(g.claim.length>90?g.claim.slice(0,89)+'…':g.claim)}</div><div class="m">${esc(g.fate)}</div>`}
 function placeGhosts(show){const cd=camera.position.clone().normalize();
-  M.ghosts.forEach((g,k)=>{const c=ghostEls[k],a=show&&g.pos.clone().normalize().dot(cd)>.1?project(g.pos):null;
+  M.ghosts.forEach((g,k)=>{const c=ghostEls[k],a=show&&(galaxy||g.pos.clone().normalize().dot(cd)>.1)?project(galaxy&&state.inside?g.pos.clone().add(galaxy.offsetOf(g.dom)):g.pos):null;
     if(!a||!a.front){c.style.display='none';return}c.style.display='';c.setAttribute('cx',a.x.toFixed(1));c.setAttribute('cy',a.y.toFixed(1))})}
 const LENSES=[['cortex','cortex'],['timeline','timeline'],['artifacts','artifacts'],['oracle','oracle']];
 LENSES.forEach(([k,w],i)=>{const a=document.createElement('a');a.dataset.l=k;a.textContent=w;a.onclick=()=>setLens(k);
@@ -2683,7 +2693,7 @@ function showHint(){const h=$('hint');h.classList.add('fresh');clearTimeout(hint
 function hint(t){const h=$('hint');if(h.innerHTML!==t){h.innerHTML=t;showHint()}}
 // THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
 const KEY=GALAXY?[...WORKS.map(([k,w],i)=>['k'+(i+1),w]),
-    ['states','colour and weave · how sure it is'],['events','bead at the pole · what happened to it'],['system','a group · claims that link'],['pin','a moon · a pin, held on purpose'],['moment','a moment, as it happens']]
+    ['states','colour and weave · how sure it is'],['events','bead at the pole · what happened to it'],['membrane','a fine ring · it came from you or the system'],['system','a group · claims that link'],['pin','a moon · a pin, held on purpose'],['moment','a moment, as it happens']]
   :[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
 function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
@@ -2707,6 +2717,7 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
   if(GALAXY&&/^k[1-7]$/.test(kind)){token(0,0,14,+kind[1],1);return c}
   if(GALAXY&&kind==='states'){[1,2,3,4].forEach((st,i)=>token(-15+i*10,0,7,1,st));return c}
   if(GALAXY&&STAR_KEY[kind]){token(0,0,13,1,STAR_KEY[kind]);return c}
+  if(GALAXY&&kind==='membrane'){token(0,0,10,1,1);g.globalAlpha=.8;g.strokeStyle='#ffe6b8';g.lineWidth=1;g.beginPath();g.arc(0,0,17,0,7);g.stroke();return c}
   if(GALAXY&&kind==='events'){const gr=g.createRadialGradient(0,0,0,0,0,7);gr.addColorStop(0,'#eef6ff');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.beginPath();g.arc(0,0,7,0,7);g.fill();
     g.globalAlpha=.35;g.strokeStyle='#eef6ff';g.beginPath();g.arc(0,0,12,0,7);g.stroke();g.globalAlpha=1;g.fillStyle='#ffd36b';g.beginPath();g.arc(8.5,-8.5,2.6,0,7);g.fill();return c}
   if(GALAXY&&kind==='system'){const gr=g.createRadialGradient(0,0,0,0,0,15);gr.addColorStop(0,'rgba(191,224,255,.35)');gr.addColorStop(1,'rgba(191,224,255,0)');
@@ -2729,7 +2740,7 @@ let keyFocus=null;
 const GAL_ISO={claim:1,learning:2,young:3,fading:4};
 function setKindFocus(k){
   if(galaxy&&k&&/^k[1-7]$/.test(k)){galaxy.isolateKind(+k[1]);keyFocus=k;$('key').classList.toggle('iso',true);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}
-  if(galaxy&&(k==='states'||k==='events'))return;   // a legend row, nothing to single out
+  if(galaxy&&(k==='states'||k==='events'||k==='membrane'))return;   // a legend row, nothing to single out
   if(galaxy){galaxy.isolate(GAL_ISO[k]||0);if(!k)galaxy.isolateKind(0);if(k in GAL_ISO||k==='system'){keyFocus=k;$('key').classList.toggle('iso',true);
     document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}}
   keyFocus=k;const kind=k==='learning'?'claim':k;
@@ -2739,7 +2750,7 @@ function setKindFocus(k){
   // a claim still learning vs proven: the glyph layer shows only that tier
   somaCellMat.uniforms.uTier.value=k==='claim'?1:k==='learning'?0:-1;
   $('key').classList.toggle('iso',!!k);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k))}
-const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.filter(l=>l.tier==='candidate').length,pin:PINS.length,
+const KEY_COUNT={membrane:LM.filter(l=>l.channel>=3).length,claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.filter(l=>l.tier==='candidate').length,pin:PINS.length,
   young:LM.filter(l=>l.born&&nowS()-l.born<7*86400).length,
   ...(GALAXY?Object.fromEntries([1,2,3,4,5,6,7].map(n=>['k'+n,LM.filter(l=>claimKind(l)===n).length])):{}),fading:LM.filter(l=>l.fading).length,system:GAL_LAYOUT?GAL_LAYOUT.systems.reduce((x,y)=>x+y.length,0):0,
   moment:M.meta?.counts?.events||M.events.length,node:NDS.length};
@@ -2747,6 +2758,8 @@ KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
   a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:k==='states'||k==='events'?'':fmt(KEY_COUNT[k]||0)}),keyIcon(k));
   a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
 // the galaxy: the key folds into one small button (owner, 2026-11-23: the open column caught clicks meant for the scene)
+if(GALAXY)for(const [w,k] of [['health view','k'],['layers','s']]){const a=document.createElement('a');a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:k}));
+  a.onclick=e=>{e.stopPropagation();if(k==='k')setHealth(!state.health);else if(!state.inside)state.showSpaces=!state.showSpaces;a.classList.toggle('on',k==='k'?state.health:state.showSpaces)};$('key').appendChild(a)}
 if(GALAXY){const kt=document.createElement('a');kt.className='kt';kt.textContent='◎';kt.title='the key: what the marks mean';const K=$('key');K.classList.add('gfold');
   kt.onclick=e=>{e.stopPropagation();const open=K.classList.toggle('gopen');K.classList.toggle('gfold',!open);kt.textContent=open?'✕':'◎'};K.appendChild(kt)}
 // THE CONTROL SHEET (UX-PLAN 3.3): `?` (or "? keys" at the foot of the key) lists the gestures of the view you are in.
@@ -3013,7 +3026,7 @@ function claimHead(k){const l=LM[k],w=WORKS[claimKind(l)-1],txt=plain(l.claim),f
   return `<div class="k" style="color:${CLAIM_STATE_COL[l.fading?4:(l.born&&nowS()-l.born<7*86400)?3:l.tier==='candidate'?2:1]}">${esc(w?w[1]:'a claim')} · ${claimState(l)}</div>
     <div class="t" title="${esc(txt)}">${esc(cutTo(first,130))}</div>${rest?`<div class="m sub">${esc(cutTo(rest,150))}</div>`:''}`}
 function claimCardHTML(k){const l=LM[k],pj=projOfClaim(l),n=(l.evidence_counts&&Object.values(l.evidence_counts).reduce((a,b)=>a+b,0))||l.evidence.length;
-  return claimHead(k)+`<div class="m"><div class="sec"><em>can it be trusted</em>${l.tier==='candidate'?(n?`not proven yet - ${fmt(n)} sign${n===1?'':'s'} that it worked, not enough to rely on`:'not proven yet - nothing has checked it'):`yes - proven by ${fmt(n)} check${n===1?'':'s'}${l.last_verified?', last '+ago(l.last_verified):''}`}${l.contradictions?` · <span class="w">contradicted ${fmt(l.contradictions)}×</span>`:' · never contradicted'}</div>
+  return claimHead(k)+`<div class="m"><div class="sec"><em>can it be trusted</em>${l.tier==='candidate'?(n?`not proven yet - ${fmt(n)} sign${n===1?'':'s'} that it worked, not enough to rely on`:'not proven yet - nothing has checked it'):`yes - proven by ${fmt(n)} check${n===1?'':'s'}${l.last_verified?', last '+ago(l.last_verified):''}`}${l.contradictions?` · <span class="w">contradicted ${fmt(l.contradictions)}×</span>`:' · never contradicted'} · ${esc(l.channel==null?'learned inside IRIS':chanWord(l.channel))}</div>
     <div class="sec st" data-story="${k}"><span class="dimm">reading its story…</span></div>
         ${pj||l.where?`<div class="sec"><em>project</em>${pj?esc(projWord(pj)):esc(l.where)}</div>`:''}</div>
     ${opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${dragHandle('claim:'+l.id,'claim · '+l.claim)}${correctionHTML(k)}`}
@@ -3198,7 +3211,7 @@ function placeLegend(){const on=!!galaxy&&state.inside&&!state.diving&&state.len
       ...(PINS.length?[(()=>{const a=document.createElement('a');a.title='a pin: held on purpose';a.append(keyIcon('pin'),' pin');return a})()]:[])))}
 // THE PROJECT LENS (owner 2026-11-23): the projects the memory knows - IRIS itself, the apps, the MCP servers - with
 // their claims; one choice lights that project's claims and constellations in every galaxy and dims the rest.
-if(GALAXY&&galaxy){const K=$('key'),pb=document.createElement('a');pb.className='kt';pb.title='projects: light one across the galaxies';
+if(GALAXY&&galaxy){const K=$('key'),pb=document.createElement('a');pb.className='kt pj';pb.title='projects: light one across the galaxies';
   const projEl=document.createElement('div');projEl.className='rlabel gproj';
   Object.assign(projEl.style,{right:'14px',left:'auto',bottom:'74px',top:'auto',display:'none',maxWidth:'270px',whiteSpace:'normal',pointerEvents:'auto',padding:'8px 10px',background:'rgba(0,0,0,.8)',
     border:'1px solid rgba(127,232,255,.18)',borderRadius:'10px',textAlign:'left',opacity:1,maxHeight:'52%',overflowY:'auto',minWidth:'220px'});
@@ -3323,7 +3336,8 @@ function exitTunnel(done){
 // ═══════════════════════════════════════════════════════════════════════════
 const queue=[];const after=(s,fn)=>queue.push({at:clock.elapsedTime+s,fn});
 let nextEv=1.2,nextRecall=5,nextPromo=18,nextCorr=34,nextDec=2,nextMote=6,nextQ=8,qIx=0;
-function regionPoint(fi){return regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.12)).normalize().multiplyScalar(R)}
+function regionPoint(fi){const ga=GAL_LAYOUT&&GAL_LAYOUT.arms[fi];if(ga)return ga.c.clone().add(new V3(gauss(),gauss()*.5,gauss()).multiplyScalar(ga.rad*.35)).add(galaxy?galaxy.offsetOf(fi):new V3());   // its galaxy, not the old orb's skin
+  return regC[fi].clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(.12)).normalize().multiplyScalar(R)}
 function pickSoma(){if(!NL)return -1;const k=Math.floor(Math.pow(rng(),1.6)*NL);return LM.map((l,i)=>[i,l.activations]).sort((a,b)=>b[1]-a[1])[k%NL][0]}
 const somaByReg=REG.map((_,ri)=>LM.map((l,i)=>l.dom===ri?i:-1).filter(i=>i>=0));
 // THE INSIDE GROWS (owner, 2026-10-26): inside a territory you shrink, so the room is set by what it holds and not by the
@@ -3533,8 +3547,8 @@ function hoverThing(x,y){
   // nodes are inside the orb, on the layer shells: from outside they are hovered only with the layers shown (s) or
   // singled out in the key - otherwise they covered the whole front of the orb and no territory could be clicked
   const nodesOn=(state.inside&&!galaxy)||state.showSpaces||keyFocus==='node';   // in a galaxy the nodes are its dust: background, never a target
-  const nk=nodesOn?nearestScreen(nodePos.map(p=>ok(p)?p:null),x,y,11):-1;
-  if(nk>=0){canvas.style.cursor='default';setAnno('hover','node'+nk,()=>project(nodePos[nk]),nodeHTML(nk),{cell:true,col:chanTint(NDS[nk].chan)});return true}
+  const nk=nodesOn?nearestScreen(galaxy?NDS.map((n,j)=>{const p=nodeAt(j);return ok(p)?p:null}):nodePos.map(p=>ok(p)?p:null),x,y,11):-1;
+  if(nk>=0){canvas.style.cursor='default';setAnno('hover','node'+nk,()=>project(galaxy?nodeAt(nk):nodePos[nk]),nodeHTML(nk),galaxy?{}:{cell:true,col:chanTint(NDS[nk].chan)});return true}
   if(slots.hover?.key&&/^(pin|node)/.test(slots.hover.key))clearAnno('hover');
   return false}
 function hover(x,y){
@@ -3656,14 +3670,16 @@ function focusSector(sec){state.focusSec=sec;if(sec<0){clearAnno('focus');return
 // Off: the territories' own colours come back. It reads only; it changes nothing.
 const healthEl=document.createElement('div');healthEl.id='health';$('hud').appendChild(healthEl);
 const regColOwn=SU.uRegCol.value.map(c=>c.clone());
+const galHealth=[];
 function setHealth(on){state.health=on;
   REG.forEach((d,i)=>{const lms=M.landmarks.filter(l=>l.domain===d);const n=Math.max(1,lms.length);
     const pv=lms.filter(l=>l.tier!=='candidate').length/n,bad=lms.filter(l=>l.contradictions>0).length/n;
+    if(galaxy&&on)galHealth[i]=lms.length?new THREE.Color('#ffa726').lerpHSL(new THREE.Color('#33d6ff'),pv).lerp(new THREE.Color('#ff4a3d'),Math.min(1,bad*2)):new THREE.Color('#5b6670');   // no claims: nothing to judge, grey (never amber)
     if(!on){SU.uRegCol.value[i].copy(regColOwn[i]);return}
     SU.uRegCol.value[i].copy(new THREE.Color('#ffb547').lerp(new THREE.Color('#7fe8ff'),pv).lerp(new THREE.Color('#ff4a3d'),Math.min(1,bad*2)))});
   const L=M.landmarks,c=M.meta?.counts||{};
-  healthEl.innerHTML=on?`health · <em>${fmt(L.filter(l=>l.tier!=='candidate').length)}</em> proven · <em>${fmt(L.filter(l=>l.tier==='candidate').length)}</em> still learning · <span class="w">${fmt(L.filter(l=>l.contradictions>0).length)} contradicted</span> · <em>${fmt(c.landmarks_absorbed||0)}</em> cleaned or merged in all · <em>${fmt(M.ghosts.length)}</em> dissolved this week (dashed outlines)<br><span class="dim">cyan holds · amber learning · red contradicted &nbsp; k · back to the territories' colours</span>`:'';
-  healthEl.classList.toggle('on',on)}
+  healthEl.innerHTML=on?`health · <em>${fmt(L.filter(l=>l.tier!=='candidate').length)}</em> proven · <em>${fmt(L.filter(l=>l.tier==='candidate').length)}</em> still learning · <span class="w">${fmt(L.filter(l=>l.contradictions>0).length)} contradicted</span> · <em>${fmt(c.landmarks_absorbed||0)}</em> cleaned or merged in all · <em>${fmt(M.ghosts.length)}</em> dissolved this week (dashed outlines)<br><span class="dim">cyan holds · green partly · amber learning · red contradicted${galaxy?' · grey no claims':''} &nbsp; k · back to the territories' colours</span>`:'';
+  if(galaxy&&on)galaxy.health(state.healthK||0,galHealth);healthEl.classList.toggle('on',on)}
 function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on&&m.state==='off'){clearAnno(n);return}if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
   if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
 canvas.addEventListener('pointerleave',()=>{mouse.over=false});host.addEventListener('pointermove',()=>{mouse.moved=performance.now()},{passive:true});
@@ -3933,10 +3949,12 @@ const _frame=()=>{
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=false;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
     {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
       state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
-      galaxy.update(t,clamp(state.vis.forest,0,1)*(.3+.7*_gk),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
+      galaxy.update(t,clamp(state.vis.forest,0,1)*(.3+.7*_gk)*(1-.82*(state.layK||0)),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
       if(state.focusSoma<0)galaxy.shut();galaxy.mark(state.hoverSoma,state.focusSoma);galaxy.pointer(mouse.over===false?9:mouse.nx,mouse.over===false?9:mouse.ny,innerWidth/Math.max(1,innerHeight),innerHeight);
-      if(Math.abs((state._offK??-1)-state.galIn)>.002||state.diving||(state._offT=(state._offT||0)+dt)<1.5){if(state.diving)state._offT=0;state._offK=state.galIn;   // pins and nodes follow their galaxy - only while the space opens or you travel
-        const na=nodeGeo.attributes.position;NDS.forEach((n,j)=>{const r=NODE_REG[j],o=r>=0?galaxy.offsetOf(r):null,b=nodePos[j];na.setXYZ(j,b.x+(o?o.x:0),b.y+(o?o.y:0),b.z+(o?o.z:0))});na.needsUpdate=true}
+      const _lk=lerp(state.layK||0,state.showSpaces&&on&&!state.inside?1:0,1-Math.pow(.06,dt)),_lm=Math.abs(_lk-(state.layK||0))>.0004;state.layK=_lk<.002?0:_lk>.998?1:_lk;galaxy.layShow(state.layK);{const want=state.layK>.5;if(want!==!!state._layCol){state._layCol=want;const ca=nodeGeo.attributes.aCol,cc=new THREE.Color();NDS.forEach((n,j)=>{cc.copy(want?new THREE.Color(LAY_COL[n.si%LAY_COL.length]):spCol[n.si]);ca.setXYZ(j,cc.r,cc.g,cc.b)});ca.needsUpdate=true}}nodeMat.uniforms.uNodeK.value=.3+2.6*state.layK;
+      state.healthK=lerp(state.healthK||0,state.health?1:0,1-Math.pow(.05,dt));galaxy.health(state.healthK);galaxy.immune(IMM);
+      if(_lm||Math.abs((state._offK??-1)-state.galIn)>.002||state.diving||(state._offT=(state._offT||0)+dt)<1.5){if(state.diving)state._offT=0;state._offK=state.galIn;   // pins and nodes follow their galaxy - only while the space opens or you travel
+        const na=nodeGeo.attributes.position;NDS.forEach((n,j)=>{nodeAt(j,_nv);na.setXYZ(j,_nv.x,_nv.y,_nv.z)});na.needsUpdate=true}
       galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null);
       // the moons turn round their groups (owner 2026-11-23, design B): at most 80, on the CPU so hover and click stay exact
       if(pinObjG&&_gk>.03){const pa=pinObjG.geometry.attributes.position;pinInfo.forEach((q,i)=>{if(q.orb)q.tip.copy(q.orb.at(t));const o=q.reg!=null&&q.reg>=0?galaxy.offsetOf(q.reg):null;
@@ -4050,9 +4068,10 @@ const _frame=()=>{
   calmLiveBead();
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(!galaxy&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
+  if(galaxy)placeLayers(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.inside&&!state.diving);
   if(galaxy){const dk=slots.focus?.on&&slots.focus.dock&&cam.mode!=='tunnel'?Math.min(286,innerWidth*.56)/2+6:0;state.dockX=lerp(state.dockX||0,dk,.12);   // the claim stays in view beside its card
     if(state.dockX>.5)camera.setViewOffset(innerWidth,innerHeight,state.dockX,0,innerWidth,innerHeight);else if(camera.view){camera.clearViewOffset();state.dockX=0}
-    lblReset();placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!cam.tween);
+    lblReset();placeDial(!state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!cam.tween);
     placeSystems(state.lens==='cortex'&&state.inside&&!state.diving&&!cam.tween?state.diveReg:-1);
     placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader();placeLegend()}
   else placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
