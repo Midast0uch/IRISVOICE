@@ -1345,7 +1345,9 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                               "contradictions": r["contradictions"] or 0, "fading": fading,
                               "last_activated": ts_of(r["last_activated"]), "last_verified": ts_of(r["last_verified"]),
                               "born": ts_of(r["created_at"]), "session": r["conversation_ref"], "fams": fams,
-                              "steps": [{"space": node_of[x][0], "label": node_of[x][1]}
+                              # W4 (§9.2): the node id places the node in its sector's halo (labels repeat
+                              # inside a space - 521 of 549 toolpath labels - so the label alone cannot find it)
+                              "steps": [{"space": node_of[x][0], "label": node_of[x][1], "node": x}
                                         for x in claim_nodes[r["landmark_id"]] if x in node_of],
                               "domain": "general"})  # landmarks carry no domain column yet
         if not any(r["micro_abstract_text"] for r in lm_rows):

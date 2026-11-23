@@ -9,6 +9,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Delaunay } from 'd3-delaunay';
 import { MEMORY_CSS, MEMORY_HTML } from './markup';
+import { createGalaxy, layoutGalaxy } from './galaxy';
 
 export interface MemoryEngineOptions {
   /** The memory model (the snapshot / API shape). Absent: the synthetic generator draws (development only). */
@@ -498,6 +499,9 @@ function normalizeMemory(M){
 // index.html?real shows the exported snapshot of this machine's memory; the default is the
 // schema-faithful demo, so the page always opens with the full experience.
 const USE_REAL=!!opts.data;
+// W4 (memory cortex plan): the galaxy cortex, first behind ?cortex=galaxy on the real memory so the owner can compare
+// it with today's cortex; it becomes the default (and the old tissue goes) in a later change.
+const GALAXY=(()=>{try{return new URLSearchParams(window.location.search).get('cortex')==='galaxy'}catch(_){return false}})();
 const M=normalizeMemory(USE_REAL?opts.data:synthMemory());
 // the Oracle view's richer record (GET /api/memory/oracle: job, the bar as a ladder, history, calibration curve)
 if(Array.isArray(opts.oracle)){const by=new Map(opts.oracle.map(o=>[o.consumer,o]));for(const o of M.oracle){const r=by.get(o.consumer);if(r)Object.assign(o,r)}}
@@ -932,6 +936,14 @@ const somaPos=LM.map(l=>{const fi=l.dom;
     for(const p of somaPos){const l=p.length();if(l>R*.92)p.multiplyScalar(R*.92/l);if(l<R*.22)p.multiplyScalar(R*.22/Math.max(l,1e-3))}
   }
 }
+let GAL_LAYOUT=null;
+if(GALAXY){
+  GAL_LAYOUT=layoutGalaxy({R,regs:REG.map(d=>({key:d,size:M.domCounts[d]||0,col:domCol(d)})),
+    claims:LM.map(l=>({reg:l.dom,born:l.born||0})),seed:7});
+  GAL_LAYOUT.posWorld.forEach((p,k)=>{if(p)somaPos[k].copy(p)});   // the tilted positions: picking, cards and the dive
+  GAL_LAYOUT.arms.forEach(a=>{const th=a.ang+.6*4.2,m=new V3(Math.cos(th)*.6,a.lift*.1,Math.sin(th)*.6).normalize().applyQuaternion(GAL_LAYOUT.tilt);regC[a.reg].copy(m)});
+  GAL_LAYOUT.sats.forEach(sa=>{regC[sa.reg].copy(sa.pos.clone().normalize().applyQuaternion(GAL_LAYOUT.tilt))});
+}
 const lmBest=LM.map(bestEvidence);
 const iP=[],iSoma=[],iT=[],iRand=[],iCol=[],iBorn=[];
 {
@@ -1355,6 +1367,22 @@ const nodePos=[],nodeSlot=new Map();
   const rot=SPACES.map((s,i)=>new THREE.Quaternion().setFromEuler(new THREE.Euler(i*1.3,i*2.1,i*.7)));
   NDS.forEach((n,j)=>{const si=spI.get(n.space);n.si=si;nodeSlot.set(M.nIndex.get(n.id),j);
     nodePos.push(fib(Math.max(1,per[si]),cnt[si]++).applyQuaternion(rot[si]).multiplyScalar(spR[si]*(1+gauss()*.012)))})}
+// W4 (§9.2): in the galaxy a node sits in the halo of the sector whose claims touch it most, on its space's orbit
+// (claim -> node from the claim's steps, by node id); a node no live claim touches sits on the nucleus side (-1).
+const HALO_COUNTS=new Map();
+if(GAL_LAYOUT){const touch=new Map();
+  LM.forEach(l=>(l.steps||[]).forEach(st=>{if(!st.node)return;const m=touch.get(st.node)||new Map();m.set(l.dom,(m.get(l.dom)||0)+1);touch.set(st.node,m)}));
+  const grp=new Map();
+  NDS.forEach((n,j)=>{let reg=-1,bn=0;(touch.get(n.id)||new Map()).forEach((c,r)=>{if(GAL_LAYOUT.hasHalo(r)&&c>bn){bn=c;reg=r}});
+    const key=reg+'|'+n.space,g=grp.get(key)||[];g.push(j);grp.set(key,g);
+    const hc=HALO_COUNTS.get(reg)||{};hc[n.space]=(hc[n.space]||0)+1;HALO_COUNTS.set(reg,hc)});
+  grp.forEach((js,key)=>{const cut=key.indexOf('|'),reg=+key.slice(0,cut),o=GAL_LAYOUT.haloOrbit(reg,key.slice(cut+1)),rad=R*(.006+.0035*Math.sqrt(js.length));
+    js.forEach((j,i)=>{const a=i*2.399963,rr=rad*(.55+.45*Math.sqrt((i+.5)/js.length));
+      nodePos[j].copy(new V3(Math.cos(a)*rr,R*.004*Math.sin(i*1.7),Math.sin(a)*rr).applyQuaternion(GAL_LAYOUT.tilt).add(o))})})}
+// W4 (section 9.2): a claim's hyphae run to the nodes its steps walked, in its sector's halo
+const CLAIM_NODES=[];
+if(GAL_LAYOUT){const nodeJ=new Map(NDS.map((n,j)=>[n.id,j]));
+  LM.forEach((l,k)=>{[...new Set((l.steps||[]).map(st=>st.node).filter(Boolean))].slice(0,7).forEach(id=>{const j=nodeJ.get(id);if(j!=null)CLAIM_NODES.push({k,p:nodePos[j]})})})}
 const nodeGeo=new THREE.BufferGeometry();
 nodeGeo.setAttribute('position',new THREE.Float32BufferAttribute(nodePos.flatMap(p=>[p.x,p.y,p.z]),3));
 nodeGeo.setAttribute('aSize',new THREE.Float32BufferAttribute(NDS.map(n=>2.6+Math.min(2,Math.sqrt(n.used||0)*.35)),1));
@@ -1362,14 +1390,14 @@ nodeGeo.setAttribute('aConf',new THREE.Float32BufferAttribute(NDS.map(n=>n.conf)
 nodeGeo.setAttribute('aChan',new THREE.Float32BufferAttribute(NDS.map(n=>n.chan==null?-1:n.chan),1));
 nodeGeo.setAttribute('aBorn',new THREE.Float32BufferAttribute(NDS.map(n=>clamp((n.born-T0)/Math.max(1,nowS()-T0),0,1)),1));
 nodeGeo.setAttribute('aCol',new THREE.Float32BufferAttribute(NDS.flatMap(n=>{const c=spCol[n.si];return [c.r,c.g,c.b]}),3));
-const nodeMat=new THREE.ShaderMaterial({uniforms:{...U,uScrub:forestU.uScrub,uVis:forestU.uVis,uNear:forestU.uNear},
-  vertexShader:`uniform float uPix,uScrub,uVis,uNear;attribute float aSize,aConf,aChan,aBorn;attribute vec3 aCol;
+const nodeMat=new THREE.ShaderMaterial({uniforms:{...U,uScrub:forestU.uScrub,uVis:forestU.uVis,uNear:forestU.uNear,uNodeK:{value:GALAXY?.3:1}},
+  vertexShader:`uniform float uPix,uScrub,uVis,uNear,uNodeK;attribute float aSize,aConf,aChan,aBorn;attribute vec3 aCol;
     varying vec3 vC;varying float vA,vChan,vF;
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);
       float f=smoothstep(0.,1.,clamp((aConf-.4)/.6,0.,1.));vF=f;vChan=aChan;
-      vA=mix(.14,.58,f)*mix(.45,1.,uNear)*step(aBorn,uScrub)*uVis;
+      vA=mix(.14,.58,f)*mix(.45,1.,uNear)*step(aBorn,uScrub)*uVis*(uNodeK<1.?.28:1.);
       vC=mix(vec3(dot(aCol,vec3(.33))),aCol,mix(.12,1.,f));
-      gl_PointSize=min(aSize*uPix*(60./-mv.z),60.*uPix);gl_Position=projectionMatrix*mv;}`,
+      gl_PointSize=min(aSize*uPix*(60./-mv.z)*uNodeK,60.*uNodeK*uPix);gl_Position=projectionMatrix*mv;}`,
   fragmentShader:`varying vec3 vC;varying float vA,vChan,vF;
     void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
       float por=vChan<0.?0.:clamp((4.-vChan)/4.,0.,1.);
@@ -1395,7 +1423,7 @@ if(NDS.length){const o=new THREE.Points(nodeGeo,nodeMat);o.frustumCulled=false;c
         void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vA=(.03+.2*aTh)*mix(.45,1.,uNear)*uVis;
           gl_PointSize=min((.9+1.1*aTh)*uPix*(70./-mv.z),4.*uPix);gl_Position=projectionMatrix*mv;}`,
       fragmentShader:`varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;gl_FragColor=vec4(.62,.78,.88,smoothstep(.5,0.,d)*vA);}`,
-      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));o.frustumCulled=false;cortex.add(o);KIND_OBJ.node.push(o)}}
+      transparent:true,depthWrite:false,blending:THREE.AdditiveBlending}));o.frustumCulled=false;o.userData.tracts=true;cortex.add(o);KIND_OBJ.node.push(o)}}
 
 // PINS (mycelium_pins): explicit memory, held not earned (it does not fade by the 11 law). A shard in brackets just inside
 // the wall of its territory (its nested sector when it has one), pin-type colour, size by link count. Taut straight
@@ -1403,9 +1431,9 @@ if(NDS.length){const o=new THREE.Points(nodeGeo,nodeMat);o.frustumCulled=false;c
 // A PIN is a small shard held between two BRACKETS that always face you: held, not earned - it does not drift or fade.
 // Its colour is its pin type; a pin held in context right now breathes slowly in its brackets.
 const pinH={value:innerHeight*.5};
-const PIN_VS=`uniform float uTime,uPix,uVis,uH;attribute vec3 aCol;attribute float aHeld,aSize;varying vec3 vC;varying float vA,vH;
+const PIN_VS=`uniform float uTime,uPix,uVis,uH,uMax;attribute vec3 aCol;attribute float aHeld,aSize;varying vec3 vC;varying float vA,vH;
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=max(-mv.z,.1);vC=aCol;vH=aHeld;vA=uVis*smoothstep(.2,1.,z);
-    gl_PointSize=clamp(aSize*projectionMatrix[1][1]*uH/z,5.*uPix,26.*uPix);gl_Position=projectionMatrix*mv;}`;
+    gl_PointSize=clamp(aSize*projectionMatrix[1][1]*uH/z,min(5.,uMax*.4)*uPix,uMax*uPix);gl_Position=projectionMatrix*mv;}`;
 const PIN_FRAG=`uniform float uTime;varying vec3 vC;varying float vA,vH;
   void main(){vec2 p=(gl_PointCoord-.5)*2.;vec2 q=abs(p);
     float hx=max(q.x*.866+q.y*.5,q.y),shard=1.-smoothstep(.36,.4,hx),edge=smoothstep(.28,.36,hx)*shard;
@@ -1414,21 +1442,27 @@ const PIN_FRAG=`uniform float uTime;varying vec3 vC;varying float vA,vH;
     float br=max(bar,arm),pulse=1.+vH*.4*sin(uTime*1.3);
     vec3 col=vC*shard*(.3+.18*facet)+mix(vC,vec3(1.),.4)*edge*.7+mix(vC,vec3(1.),.55)*br*.85*pulse;
     gl_FragColor=vec4(col*.8,(shard*.26+edge*.4+br*.5*pulse)*vA);}`;
-function pinSprites(list,uVis){ // list: {pos,col,held,s}
+function pinSprites(list,uVis,max=26){ // list: {pos,col,held,s}
   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(list.flatMap(c=>[c.pos.x,c.pos.y,c.pos.z]),3));
   g.setAttribute('aCol',new THREE.Float32BufferAttribute(list.flatMap(c=>[c.col.r,c.col.g,c.col.b]),3));
   g.setAttribute('aHeld',new THREE.Float32BufferAttribute(list.map(c=>c.held),1));g.setAttribute('aSize',new THREE.Float32BufferAttribute(list.map(c=>c.s*2.8),1));
-  return Object.assign(new THREE.Points(g,new THREE.ShaderMaterial({uniforms:{...U,uVis,uH:pinH},vertexShader:PIN_VS,fragmentShader:PIN_FRAG,
+  return Object.assign(new THREE.Points(g,new THREE.ShaderMaterial({uniforms:{...U,uVis,uH:pinH,uMax:{value:max}},vertexShader:PIN_VS,fragmentShader:PIN_FRAG,
     transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false,renderOrder:3})}
 const PINS=M.pins.slice(0,80);let pinArtTethers=null;const pinTethers=[];
 const cloudPt=id=>{let h=7;for(const ch of String(id))h=(h*31+ch.charCodeAt(0))>>>0;const r=mulberry32(h);return new V3(-2.3*R+(r()-.5)*1.6*R,(r()-.5)*1.6*R,(r()-.5)*.8*R)};
-const pinInfo=PINS.map(p=>{const ri=REGI[p.domain]??0;let c=regC[ri],rad=regRad[ri];
+const pinJ=new Map();
+const pinInfo=PINS.map(p=>{let ri=REGI[p.domain]??0;
+  if(GAL_LAYOUT){const by=new Map();for(const r of p.refs||[])if(r.t==='landmark'){const k=M.lmIndex.get(r.id);if(k!=null)by.set(LM[k].dom,(by.get(LM[k].dom)||0)+1)}
+    let bn=0;by.forEach((n,r)=>{if(n>bn){bn=n;ri=r}});const reg=GAL_LAYOUT.hasHalo(ri)?ri:-1,j=pinJ.get(reg)||0;pinJ.set(reg,j+1);
+    const tip=GAL_LAYOUT.pinAt(reg,j),s=R*(.004+.002*Math.sqrt(Math.max(1,p.links||1)));   // W4 (§10): a fixed star the arm slides past
+    return {p,reg,dir:tip.clone().normalize(),base:tip.clone(),s,tip,col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}}
+  let c=regC[ri],rad=regRad[ri];
   if(p.sector&&SUBI[p.sector]!=null){c=subC[SUBI[p.sector]];rad=subRad[SUBI[p.sector]]}
   const dir=c.clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(rad*.45)).normalize(),s=R*(.02+.011*Math.sqrt(Math.max(1,p.links||1)));
   const base=dir.clone().multiplyScalar(R*.985);
   return {p,dir,base,s,tip:base.clone().addScaledVector(dir,-s*2.0),col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}});
 if(PINS.length){
-  const pinObj=pinSprites(pinInfo.map(q=>({pos:q.tip,col:q.col,held:q.held,s:q.s})),forestU.uVis);cortex.add(pinObj);KIND_OBJ.pin.push(pinObj);
+  const pinObj=pinSprites(pinInfo.map(q=>({pos:q.tip,col:q.col,held:q.held,s:q.s})),forestU.uVis,GAL_LAYOUT?9:26);cortex.add(pinObj);KIND_OBJ.pin.push(pinObj);
   // tethers: straight from the tip to what the pin references (a certainty, a node, a thing made)
   // (a tether to a thing made reaches out of the orb to where the artifact tissue settles, so it shows in that lens only)
   const tp=[],tc=[],ap=[],ac=[];
@@ -1442,6 +1476,12 @@ if(PINS.length){
     const l=new THREE.LineSegments(g_,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));l.frustumCulled=false;cortex.add(l);return l};
   const t1=tether(tp,tc);if(t1){pinTethers.push(t1);KIND_OBJ.pin.push(t1)}
   pinArtTethers=tether(ap,ac);if(pinArtTethers){pinArtTethers.visible=false;pinTethers.push(pinArtTethers)}}
+// W4: the galaxy (its own module); links = the landmark edges, lit by their traversals and by live recalls
+const galaxy=GALAXY&&GAL_LAYOUT?createGalaxy({R,U,layout:GAL_LAYOUT,seed:11,
+  links:M.edges.filter(e=>e.a<NL&&e.b<NL).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),
+  claimNodes:CLAIM_NODES,pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
+  halos:[...new Set([...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg),...HALO_COUNTS.keys()])].map(reg=>({reg,counts:HALO_COUNTS.get(reg)||{}}))}):null;
+if(galaxy)cortex.add(galaxy.group);
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
   return `<div class="k">pin · ${t.word} · ${p.held?'held in context right now':'resting'}${p.permanent?' · permanent':''}</div><div class="t">${esc(p.title)}</div>
     <div class="m">tied to <em>${p.links}</em> thing${p.links===1?'':'s'}${th?` · used in <em>${th}</em> thread${th===1?'':'s'}`:''} · pinned ${ago(p.created)}<br>pins do not fade: they are held, not earned</div>`};
@@ -2261,7 +2301,7 @@ function flyFrom(pos,look){cam.pos.copy(pos);const d=look.clone().sub(pos).norma
 const dirOf=(yaw,pitch)=>new V3(Math.sin(yaw)*Math.cos(pitch),Math.sin(pitch),Math.cos(yaw)*Math.cos(pitch));
 const keys={};
 const __cortex={scene,renderer,composer,bloom,cortex,camera,project:v=>project(v),cam,mouse,keys,get state(){return state},M,IMM,get tunnel(){return tunnel},setLens:l=>setLens(l),enter:i=>enterTunnel(sess[i]),
-  dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length,sync:()=>sync,syncFor:id=>buildSyncFor(id)}; // inspection handle for the mockup
+  dive:i=>dive(i),immune:q=>immuneSignal(q),pins:()=>pinInfo,nodes:()=>NDS.length,spaces:()=>SPACES.length,sync:()=>sync,syncFor:id=>buildSyncFor(id),get galaxy(){return galaxy},get follow(){return follow},somaPos};  // inspection handle for the mockup
 const angWrap=a=>{a=(a+Math.PI)%(Math.PI*2);if(a<0)a+=Math.PI*2;return a-Math.PI};
 function updateCamera(dt){
   if(cam.tween){const tw=cam.tween;tw.t+=dt/tw.dur;const e=easeIO(Math.min(1,tw.t));
@@ -2294,7 +2334,8 @@ function updateCamera(dt){
     const A=R*2.4*dt*cam.f/innerK();if(keys.w||keys.arrowup)cam.vel.addScaledVector(fwd,A);if(keys.s||keys.arrowdown)cam.vel.addScaledVector(fwd,-A);
     if(keys.a||keys.arrowleft)cam.vel.addScaledVector(right,-A);if(keys.d||keys.arrowright)cam.vel.addScaledVector(right,A);
     if(keys.e||keys[' '])cam.vel.y+=A;if(keys.q||keys.shift)cam.vel.y-=A;
-    if(!REDUCED&&cam.idle>3){const w=smooth01((cam.idle-3)/4),piv=state.focusSoma>=0?somaWorld(state.focusSoma):new V3();
+    // the galaxy keeps still while you read inside a sector (plan section 8.4: the map never moves while it is read)
+    if(!REDUCED&&cam.idle>3&&!galaxy){const w=smooth01((cam.idle-3)/4),piv=state.focusSoma>=0?somaWorld(state.focusSoma):new V3();
       const rel=cam.pos.clone().sub(piv),tan=new V3(0,1,0).cross(rel);
       if(tan.lengthSq()>1e-6){tan.normalize();cam.pos.addScaledVector(tan,R*(state.focusSoma>=0?.05:.04)*w*dt/innerK());cam.pos.y+=Math.sin(t*.35)*R*.006*w*dt/innerK()}
       if(state.focusSoma>=0){const d=piv.clone().sub(cam.pos).normalize();cam.yawT=cam.yaw+angWrap(Math.atan2(d.x,d.z)-cam.yaw)*Math.min(1,dt*1.5*w);
@@ -2411,6 +2452,17 @@ const regLabelEls=REG.map((d,i)=>{const el=document.createElement('div');el.clas
 const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el.className='rlabel';
   el.innerHTML=`<b style="color:${chanTint(s.write_lock)}">${esc(SPACE_WORD[s.id]||String(s.id).replace(/_/g,' '))}</b>${s.write_lock!=null?`<i>${esc(LOCK_WORD[s.write_lock]||'')}</i>`:''}`;labelsEl.appendChild(el);
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
+// W4 (§9.2): inside a sector its halo opens - each space that holds something here names itself (short)
+let haloLabelEls=null;
+function placeHaloLabels(reg){
+  if(!haloLabelEls)haloLabelEls=SPACES.map(sp=>{const el=document.createElement('div');el.className='rlabel';labelsEl.appendChild(el);return {el,sp:sp.id,n:-1}});
+  if(!readerEl.parentNode)labelsEl.appendChild(readerEl);
+  const ok=reg>=-1&&GAL_LAYOUT&&GAL_LAYOUT.hasHalo(reg),hc=ok?HALO_COUNTS.get(reg)||{}:{};
+  haloLabelEls.forEach(L=>{const n=hc[L.sp]||0,pt=ok&&n?project(GAL_LAYOUT.haloOrbit(reg,L.sp)):null;
+    if(!pt||!pt.front){L.el.style.opacity=0;return}
+    if(L.n!==n){L.n=n;L.el.innerHTML=`<b>${esc(SPACE_WORD[L.sp]||L.sp)}</b><i>${fmt(n)} here</i>`}
+    L.el.style.opacity=.8;L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
+  spaceLabelEls.forEach(L=>{L.el.style.opacity=0;L.p.setAttribute('d','')})}
 function placeSpaceLabels(show){
   const c=project(new V3()),e=project(new V3(R,0,0).applyQuaternion(camera.quaternion)),rs=Math.abs(e.x-c.x)||200;
   const right=new V3(1,0,0).applyQuaternion(camera.quaternion),up=new V3(0,1,0).applyQuaternion(camera.quaternion);
@@ -2835,6 +2887,19 @@ annosEl.addEventListener('click',e=>{
   const tc=e.target.closest('[data-claim]');if(tc){const l=LM[+tc.dataset.claim];if(l)focusRef('claim:'+l.id);return}   // a task's touched claim
   const sp=e.target.closest('[data-step]');if(sp){showStepOutput(sp);return}   // W1: the step's exact output, on click
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
+// W4 reading inside a sector (owner, 2026-11-23): hover = one line; click = the card; the arrow keys walk the arm
+const claimTag=k=>{const c=String(LM[k].claim||'');return `<div class="t">${esc(c.length>72?c.slice(0,71)+'…':c)}</div><div class="k">click · read it &nbsp; ← → · walk the arm</div>`};
+const readOrder=reg=>LM.map((l,i)=>l.dom===reg?i:-1).filter(i=>i>=0).sort((a,b)=>(LM[b].born||0)-(LM[a].born||0));   // newest (core) -> oldest (rim)
+function readStep(dir){if(!state.inside||cam.tween||state.diving)return;const o=readOrder(state.diveReg);if(!o.length)return;
+  let i=o.indexOf(state.focusSoma);
+  if(i<0){let bd=1e9;o.forEach((k,j)=>{const d=somaPos[k].distanceTo(camera.position);if(d<bd){bd=d;i=j}});i-=dir}   // start beside you
+  flyToSoma(o[(i+dir+o.length)%o.length])}
+const readerEl=document.createElement('div');readerEl.className='rlabel';
+Object.assign(readerEl.style,{left:'50%',top:'14px',bottom:'auto',transform:'translateX(-50%)',textAlign:'center',opacity:0,pointerEvents:'none'});
+let readerKey='';
+function placeReader(){const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex';readerEl.style.opacity=on?.85:0;if(!on)return;
+  const o=readOrder(state.diveReg),i=o.indexOf(state.focusSoma),key=state.diveReg+':'+i;if(key===readerKey)return;readerKey=key;
+  readerEl.innerHTML=`<b>${i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims here`}</b><i>← → walk the arm, newest to oldest · click a claim · esc · back out</i>`}
 function flyToSoma(k){
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
   setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
@@ -3007,6 +3072,7 @@ function followCamera(e){if(!follow.on||cam.mode!=='orbit'||state.lens!=='cortex
 function liveEmit(e){
   const k=e.landmark!=null&&e.landmark<NL?e.landmark:-1;followCamera(e);
   if(e.label==='RECALL_DELIVERED'||e.label==='RECALL_USED'){tick(e);   // INWARD: memory -> mind
+    if(galaxy&&k>=0&&state.lens==='cortex')galaxy.pulse(k);   // W4: claim -> arm -> strand -> pole -> the weave
     if(!cortexShown()||!fxTake())return;const from=k>=0?somaWorld(k):regionPoint(regOf(e.domain||'general'));
     if(k>=0){somaData[k*8]=Math.min(1,somaData[k*8]+.35);somaTex.needsUpdate=true}
     spark(from,from.clone().multiplyScalar(.1),FAM[FAMI.memory].color,{speed:.85,gain:.35+(EVID[e.evidence]??.2)*.6,jit:.008});return}
@@ -3184,7 +3250,7 @@ function hover(x,y){
     else lingerClear('hover');return}
   if(state.inside){
     const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaPos[i].distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
-    if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,false),lmCell(k));
+    if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),galaxy?claimTag(k):landmarkHTML(k,false),galaxy?{}:lmCell(k));
       for(let j=0;j<NL;j++)if(j!==state.focusSoma)somaData[j*8+2]=j===k?1:0;somaTex.needsUpdate=true}
     else{if(k<0){if(!hoverThing(x,y))lingerClear('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
     return}
@@ -3349,6 +3415,7 @@ addEventListener('keydown',e=>{
   if(cam.mode==='tunnel'&&e.shiftKey&&(k==='arrowright'||k==='arrowleft')){turnStep(k==='arrowright'?1:-1);e.preventDefault();return}
   if(cam.mode==='tunnel'&&k==='tab'){toDoorway();e.preventDefault();return}
   if(cam.mode==='tunnel'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){neuronStep(k==='arrowright'?1:-1);return}
+  if(galaxy&&state.inside&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){keys[k]=false;readStep(k==='arrowright'?1:-1);e.preventDefault();return}
   if(state.lens==='timeline'&&cam.mode==='orbit'&&!e.altKey&&(k==='arrowright'||k==='arrowleft')){beadStep(k==='arrowright'?1:-1);e.preventDefault();return}
   if(state.lens==='timeline'&&cam.mode==='orbit'&&(k==='arrowup'||k==='arrowdown')){dayStep(k==='arrowup'?1:-1);e.preventDefault();return}
   // Escape (and Alt+Left, and the mouse's back button) steps out ONE level; only at the top level does it pass through
@@ -3502,6 +3569,11 @@ const _frame=()=>{
   const dt=Math.min(clock.getDelta(),.1),t=clock.elapsedTime; // flights keep real time on slow frames
   U.uTime.value=t;
   simulate(dt);
+  if(galaxy){const on=state.lens==='cortex';galaxy.group.visible=on;
+    for(const o of [skin,wire,cells,xur,mist,arbors])o.visible=!on;rings.forEach(r=>{r.visible=!on});
+    {const inside=(state.insideK||0)>.05;forest.visible=!on||inside;somaCells.visible=!on||inside}
+    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=!on;else if(o.userData.tracts)o.visible=!on||(state.insideK||0)>.05})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
+    if(on)galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9)}
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
   const sx=Math.sin(t*.13)+.4*Math.sin(t*.31),su=.5+.5*Math.sin(t*.07);
   // morph the organism
@@ -3609,7 +3681,8 @@ const _frame=()=>{
   calmLiveBead();
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
-  placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
+  if(galaxy){placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader()}
+  else placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
   placeInsideLabels(state.inside&&!state.diving&&cam.mode==='fly');

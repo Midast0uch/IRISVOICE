@@ -248,7 +248,8 @@ def test_a_claim_carries_its_steps_and_every_territory_has_a_name(snap_env):
     con.close()
     d = _get(snap_env)
     live = {x["id"]: x for x in d["landmarks"]}
-    assert live["C_LIVE"]["steps"] == [{"space": "semantic", "label": "beta"}, {"space": "semantic", "label": "alpha"}]
+    assert live["C_LIVE"]["steps"] == [{"space": "semantic", "label": "beta", "node": "n2"},
+                                       {"space": "semantic", "label": "alpha", "node": "n1"}]
     assert live["C_CAND"]["steps"] == []
     assert {s["key"]: s["label"] for s in d["sectors"]} == {"web": "web", "general": "general", "web/search": "search"}
 
