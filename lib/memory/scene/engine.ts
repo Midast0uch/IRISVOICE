@@ -2457,12 +2457,16 @@ const spaceLabelEls=SPACES.map((s,i)=>{const el=document.createElement('div');el
   const p=document.createElementNS('http://www.w3.org/2000/svg','path');svg.appendChild(p);return {el,p}});
 // W4 (§9.2): inside a sector its halo opens - each space that holds something here names itself (short)
 let haloLabelEls=null;
+// W4 (owner, 2026-11-23: "a lot of text on screen inside the shell"): text shows where the attention is - near the
+// pointer (fades in from 200 px), and every name for 3 s after you arrive in a galaxy, so you see the map once
+const ARRIVE_MS=3000;let arriveT=0;
+function reveal(ax,ay){const near=clamp(1-(Math.hypot(ax-mouse.x,ay-mouse.y)-50)/150,0,1),arr=clamp(1-(performance.now()-arriveT-ARRIVE_MS)/800,0,1);return Math.max(near,arr*.85)}
 let dialHover=-1,dialEls=null;
 function placeDial(show){
   if(!GAL_LAYOUT)return;
   if(!dialEls)dialEls=[...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg)].map(reg=>{const el=document.createElement('div');el.className='rlabel gdial';
     Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0});
-    el.innerHTML=`<span style="color:${domCol(REG[reg])};font-weight:600">● ${esc(domWord(REG[reg]))}</span> <span style="opacity:.6">${fmt((somaByReg[reg]||[]).length)}</span>`;
+    el.innerHTML=`<span style="color:${domCol(REG[reg])};font-weight:600">●</span><span class="nm" style="color:${domCol(REG[reg])};font-weight:600"> ${esc(domWord(REG[reg]))}</span><span class="nm" style="opacity:.6"> ${fmt((somaByReg[reg]||[]).length)}</span>`;
     el.title=`${fmt((somaByReg[reg]||[]).length)} claims · ${fmt(M.domCounts[REG[reg]]||0)} moments · click to go in`;
     el.addEventListener('pointerenter',()=>{dialHover=reg});el.addEventListener('pointerleave',()=>{if(dialHover===reg)dialHover=-1});
     el.addEventListener('click',e=>{e.stopPropagation();dialHover=-1;goGalaxy(reg)});labelsEl.appendChild(el);return {el,reg}});
@@ -2472,6 +2476,7 @@ function placeDial(show){
     if(!a||!a.front){D.el.style.opacity=0;D.el.style.pointerEvents='none';return}items.push({D,a,right:a.x>innerWidth/2,y:a.y-8})});
   for(const side of [false,true]){const col=items.filter(o=>o.right===side).sort((p,q)=>p.y-q.y);for(let i=1;i<col.length;i++)col[i].y=Math.max(col[i].y,col[i-1].y+15)}
   items.forEach(({D,a,right,y})=>{const here=state.inside&&D.reg===state.diveReg;D.el.style.pointerEvents=here?'none':'auto';
+    const rv=state.inside?(dialHover===D.reg?1:reveal(a.x,a.y)):1;D.el.querySelectorAll('.nm').forEach(x=>{x.style.opacity=rv});
     D.el.style.opacity=here?.45:lit===D.reg?1:lit>=0?.3:.78;
     const wd=D.el.offsetWidth;D.el.style.textAlign=right?'left':'right';
     D.el.style.left=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4)+'px';D.el.style.top=y+'px'})}
@@ -2491,7 +2496,8 @@ function placeSystems(reg){
       labelsEl.appendChild(el);return {el,sy}})}
   const items=[];sysEls.forEach(L=>{const a=project(L.sy.c.clone().add(new V3(0,L.sy.r*.6,0)));if(!a.front){L.el.style.opacity=0;L.el.style.pointerEvents='none';return}items.push({L,a,y:a.y-8})});
   items.sort((p,q)=>p.y-q.y);for(let i=1;i<items.length;i++)if(Math.abs(items[i].a.x-items[i-1].a.x)<140)items[i].y=Math.max(items[i].y,items[i-1].y+15);
-  items.forEach(({L,a,y})=>{L.el.style.pointerEvents='auto';L.el.style.opacity=.9;const w=L.el.offsetWidth;L.el.style.left=clamp(a.x-w/2,4,innerWidth-w-4)+'px';L.el.style.top=y+'px'})}
+  let mid=null,md=1e9;items.forEach(o=>{const dd=Math.hypot(o.a.x-innerWidth/2,o.a.y-innerHeight/2);if(dd<md){md=dd;mid=o}});
+  items.forEach(o=>{const {L,a,y}=o,rv=o===mid?1:reveal(a.x,a.y);L.el.style.pointerEvents=rv>.2?'auto':'none';L.el.style.opacity=.9*rv;const w=L.el.offsetWidth;L.el.style.left=clamp(a.x-w/2,4,innerWidth-w-4)+'px';L.el.style.top=y+'px'})}
 function placeHaloLabels(reg){
   if(!haloLabelEls)haloLabelEls=SPACES.map(sp=>{const el=document.createElement('div');el.className='rlabel';labelsEl.appendChild(el);return {el,sp:sp.id,n:-1}});
   if(!readerEl.parentNode)labelsEl.appendChild(readerEl);
@@ -2499,7 +2505,7 @@ function placeHaloLabels(reg){
   haloLabelEls.forEach(L=>{const n=hc[L.sp]||0,pt=ok&&n?project(GAL_LAYOUT.haloOrbit(reg,L.sp)):null;
     if(!pt||!pt.front){L.el.style.opacity=0;return}
     if(L.n!==n){L.n=n;L.el.innerHTML=`<b>${esc(SPACE_WORD[L.sp]||L.sp)}</b><i>${fmt(n)} here</i>`}
-    L.el.style.opacity=.8;L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
+    L.el.style.opacity=.8*reveal(pt.x,pt.y);L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
   spaceLabelEls.forEach(L=>{L.el.style.opacity=0;L.p.setAttribute('d','')})}
 function placeSpaceLabels(show){
   const c=project(new V3()),e=project(new V3(R,0,0).applyQuaternion(camera.quaternion)),rs=Math.abs(e.x-c.x)||200;
@@ -2799,8 +2805,9 @@ function regionWorld(i,s=R){return regC[i].clone().multiplyScalar(s)}
 // W4 (owner, 2026-11-23: inside, the camera seemed stuck): in the galaxy you ORBIT a pivot - the sector's centre, then
 // the claim you pick. Drag turns round it, the wheel goes closer or further (past the far limit it leaves the sector),
 // shift- or right-drag moves the pivot; the nav bar does the same with buttons.
-function setSectorTitle(i){const T=$('title');
-  T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this domain · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1}
+function setSectorTitle(i){const T=$('title');arriveT=performance.now();
+  T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this domain · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1;
+  const sm=T.querySelector('small');if(sm){sm.style.transition='opacity .9s';sm.style.opacity=1;setTimeout(()=>{if(sm.isConnected)sm.style.opacity=.22},4500)}}
 function diveGalaxy(i){
   if(state.diving||state.inside)return;const v=GAL_LAYOUT.viewOf(i);if(!v)return;
   state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');dialHover=-1;
