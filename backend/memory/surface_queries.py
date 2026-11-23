@@ -1341,7 +1341,7 @@ def turn(conversation_id: str, turn_id: str) -> dict:
                 p = jload(r["payload"], {}) or {}
                 t.update(step=r["step_index"], ts=r["ts"], source=p.get("source") or "neighbors",
                          refs=[x for x in (p.get("refs") or []) if isinstance(x, str) and x][:REFS_PER_RECALL])
-            else:
+            elif r["label"] == "RECALL_MISLED" or r["evidence"] == "verifier":   # helped = a verified step (memory_events.RECALL_COUNTS_SQL)
                 t["outcome"] = "helped" if r["label"] == "RECALL_HELPED" else "misled"
         steps = sorted((t for t in traces.values() if t["ts"] is not None), key=lambda t: t["ts"])
 
@@ -2027,11 +2027,11 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             turns = sorted(t for t in seen_turns if t)
             for i in range(0, len(turns), 500):
                 part = turns[i:i + 500]
-                for r in con.execute(f"SELECT label, links FROM memory_events WHERE episode_id IN ({_marks(len(part))}) "
+                for r in con.execute(f"SELECT label, links, evidence FROM memory_events WHERE episode_id IN ({_marks(len(part))}) "
                                      f"AND family = 'memory' AND label IN ({_marks(len(RECALL_LABELS) - 1)})",
                                      part + list(RECALL_LABELS[1:])):
                     tid = (jload(r["links"], {}) or {}).get("recall_trace_id")
-                    if tid in traces:
+                    if tid in traces and (r["label"] == "RECALL_MISLED" or r["evidence"] == "verifier"):
                         traces[tid]["outcome"] = "helped" if r["label"] == "RECALL_HELPED" else "misled"
         by_turn: dict[str, list] = {}
         for t in traces.values():
@@ -2816,7 +2816,7 @@ class _Search:
             if r["kind"] == "moment":
                 if "contradicted" in p.flags and r["label"] != "CLAIM_CONTRADICTED":
                     continue
-                if "helped" in p.flags and r["label"] != "RECALL_HELPED":
+                if "helped" in p.flags and (r["label"] != "RECALL_HELPED" or r["evidence"] != "verifier"):
                     continue
                 if p.evidence is not None and r["evidence"] not in p.evidence:
                     continue

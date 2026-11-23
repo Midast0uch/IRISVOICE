@@ -67,7 +67,7 @@ desync glitch, a reorganization a pulse that resettles).
 | Fragment | the atom: an event, a context chunk, a coordinate node | a small low-poly shard of pale light; its solidity is its trust |
 | Strand | continuity: a conversation, a route between ideas | a thin continuous line; a conversation is a DOUBLE strand (chat + memory) with rungs where a moment belongs to a turn |
 | Glyph | meaning: a claim | a seed of the weave (§3.1): its weave is its evidence, its shape its kind of work |
-| Sync | proof and confidence | a 0–100% value on every claim, strand and territory; high = sharp and assembled, low = soft and drifting |
+| Sync | proof and confidence | a 0–100% value behind the motion of claims, strands and territories (**no longer a figure on the timeline**, owner 2026-11-23: 39 of 48 strands had no task result, so it rested on event labels alone; the face says "3 of 4 tasks went well"); high = sharp and assembled, low = soft and drifting |
 | Desync | contradiction, failure, threat | a short glitch (≤ 300 ms): chromatic offset, fragments jolt, a scan line |
 | Assembly / dissolution | recall / forgetting | recalled memory flies together; decaying memory loosens and fades |
 
@@ -163,7 +163,7 @@ rest on hover.
   open them round the axis" (strands made minutes apart sit at one height, so their braid line lies inside the
   beads' hover zones — the card link is the reliable way in). Open = the thread's beads spread round the axis so each
   can be picked; Esc or the same link folds them.
-- **Strand card:** age · duration · outcome · #tags · what was asked · sync · tasks · "the memory gave it …"
+- **Strand card:** age · duration · outcome · #tags · what was asked · how many tasks went well · "the memory gave it …"
   (recall arches from earlier steps); **click** = step inside (the corridor).
 - **Turn zoom (Ctrl+wheel):** each bead opens into its turns; a turn's card names the claims it touched (§6.1).
 - **The helix holds your conversations** (2026-11-23): every chat with words, also those older than the event log, then ids no chat ever
@@ -558,9 +558,10 @@ The design is complete; the largest remaining gains are in the **data the design
 4. **The timeline holds the newest 48 threads**; any other conversation opens from a claim or a pin (2026-11-23). Older beads on the
    helix itself still wait for loading by scroll.
 5. ~~The galaxy does not yet show health, layers, membrane and immune response~~ — done 2026-11-23 (§3.2).
-7. **RECALL_HELPED means "the step did not fail"**: 6,115 of 9,683 (63 %) are from steps nobody verified, and they slow the fading of
-   26,221 of 95,358 chunks and raise their rank (`chunk_decay._outcome_multipliers`, `memory_rank._strand_outcomes`). Counting only
-   verifier evidence would let more fade and be pruned: the owner's decision (replayed 2026-11-23, not changed).
+7. ~~RECALL_HELPED meant "the step did not fail"~~ — **verified only** since 2026-11-23 (owner). 6,115 of 9,683 (63 %) came from steps
+   nobody checked; they slowed the fading of 26,221 of 95,358 chunks and raised their rank. The writer types nothing for an unchecked
+   step (unknown); every reader uses `memory_events.RECALL_COUNTS_SQL`, because the old rows stay. Dry run on the live store: 0 rows
+   pruned that day under either rule; over 30 active days 29,890 fade instead of 26,810, over 90 days 71,702 instead of 58,153.
 6. **The old orb** (`?cortex=tissue`) can go when the owner says so; the skin's points must stay (helix, artifact tissue).
 
 Polish beyond the plan, in a simpler form today: claim arches per use and frost-bridge walking; the focused object

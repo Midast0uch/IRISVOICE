@@ -108,7 +108,8 @@ MINIMAL_DDL = ";\n".join(s for s in MEMORY_DDL.split(";\n") if re.search(
 def _ev(con, eid, ts, label, thread, episode=None, step=None, family="memory", links=None, payload=None):
     con.execute("INSERT INTO memory_events (event_id, ts, schema_version, episode_id, step_index, thread_id, family, label,"
                 " valence, actor, evidence, label_source, links, payload) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (eid, ts, 1, episode, step, thread, family, label, "neutral", "agent", "none", "rule",
+                (eid, ts, 1, episode, step, thread, family, label, "neutral", "agent",
+                 "verifier" if label == "RECALL_HELPED" else "none", "rule",   # helped = a verified step (owner 2026-11-23)
                  json.dumps(links or {}), json.dumps(payload or {})))
 
 

@@ -49,7 +49,7 @@ def store(tmp_path):
     # the outcome multipliers read when the fixture store lacks it
     con.execute(
         "CREATE TABLE IF NOT EXISTS memory_events ("
-        "event_id TEXT, label TEXT, thread_id TEXT, payload TEXT, created_at REAL)")
+        "event_id TEXT, label TEXT, thread_id TEXT, payload TEXT, created_at REAL, evidence TEXT DEFAULT 'verifier')")
     # the clock counts ACTIVE days: one episode per day for the last 120 days,
     # so a chunk seeded N days old has N active days behind it
     now = time.time()

@@ -536,11 +536,20 @@ def new_recall_trace_id() -> str:
     return "rt-" + uuid.uuid4().hex[:12]
 
 
+# WHEN A RECALL COUNTS (owner 2026-11-23): "helped" only when the step it was delivered to was VERIFIED. A step that merely
+# did not fail says nothing (specs/wormhole-aperture: an unmeasured outcome is unknown). Measured before: 6,115 of 9,683
+# RECALL_HELPED rows (63 %) came from steps nobody checked, and they slowed the fading of 26,221 of 95,358 chunks and
+# raised their rank. The writer no longer types them; every reader of outcomes uses this predicate, because the old rows stay.
+RECALL_COUNTS_SQL = ("(label = 'RECALL_MISLED' OR (label = 'RECALL_HELPED' AND evidence = 'verifier'))")
+
+
 def _attribute_recalls(conn, trace_ids: Optional[List[str]], failed: bool, verified: str,
                        step_id: str, task_id: str, pending: List[dict]) -> List[str]:
     """RECALL_HELPED / RECALL_MISLED for the recalls delivered to this step. A trace
     that already has an outcome event is skipped (a retried finalize never double-counts)."""
     written: List[str] = []
+    if not failed and verified != "VERIFIED":
+        return written   # nobody checked the step: the recall's effect is unknown, not "helped"
     label = "RECALL_MISLED" if failed else "RECALL_HELPED"
     # The verifier ruled on the step -> inside evidence; no ruling -> none.
     evidence = "verifier" if verified in ("VERIFIED", "FAILED") else "none"
@@ -575,8 +584,8 @@ def record_step(
     """Type one finished DER step. Returns the event types written.
 
     ``recall_trace_ids`` are the recalls DELIVERED to this step (attribution v1,
-    Wormhole REQ-17): each gets one RECALL_HELPED (the step did not fail) or
-    RECALL_MISLED (it failed). A recall never delivered to the step is never
+    Wormhole REQ-17): each gets one RECALL_HELPED (the step was VERIFIED) or
+    RECALL_MISLED (it failed); an unchecked step gives none (unknown). A recall never delivered to the step is never
     credited, and a trace is credited at most once.
     """
     try:

@@ -531,6 +531,9 @@ const syncSession=s=>{const eps=s.episodes.map(id=>M.epById.get(id)).filter(e=>e
 const desyncSession=s=>{const eps=s.episodes.map(id=>M.epById.get(id)).filter(e=>e&&e.outcome!=='running');
   const f=eps.length?eps.filter(e=>e.outcome==='failure').length/eps.length:0,b=s.events.length?s.events.filter(e=>e.valence==='sets_back').length/s.events.length:0;
   return clamp(f+b*2,0,1)};
+// how a conversation's tasks went, in words. (A "sync %" stood here until 2026-11-23: 39 of 48 strands had no task result, so the number
+// rested on event labels alone and told the reader nothing. syncSession still shapes motion, never a figure on the timeline.)
+const taskWords=s=>{const e=(s.episodes||[]).map(id=>M.epById.get(id)).filter(x=>x&&x.outcome!=='running');return e.length?` · ${e.filter(x=>x.outcome==='success').length} of ${e.length} task${e.length===1?'':'s'} went well`:''};
 const syncHTML=v=>{const p=Math.round(v*100),c=v>=.75?'#bfe9f6':v>=.5?'#d8cf9a':'#ff8a6a';
   return `<span class="syncr" style="color:${c}">sync <span class="sync"><i style="width:${p}%"></i></span>${p}%</span>`};
 // territories: the domains that hold anything, largest first (max 12 = the shader's region slots)
@@ -3320,7 +3323,7 @@ function enterTunnel(s,{at=null}={}){
       if(at!=null){cam.tp=cam.tpT=Math.max(0,tunnel.uOf(at)-.02);cam.idle=-9}   // arrive at a moment (a helper's report)
       const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
       const ask0=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text,name=ask0&&ask0.startsWith(s.objective.slice(0,30))&&ask0.length>s.objective.length?(ask0.length>110?ask0.slice(0,109)+'…':ask0):s.objective;   // the chat store cuts a title at 50 characters: the question itself is whole
-      T.innerHTML=`${esc(name)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
+      T.innerHTML=`${esc(name)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments${taskWords(s)}</small>`;T.style.opacity=1;
       $('scrub').classList.remove('on');
       document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
       hint('scroll / w s · travel through the strand &nbsp; ← → · claim to claim<br>hover · read a message or moment &nbsp; click a claim · follow its thread &nbsp; esc · back');
@@ -3633,7 +3636,7 @@ function hover(x,y){
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(beadPos(k)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}${(()=>{const h=stepsHTML(eps,s.ghost?null:s.id,5);return h?'<br>what IRIS did:'+h:''})()}${s.ctx_peak!=null?(()=>{const n=s.events.filter(e=>e.label==='OFFLOADED').length;
+        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${done.length?`${good} of ${done.length} task${done.length===1?'':'s'} went well<br>`:''}${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}${(()=>{const h=stepsHTML(eps,s.ghost?null:s.id,5);return h?'<br>what IRIS did:'+h:''})()}${s.ctx_peak!=null?(()=>{const n=s.events.filter(e=>e.label==='OFFLOADED').length;
           return `<br>context peak <em>${Math.round(s.ctx_peak*100)}%</em>${n?` · made room ${n} time${n===1?'':'s'}`:' · never had to make room'}`})():''}</div><span class="go">click · step inside</span>${fanLinkHTML(s)}`)}
     else if(newBead.visible&&liveNew&&nearestScreen([newBead.position],x,y,18)===0){state.hoverNew=true;state.hoverBraid=null;canvas.style.cursor='pointer';
       setAnno('hover','newbead'+liveNew.tid,()=>project(newBead.position),`<div class="k">being written now · not in this view yet</div><div class="t">${esc(prettyThread(liveNew.tid))}</div><div class="m">it takes its place on the helix the next time the memory opens</div><span class="go">click · continue it in chat</span>`)}

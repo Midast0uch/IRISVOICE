@@ -8,7 +8,7 @@ law ``mycelium/decay.py`` states for edges and nodes, applied to chunks:
     a(n)     = 1 / (1 + n)          n = retrieval_count (use is the evidence)
     m_zone   = the channel the chunk's Kyudo zone maps to (trusted = USER 1.0,
                tool = VERIFIED 1.5, reference = EXTERNAL 3.0)
-    m_outcome= 0.5 when the chunk's strand's recalls HELPED (the law's expand
+    m_outcome= 0.5 when the chunk's strand's recalls HELPED a VERIFIED step (the law's expand
                multiplier), 1.8 when they MISLED (its compress multiplier) -
                the same constants the quorum reorganization uses, because a
                recall that helped is reinforcement and one that misled is a
@@ -40,6 +40,7 @@ from typing import Dict, List, Optional, Set
 
 from backend.memory.db import app_flush, app_write
 from backend.memory.mycelium import decay as kyudo
+from backend.memory.memory_events import RECALL_COUNTS_SQL
 from backend.memory.mycelium.landmark import _emit_landmark_event
 
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ def _outcome_multipliers(conn) -> Dict[str, float]:
     try:
         for sid, label, n in conn.execute(
                 "SELECT thread_id, label, count(*) FROM memory_events "
-                "WHERE label IN ('RECALL_HELPED', 'RECALL_MISLED') "
+                f"WHERE label IN ('RECALL_HELPED', 'RECALL_MISLED') AND {RECALL_COUNTS_SQL} "
                 "GROUP BY thread_id, label").fetchall():
             if not sid:
                 continue

@@ -29,6 +29,7 @@ from collections import Counter
 from typing import Any, Dict, List, Optional
 
 from backend.memory.event_alphabet import OUTSIDE_EVIDENCE, counts_as_outside_evidence
+from backend.memory.memory_events import RECALL_COUNTS_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,8 @@ def curation_report(conn) -> Dict[str, Any]:
     delivered, helped, misled = set(), set(), set()
     for label, links in q(
         "SELECT label, links FROM memory_events WHERE label IN "
-        "('RECALL_DELIVERED', 'RECALL_HELPED', 'RECALL_MISLED')"
+        "('RECALL_DELIVERED', 'RECALL_HELPED', 'RECALL_MISLED') "
+        f"AND (label = 'RECALL_DELIVERED' OR {RECALL_COUNTS_SQL})"
     ).fetchall():
         try:
             trace = (json.loads(links or "{}") or {}).get("recall_trace_id")

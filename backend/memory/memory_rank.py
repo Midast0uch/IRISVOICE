@@ -43,6 +43,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from backend.memory.db import app_write
+from backend.memory.memory_events import RECALL_COUNTS_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,7 @@ def _strand_outcomes(conn) -> Dict[str, Tuple[int, int]]:
         try:
             for sid, label, n in conn.execute(
                     "SELECT thread_id, label, count(*) FROM memory_events "
-                    "WHERE label IN ('RECALL_HELPED', 'RECALL_MISLED') "
+                    f"WHERE label IN ('RECALL_HELPED', 'RECALL_MISLED') AND {RECALL_COUNTS_SQL} "
                     "GROUP BY thread_id, label").fetchall():
                 if not sid:
                     continue
