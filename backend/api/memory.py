@@ -94,6 +94,12 @@ def memory_claim_uses(claim_id: str, limit: int = sq.OBSERVED_CAP):
     return _serve("claim_uses", sq.claim_uses, claim_id, limit=limit)
 
 
+@router.get("/claims/{claim_id}/source")
+def memory_claim_source(claim_id: str):
+    """W4: where a claim was learned and what that turn found (question, answer, tool results)."""
+    return _serve("claim-source", sq.claim_source, claim_id)
+
+
 @router.get("/threads")
 def memory_threads(limit: int = 30, include_eval: bool = False):
     return _serve("threads", sq.threads, limit=limit, include_eval=include_eval)

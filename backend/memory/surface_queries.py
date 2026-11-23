@@ -2784,6 +2784,92 @@ TOOL_OUTPUT_CHARS = 4000
 TOOL_OUTPUT_ROWS = 3
 
 
+CLAIM_SOURCE_MSGS = 2000      # messages of the source conversation read to place the turn (bounded)
+CLAIM_SOURCE_QUESTION = 400   # characters of the user's question
+CLAIM_SOURCE_ANSWER = 700     # characters of IRIS's answer
+CLAIM_SOURCE_STEPS = 12       # tool results of that turn
+CLAIM_SOURCE_EXCERPT = 240    # characters of one tool result (the full output stays behind /tool-result)
+CLAIM_SOURCE_MATCH = 0.5      # share of the claim's words a user message must hold to be the turn that asked it
+
+
+def _words(text: Any) -> set:
+    """The content words of a text (lower case, 3+ letters) - for matching a claim to the turn that asked it."""
+    return {w for w in re.findall(r"[a-z0-9]{3,}", str(text or "").lower())}
+
+
+def claim_source(claim_id: str) -> dict:
+    """W4 (owner, 2026-11-23: a claim's card "does not give me much"): WHERE a claim was learned and WHAT that turn
+    found - the conversation, the user's question, IRIS's answer and that turn's tool results (tool, target, size,
+    a short excerpt). Read-only.
+
+    The claim's conversation_ref names the conversation for a chat-born claim. An evaluation run's ref is its
+    WebSocket session id; it resolves through der_fan_traces (session_id -> conversation_id, written since W2) when
+    it can. Evaluation runs keep their own chat store, so an older run's source is often not stored here: then
+    `status` is "not_stored" (the card says so - never a silently empty card).
+
+    The turn: a claim's text is the task it learned, so the turn is the one whose USER message asks it (word
+    overlap with the claim >= CLAIM_SOURCE_MATCH); the answer is IRIS's next message. Measured live: conversation_ref
+    can name a conversation that never held the task (a claim about greet.py pointed at a probe conversation whose
+    answer was "durable-7b3e0a"); a match by time alone then showed a stranger's answer. No asking turn ->
+    `status` "unrelated" (the card says the source does not hold the task).
+    """
+    with read_only(memory_db_path()) as mem, _optional_chat_store() as cdb:
+        # PLAN  SELECT … FROM mycelium_landmarks WHERE landmark_id = ? -> SEARCH USING INDEX (landmark_id=?) (primary key)
+        row = mem.execute("SELECT landmark_id, conversation_ref, created_at, micro_abstract_text, label FROM mycelium_landmarks"
+                          " WHERE landmark_id = ?", (claim_id,)).fetchone()
+        if row is None:
+            raise NotFound(claim_id)
+        ref, made = row["conversation_ref"] or "", ts_of(row["created_at"]) or 0.0
+        out = {"claim": claim_id, "ref": ref, "status": "not_stored", "conversation": None, "turn": None,
+               "question": None, "answer": None, "steps": []}
+        if cdb is None or not ref:
+            return out
+        # PLAN  SELECT id, title FROM conversations WHERE id = ? -> SEARCH USING INDEX sqlite_autoindex_conversations_1
+        conv = cdb.execute("SELECT id, title FROM conversations WHERE id = ?", (ref,)).fetchone()
+        if conv is None and "conversation_id" in table_cols(mem, "der_fan_traces"):
+            # PLAN  SELECT conversation_id FROM der_fan_traces WHERE session_id = ? -> SEARCH USING INDEX (session_id)
+            hit = mem.execute("SELECT conversation_id FROM der_fan_traces WHERE session_id = ? AND conversation_id IS NOT NULL"
+                              " LIMIT 1", (ref,)).fetchone()
+            if hit:
+                conv = cdb.execute("SELECT id, title FROM conversations WHERE id = ?", (hit[0],)).fetchone()
+        if conv is None:
+            return out
+        out["conversation"] = {"id": conv["id"], "title": conv["title"]}
+        # PLAN  SELECT … FROM messages WHERE conversation_id = ? ORDER BY timestamp -> SEARCH USING INDEX idx_messages_conv
+        msgs = cdb.execute("SELECT id, role, substr(text, 1, 2000) AS text, turn_id, timestamp FROM messages"
+                           " WHERE conversation_id = ? ORDER BY timestamp, id LIMIT ?", (conv["id"], CLAIM_SOURCE_MSGS)).fetchall()
+        if not any(m["role"] == "assistant" for m in msgs):
+            out["status"] = "no_turn"
+            return out
+        want = _words(row["micro_abstract_text"] or (row["label"] or "").replace("_", " "))
+        best, bs, bt = -1, 0.0, 0.0
+        for i, m in enumerate(msgs):
+            if m["role"] != "user" or not want:
+                continue
+            sc = len(want & _words(m["text"])) / len(want)
+            dt = abs((ts_of(m["timestamp"]) or 0.0) - made)   # ties: the asking nearest the claim's birth
+            if sc > bs or (sc == bs and sc > 0 and dt < bt):
+                best, bs, bt = i, sc, dt
+        if best < 0 or bs < CLAIM_SOURCE_MATCH:
+            out["status"] = "unrelated"
+            return out
+        q = msgs[best]
+        ans = next((msgs[j] for j in range(best + 1, len(msgs)) if msgs[j]["role"] == "assistant"), None)
+        if ans is None:
+            out.update(status="no_turn", question=clip(q["text"], CLAIM_SOURCE_QUESTION))
+            return out
+        out.update(status="found", turn=ans["turn_id"], question=clip(q["text"], CLAIM_SOURCE_QUESTION),
+                   answer=clip(ans["text"], CLAIM_SOURCE_ANSWER))
+        if ans["turn_id"] and table_cols(cdb, "tool_results"):
+            # PLAN  SELECT … FROM tool_results WHERE conversation_id = ? AND turn_id = ? -> SEARCH USING INDEX idx_tool_results_conv
+            out["steps"] = [{"id": r["id"], "tool": r["tool"], "target": clip(r["target"] or "", 80), "chars": r["chars"],
+                             "cut": bool(r["cut"]), "excerpt": clip(" ".join((r["excerpt"] or "").split()), CLAIM_SOURCE_EXCERPT)}
+                            for r in cdb.execute("SELECT id, tool, target, chars, cut, substr(content, 1, 800) AS excerpt"
+                                                 " FROM tool_results WHERE conversation_id = ? AND turn_id = ? ORDER BY id LIMIT ?",
+                                                 (conv["id"], ans["turn_id"], CLAIM_SOURCE_STEPS))]
+    return out
+
+
 def tool_output(conversation_id: str, tool: Optional[str] = None, target: Optional[str] = None,
                 turn_id: Optional[str] = None, step_id: Optional[str] = None) -> dict:
     """The recorded output of a strand's step: rows of `tool_results` (the chat record, PLAIN TEXT

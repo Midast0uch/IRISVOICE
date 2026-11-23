@@ -219,7 +219,7 @@ const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(r
 const STAR_VS = `uniform float uTime,uPix,uVis,uFoc,uIn;attribute float aA,aPh,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.78+.22*sin(uTime*(.6+aPh*.9)+aPh*40.);
-    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc)*depthK(-mv.z)*(aReg<-.5?1.-.7*uIn:1.-.4*uIn);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
+    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc)*depthK(-mv.z)*(aReg<-.5?1.-.9*uIn:1.-.55*uIn);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
 const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
   gl_FragColor=vec4(vC,(smoothstep(.5,.0,d)*.55+smoothstep(.18,.0,d)*.6)*vA);}`;
 // soft glows (galaxy cores and halos, nebula clumps, far galaxies): large, faint, gaussian
@@ -336,7 +336,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
             for (let j = 0; j < 48; j++) { const th = j / 48 * TAU; put(toWorld(a, pl.x + Math.cos(th) * rr, pl.y, pl.z + Math.sin(th) * rr), col.clone().lerp(W, 0.4), 0.09, 0.8, a.reg); } } }
         if (i === 0) spikes.push({ p: p.clone(), c: col.clone().lerp(W, 0.5), a: 0.35, sz: a.rad / R * 6, reg: a.reg }); });
       glow(a.c, a.col, 0.018, a.rad / R * 13, a.reg);   // the faint light of the whole galaxy (wide glows made a navy haze)
-      (layout.systems[a.reg] || []).forEach(sy => glow(sy.c, sunCol(a, sy.sun).lerp(a.col, 0.5), 0.05 + 0.09 * Math.sqrt(sy.mass), sy.r / R * 14, a.reg));   // a system's light
+      (layout.systems[a.reg] || []).forEach(sy => glow(sy.c, sunCol(a, sy.sun).lerp(a.col, 0.5), 0.03 + 0.05 * Math.sqrt(sy.mass), sy.r / R * 11, a.reg));   // a group's light (wide lights made a haze)
     });
     addPoints(P, C, A, PH, SZ, RG);
   }
@@ -349,7 +349,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       const p = new V3(Math.cos(th) * rho, y, Math.sin(th) * rho); let best = null, bd = 1e9;
       arms.forEach(a => { const d = a.c.distanceTo(p) / a.rad; if (d < bd) { bd = d; best = a; } });
       const c = best ? best.col.clone().lerp(COOL, 0.5) : COOL; P.push(p.x, p.y, p.z); C.push(c.r, c.g, c.b);
-      A.push(0.018 + 0.05 * Math.pow(rng(), 2)); PH.push(rng()); SZ.push(0.9 + rng() * 0.5); RG.push(-1); }
+      A.push(0.006 + 0.022 * Math.pow(rng(), 2)); PH.push(rng()); SZ.push(0.9 + rng() * 0.5); RG.push(-1); }   // a whisper: the inside is a black void
     addPoints(P, C, A, PH, SZ, RG);
     const NEB = [new THREE.Color('#7a5cff'), new THREE.Color('#2fd4c8'), new THREE.Color('#ff6fae'), new THREE.Color('#4f8dff')];
     for (let k = 0; k < 10; k++) { const y = (k / 9 * 2 - 1) * HH * 0.55, th = (hashKey('neb' + k) % 628) / 100, rho = shellR(y) * (0.3 + 0.4 * rng());
@@ -606,6 +606,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     }
   }
 
+  let voidMat = null;   // the black inner body (below): unseen from outside, the black void once you are inside
   // ── the membrane: a faint woven skin on the shell's envelope, tinted by the nearest galaxy ──────────────────────
   {
     const prof = [];
@@ -623,8 +624,13 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       fragmentShader: `uniform float uTime,uVis,uIn;varying vec3 vC,vN,vV,vP;void main(){float f=pow(1.-abs(dot(vN,vV)),2.6);
         float ph=atan(vP.z,vP.x),y=vP.y*${(4 / HH).toFixed(4)};
         float w=pow(abs(sin(ph*9.+y*1.6+uTime*.05)*sin(ph*9.-y*1.6-uTime*.04)),.35);
-        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-.25*uIn));}` });
+        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-.65*uIn));}` });   // from inside: the strands show the shell, the skin stays dark
     const o = new THREE.Mesh(geo, mat); o.frustumCulled = false; o.renderOrder = -1; g.add(o); disposables.push(geo, mat);
+    // the VOID inside the shell (owner, 2026-11-23: the inside must be black like space; the panel round it keeps its
+    // own colour): the shell's inner faces in black, drawn before everything else in the shell, so the backdrop seen
+    // through the shell goes dark and the galaxies, claims and weave light up on top of it
+    voidMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, side: THREE.BackSide, depthWrite: false });
+    const vo = new THREE.Mesh(geo, voidMat); vo.frustumCulled = false; vo.renderOrder = -10; g.add(vo); disposables.push(voidMat);
   }
   // the dial: a faint ring of stars at the equator, a tick of each domain's colour at its galaxy's compass angle
   {
@@ -678,6 +684,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   function update(t, vis, inside = 0, haloReg = -9, camD = R * 5.8) {
     now = t; uni.uVis.value = vis; uni.uIn.value = inside; uni.uHalo.value = haloReg;
     uni.uNearZ.value = Math.max(0, camD - R); uni.uSpan.value = R * 2;   // the shell's near side is the brightest
+    if (voidMat) { voidMat.opacity = inside; voidMat.visible = inside > 0.02; }   // owner, 2026-11-23: outside the shell stays as it was; inside, the void of space
     strands.forEach((sd, n) => dust[n].forEach((d, j) => { const q = (d.s + t * d.v) % 1, onLeg = q < LEG_SHARE;
       const s = onLeg ? q / LEG_SHARE : (q - LEG_SHARE) / (1 - LEG_SHARE), path = onLeg ? LEG[n] : SAMPLES[n], ns = onLeg ? LEG_NS : NS;
       const f = s * ns, i0 = Math.floor(f), w = f - i0, A = path[i0], B = path[Math.min(ns, i0 + 1)], idx = (n * DUST + j) * 3;

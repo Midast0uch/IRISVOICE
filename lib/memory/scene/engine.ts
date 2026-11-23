@@ -34,6 +34,10 @@ export interface MemoryEngineOptions {
   toolResult?: (conversation: string, tool: string, target: string) => Promise<any>;
   /** W3: one strand's detail (GET /api/memory/strand/<id>), read when its corridor opens - the context band's series. */
   strandDetail?: (id: string) => Promise<any>;
+  /** W4: where a claim was learned and what that turn found (GET /api/memory/claims/<id>/source). */
+  claimSource?: (id: string) => Promise<any>;
+  /** W4: a conversation's full messages for the corridor's transcript. */
+  transcript?: (id: string) => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -557,12 +561,15 @@ try{renderer=new THREE.WebGLRenderer({canvas,antialias:false,powerPreference:'hi
 catch(e){document.getElementById('err').style.display='flex';opts.onError?.(e);throw e}
 // GPU is shared with local models: cap the pixel ratio and let quality fall back on slow frames.
 let DPR=Math.min(devicePixelRatio||1,1.6);
-renderer.setPixelRatio(DPR);renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0x020306,1);
+renderer.setPixelRatio(DPR);renderer.setSize(innerWidth,innerHeight);renderer.setClearColor(0x020306,1);   // the panel's own backdrop (the galaxy blacks out only the inside of its shell - galaxy.ts)
 const scene=new THREE.Scene();
 const camera=new THREE.PerspectiveCamera(38,innerWidth/innerHeight,.01,8000);
 const composer=new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene,camera));
 const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.85,.5,.24);
+// the galaxy: only bright light blooms (measured: the bloom spread every faint star into a grey - the empty space
+// inside the shell measured 42 with it, 25 without); a black void needs a high threshold and a small radius
+if(GALAXY){bloom.threshold=.55;bloom.radius=.3}
 composer.addPass(bloom);composer.addPass(new OutputPass());
 
 const THEMES=[['aether','#00d4ff'],['aurora','#f82a2a'],['ember','#e8843a'],['aurum','#f2c230'],['verdant','#2bd977']];
@@ -1988,6 +1995,68 @@ function buildTunnel(s){
 // to make room, and a mark on the wall for each set-aside (amber when it was let go too early, dim when it came back).
 // The series is the strand's der_fan_traces rows (GET /api/memory/strand/<id> `context`), read when the corridor opens.
 const BAND_MARGIN=.75;
+// W4 (owner, 2026-11-23: the corridor's text "seems like jumbled words", "I can't tell what the conversation was
+// about", "it does not fit on the screen"): a READABLE TRANSCRIPT beside the corridor - you and IRIS, turn by turn, the
+// full text (the chat's own read), wrapped and scrollable; IRIS's turns carry how full the context got (W2). It follows
+// the corridor (the turn you are passing is lit) and a click on a turn takes you there.
+const trEl=document.createElement('div');trEl.className='gtr';
+Object.assign(trEl.style,{position:'absolute',right:'10px',top:'64px',bottom:'120px',width:'min(320px,40%)',overflowY:'auto',pointerEvents:'auto',
+  background:'rgba(3,6,10,.86)',border:'1px solid rgba(127,232,255,.16)',borderRadius:'10px',padding:'10px 12px',font:'12px/1.45 system-ui,sans-serif',
+  color:'#d8e6ee',display:'none',zIndex:6});
+host.appendChild(trEl);
+// the subtitle strip (owner, 2026-11-23: the transcript took too much of the corridor): only what you are passing
+const trStrip=document.createElement('div');trStrip.className='gtr-strip';
+Object.assign(trStrip.style,{position:'absolute',left:'50%',transform:'translateX(-50%)',bottom:'64px',width:'min(560px,86%)',pointerEvents:'auto',
+  background:'rgba(0,0,0,.72)',border:'1px solid rgba(127,232,255,.14)',borderRadius:'9px',padding:'6px 10px',font:'12px/1.45 system-ui,sans-serif',
+  color:'#e4eef3',display:'none',zIndex:6});
+trStrip.innerHTML=`<div class="cur" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden"></div>`+
+  `<div style="margin-top:4px;text-align:right"><button data-tr="open" style="background:none;border:1px solid rgba(127,232,255,.3);color:#bfe9f5;border-radius:6px;padding:1px 8px;font:inherit;font-size:11px;cursor:pointer">▤ the whole conversation</button></div>`;
+host.appendChild(trStrip);
+const trPanel=on=>{trEl.style.display=on?'block':'none';trStrip.querySelector('[data-tr="open"]').textContent=on?'▤ hide the conversation':'▤ the whole conversation';if(on)trOn=-1};
+trStrip.addEventListener('click',e=>{const b=e.target.closest('[data-tr]');if(!b)return;e.stopPropagation();trPanel(trEl.style.display==='none')});
+let trItems=[],trOn=-1,trUserScroll=0;
+trEl.addEventListener('wheel',e=>{e.stopPropagation();trUserScroll=performance.now()},{passive:true});
+trEl.addEventListener('click',e=>{if(e.target.closest('[data-trx]')){e.stopPropagation();trPanel(false);return}const it=e.target.closest('[data-tu]');if(!it||!tunnel)return;e.stopPropagation();cam.tpT=Math.max(0,+it.dataset.tu-.02);cam.idle=-9});
+const tsOf=v=>typeof v==='number'?v:(Date.parse(v)/1000||0);
+function transcriptOpen(T,s){
+  trEl.style.display='none';trStrip.style.display='block';trStrip.querySelector('.cur').innerHTML='';trUserScroll=0;
+  // the story, even when the chat itself is not kept (an evaluation run): the goal, what IRIS did (its steps), then
+  // the messages and the memory moments in time order
+  const eps=(s.episodes||[]).map(id=>M.epById.get(id)).filter(Boolean),did=eps.length?stepsHTML(eps,s.id,6):'';
+  trEl.innerHTML=`<div style="display:flex;justify-content:space-between;gap:8px"><div style="font-size:13px;color:#eef7fb;margin-bottom:4px">${esc(s.objective||'a conversation')}</div>`+
+    `<span data-trx style="cursor:pointer;opacity:.6">✕</span></div>`+
+    (did?`<div style="opacity:.75;margin-bottom:8px"><span style="opacity:.6">what IRIS did</span>${did}</div>`:'')+`<div class="trl"></div>`;
+  const msgItems=T.items.filter(n=>n.type==='msg'),moments=T.items.filter(n=>n.type==='event');
+  const render=(full,why)=>{const list=trEl.querySelector('.trl');if(!list)return;
+    const rows=(full||msgItems.map(n=>({role:n.m.role==='user'?'user':'assistant',text:n.m.text||'',ts:n.m.ts,turn:n.m.turn,cut:(n.m.len||0)>(n.m.text||'').length,len:n.m.len||0})))
+      .map((m,i)=>{let it=full?null:msgItems[i];if(!it){let bd=1e9;msgItems.forEach(n=>{const d=Math.abs(n.m.ts-m.ts);if(d<bd){bd=d;it=n}})}return {...m,kind:'msg',u:it?it.u:0}});
+    const all=rows.concat(moments.slice(0,240).map(n=>({kind:'moment',ts:n.e.ts,u:n.u,e:n.e}))).sort((x,y)=>(x.ts||0)-(y.ts||0));
+    trItems=[];
+    list.innerHTML=all.map(m=>{trItems.push(m.u);
+        if(m.kind==='moment'){const c=m.e.valence==='sets_back'?'#ff7a6b':(FAM[FAMI[m.e.family]??0]||{}).color||'#9fd0e6';
+          return `<div data-tu="${m.u}" style="margin:0 0 3px 12px;font-size:11px;opacity:.72;cursor:pointer"><span style="color:${c}">●</span> ${esc(readEvent(m.e))}</div>`}
+        const you=m.role==='user',mins=T.session&&T.session.started?Math.max(0,Math.round((m.ts-T.session.started)/60)):null;
+        const body=m.text?esc(String(m.text).slice(0,4000))+(m.cut?'…':''):`<span style="opacity:.6">${you?'you wrote':'IRIS replied'} · about ${Math.max(5,Math.round((m.len||60)/6))} words - the text is not kept</span>`;
+        return `<div data-tu="${m.u}" style="margin:6px 0 8px;padding:6px 8px;border-radius:7px;cursor:pointer;background:${you?'rgba(251,233,247,.07)':'rgba(127,232,255,.05)'};border-left:2px solid ${you?'#fbe9f7':'#7fe8ff'}">`+
+          `<div style="font-size:10.5px;opacity:.65">${you?'you':'IRIS'}${mins!=null?' · '+mins+' min in':''}<span class="trc" data-turn="${esc(m.turn||'')}"></span></div>`+
+          `<div style="white-space:pre-wrap;word-break:break-word">${body}</div></div>`}).join('')||'<div style="opacity:.6">nothing was kept for this conversation</div>';
+    if(why)list.insertAdjacentHTML('afterbegin',`<div style="opacity:.55;font-size:11px;margin-bottom:6px">${why}</div>`);
+    trOn=-1;if(T._ctx)transcriptCtx(T,T._ctx)};
+  render(null);
+  if(opts.transcript&&!s.ghost)opts.transcript(s.id).then(c=>{if(tunnel!==T||!c||!Array.isArray(c.messages))return;
+    render(c.messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role,text:m.text||m.content||'',ts:tsOf(m.timestamp),turn:m.turn_id})))})
+    .catch(()=>{if(tunnel===T)render(null,'the chat of this conversation is not kept here (an evaluation run) - its story from memory:')})}
+function transcriptCtx(T,ctx){if(!T||!Array.isArray(ctx))return;T._ctx=ctx;const by=new Map();
+  ctx.forEach(c=>{if(c.turn&&c.fill!=null)by.set(c.turn,Math.max(by.get(c.turn)||0,c.fill))});
+  trEl.querySelectorAll('.trc').forEach(el=>{const f=by.get(el.dataset.turn);el.textContent=f!=null?` · context ${Math.round(f*100)}% full`:''})}
+function transcriptClose(){trEl.style.display='none';trStrip.style.display='none';trEl.innerHTML='';trItems=[];trOn=-1}
+function transcriptSync(){if(!tunnel||!trItems.length)return;let bi=0,bd=1e9;
+  trItems.forEach((u,i)=>{const d=Math.abs(u-cam.tp);if(d<bd){bd=d;bi=i}});if(bi===trOn)return;trOn=bi;
+  const rows=trEl.querySelectorAll('[data-tu]');rows.forEach((el,i)=>{el.style.outline=i===bi?'1px solid rgba(127,232,255,.55)':'none'});
+  // the strip: the message you are passing (or the moment, with the message it belongs to)
+  if(rows[bi]){let m=rows[bi];if(!m.querySelector('.trc')){for(let j=bi;j>=0;j--)if(rows[j].querySelector('.trc')){m=rows[j];break}}
+    trStrip.querySelector('.cur').innerHTML=(m!==rows[bi]?`<div style="font-size:11px;opacity:.7">${rows[bi].innerHTML}</div>`:'')+m.innerHTML}
+  if(trEl.style.display!=='none'&&rows[bi]&&performance.now()-trUserScroll>2500)rows[bi].scrollIntoView({block:'nearest',behavior:'smooth'})}
 function addContextBand(T,ctx){
   if(!T||!T.curve)return null;const s=T.session,pts=(ctx||[]).filter(c=>c&&c.fill!=null&&c.ts!=null).sort((a,b)=>a.ts-b.ts);
   const edits=(s.events||[]).filter(e=>e.clm&&(e.label==='OFFLOADED'||e.label==='RESTRETCHED'||e.label==='PREMATURE_EVICTION'));
@@ -2028,7 +2097,7 @@ function tunnelHighlight(it){
   const H=T.hlU.value;H.forEach(v=>v.set(-1,0,0,0));let j=0;
   const put=(x,gain)=>{if(j<H.length)H[j++].set(x.bundle,x.ua-.003,x.ub+.003,gain)};
   if(it){put(it,2.4);it.links.slice(0,7).forEach(l=>put(l,2))}}   // the rungs show the link; no straight lines across the corridor
-function disposeTunnel(){if(!tunnel)return;scene.remove(tunnel.g);tunnel.g.traverse(o=>{o.geometry?.dispose();o.material?.dispose?.()});tunnel=null;rail.build(null)}
+function disposeTunnel(){transcriptClose();if(!tunnel)return;scene.remove(tunnel.g);tunnel.g.traverse(o=>{o.geometry?.dispose();o.material?.dispose?.()});tunnel=null;rail.build(null)}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 7b. SYNCHRONIZATION, inside the timeline (design §18.4; owner, 2026-10-19: "it does not need its own tab, it can
@@ -2420,7 +2489,7 @@ function setAnno(name,key,anchorFn,html,o={}){const s=anno(name);if(s.lingerT){c
 function showAnno(name,key,anchorFn,html,{hot=false,cell=false,col=null}={}){const s=anno(name);
   if(s.cell!==cell){s.cell=cell;s.el.classList.toggle('cell',cell);s.key=null}
   if(col)s.el.style.setProperty('--cell',col);
-  if(s.key!==key){s.el.innerHTML=html;s.key=key;const t=s.el.querySelector('.t');if(t)scramble(t,t.textContent,18);
+  if(s.key!==key){s.el.innerHTML=html;s.key=key;const t=s.el.querySelector('.t');if(t&&t.textContent.length<=40)scramble(t,t.textContent,18);   // never on long text: it read as jumbled words
     if(cell){s.el.classList.remove('on');void s.el.offsetWidth}} // a new cell grows again from its own point
   s.anchor=anchorFn;s.on=true;s.el.classList.add('on');s.path.classList.toggle('hot',hot)}
 function clearAnno(name){const s=slots[name];if(!s)return;clearTimeout(s.intentT);clearTimeout(s.lingerT);s.intentT=s.lingerT=null;s.pend=null;
@@ -3019,9 +3088,22 @@ function placeReader(){if(!(galaxy&&state.inside&&!state.diving))goOpen(false);c
   const o=readOrder(state.diveReg),i=o.indexOf(state.focusSoma),key=state.diveReg+':'+i;if(key===readerKey)return;readerKey=key;
   const n=readerEl.querySelector('[data-g="n"]');
   n.innerHTML=`<span style="color:${domCol(REG[state.diveReg])}">● ${esc(domWord(REG[state.diveReg]))}</span> · `+(i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims`)}
+// W4 (owner, 2026-11-23: a card "does not give me much"): the card adds what the claim's turn FOUND - the question,
+// IRIS's answer, the tool results (a click shows the full output) - or says plainly that its source is not kept here
+function fillClaimSource(k){if(!opts.claimSource)return;const l=LM[k];
+  opts.claimSource(l.id).then(r=>{if(state.focusSoma!==k||!slots.focus?.on)return;const box=slots.focus.el.querySelector('.m');if(!box||box.querySelector('.src'))return;
+    const cut=(t,n)=>{t=String(t||'').replace(/\s+/g,' ').trim();return t.length>n?t.slice(0,n-1)+'…':t};let h='';
+    if(r.status==='found'){const cid=r.conversation.id;
+      h=`${r.question?`<br><em>you asked</em> · ${esc(cut(r.question,170))}`:''}${r.answer?`<br><em>IRIS answered</em> · ${esc(cut(r.answer,260))}`:''}`+
+        (r.steps||[]).slice(0,3).map(st=>`<span class="go step" data-step="${esc(cid)}" data-tool="${esc(st.tool||'')}" data-target="${esc(st.target||'')}">${esc(String(st.tool||'').replace(/_/g,' '))}${st.target?' · '+esc(cut(st.target,40)):''}${st.excerpt?' - '+esc(cut(st.excerpt,80)):''}</span>`).join('');
+      if(!l.session||!M.sById.get(l.session)){const s2=M.sById.get(cid);if(s2)h+=`<span class="go" data-go="${esc(cid)}">→ open that conversation and its context</span>`}}
+    else if(r.status==='no_turn')h=`<br><em>its source</em> · ${esc(cut(r.conversation?.title||'a conversation',60))} - no answer was recorded`;
+    else if(r.status==='unrelated')h=`<br><em>its source</em> · ${esc(cut(r.conversation?.title||'a conversation',60))} - that conversation never asked this task, so its answer is not shown`;
+    else h=`<br><em>its source</em> · an evaluation run - its conversation is not kept in this memory`;
+    box.insertAdjacentHTML('beforeend',`<div class="src">${h}</div>`)}).catch(()=>{})}
 function flyToSoma(k){
   if(galaxy&&cam.mode==='orbit'){setFocusSoma(k);cam.targetT.copy(somaWorld(k));cam.distT=clamp(cam.distT,R*.05,R*.14);cam.idle=0;
-    setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');satellites(k);return}
+    setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true});clearAnno('hover');satellites(k);fillClaimSource(k);return}
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
   setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
   setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');
@@ -3071,8 +3153,8 @@ function enterTunnel(s,{at=null}={}){
   clearAnno('focus');clearAnno('hover');satellites(-1);
   const goIn=()=>{flash(true,REDUCED?1:220);setTimeout(()=>{
       if(state.inside){state.inside=false;state.openT=0;LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;state.focusDimT=0}
-      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);
-      if(opts.strandDetail&&!s.ghost){const T0_=tunnel;opts.strandDetail(s.id).then(d=>{if(tunnel!==T0_)return;const b=addContextBand(T0_,d&&d.context);
+      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);transcriptOpen(tunnel,s);
+      if(opts.strandDetail&&!s.ghost){const T0_=tunnel;opts.strandDetail(s.id).then(d=>{if(tunnel!==T0_)return;const b=addContextBand(T0_,d&&d.context);transcriptCtx(T0_,d&&d.context);
         const sm=$('title')?.querySelector('small');if(sm&&b)sm.insertAdjacentHTML('beforeend',` · ${esc(bandLine(b))}`)})
         .catch(err=>console.warn('[memory] strand detail',s.id,err))}state.voidT=REDUCED?0:1;tunnel.tileU.uAsm.value=REDUCED?1:0;cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
       cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
@@ -3701,7 +3783,8 @@ const _frame=()=>{
     for(const o of [skin,wire,cells,xur,mist,arbors])o.visible=!on;rings.forEach(r=>{r.visible=!on});
     forest.visible=!on;somaCells.visible=!on;   // the claims are the galaxy's own stars (galaxy.ts)
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=!on;else if(o.userData.tracts)o.visible=!on||(state.insideK||0)>.05})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
-    if(on){galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9,camera.position.length());
+    if(on){state.galIn=lerp(state.galIn||0,state.inside||state.diving?1:0,1-Math.pow(.05,dt));   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
+      galaxy.update(t,clamp(state.vis.forest,0,1),Math.max(state.insideK||0,state.galIn),state.inside||state.diving?state.diveReg:-9,camera.position.length());
       galaxy.mark(state.hoverSoma,state.focusSoma);
       galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null)}}   // inside: every galaxy stays visible
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
@@ -3752,7 +3835,7 @@ const _frame=()=>{
   state.insideK=lerp(state.insideK||0,cortex.visible?clamp((1.6-camR)/.7,0,1):0,1-Math.pow(.02,dt));
   core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55)*(galaxy?.6:1);
   coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85)*(galaxy?.55:1);
-  if(galaxy)coreHalo.scale.setScalar(R*.6);   // the nucleus: a soft light, not a wash over the shell
+  if(galaxy)coreHalo.scale.setScalar(R*.38);   // the nucleus: bright, but a tight halo (a wide one washed the shell)   // the nucleus: a soft light, not a wash over the shell
   cells.scale.setScalar(b);coreHalo.scale.setScalar(R*(1.0+.1*sx)*pupilS);
   for(let i=0;i<MAXSEC;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
   {let o=0;const det=.52+.48*(.5+.5*Math.sin(t/4.2*Math.PI*2));const flat=state.morph.i;
@@ -3819,6 +3902,7 @@ const _frame=()=>{
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
   placeInsideLabels(state.inside&&!state.diving&&cam.mode==='fly');
+  if(cam.mode==='tunnel')transcriptSync();   // W4: the transcript follows the corridor
   placeTimelineLabels(state.lens==='timeline'&&cam.mode==='orbit'&&!cam.tween&&!sync.sid);
   state.turnZoom=state.lens==='timeline'&&cam.mode==='orbit'&&camera.position.distanceTo(cam.look)<R*2.6;turnPts.visible=state.turnZoom;
   {const age=clock.elapsedTime-pupilLive.t;   // up in .35 s, held, back to turning by 3 s
@@ -3827,7 +3911,7 @@ const _frame=()=>{
   drawLiveDecision();
   drawTissue(dt);
   clearAnno('decision');   // the decision line is drawn under the arc ring by drawLiveDecision
-  bloom.strength=(galaxy?.55-state.insideK*.25:.85-state.insideK*.35)+sh*.8;   // the galaxy: less haze, black space
+  bloom.strength=(galaxy?.42-state.insideK*.2:.85-state.insideK*.35)+sh*.8;   // the galaxy: bright light blooms, the void stays black
   // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)
   if(Math.abs(renderer.domElement.width-Math.floor(innerWidth*DPR))>2||Math.abs(renderer.domElement.height-Math.floor(innerHeight*DPR))>2){
     renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix()}

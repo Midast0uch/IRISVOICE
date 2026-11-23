@@ -175,6 +175,25 @@ export async function fetchToolResult(conversation: string, tool: string, target
   return res.json()
 }
 
+/** W4: a conversation's full messages for the corridor's transcript (the chat's own read: GET /api/conversations/<id>). */
+export async function fetchTranscript(id: string): Promise<{ messages?: Array<{ role: string; text?: string; content?: string; timestamp?: string | number; turn_id?: string }> }> {
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) throw new MemoryResting(res.status, "the conversation could not be read")
+  return res.json()
+}
+
+/** W4: where a claim was learned and what that turn found (GET /api/memory/claims/<id>/source): the conversation, the
+ *  user's question, IRIS's answer and the turn's tool results. status "not_stored" when the source is not kept here. */
+export async function fetchClaimSource(id: string): Promise<{
+  status: "found" | "not_stored" | "no_turn"; conversation: { id: string; title: string } | null; turn: string | null
+  question: string | null; answer: string | null
+  steps: Array<{ id: number; tool: string; target: string | null; chars: number; cut: boolean; excerpt: string | null }>
+}> {
+  const res = await fetch(`/api/memory/claims/${encodeURIComponent(id)}/source`, { signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) throw new MemoryResting(res.status, "the claim's source could not be read")
+  return res.json()
+}
+
 /** W3: one strand's detail (GET /api/memory/strand/<id>) - the corridor reads its `context` series (the context band). */
 export async function fetchStrand(id: string): Promise<any> {
   const res = await fetch(`/api/memory/strand/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(20_000) })
