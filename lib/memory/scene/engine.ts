@@ -180,7 +180,8 @@ const READ={
   UNSAFE_REFUSED:'refused something unsafe',ESCALATED_UNSURE:'checked with you when unsure',INJECTION_SUSPECTED:'spotted a manipulation attempt',
   PERMISSION_DENIED:'was not allowed',DEPENDENCY_CHANGED:'a dependency changed',RESOURCE_LIMIT:'hit a limit of this machine',WORLD_CHANGED:'the world changed',
 };
-const readEvent=e=>READ[e.label]||((FAM[FAMI[e.family]]||{word:'other'}).word+' · '+String(e.label||'').toLowerCase().replace(/_/g,' '));
+const readEvent=e=>evWords(e)+(e.detail?' · '+e.detail:'');   // what happened · what it was about (the detail is joined by the backend)
+const evWords=e=>READ[e.label]||((FAM[FAMI[e.family]]||{word:'other'}).word+' · '+String(e.label||'').toLowerCase().replace(/_/g,' '));
 // the store keeps raw prompts, thread ids and node labels; the face says what the thing is (UX-PLAN §1, §6.4)
 // a task-path claim is stored as its task prompt: "The project is in <folder>. <the task>" -> the task, and the folder's name
 const claimParts=c=>{const t=String(c||''),m=t.match(/^The project is in (.+?)\.\s+([\s\S]+)$/);
@@ -571,7 +572,8 @@ composer.addPass(new RenderPass(scene,camera));
 const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.85,.5,.24);
 // the galaxy: only bright light blooms (measured: the bloom spread every faint star into a grey - the empty space
 // inside the shell measured 42 with it, 25 without); a black void needs a high threshold and a small radius
-if(GALAXY){bloom.threshold=.55;bloom.radius=.3}
+if(GALAXY){bloom.threshold=.55;bloom.radius=.3;
+  const bs=bloom.setSize.bind(bloom);bloom.setSize=(w,h)=>bs(Math.max(2,w/2),Math.max(2,h/2));bloom.setSize(innerWidth,innerHeight)}   // the glow at half size: it is a blur (10.4 ms of a 37 ms frame at full size)
 composer.addPass(bloom);composer.addPass(new OutputPass());
 
 const THEMES=[['aether','#00d4ff'],['aurora','#f82a2a'],['ember','#e8843a'],['aurum','#f2c230'],['verdant','#2bd977']];
@@ -926,8 +928,8 @@ const LM=M.landmarks;
 // never a region of its own: the map stays the meaning, the lens lights one project across it.
 const PROJ=Array.isArray(M.projects)?M.projects:[],PROJI=new Map(PROJ.map((p,i)=>[p.id,i]));
 const projOfClaim=l=>l&&l.project!=null&&PROJI.has(l.project)?PROJ[PROJI.get(l.project)]:null;
-const PROJ_KIND={iris:'IRIS itself',app:'an app',mcp:'an MCP server'};
-const projWord=p=>p.kind==='iris'?'IRIS itself':`${p.kind==='mcp'?'the MCP server':'the app'} ${p.name}`;
+const PROJ_KIND={iris:'IRIS itself',app:'an app',mcp:'an MCP server',eval:'evaluation runs'};
+const projWord=p=>p.kind==='eval'?'a test run of IRIS (not your own work)':p.kind==='iris'?'IRIS itself':`${p.kind==='mcp'?'the MCP server':'the app'} ${p.name}`;
 const NL=LM.length;
 // the objects of each kind of memory, so the key can single one kind out
 const KIND_OBJ={claim:[],pin:[],moment:[],node:[]};
@@ -1215,7 +1217,7 @@ const moteObj=new THREE.Points(moteGeo,moteMat);moteObj.frustumCulled=false;cort
 // caduceus beads: one per session, on the staff
 // OUTSIDE CHAT (UX-PLAN 11.3): memory written under a thread that never was a chat conversation - voice with no chat
 // open, probes, the system. Not a ghost (chat never had it), not a test run (those are left out of the snapshot).
-const outsideChat=s=>!s.ghost&&!(s.messages||[]).length&&!/^test run/.test(s.objective||'');
+const outsideChat=s=>s.chat?s.chat==='outside':!s.ghost&&!(s.messages||[]).length&&!/^test run/.test(s.objective||'');
 const beadGeo=new THREE.BufferGeometry();const bP=new Float32Array(sess.length*3),bA=new Float32Array(sess.length),bS=new Float32Array(sess.length),bC=new Float32Array(sess.length*3);
 sess.forEach((s,i)=>{bP.set([0,helixY(sessS(s)),0],i*3);bS[i]=(2.5+Math.sqrt(s.events.length)*.7)*(s.ghost?.7:1);
   // a ghost (chat deleted the strand; its tombstone keeps the name) stays on the helix, small and grey
@@ -1635,12 +1637,15 @@ const THREAD_COL=new THREE.Color('#c23aa8'),STRAND_COL=new THREE.Color('#e070d0'
 // conversations.db rows when the snapshot has them; otherwise the turns the events imply
 function sessionMessages(s){
   if(s.messages&&s.messages.length)return s.messages;
-  const out=[];
+  const out=[],said=d=>/^“/.test(d||'')?d.replace(/^“|”$/g,''):null;   // (2026-11-23: this invented a length per turn - "about 27 words" was arithmetic on the time)
   for(const e of s.events){
-    if(e.actor==='user'&&(e.family==='intent'||e.family==='feedback'))out.push({ts:e.ts-1,role:'user',len:30+Math.floor((e.ts*7)%140),text:null});
-    else if(e.family==='delivery'&&/ANSWER_GIVEN|ARTIFACT_PRODUCED|NARRATED/.test(e.label))out.push({ts:e.ts,role:'iris',len:80+Math.floor((e.ts*13)%420),text:null})}
-  if(!out.length)out.push({ts:s.started,role:'user',len:60,text:null});
+    if(e.label==='GOAL_SET'||e.label==='GOAL_REFINED'||e.label==='CORRECTION')out.push({ts:e.ts-1,role:'user',len:0,text:said(e.detail)});
+    else if(e.label==='ANSWER_GIVEN')out.push({ts:e.ts,role:'iris',len:0,text:said(e.detail)})}
   return out}
+// why a turn's words are not here (session.chat): said plainly, never a made-up size
+const CHAT_WHY={eval:'a test run of IRIS - its chat is removed when the run ends',deleted:'you deleted this chat - only what IRIS learned remains',
+  outside:'no chat was open here',kept:'these words were not saved'};
+const noWords=(s,you)=>`${you?'you asked something here':'IRIS answered here'} · ${CHAT_WHY[s?.chat]||CHAT_WHY[s?.ghost?'deleted':'kept']}`;
 // The design language (MEMORY-DASHBOARD-DESIGN §18): FRAGMENT, STRAND, GLYPH, SYNC, DESYNC, ASSEMBLY. A session is relived
 // the way the Animus replays a memory: the corridor ASSEMBLES out of wall fragments around you as you travel, the
 // conversation and the memory run through it as one DOUBLE STRAND (conversations.db and memory.db, a rung wherever a
@@ -2049,6 +2054,8 @@ let trItems=[],trOn=-1,trUserScroll=0;
 trEl.addEventListener('wheel',e=>{e.stopPropagation();trUserScroll=performance.now()},{passive:true});
 trEl.addEventListener('click',e=>{if(e.target.closest('[data-trx]')){e.stopPropagation();trPanel(false);return}const it=e.target.closest('[data-tu]');if(!it||!tunnel)return;e.stopPropagation();cam.tpT=Math.max(0,+it.dataset.tu-.02);cam.idle=-9});
 const tsOf=v=>typeof v==='number'?v:(Date.parse(v)/1000||0);
+// moments that only repeat the line beside them (the reply spoken, a card drawn, the same goal and answer): not listed again
+const TR_QUIET=new Set(['NARRATED','CARD_SHOWN','ANSWER_GIVEN','GOAL_SET']);
 function transcriptOpen(T,s){
   trEl.style.display='none';trStrip.style.display='block';trStrip.querySelector('.cur').innerHTML='';trUserScroll=0;
   // the story, even when the chat itself is not kept (an evaluation run): the goal, what IRIS did (its steps), then
@@ -2061,13 +2068,13 @@ function transcriptOpen(T,s){
   const render=(full,why)=>{const list=trEl.querySelector('.trl');if(!list)return;
     const rows=(full||msgItems.map(n=>({role:n.m.role==='user'?'user':'assistant',text:n.m.text||'',ts:n.m.ts,turn:n.m.turn,cut:(n.m.len||0)>(n.m.text||'').length,len:n.m.len||0})))
       .map((m,i)=>{let it=full?null:msgItems[i];if(!it){let bd=1e9;msgItems.forEach(n=>{const d=Math.abs(n.m.ts-m.ts);if(d<bd){bd=d;it=n}})}return {...m,kind:'msg',u:it?it.u:0}});
-    const all=rows.concat(moments.slice(0,240).map(n=>({kind:'moment',ts:n.e.ts,u:n.u,e:n.e}))).sort((x,y)=>(x.ts||0)-(y.ts||0));
+    const all=rows.concat(moments.filter(n=>!TR_QUIET.has(n.e.label)).slice(0,240).map(n=>({kind:'moment',ts:n.e.ts,u:n.u,e:n.e}))).sort((x,y)=>(x.ts||0)-(y.ts||0));
     trItems=[];
     list.innerHTML=all.map(m=>{trItems.push(m.u);
         if(m.kind==='moment'){const c=m.e.valence==='sets_back'?'#ff7a6b':(FAM[FAMI[m.e.family]??0]||{}).color||'#9fd0e6';
-          return `<div data-tu="${m.u}" style="margin:0 0 3px 12px;font-size:11px;opacity:.72;cursor:pointer"><span style="color:${c}">●</span> ${esc(readEvent(m.e))}</div>`}
+          return `<div data-tu="${m.u}" style="margin:0 0 3px 12px;font-size:11px;opacity:.72;cursor:pointer"><span style="color:${c}">●</span> ${esc(evWords(m.e))}${m.e.detail?` <span style="color:#eef7fb">${esc(m.e.detail)}</span>`:''}</div>`}
         const you=m.role==='user',mins=T.session&&T.session.started?Math.max(0,Math.round((m.ts-T.session.started)/60)):null;
-        const body=m.text?esc(String(m.text).slice(0,4000))+(m.cut?'…':''):`<span style="opacity:.6">${you?'you wrote':'IRIS replied'} · about ${Math.max(5,Math.round((m.len||60)/6))} words - the text is not kept</span>`;
+        const body=m.text?esc(String(m.text).slice(0,4000))+(m.cut?'…':''):`<span style="opacity:.6">${esc(noWords(s,you))}</span>`;
         return `<div data-tu="${m.u}" style="margin:6px 0 8px;padding:6px 8px;border-radius:7px;cursor:pointer;background:${you?'rgba(251,233,247,.07)':'rgba(127,232,255,.05)'};border-left:2px solid ${you?'#fbe9f7':'#7fe8ff'}">`+
           `<div style="font-size:10.5px;opacity:.65">${you?'you':'IRIS'}${mins!=null?' · '+mins+' min in':''}<span class="trc" data-turn="${esc(m.turn||'')}"></span></div>`+
           `<div style="white-space:pre-wrap;word-break:break-word">${body}</div></div>`}).join('')||'<div style="opacity:.6">nothing was kept for this conversation</div>';
@@ -2076,7 +2083,8 @@ function transcriptOpen(T,s){
   render(null);
   if(opts.transcript&&!s.ghost)opts.transcript(s.id).then(c=>{if(tunnel!==T||!c||!Array.isArray(c.messages))return;
     render(c.messages.filter(m=>m.role==='user'||m.role==='assistant').map(m=>({role:m.role,text:m.text||m.content||'',ts:tsOf(m.timestamp),turn:m.turn_id})))})
-    .catch(()=>{if(tunnel===T)render(null,'the chat of this conversation is not kept here (an evaluation run) - its story from memory:')})}
+    .catch(()=>{if(tunnel===T)render(null,esc(CHAT_WHY[s.chat]||'the chat could not be read')+' · its story from memory:')})
+  else render(null,esc(CHAT_WHY[s.chat]||CHAT_WHY.deleted)+' · its story from memory:')}
 function transcriptCtx(T,ctx){if(!T||!Array.isArray(ctx))return;T._ctx=ctx;const by=new Map();
   ctx.forEach(c=>{if(c.turn&&c.fill!=null)by.set(c.turn,Math.max(by.get(c.turn)||0,c.fill))});
   trEl.querySelectorAll('.trc').forEach(el=>{const f=by.get(el.dataset.turn);el.textContent=f!=null?` · context ${Math.round(f*100)}% full`:''})}
@@ -3026,7 +3034,7 @@ function claimHead(k){const l=LM[k],w=WORKS[claimKind(l)-1],txt=plain(l.claim),f
   return `<div class="k" style="color:${CLAIM_STATE_COL[l.fading?4:(l.born&&nowS()-l.born<7*86400)?3:l.tier==='candidate'?2:1]}">${esc(w?w[1]:'a claim')} · ${claimState(l)}</div>
     <div class="t" title="${esc(txt)}">${esc(cutTo(first,130))}</div>${rest?`<div class="m sub">${esc(cutTo(rest,150))}</div>`:''}`}
 function claimCardHTML(k){const l=LM[k],pj=projOfClaim(l),n=(l.evidence_counts&&Object.values(l.evidence_counts).reduce((a,b)=>a+b,0))||l.evidence.length;
-  return claimHead(k)+`<div class="m"><div class="sec"><em>can it be trusted</em>${l.tier==='candidate'?(n?`not proven yet - ${fmt(n)} sign${n===1?'':'s'} that it worked, not enough to rely on`:'not proven yet - nothing has checked it'):`yes - proven by ${fmt(n)} check${n===1?'':'s'}${l.last_verified?', last '+ago(l.last_verified):''}`}${l.contradictions?` · <span class="w">contradicted ${fmt(l.contradictions)}×</span>`:' · never contradicted'} · ${esc(l.channel==null?'learned inside IRIS':chanWord(l.channel))}</div>
+  return claimHead(k)+`<div class="m"><div class="sec"><em>can it be trusted</em>${l.tier==='candidate'?(n?`not proven yet - ${fmt(n)} sign${n===1?'':'s'} that it worked, not enough to rely on`:'not proven yet - nothing has checked it'):`yes - proven by ${fmt(n)} check${n===1?'':'s'}${l.last_verified?', last '+ago(l.last_verified):''}`}${l.contradictions?` · <span class="w">contradicted ${fmt(l.contradictions)}×</span>`:' · never contradicted'} · ${esc(l.channel_inferred?'it came from the web, an outside source':l.channel==null?'learned inside IRIS':chanWord(l.channel))}</div>
     <div class="sec st" data-story="${k}"><span class="dimm">reading its story…</span></div>
         ${pj||l.where?`<div class="sec"><em>project</em>${pj?esc(projWord(pj)):esc(l.where)}</div>`:''}</div>
     ${opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${dragHandle('claim:'+l.id,'claim · '+l.claim)}${correctionHTML(k)}`}
@@ -3225,7 +3233,7 @@ if(GALAXY&&galaxy){const K=$('key'),pb=document.createElement('a');pb.className=
     const sec=(kind,w)=>{const g=grp(kind);return g.length?`<div style="opacity:.5;margin:6px 0 2px">${w}</div>`+g.map(row).join(''):''};
     projEl.innerHTML=`<div style="opacity:.6;margin-bottom:2px">where the work happened</div>`+
       `<div data-pj="-1" style="cursor:pointer;padding:2px 0;${state.projLens<0?'color:#fff':''}">◎ everything <span style="opacity:.55">${fmt(LM.length)} claims</span></div>`+
-      sec('iris','IRIS working on itself')+sec('app','apps')+sec('mcp','MCP servers')+
+      sec('iris','IRIS working on itself')+sec('app','apps')+sec('mcp','MCP servers')+sec('eval','IRIS being tested')+
       (none?`<div style="opacity:.45;margin-top:6px">${fmt(none)} claim${none===1?'':'s'} with no project: a search or a chat, or learned before projects were recorded</div>`:'')+
       (PROJ.length?'':`<div style="opacity:.55;margin-top:4px">no project is recorded yet: IRIS records one when it works in a folder</div>`);
     projEl.style.display='block'};
@@ -3582,10 +3590,10 @@ function hover(x,y){
     if(k>=0){const n=tunnel.items[k];tunnelHighlight(n);canvas.style.cursor='default';
       if(n.type==='msg'){const m=n.m,mins=Math.max(0,Math.round((m.ts-tunnel.session.started)/60));
         setAnno('hover','item'+k,()=>project(n.world),`<div class="k">${m.role==='user'?'you':'IRIS'} · ${mins} min in · conversation</div>
-          <div class="t">${m.text?esc(m.text):(m.role==='user'?'you wrote':'IRIS replied')+` · about ${Math.max(5,Math.round((m.len||60)/6))} words`}</div>
+          <div class="t">${m.text?esc(m.text):esc(noWords(tunnel.session,m.role==='user'))}</div>
           <div class="m">linked to <em>${n.links.length}</em> moment${n.links.length===1?'':'s'} in memory${n.links.length?':<br>'+n.links.slice(0,4).map(l=>esc(readEvent(l.e))).join(' · '):''}</div>`,{hot:m.role==='user'});return}
       const e=n.e;const ep=M.epById.get(e.episode);const turn=n.links[0];
-      setAnno('hover','item'+k,()=>project(n.world),`<div class="k">${FAM[FAMI[e.family]]?.word||'other'} · ${ago(e.ts)} · memory</div><div class="t">${esc(readEvent(e))}</div>
+      setAnno('hover','item'+k,()=>project(n.world),`<div class="k">${esc(evWords(e))} · ${ago(e.ts)}</div><div class="t">${esc(e.detail||evWords(e))}</div>
         <div class="m">${EVID_WORD[e.evidence]||'unconfirmed'} · ${e.valence==='advances'?'helped the goal':e.valence==='sets_back'?'<span class="w">set the goal back</span>':'neither helped nor hurt'}
         · by ${e.actor==='user'?'<span class="u">you</span>':e.actor==='agent'?'IRIS':e.actor==='tool'?'a tool':e.actor==='subagent'?'a helper':'the world'}
         ${turn?`<br>in the turn where ${turn.m.role==='user'?'you wrote':'IRIS replied'}${turn.m.text?': <em>'+esc(turn.m.text.slice(0,70))+'</em>':''}`:''}
@@ -3946,7 +3954,7 @@ const _frame=()=>{
     rings.forEach(r=>{r.visible=false});   // the old rings were circles for a sphere; the galaxy draws the aurora of its own shell
     galaxy.auroraStep(dt,state.busyK||0,clamp(state.vis.rings,0,1)*(1-clamp((state.galIn||0)*2,0,1)));
     skin.visible=!on||_mm>.02||(state.morph.i||0)>.02;forest.visible=false;somaCells.visible=false;   // the skin's 42,000 points ARE the helix / the artifact tissue / the oracle's map; in the cortex the galaxy replaces it
-    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=false;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
+    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=false;else o.visible=on&&((state.galIn||0)>.02||(state.layK||0)>.001)})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
     {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
       state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
       galaxy.update(t,clamp(state.vis.forest,0,1)*(.3+.7*_gk)*(1-.82*(state.layK||0)),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());

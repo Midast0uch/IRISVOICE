@@ -631,7 +631,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG, 1)); geo.setAttribute('aA', new THREE.Float32BufferAttribute(LA, 1)); geo.setAttribute('aB', new THREE.Float32BufferAttribute(LB, 1));
     uni.uPulse = { value: Array.from({ length: PULSE_SLOTS }, () => new THREE.Vector2(-1, -99)) };
     const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: HYPHA_VS, fragmentShader: HYPHA_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    const o = new THREE.LineSegments(geo, mat); o.frustumCulled = false; g.add(o); disposables.push(geo, mat);
+    const o = new THREE.LineSegments(geo, mat); o.frustumCulled = false; o.userData.onDemand = true; g.add(o); disposables.push(geo, mat);
   }
 
   // ── the woven shell: every galaxy sends an anchor thread to the shell's equator that becomes its strands to the two
@@ -759,7 +759,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       geo.setAttribute('aU', new THREE.Float32BufferAttribute(UU, 1)); geo.setAttribute('aA', new THREE.Float32BufferAttribute(AA, 1));
       geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(TR, 1));
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: THREAD_VS, fragmentShader: LINE_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-      const o = new THREE.LineSegments(geo, mat); o.frustumCulled = false; g.add(o); disposables.push(geo, mat);
+      const o = new THREE.LineSegments(geo, mat); o.frustumCulled = false; o.userData.onDemand = true; g.add(o); disposables.push(geo, mat);
     }
   }
 
@@ -870,11 +870,11 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   { const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: STAR_VS, fragmentShader: STAR_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const o = new THREE.Points(headGeo, mat); o.frustumCulled = false; g.add(o); disposables.push(headGeo, mat); }
 
-  let pulses = [], linkSlot = 0, strandSlot = 0, claimSlot = 0, now = 0;
+  let galOn = true, lastPulse = -99, pulses = [], linkSlot = 0, strandSlot = 0, claimSlot = 0, now = 0;
   /** A recall used claim `k`: its links and threads light; a light runs from the claim to its galaxy's anchor, up a
    *  strand to the pole, and back down every strand on that side. Real recall events only (engine liveEmit). */
   function pulse(k) {
-    const pl = place[k]; if (!pl || !pos[k]) return;
+    const pl = place[k]; if (!pl || !pos[k]) return; lastPulse = now;
     uni.uCP.value[claimSlot % PULSE_SLOTS].set(k, now); claimSlot++;
     (linkOf.get(k) || []).slice(0, 3).forEach(id => { uni.uPulse.value[linkSlot % PULSE_SLOTS].set(id, now); linkSlot++; });
     const a = pl.arm != null ? arms[pl.arm] : null, dir = a ? (Math.sign(a.c.y) || ((k % 2) ? 1 : -1)) : (Math.sign(pos[k].y) || 1);
@@ -892,6 +892,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     const tgt = haloReg >= 0 && arms[haloReg] ? arms[haloReg].c : null;
     if (tgt) { if (!cenSet || inside < 0.05) { cen.copy(tgt); cenSet = true; } else cen.lerp(tgt, 1 - Math.pow(0.04, dt)); }
     arms.forEach((a, i) => { if (i < 12) uni.uOff.value[i].copy(a.c).sub(cen).multiplyScalar((SPACE_K - 1) * inside * (cenSet ? 1 : 0)); });
+    // links and node threads are dark unless a claim is hovered or open, or a recall runs: not drawn then (3.6 ms of 37 measured)
+    const lit = uni.uHov.value > -0.5 || uni.uSel.value > -0.5 || pulses.length > 0 || t - lastPulse < 3; g.children.forEach(o => { if (o.userData.onDemand) o.visible = lit && galOn; });
     now = t; uni.uVis.value = vis; uni.uIn.value = inside; uni.uHalo.value = haloReg;
     uni.uNearZ.value = Math.max(0, camD - R); uni.uSpan.value = R * 2;   // the shell's near side is the brightest
     if (voidMat) { voidMat.opacity = inside; voidMat.visible = inside > 0.02; }
@@ -918,7 +920,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
 
   function dispose() { disposables.forEach(d => d.dispose && d.dispose()); }
   /** the galaxies themselves show in the cortex tab; the shell (weave, skin, poles, dial, deep space) in every tab */
-  function interior(on) { g.children.forEach(o => { if (!o.userData.shell) o.visible = on; if (o.userData.layers) o.visible = on && layU.value > 0.01; }); }
+  function interior(on) { galOn = on; g.children.forEach(o => { if (!o.userData.shell) o.visible = on; if (o.userData.layers) o.visible = on && layU.value > 0.01; }); }
   function focus(reg) { uni.uFoc.value = reg == null ? -1 : reg; uni.uFocArm.value = reg == null || reg < 0 || !arms[reg] ? -1 : reg; }
   function mark(hov, sel) { uni.uHov.value = hov == null ? -1 : hov; uni.uSel.value = sel == null ? -1 : sel; }
   /** the key isolates one landmark state: 1 proven, 2 still learning, 3 new this week, 4 fading; 0 = all */

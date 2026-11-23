@@ -418,6 +418,20 @@ def add_message(
         return msg
 
 
+def ensure_user_message(conversation_id: str, text: str, source: str | None = None) -> bool:
+    """The user's side of a turn, when nobody saved it. The frontend posts it before the turn; a client that does not (a
+    harness, a lost request) left a chat with answers and no questions (2026-11-23: 25 such conversations, conv-10866 among
+    them). Called at the turn's end, before the reply is added: the chat's last message is then the user's own, or it is
+    added here. Never duplicates."""
+    if not conversation_id or not (text or "").strip():
+        return False
+    with _lock:
+        conv = _conversations.get(conversation_id)
+        if not conv or (conv["messages"] and conv["messages"][-1].get("role") == "user"):
+            return False
+    return add_message(conversation_id, "user", text, source=source or "turn_text") is not None
+
+
 # Tombstones (MEMORY-SURFACE-BUILD section 4 cases 1/2/8): titles live ONLY in this store, so
 # when a conversation is deleted or renamed the memory is told, once per conversation, and
 # keeps the title (STRAND_DELETED / STRAND_RENAMED in memory.db, on the memory_events lane).

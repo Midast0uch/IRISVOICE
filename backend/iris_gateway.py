@@ -6372,6 +6372,10 @@ class IRISGateway:
                             _srcs = agent_kernel._turn_sources(_conv_for_turn)
                         except Exception:  # noqa: BLE001
                             _srcs = []
+                        # both sides of a turn are in the chat store, whoever the client is (2026-11-23)
+                        from backend.conversation_store import ensure_user_message as _ensure_user
+
+                        _ensure_user(_conv_for_turn, payload.get("text") or "", source="ws_text_message")
                         _store_add(
                             _conv_for_turn,
                             "assistant",

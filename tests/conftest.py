@@ -15,6 +15,9 @@ os.environ.setdefault(
     "IRIS_MODEL_CALL_PROFILE",
     os.path.join(_tempfile.gettempdir(), "iris-tests-model_call_times.json"),
 )
+# The chat store: never the app's (backend/tests/conftest.py has the same rule since 2026-11-16; this folder did not, and
+# 2026-11-23 the app's store held ~800 "Fork Parent" / "Lifecycle Test" conversations from older test runs).
+os.environ.setdefault("IRIS_CONVERSATIONS_DB", os.path.join(_tempfile.gettempdir(), f"iris-tests-conversations-{os.getpid()}.db"))
 import sys
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

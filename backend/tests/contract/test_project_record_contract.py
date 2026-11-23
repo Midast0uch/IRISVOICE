@@ -156,4 +156,4 @@ def test_the_snapshot_serves_projects_for_the_lens(env):  # noqa: F811
     assert ps["proj_iris"]["kind"] == "iris" and ps["proj_iris"]["claims"] == 1
     assert ps["proj_srv"]["kind"] == "mcp" and ps["proj_srv"]["name"] == "weather" and ps["proj_srv"]["claims"] == 1
     assert ps[by["P_TEXT"]["project"]]["name"] == "demo_app" and ps[by["P_TEXT"]["project"]]["inferred"] is True
-    assert [p["kind"] for p in snap["projects"]] == sorted((p["kind"] for p in snap["projects"]), key=("iris", "app", "mcp").index)
+    assert [p["kind"] for p in snap["projects"]] == sorted((p["kind"] for p in snap["projects"]), key=("iris", "app", "mcp", "eval").index)

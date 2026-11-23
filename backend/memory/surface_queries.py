@@ -517,8 +517,198 @@ def claim_work(text: Any, task_class: Any = None) -> str:
     return next((k for k, rx in _WORK_RULES if rx.search(t)), "words")
 
 
+MOMENT_DETAIL = 150          # characters a moment says about itself
+MOMENT_ASK_S = 900.0         # a goal's words: the user message (or the run) within this of the moment
+_STRATEGY_WORD = {"do_it_myself": "IRIS does it itself", "delegate": "with a helper", "ask": "asks you first"}
+
+
+# memory written under the app's own connection, with no chat open (the surface words them: THREAD_WORD in engine.ts)
+OUTSIDE_THREADS = ("session_iris", "voice_headless", "session_iris_integration")
+_TIME_THREAD = re.compile(r"^\d{10,}-\d+$")   # a thread named by its creation time
+
+
+def _cleaned_evals(con: sqlite3.Connection, ids: Any, kept: Any) -> set:
+    """Which `conv-` threads are CLEANED EVALUATION RUNS (owner 2026-11-23: "text is not kept"). The eval runner deletes its own
+    chats when it ends, by direct SQL, so no title is left to tell them by; measured: 10,282 conversations with events and
+    no chat, 1 of them with a deletion record, and 46 of the timeline's 48 beads. A chat deleted in the app always leaves a
+    STRAND_DELETED tombstone (conversation_store.delete_conversation), so: no chat, no tombstone = a cleaned evaluation."""
+    gone = [t for t in ids if isinstance(t, str) and t.startswith("conv-") and t not in kept]
+    if not gone:
+        return set()
+    # PLAN  … WHERE family = 'memory' AND label = 'STRAND_DELETED' -> SEARCH memory_events USING INDEX idx_memory_events_label_ts
+    dead = {r[0] for r in con.execute("SELECT thread_id FROM memory_events WHERE family = 'memory' AND label = 'STRAND_DELETED' LIMIT 20000")} \
+        if has_index_on(con, "memory_events", "family") else set()
+    return {t for t in gone if t not in dead}
+
+
+def _action_words(a: Any) -> str:
+    tool, _, target = str(a or "").partition(":")
+    return (tool.replace("_", " ") + (" · " + target if target else "")).strip()
+
+
+def _ref_texts(con: sqlite3.Connection, pairs: list) -> dict[str, str]:
+    """What the references of these moments point at, as short words: claims, chain rows, documents. Each kind is ONE batched
+    read by its own key; a reference the store no longer holds is simply absent."""
+    claims, chain, docs = set(), set(), set()
+    for ev, p in pairs:
+        if isinstance(ev.get("landmark"), str):
+            claims.add(ev["landmark"])
+        if not isinstance(p, dict):
+            continue
+        if p.get("landmark"):
+            claims.add(str(p["landmark"]))
+        if ev["label"] == "RECALL_DELIVERED":
+            chain.update(str(x) for x in (p.get("refs") or [])[:3] if x)
+        if p.get("document_id"):
+            docs.add(str(p["document_id"]))
+    out: dict[str, str] = {}
+    if claims and table_cols(con, "mycelium_landmarks"):
+        for part in _chunks(sorted(claims)):
+            # PLAN  … WHERE landmark_id IN (…) -> SEARCH mycelium_landmarks USING INDEX sqlite_autoindex_mycelium_landmarks_1
+            for r in con.execute(f"SELECT landmark_id, micro_abstract_text, label FROM mycelium_landmarks WHERE landmark_id IN ({_marks(len(part))})", part):
+                out[r[0]] = _TASK_PREFIX.sub("", r[1] or (r[2] or "").replace("_", " "))
+    if chain and "chain_id" in table_cols(con, "memory_chain") and has_index_on(con, "memory_chain", "chain_id"):
+        for part in _chunks(sorted(chain)):
+            # PLAN  … WHERE chain_id IN (…) -> SEARCH memory_chain USING INDEX idx_memory_chain_chain_id (chain_id=?)
+            for r in con.execute(f"SELECT chain_id, distilled, substr(content, 1, 240) FROM memory_chain WHERE chain_id IN ({_marks(len(part))})", part):
+                t = r[1] if isinstance(r[1], str) and len(r[1]) > 3 else r[2]
+                if t:
+                    out.setdefault(r[0], " ".join(str(t).split()))
+    if docs and "document_id" in table_cols(con, "document_data"):
+        have_title = "title" in table_cols(con, "document_data")
+        for part in _chunks(sorted(docs)):
+            # PLAN  … WHERE document_id IN (…) -> SEARCH document_data USING INDEX sqlite_autoindex_document_data_1 (primary key)
+            for r in con.execute(f"SELECT document_id, {'title' if have_title else 'NULL'}, substr(content, 1, 400) FROM document_data "
+                                 f"WHERE document_id IN ({_marks(len(part))})", part):
+                m = re.search(r'"query":\s*"([^"]{4,160})', r[2] or "")
+                h = re.search(r"^#+\s*(.{3,120})$", r[2] or "", re.M)
+                t = r[1] or (m.group(1) if m else None) or (h.group(1) if h else None)
+                if t:
+                    out[r[0]] = " ".join(t.split())
+    return out
+
+
+def _turn_words(cdb: Optional[sqlite3.Connection], events: list[dict]) -> dict[str, tuple]:
+    """turn id -> (what the user asked, what IRIS answered), from the chat store. The exact link: a moment's episode id ends in
+    its turn id, and IRIS's reply is saved under the same one - it holds even when the moment was recorded under the app's
+    connection instead of its conversation (session_iris)."""
+    turns = {str(e.get("episode") or "").rpartition(":")[2] for e in events}
+    turns = sorted(t for t in turns if len(t) >= 6)
+    out: dict[str, tuple] = {}
+    if cdb is None or not turns:
+        return out
+    for part in _chunks(turns):
+        # PLAN  … FROM messages WHERE turn_id IN (…) AND role = 'assistant' -> SCAN messages (the chat store, 1.3k rows)
+        for r in cdb.execute("SELECT id, conversation_id, turn_id, substr(text, 1, 400) FROM messages WHERE role = 'assistant' AND "
+                             f"turn_id IN ({_marks(len(part))}) ORDER BY id", part).fetchall():
+            # PLAN  … WHERE conversation_id = ? AND role = 'user' AND id < ? ORDER BY id DESC LIMIT 1 -> SEARCH USING INDEX idx_messages_conv
+            u = cdb.execute("SELECT substr(text, 1, 400) FROM messages WHERE conversation_id = ? AND role = 'user' AND id < ? "
+                            "ORDER BY id DESC LIMIT 1", (r[1], r[0])).fetchone()
+            out[r[2]] = (u[0] if u else None, r[3])
+    return out
+
+
+def _moment_details(con: sqlite3.Connection, pairs: list, messages: dict[str, list], episodes: list[dict],
+                    by_turn: Optional[dict] = None) -> None:
+    """Sets event["detail"]: what a moment was ABOUT (owner 2026-11-23: "moments and goals don't really have enough
+    information"). An event keeps references and lengths, never the words (a privacy rule of the writers); the words are
+    where they always were - the chat, the run, the claim, the document, the chain - and are joined here at read time, so
+    deleting a chat still removes them. Nothing is guessed: no source, no detail (None)."""
+    refs = _ref_texts(con, pairs)
+    by_turn = by_turn or {}
+    eps: dict[str, list] = {}
+    for e in episodes:
+        if e.get("ts"):
+            eps.setdefault(e["session"], []).append(e)
+    cut = lambda t: clip(" ".join(str(t or "").split()), MOMENT_DETAIL) or None
+
+    def run_near(t, ts):
+        best = [e for e in eps.get(t, []) if -60 <= e["ts"] - ts <= MOMENT_ASK_S]
+        return min(best, key=lambda e: abs(e["ts"] - ts)) if best else None
+
+    def user_words(t, ts):
+        ms = [m for m in messages.get(t, []) if m.get("role") == "user" and m.get("text") and -MOMENT_ASK_S <= m["ts"] - ts <= 5]
+        if ms:
+            return ms[-1]["text"]
+        e = run_near(t, ts)
+        return _TASK_PREFIX.sub("", e["summary"]) if e and e.get("summary") else None
+
+    def iris_words(t, ts):
+        ms = [m for m in messages.get(t, []) if m.get("role") != "user" and m.get("text") and -15 <= m["ts"] - ts <= 120]
+        return min(ms, key=lambda m: abs(m["ts"] - ts))["text"] if ms else None
+
+    for ev, p in pairs:
+        p = p if isinstance(p, dict) else {}
+        lb, t, ts, d = ev["label"], ev["session"], ev["ts"] or 0.0, None
+        if lb in ("GOAL_SET", "GOAL_REFINED", "PREFERENCE_STATED", "CORRECTION", "CONFIRMATION"):
+            d = (by_turn.get(str(ev.get("episode") or "").rpartition(":")[2]) or (None, None))[0] or user_words(t, ts)
+            d = f"“{cut(d)}”" if d else None
+        elif lb == "PLAN_MADE":
+            titles = [str(x) for x in (p.get("titles") or []) if x]
+            if not titles:
+                e = run_near(t, ts)
+                titles = list(dict.fromkeys(str(s["what"]) for s in (e or {}).get("steps") or [] if isinstance(s, dict) and s.get("what")))
+            n = p.get("steps")
+            head = f"{n} step{'' if n == 1 else 's'}" if isinstance(n, int) and n else ""
+            tail = " → ".join(clip(x, 60) for x in titles[:4]) or ", ".join(
+                x for x in (_STRATEGY_WORD.get(str(p.get("strategy")), str(p.get("strategy") or "").replace("_", " ")),
+                            str(p.get("task_class") or "").replace("_", " ")) if x and x != "full")
+            d = ": ".join(x for x in (head, tail) if x) or None
+        elif lb in ("REPLAN", "SPLIT"):
+            d = "because " + str(p["trigger"]).replace("_", " ") + (f", into {p['width']} paths" if (p.get("width") or 0) > 1 else "") if p.get("trigger") else None
+        elif lb == "ANSWER_GIVEN":
+            w = (by_turn.get(str(ev.get("episode") or "").rpartition(":")[2]) or (None, None))[1] or iris_words(t, ts)
+            d = f"“{cut(w)}”" if w else (f"{p['display_chars']:,} characters" if p.get("display_chars") else None)
+        elif lb == "NARRATED":
+            d = ("the reply, aloud" if p.get("lane") == "reply" else "while working") + (f" · {p['chars']} characters" if p.get("chars") else "")
+        elif lb == "CARD_SHOWN":
+            d = refs.get(str(p.get("document_id"))) or {"task:start": "the plan", "document:ready": "a document"}.get(
+                str(p.get("event")), str(p.get("event") or "").replace(":", " ").replace("_", " ")) or None
+        elif lb == "RECALL_DELIVERED":
+            got = [refs[str(x)] for x in (p.get("refs") or [])[:3] if str(x) in refs]
+            src = {"neighbors": "earlier steps like this one", "prior_research": "earlier research", "chain_timeline": "what happened before"}.get(
+                str(p.get("source")), str(p.get("source") or "").replace("_", " "))
+            d = "; ".join(clip(x, 70) for x in got) or (src + (f" · {len(p['refs'])}" if p.get("refs") else "")) or None
+        elif lb in ("RECALL_HELPED", "RECALL_MISLED"):
+            v = str(p.get("verified") or "").lower()
+            d = {"verified": "the step was checked and held", "failed": "the step failed its check", "unverified": "the step ended without a check"}.get(v, v or None)
+        elif lb == "OBSERVED":
+            d = {"test_pass": "a test passed", "task_complete": "the task finished"}.get(str(p.get("kind")), str(p.get("kind") or "").replace("_", " "))
+            d += f" · {p['command']}" if p.get("command") else ""
+        elif lb == "ARTIFACT_PRODUCED":
+            w = refs.get(str(p.get("document_id")))
+            d = (f"“{w}” · " if w else "") + str(p.get("format") or "document") + (f", {p['chars']:,} characters" if isinstance(p.get("chars"), int) else "")
+        elif lb in ("CLAIM_UPDATED", "CLAIM_CORROBORATED"):
+            d = {"changed": "it changed since", "confirmed": "it still holds since"}.get(str(p.get("check")), "compared with") + f" {p['prior_date']}" if p.get("prior_date") else None
+        elif lb in ("ATTEMPT", "RESOLUTION", "DEAD_END", "FIX"):
+            d = _action_words(p.get("action")) or None
+        elif lb in ("OBSTACLE", "BUG", "APPROVAL", "DENIAL", "PERMISSION_DENIED"):
+            d = " · ".join(x for x in (str(p.get("tool") or "").replace("_", " "), str(p.get("reason") or "").replace("_", " ")) if x) or None
+        elif lb in ("UNSAFE_REFUSED", "ESCALATED_UNSURE", "PIVOT"):
+            d = " · ".join(x for x in (str(p.get("action") or ""), str(p.get("role") or ""), str(p.get("verdict") or "")) if x) or None
+        elif lb in ("CLARIFY_ASKED", "CLARIFY_ANSWERED", "NO_RESPONSE"):
+            d = {"clarify": "to be sure what you meant", "safety": "to ask before something risky"}.get(str(p.get("purpose")), str(p.get("purpose") or "").replace("_", " ")) or None
+            d = f"{d} · {p['options']} choices" if d and p.get("options") else d
+        elif lb == "LESSON":
+            d = p.get("text")
+        elif lb == "SOURCE_UNRELIABLE":
+            d = " · ".join(str(x) for x in (p.get("domain"), p.get("reason")) if x) or None
+        elif lb.startswith("SECTOR_"):
+            d = str(p.get("sector") or p.get("survivor") or "") or None
+        elif lb == "OFFLOADED":
+            d = ", ".join(str(x).replace("_", " ") for x in (p.get("tools") or [])[:3]) + (f" · {p['saving']:,} tokens set aside" if isinstance(p.get("saving"), int) else "") or None
+        elif lb == "MEMORY_PRUNED":
+            d = f"{p.get('n') or p.get('total') or ''} rows · {str(p.get('reason') or '').replace('_', ' ')}".strip(" ·") or None
+        elif lb == "BUDGET_HIT":
+            d = str(p.get("budget") or "").replace("_", " ") or None
+        if d is None and (isinstance(ev.get("landmark"), str) or p.get("landmark")):
+            d = refs.get(str(ev.get("landmark") if isinstance(ev.get("landmark"), str) else p.get("landmark")))
+        (ev.get("_out") or ev)["detail"] = cut(d)
+
+
 _PROJECT_IN_TEXT = re.compile(r"^The project is in (.+?)\.\s")
-PROJECT_KINDS = ("iris", "app", "mcp")
+PROJECT_KINDS = ("iris", "app", "mcp", "eval")
+EVAL_PROJECT = {"id": "proj_evaluations", "name": "evaluation runs", "path": None, "kind": "eval"}   # IRIS tested on set tasks
 
 
 def _claim_projects(con: sqlite3.Connection, landmarks: list[dict], lm_rows: list, chat_path, have: set) -> list[dict]:
@@ -542,6 +732,7 @@ def _claim_projects(con: sqlite3.Connection, landmarks: list[dict], lm_rows: lis
                                           "path": d.get("path"), "kind": d.get("kind") if d.get("kind") in PROJECT_KINDS else "app"}
     refs = sorted({r["conversation_ref"] for r in lm_rows if r["conversation_ref"]})
     conv_project: dict[str, str] = {}
+    eval_ids: set = set()
     if refs:
         with _optional_chat_store(chat_path) as cdb:
             if cdb is not None and "project_id" in table_cols(cdb, "conversations"):
@@ -551,6 +742,16 @@ def _claim_projects(con: sqlite3.Connection, landmarks: list[dict], lm_rows: lis
                     conv_project.update({r[0]: r[1] for r in cdb.execute(
                         f"SELECT id, project_id FROM conversations WHERE id IN ({_marks(len(part))}) AND project_id IS NOT NULL",
                         part)})
+    chat_ids: set = set()
+    if refs:
+        with _optional_chat_store(chat_path) as cdb:
+            if cdb is not None:
+                # PLAN  SELECT id, title FROM conversations -> SCAN conversations (the chat store; ids and titles)
+                for i_, t_ in cdb.execute("SELECT id, title FROM conversations"):
+                    chat_ids.add(i_)
+                    if t_ and t_.startswith(EVAL_TITLE_PREFIXES):
+                        eval_ids.add(i_)
+    cleaned = _cleaned_evals(con, refs, chat_ids) if chat_ids else set()
     out: dict[str, dict] = {}
     for lm, r in zip(landmarks, lm_rows):
         p, inferred = None, False
@@ -563,6 +764,9 @@ def _claim_projects(con: sqlite3.Connection, landmarks: list[dict], lm_rows: lis
             m = _PROJECT_IN_TEXT.match(lm["claim"] or "")   # the served text: the label when there is no abstract (most claims)
             if m:
                 p, inferred = _projects.short(_projects.project_of(m.group(1), probe=False)), True
+        ref = str(r["conversation_ref"] or "")
+        if p is None and (ref.startswith(EVAL_THREAD_PREFIX) or ref in cleaned or ref in eval_ids or _projects.EVAL_FOLDER in (lm["claim"] or "")):
+            p = EVAL_PROJECT   # learned while IRIS was being tested (its chat is cleaned after the run)
         pid = p.get("id") if p else None
         lm["project"], lm["project_inferred"] = pid, inferred if pid else False
         if not pid:
@@ -1294,20 +1498,42 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                    "payload", "topic_domain")
         chat_path = conv_db if conv_db else (Path(db).with_name("conversations.db") if db else None)
         eval_convs: Optional[set] = None
+        chat_last: dict[str, float] = {}
+        kept_convs: set = set()   # every conversation the chat store holds (empty: no chat store, nothing is judged)
         if not include_eval and ev_thread_idx:
             with _optional_chat_store(chat_path) as cdb:
                 if cdb is not None:
                     # PLAN  SELECT id FROM conversations WHERE <eval titles> -> SCAN conversations (5.8k rows, the chat store)
                     eval_convs = {r[0] for r in cdb.execute(f"SELECT id FROM conversations WHERE {EVAL_TITLE_SQL}")}
+                    # PLAN  SELECT id FROM conversations -> SCAN conversations USING COVERING INDEX (the chat store's ids)
+                    kept_convs = {r[0] for r in cdb.execute("SELECT id FROM conversations")}
+                    # every chat that holds words, by its last message: a conversation is a bead of the timeline even when it
+                    # is older than the event log (measured: 288 of 335 chats with messages have no event)
+                    # PLAN  … FROM messages GROUP BY conversation_id -> SCAN messages USING INDEX idx_messages_conv (1.3k rows)
+                    chat_last = {r[0]: ts_of(r[1]) or 0.0 for r in cdb.execute(
+                        "SELECT conversation_id, MAX(timestamp) FROM messages GROUP BY conversation_id") if r[0] in kept_convs}
         if eval_convs is not None:
             # The eval harness runs as chat conversations (conv-NNNN, "[eval] ..."): 2026-10-24, 5,881 of the newest 6,000
             # events were theirs, so a ts-ordered window held 4 real threads. The newest REAL threads come first, then each
             # thread's own newest events (warm: 14 ms + 3 ms on the live store; cold 1.5 s).
             # PLAN  SELECT thread_id, MAX(ts) … GROUP BY thread_id -> SCAN memory_events USING COVERING INDEX
             #       idx_memory_events_thread_ts + TEMP B-TREE FOR ORDER BY (one entry per thread)
-            newest = [r[0] for r in con.execute(
+            last_of = {r[0]: r[1] or 0.0 for r in con.execute(
                 "SELECT thread_id, MAX(ts) AS last FROM memory_events WHERE thread_id NOT LIKE 'eval-%' "
-                "GROUP BY thread_id ORDER BY last DESC") if r[0] and r[0] not in eval_convs]
+                "GROUP BY thread_id ORDER BY last DESC") if r[0] and r[0] not in eval_convs}
+            newest, by_chat_only = list(last_of), []
+            if kept_convs:
+                cleaned = _cleaned_evals(con, newest, kept_convs)
+                counts["eval_cleaned"] = len(cleaned)
+                newest = [t for t in newest if t not in cleaned]
+                for t, at in chat_last.items():
+                    if t not in eval_convs:
+                        last_of[t] = max(last_of.get(t, 0.0), at)
+                        if t not in by_chat_only and t not in newest:
+                            by_chat_only.append(t)
+                # your conversations first (a chat, a deleted chat's ghost, a spoken one), then ids no chat ever knew (probes)
+                known = lambda t: t in kept_convs or t.startswith(("conv-", "strand-")) or t in OUTSIDE_THREADS or bool(_TIME_THREAD.match(t))
+                newest = sorted(newest + by_chat_only, key=lambda t: (not known(t), -last_of[t]))
             ev_rows = []
             for t in newest[:threads * SNAPSHOT_THREAD_CANDIDATES]:
                 if len(ev_rows) >= events:
@@ -1322,7 +1548,13 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         for r in ev_rows:
             if r["thread_id"]:
                 by_thread.setdefault(r["thread_id"], []).append(r)
-        thread_ids = sorted(by_thread, key=lambda t: by_thread[t][0]["ts"], reverse=True)
+        if chat_last:
+            for t in newest[:threads * SNAPSHOT_THREAD_CANDIDATES]:
+                if t in chat_last:
+                    by_thread.setdefault(t, [])   # a chat with words and no event yet
+            thread_ids = [t for t in newest if t in by_thread]
+        else:
+            thread_ids = sorted(by_thread, key=lambda t: by_thread[t][0]["ts"], reverse=True)
         thread_ids = thread_ids[:threads if include_eval else threads * SNAPSHOT_THREAD_CANDIDATES]
         if ev_thread_idx:
             # PLAN  SELECT COUNT(*) FROM (SELECT DISTINCT thread_id FROM memory_events)
@@ -1376,6 +1608,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         lm_index = {lid: i for i, lid in enumerate(lm_ids)}
         lm_fams: dict[str, dict[str, int]] = {}
         out_events = []
+        moment_rows: list[tuple[dict, Any]] = []   # (event, payload) of the listed conversations: their details are joined below
         for t in thread_ids:
             for r in by_thread[t][:SNAPSHOT_EVENTS_PER_THREAD]:
                 links, payload = jload(r["links"], {}), jload(r["payload"], {})
@@ -1389,7 +1622,9 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                                    "valence": r["valence"], "actor": r["actor"], "evidence": r["evidence"],
                                    "episode": r["episode_id"], "session": t, "domain": r["topic_domain"] or "general",
                                    "landmark": lid if lid in lm_index else None,
-                                   "clm": _clm_detail(r["label"], payload)})   # W2: the corridor's set-aside shards
+                                   "clm": _clm_detail(r["label"], payload),   # W2: the corridor's set-aside shards
+                                   "detail": None})
+                moment_rows.append((dict(out_events[-1], landmark=lid, _out=out_events[-1]), payload))
         # the steps of a claim: the nodes its traversal walked, in order, as {space, label}. ONE batched read of the
         # nodes of all claims together; an id the store no longer holds is skipped.
         # PLAN  SELECT node_id, space_id, label FROM mycelium_nodes WHERE node_id IN (…)
@@ -1463,6 +1698,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             chan = _channels(con, lm_ids)   # PLAN  SEARCH mycelium_episode_index USING INDEX idx_epindex_landmark
             for lm in landmarks:
                 lm["channel"] = chan.get(lm["id"])
+                if lm["channel"] is None and lm["work"] == "web":   # never observed on a channel, but its work is web content: outside
+                    lm["channel"], lm["channel_inferred"] = 1, True
 
         lap("landmark_channels")
         # sectors: territories read from the registry when the tables exist (a newer build creates them); the page falls
@@ -1565,14 +1802,20 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             x = exits.get(t)
             chat_title = title_of(t)
             title = chat_title or ghosts.get(t) or pretty_thread(t)
-            started, ended = rows[-1]["ts"], rows[0]["ts"]
+            said = [m["ts"] for m in messages.get(t, []) if m["ts"]]
+            spans = ([rows[-1]["ts"], rows[0]["ts"]] if rows else []) + said
+            if not spans:
+                continue   # nothing to place it by
+            started, ended = min(spans), max(spans)
             live = now - ended < 600
             sessions.append({"id": t, "objective": title, "started": started, "ended": None if live else ended,
                              "exit": "live" if live else ("drift" if x and x[2] and not x[1] else "natural"),
                              "traj": traj.get(t, []), "eval": _is_eval_thread(t, chat_title), "episodes": [],
                              "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, []),
                              "thread": thread_of.get(t, conv_of.get(t, t)), "tags": tags_of.get(t, []), "reports_to": helpers.get(t, {}).get("reports_to"), "reports": helpers.get(t, {}).get("reports", []),
-                             "ghost": t in ghosts})
+                             "ghost": t in ghosts,
+                             "chat": "kept" if chat_title or messages.get(t) else "deleted" if t in ghosts else
+                             "eval" if _is_eval_thread(t, chat_title) else "outside"})
 
         # W3: each strand's peak context fill (the timeline bead's ring), ONE grouped read on idx_ft_conv; strands
         # older than W2 have no row and carry None (the card says "not recorded", never a guess)
@@ -1592,11 +1835,13 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         # ⑤ episodes (task runs)
         episodes = []
         sess_ids = set(thread_ids)
-        if "episodes" in have:
-            # PLAN  … FROM episodes ORDER BY timestamp DESC LIMIT 300 -> SCAN episodes USING INDEX idx_ep_timestamp
+        if "episodes" in have and thread_ids:
+            # PLAN  … FROM episodes WHERE session_id IN (…) ORDER BY timestamp DESC LIMIT 300
+            #       -> SEARCH episodes USING INDEX idx_ep_session (session_id=?) + TEMP B-TREE FOR ORDER BY
             for r in con.execute("SELECT id, session_id, task_summary, outcome_type, outcome_score, failure_reason, "
                                  "user_corrected, user_confirmed, duration_ms, tool_sequence, timestamp FROM episodes "
-                                 "ORDER BY timestamp DESC LIMIT ?", (SNAPSHOT_EPISODES,)):
+                                 f"WHERE session_id IN ({_marks(len(thread_ids))}) ORDER BY timestamp DESC LIMIT ?",
+                                 list(thread_ids) + [SNAPSHOT_EPISODES]):
                 tools, steps, n_steps = episode_steps(r["tool_sequence"], SNAPSHOT_STEPS)
                 episodes.append({"id": r["id"], "session": r["session_id"], "summary": (r["task_summary"] or "")[:160],
                                  "outcome": r["outcome_type"] or "partial", "score": r["outcome_score"] or 0.0,
@@ -1606,6 +1851,9 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         for s in sessions:
             s["episodes"] = [e["id"] for e in episodes if e["session"] == s["id"]]
         episodes = [e for e in episodes if e["session"] in sess_ids]
+        with _optional_chat_store(chat_path) as cdb:
+            _moment_details(con, moment_rows, messages, episodes, _turn_words(cdb, [e for e, _ in moment_rows]))
+        lap("moments")
 
         lap("episodes")
         # ⑥ things IRIS made (names and kinds only; no content, no blobs)
@@ -3109,7 +3357,7 @@ def thread_model(thread_id: str) -> dict:
     conversation a claim is connected to, not only the snapshot's newest threads. Built from the memory (events, runs)
     and the chat when it is kept. NotFound when the memory holds neither. Read-only, bounded."""
     with read_only(memory_db_path()) as mem, _optional_chat_store() as cdb:
-        events, episodes, messages, title = [], [], [], None
+        events, episodes, messages, title, rows_ = [], [], [], None, []
         if "thread_id" in table_cols(mem, "memory_events"):
             # PLAN  … FROM memory_events WHERE thread_id = ? ORDER BY ts DESC LIMIT ?
             #       -> SEARCH memory_events USING INDEX idx_memory_events_thread_ts (thread_id=?)
@@ -3120,7 +3368,8 @@ def thread_model(thread_id: str) -> dict:
                       (payload.get("landmark") if isinstance(payload, dict) else None)
                 events.append({"id": r["event_id"], "ts": r["ts"], "family": r["family"], "label": r["label"], "valence": r["valence"],
                                "actor": r["actor"], "evidence": r["evidence"], "episode": r["episode_id"], "session": thread_id,
-                               "domain": r["topic_domain"] or "general", "landmark": lid, "clm": _clm_detail(r["label"], payload)})
+                               "domain": r["topic_domain"] or "general", "landmark": lid, "clm": _clm_detail(r["label"], payload), "detail": None})
+                rows_.append((events[-1], payload))
         if "session_id" in table_cols(mem, "episodes"):
             # PLAN  … FROM episodes WHERE session_id = ? -> SEARCH episodes USING INDEX idx_ep_session (session_id=?)
             for r in mem.execute("SELECT id, task_summary, outcome_type, outcome_score, failure_reason, user_corrected, user_confirmed, "
@@ -3138,9 +3387,14 @@ def thread_model(thread_id: str) -> dict:
             title = c[0] if c else None
             if c is not None:
                 # PLAN  … FROM messages WHERE conversation_id = ? -> SEARCH USING INDEX idx_messages_conv
-                messages = [{"ts": ts_of(r["timestamp"]), "role": r["role"], "turn": r["turn_id"], "text": clip(r["text"], 160)}
-                            for r in cdb.execute("SELECT role, substr(text, 1, 400) AS text, turn_id, timestamp FROM messages WHERE "
-                                                 "conversation_id = ? ORDER BY timestamp, id LIMIT 200", (thread_id,))]
+                messages = [{"ts": ts_of(r["timestamp"]), "role": "user" if r["role"] == "user" else "iris", "turn": r["turn_id"],
+                             "text": clip(r["text"], 160), "len": r["n"] or 0, "report": None}
+                            for r in cdb.execute("SELECT role, substr(text, 1, 400) AS text, length(text) AS n, turn_id, timestamp FROM messages "
+                                                 "WHERE conversation_id = ? ORDER BY timestamp, id LIMIT 200", (thread_id,))]
+        kept = title is not None or bool(messages)
+        cleaned = not kept and cdb is not None and thread_id in _cleaned_evals(mem, [thread_id], set())
+        _moment_details(mem, rows_, {thread_id: [m for m in messages if m["ts"]]}, episodes,
+                        _turn_words(cdb, events))
         events.reverse()
         times = [e["ts"] for e in events if e["ts"]] + [e["ts"] for e in episodes if e["ts"]] + [m["ts"] for m in messages if m["ts"]]
         if not times:
@@ -3149,7 +3403,9 @@ def thread_model(thread_id: str) -> dict:
         return {"session": {"id": thread_id, "objective": name, "started": min(times), "ended": max(times), "exit": "natural", "traj": [],
                             "eval": _is_eval_thread(thread_id, title), "episodes": [e["id"] for e in episodes],
                             "messages": [m for m in messages if m["ts"]], "strands": [], "thread": thread_id, "tags": [],
-                            "reports_to": None, "reports": [], "ghost": title is None, "ctx_peak": None},
+                            "reports_to": None, "reports": [], "ghost": not kept, "ctx_peak": None,
+                            "chat": "kept" if kept else "eval" if cleaned or _is_eval_thread(thread_id, title) else
+                            "deleted" if thread_id.startswith("conv-") else "outside"},
                 "events": events, "episodes": episodes}
 
 

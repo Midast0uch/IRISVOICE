@@ -507,7 +507,7 @@ def _retire_eval_chats() -> int:
                 "SELECT count(*) FROM messages WHERE conversation_id IN "
                 "(SELECT id FROM conversations WHERE title LIKE '[eval%')"
             ).fetchone()[0]
-            if not n:
+            if not n and not ids:
                 return 0
             # The T42 user-turn row carries thread_id = CONVERSATION id and no
             # session id (measured 2026-10-31), so the memory cleanup cannot find

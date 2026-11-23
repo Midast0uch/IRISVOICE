@@ -576,7 +576,8 @@ class DerRunMixin:
             exec_domain=getattr(_plan_rec, "execution_domain", None),
             topic_domain=getattr(_plan_rec, "topic_domain", None),
             payload={"steps": len(items), "strategy": getattr(plan, "strategy", None),
-                     "task_class": task_class},
+                     "task_class": task_class,
+                     "titles": [" ".join(str(getattr(st, "description", "") or "").split())[:80] for st in (plan.steps or [])[:6]]},
         )
 
         # â”€â”€ Goal contract T4 (specs/goal-contract-coverage, REQ-1) â”€â”€

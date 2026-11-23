@@ -209,7 +209,7 @@
   "method:_empty_der_fallback_message": "6bb105aa6275a0657d4fe4ef03a4eb07db1482c68548115b2805409963347138",
   "method:_end_tool_wait": "b3387f284c8474d5818b9a9a10930ec8e0751d6fd0f84e063a47ec618318dd45",
   "method:_ensure_tool_bridge": "19b18477ddc0d6d50f626572185f0737ab8c4278dd31926389e3dd1c679e1e4d",
-  "method:_execute_plan_der": "bffb3a75c2d56b3543b1eb68c81e2324d07756f47167f895cf58f2ea3242c20b",
+  "method:_execute_plan_der": "f6aa886cd7b21d5b0ef4ea51f34861da7fc0e47b43d7309a2da59e326a65969c",
   "method:_extract_chunk_text": "aeeb2973e833f9c548f97b0137653e75efab71a9a7b6f48b202bd84040df7f50",
   "method:_extract_sources_from_raw": "8a332531cb85d5c7f7e633f3fd7effaf1f88d334868d66bcd99215cb864802d7",
   "method:_finalize_response": "43ef157b4336e97b891360b50a5ec32021a2fcf0a3c568cf4d22c8ca3c48f2c7",
