@@ -2586,12 +2586,12 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
   g.lineWidth=1.6;
   // the galaxy's own marks: a star in its state's colour, a system's soft light, a halo dot on its orbit
-  const STAR_KEY={claim:['#ffffff','#bfe0ff',1],learning:['#9fe6ff','#3a8fb0',.75],young:['#ffd0e6','#ff8fc4',1],fading:['#ffd9a8','#ffb46b',.85]};
-  if(GALAXY&&STAR_KEY[kind]){const [c0,c1,al]=STAR_KEY[kind],soft=kind==='learning',gr=g.createRadialGradient(0,0,0,0,0,soft?12:9);
-    gr.addColorStop(0,c0);gr.addColorStop(soft?.5:.25,c1);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=soft?.5:al;g.fillStyle=gr;g.beginPath();g.arc(0,0,soft?12:9,0,7);g.fill();
-    g.globalAlpha=al;g.fillStyle=c0;if(!soft){g.beginPath();g.arc(0,0,kind==='fading'?2:2.6,0,7);g.fill()}
-    if(kind==='claim'){g.strokeStyle=c0;g.lineWidth=1;g.globalAlpha=.85;g.beginPath();g.moveTo(-15,0);g.lineTo(15,0);g.moveTo(0,-15);g.lineTo(0,15);g.stroke()}   // a sparkle
-    if(kind==='young'){g.strokeStyle=c1;g.lineWidth=1.2;g.beginPath();g.arc(0,0,7,0,7);g.stroke()}                                                          // a newborn ring
+  const STAR_KEY={claim:['#ffffff','#bfe0ff',1],learning:['#6fdcff','#6fdcff',1],young:['#ff6fb5','#ff6fb5',1],fading:['#ffa64d','#ffa64d',.9]};
+  if(GALAXY&&STAR_KEY[kind]){const [c0,,al]=STAR_KEY[kind];g.globalAlpha=al;g.strokeStyle=g.fillStyle=c0;g.lineWidth=2;
+    if(kind==='claim'){g.beginPath();g.arc(0,0,3.4,0,7);g.fill();g.lineWidth=1.4;g.beginPath();g.moveTo(-15,0);g.lineTo(15,0);g.moveTo(0,-15);g.lineTo(0,15);g.stroke()}   // proven: a sparkle
+    else if(kind==='learning'){g.beginPath();g.arc(0,0,7,0,7);g.stroke()}                                                    // still learning: an open circle
+    else if(kind==='young'){g.beginPath();g.moveTo(0,-9);g.lineTo(9,0);g.lineTo(0,9);g.lineTo(-9,0);g.closePath();g.fill()}   // new: a diamond
+    else{g.strokeRect(-6,-6,12,12)}                                                                                          // fading: an open square
     return c}
   if(GALAXY&&kind==='system'){const gr=g.createRadialGradient(0,0,0,0,0,15);gr.addColorStop(0,'rgba(191,224,255,.35)');gr.addColorStop(1,'rgba(191,224,255,0)');
     g.fillStyle=gr;g.beginPath();g.arc(0,0,15,0,7);g.fill();g.fillStyle='#fff';for(const [x,y,r] of [[0,0,2.6],[-7,4,1.4],[6,-5,1.2],[5,6,1]]){g.beginPath();g.arc(x,y,r,0,7);g.fill()}return c}
@@ -2870,19 +2870,30 @@ function somaWorld(k){return somaPos[k].clone()}
 const dragHandle=(addr,label)=>`<span class="go drag" draggable="true" data-ref="${esc(addr)}" data-label="${esc(label.length>60?label.slice(0,59)+'…':label)}" title="drag onto the chat: a reference chip, never the content">⠿ drag to the chat</span>`;
 host.addEventListener('dragstart',e=>{const h=e.target?.closest?.('[data-ref]');if(!h||!e.dataTransfer)return;
   e.dataTransfer.setData('application/x-iris-ref',JSON.stringify({address:h.dataset.ref,label:h.dataset.label}));e.dataTransfer.setData('text/plain',h.dataset.label||'');e.dataTransfer.effectAllowed='copy'});
-function landmarkHTML(k,deep){const l=LM[k];const be=lmBest[k];
+// what an event on a claim means, in words (the taxonomy's labels; anything else shows its own label)
+const EV_WORD={RECALL_DELIVERED:'given to IRIS',RECALL_USED:'used in an answer',RECALL_HELPED:'helped',RECALL_MISLED:'misled',RECALL_MISSED:'missed',
+  CORROBORATED:'backed up by another source',CONTRADICTED:'contradicted',UPDATED:'updated',CONFIRMATION:'you confirmed it',APPROVAL:'you approved it',
+  CORRECTION:'you corrected it',DENIAL:'you said it is wrong',LANDMARK_PROMOTED:'became proven',LANDMARK_STALE:'went stale',LANDMARK_DEMOTED:'demoted',
+  LANDMARK_MERGED:'merged with another',PIN_CORRECTED:'its pin corrected'};
+const evLabel=l=>EV_WORD[l]||String(l||'').toLowerCase().replace(/_/g,' ');
+const lmEvents=new Map();for(const e of M.events)if(typeof e.landmark==='number'){const m=lmEvents.get(e.landmark)||new Map();m.set(e.label,(m.get(e.label)||0)+1);lmEvents.set(e.landmark,m)}
+const claimState=l=>l.fading?'fading':(l.born&&nowS()-l.born<7*86400)?'new this week':l.tier==='candidate'?'still learning':'proven';
+function landmarkHTML(k,deep){const l=LM[k];
   const counts=l.evidence_counts?{...l.evidence_counts}:{};if(!l.evidence_counts)l.evidence.forEach(e=>counts[e.kind]=(counts[e.kind]||0)+1);
-  const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ')||'<span>no outside evidence yet</span>';
+  const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ');
   const s=M.sById.get(l.session);
-  // a short task's class is the task's own words (landmark._make_task_class): then the kind says nothing - leave it out
-  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':/^domain_task_/.test(l.cls)?'a kind of task':/^toolpath_task_/.test(l.cls)?'a way that worked for a task':'');
+  const cw=CLUSTER_WORD[l.cls]||(l.cls==='bootstrap'?'how IRIS was built':'');
   const how=claimHow(l);
-  return `<div class="k">claim · ${l.tier==='candidate'?'still learning':'proven'}${l.permanent?' · permanent':''}${cw?' · '+esc(cw):''} · ${syncHTML(syncClaim(l))}</div>
+  const happened=[...(lmEvents.get(k)||new Map()).entries()].sort((a,b)=>b[1]-a[1]).slice(0,5).map(([lb,n])=>`${esc(evLabel(lb))}${n>1?' ×'+n:''}`).join(' · ');
+  const eps=s?(s.episodes||[]).map(id=>M.epById.get(id)).filter(Boolean):[],steps=deep&&eps.length?stepsHTML(eps,s.id,4):'';
+  return `<div class="k">a claim · ${claimState(l)}${l.permanent?' · permanent':''}${cw?' · '+esc(cw):''}</div>
     <div class="t" title="${esc(l.claim)}">${esc(l.claim)}</div>
-    <div class="m">${how?esc(how)+'<br>':''}${l.where?`in the project <em>${esc(l.where)}</em><br>`:''}sync = how strongly it is proven: ${ev}<br>used <em>${fmt(l.activations)}</em> times${l.last_activated?' · last used '+ago(l.last_activated):''} · ${l.last_verified?'last confirmed '+ago(l.last_verified):'not confirmed yet'}
+    <div class="m"><em>what proves it</em> · ${ev||'nothing outside yet - only the run it came from'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
-    ${deep&&s?`<br>learned while: <em>${esc(s.objective)}</em>`:''}</div>
-    ${deep?dragHandle('claim:'+l.id,'claim · '+l.claim):''}${deep&&s?`<span class="go" data-go="${s.id}">→ step into that strand</span>`:''}${deep&&opts.uses?`<span class="go" data-uses="${k}">→ every time it was used</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep&&opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${deep?correctionHTML(k):''}`}
+    <br><em>what happened to it</em> · used ${fmt(l.activations)} times${l.last_activated?' · last '+ago(l.last_activated):''}${happened?' · '+happened:''}
+    ${how?`<br><em>how it was done</em> · ${esc(how.replace(/^how:\s*/,''))}`:''}${l.where?`<br><em>in the project</em> · ${esc(l.where)}`:''}
+    ${deep&&s?`<br><em>learned in</em> · ${esc(s.objective)}${s.ts?' · '+ago(s.ts):''}`:''}${steps?`<div class="m" style="opacity:.85">${steps}</div>`:''}</div>
+    ${deep&&s?`<span class="go" data-go="${s.id}">→ open that conversation and its context</span>`:''}${deep?dragHandle('claim:'+l.id,'claim · '+l.claim):''}${deep&&opts.uses?`<span class="go" data-uses="${k}">→ every time it was used</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep&&opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${deep?correctionHTML(k):''}`}
 // EVERY TIME IT WAS USED (UX-PLAN 7.4): the turns that were given this claim - the timeline lights the beads of their
 // conversations (the others dim) and the breadcrumb counts them; Esc returns. The most direct answer to "is this claim
 // worth anything?".
@@ -3739,9 +3750,9 @@ const _frame=()=>{
   // dims by where the camera IS, so the core never flares while a flight passes through the skin
   const camR=camera.position.length()/R;
   state.insideK=lerp(state.insideK||0,cortex.visible?clamp((1.6-camR)/.7,0,1):0,1-Math.pow(.02,dt));
-  core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55)*(galaxy?.35:1);
-  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85)*(galaxy?.3:1);
-  if(galaxy)coreHalo.scale.setScalar(R*.45);   // the nucleus: a soft light, not a wash over the shell
+  core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55)*(galaxy?.6:1);
+  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85)*(galaxy?.55:1);
+  if(galaxy)coreHalo.scale.setScalar(R*.6);   // the nucleus: a soft light, not a wash over the shell
   cells.scale.setScalar(b);coreHalo.scale.setScalar(R*(1.0+.1*sx)*pupilS);
   for(let i=0;i<MAXSEC;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
   {let o=0;const det=.52+.48*(.5+.5*Math.sin(t/4.2*Math.PI*2));const flat=state.morph.i;
@@ -3816,7 +3827,7 @@ const _frame=()=>{
   drawLiveDecision();
   drawTissue(dt);
   clearAnno('decision');   // the decision line is drawn under the arc ring by drawLiveDecision
-  bloom.strength=.85-state.insideK*.35+sh*.8;
+  bloom.strength=(galaxy?.55-state.insideK*.25:.85-state.insideK*.35)+sh*.8;   // the galaxy: less haze, black space
   // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)
   if(Math.abs(renderer.domElement.width-Math.floor(innerWidth*DPR))>2||Math.abs(renderer.domElement.height-Math.floor(innerHeight*DPR))>2){
     renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix()}

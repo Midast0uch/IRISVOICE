@@ -216,10 +216,10 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {   // l
 
 const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(reg-foc)<.5?1.2:(reg<-.5?.55:.22));}
   uniform float uNearZ,uSpan;float depthK(float z){return clamp(1.3-(z-uNearZ)/uSpan,.3,1.3);}`;
-const STAR_VS = `uniform float uTime,uPix,uVis,uFoc;attribute float aA,aPh,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
+const STAR_VS = `uniform float uTime,uPix,uVis,uFoc,uIn;attribute float aA,aPh,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.78+.22*sin(uTime*(.6+aPh*.9)+aPh*40.);
-    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc)*depthK(-mv.z);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
+    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc)*depthK(-mv.z)*(aReg<-.5?1.-.7*uIn:1.-.4*uIn);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
 const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
   gl_FragColor=vec4(vC,(smoothstep(.5,.0,d)*.55+smoothstep(.18,.0,d)*.6)*vA);}`;
 // soft glows (galaxy cores and halos, nebula clumps, far galaxies): large, faint, gaussian
@@ -286,6 +286,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   const spikes = [];
   const byGal = arms.map(() => []);
   pos.forEach((p, k) => { const pl = place[k]; if (p && pl && pl.arm != null && byGal[pl.arm]) byGal[pl.arm].push(k); });
+  const STATE_COL = { 1: new THREE.Color('#ffffff'), 2: new THREE.Color('#6fdcff'), 3: new THREE.Color('#ff6fb5'), 4: new THREE.Color('#ffa64d') };
   const sunCol = (a, k) => { const info = claimInfo[k] || {};
     if (info.young) return PINK.clone().lerp(W, 0.25);
     if (info.fading) return AMBER.clone();
@@ -370,21 +371,21 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
       vC=aC;vP=aProven;vH=h;vS=sel;vSt=aState;float tw=abs(aState-4.)<.5?.55+.45*sin(uTime*2.6+aPh*20.):.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
       float iso=uIso<.5?1.:(abs(aState-uIso)<.5?1.4:.08);
-      vA=(.3+.55*aSync)*mix(.4,1.,aMass)*tw*uVis*focusDim(aReg,uFoc)*iso*(1.+.6*max(h,sel));
-      float sz=(1.3+1.3*aSync)*(.75+1.1*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel))*(abs(aState-1.)<.5?1.6:abs(aState-3.)<.5?1.35:1.);
+      vA=(.55+.35*aSync)*mix(.6,1.,aMass)*tw*uVis*focusDim(aReg,uFoc)*iso*(1.+.6*max(h,sel));
+      float sz=(1.6+1.2*aSync)*(.8+1.*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel))*(abs(aState-1.)<.5?1.7:1.25);
       gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(8.+5.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
   const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS,vSt;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     vec2 q=abs(c*2.);float hi=max(vH,vS),a=0.;
-    if(vSt<1.5){a=smoothstep(.1,.0,d)+smoothstep(.5,.0,d)*.22+(exp(-q.y*16.)*(1.-q.x)+exp(-q.x*16.)*(1.-q.y))*.8;}          // proven: a sparkle
-    else if(vSt<2.5){a=smoothstep(.5,.06,d)*.5+smoothstep(.09,.0,d)*.35;}                                                   // still learning: hazy
-    else if(vSt<3.5){a=smoothstep(.12,.0,d)+smoothstep(.04,.0,abs(d-.3))*.75+smoothstep(.5,.0,d)*.15;}                     // new: a thin ring (newborn)
-    else{a=smoothstep(.13,.0,d)*.8+smoothstep(.45,.0,d)*.12;}                                                               // fading: dim, flickers
+    if(vSt<1.5){a=smoothstep(.12,.0,d)*1.2+(exp(-q.y*12.)*(1.-q.x)+exp(-q.x*12.)*(1.-q.y))*1.1;}                         // proven: a white sparkle
+    else if(vSt<2.5){a=smoothstep(.06,.0,abs(d-.28))*1.1;}                                                                  // still learning: an open circle
+    else if(vSt<3.5){a=step(q.x+q.y,.62)*1.1+smoothstep(.5,.0,d)*.12;}                                                     // new this week: a solid diamond
+    else{float sq=max(q.x,q.y);a=smoothstep(.07,.0,abs(sq-.5))*.95;}                                                        // fading: an open square
     a+=smoothstep(.035,.0,abs(d-.46))*hi*.9;                                                                                  // hover / focus
     gl_FragColor=vec4(mix(vC,vec3(1.),.25+.4*hi),a*vA);}`;
   {
     const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [], ST = [];
     pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {}, info = claimInfo[k] || {}, a = pl.arm != null ? arms[pl.arm] : null;
-      const col = a ? sunCol(a, k) : new THREE.Color('#cfe9f5'); MS.push(pl.mass || 0.3); ST.push(info.young ? 3 : info.fading ? 4 : info.proven ? 1 : 2);
+      const st = info.young ? 3 : info.fading ? 4 : info.proven ? 1 : 2, col = STATE_COL[st].clone(); MS.push(pl.mass || 0.3); ST.push(st);
       P.push(p.x, p.y, p.z); C.push(col.r, col.g, col.b); IX.push(k); PR.push(info.proven ? 1 : 0); SY.push(clamp(info.sync ?? 0.4, 0, 1)); RG.push(a ? a.reg : -1); PH.push(rng()); });
     if (P.length) {
       const geo = new THREE.BufferGeometry();
