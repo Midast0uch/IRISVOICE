@@ -154,11 +154,11 @@ So the strand shows (1) always, and offers (2) on click while it is kept.
 
 ### 4.1 What stays (the aesthetic)
 
-The hex skin and its lattice, the wire, the rings, the morph modes, the claim crystal glyph (one
-glyph everywhere), the Oracle's pupil and its lens, cards, HUD, tunnel, brand palette, the dark
-field, pale white-cyan points and lines, "brightness never builds up over time", "every motion is
-driven by a real value". What changes is the tissue INSIDE the skin: the neuron forest, the mist
-and the arbors.
+The claim crystal glyph (one glyph everywhere), the Oracle's pupil and its lens, cards, HUD,
+tunnel, brand palette, the dark field, pale white-cyan points and lines, "brightness never builds
+up over time", "every motion is driven by a real value". What changes is the tissue inside (the
+neuron forest, the mist and the arbors) AND the shell: owner decision §8.7 replaces the hex skin,
+the wire and the rings with a shell woven from the galaxy's own arms.
 
 Note for the design doc: §2 says "no organic silhouettes". A galaxy is a form, not a leaf or a
 vine; it is drawn only from points and lines, so it keeps the rule's intent. The owner's ask
@@ -262,7 +262,7 @@ It becomes the nucleus:
 | W1 | (B) strand steps: `surface_queries.strand()` and the snapshot's episode rows carry `{tool, target ≤ 80, description ≤ 120, success}` (from `tool_sequence`, ≤ 12 per episode); strand card, braid hover, corridor task cards show the step lines; `GET /api/memory/tool-result` for the click | yes (read only) | hovering a strand on the timeline names its steps without opening chat; cold snapshot time unchanged within S121 | tool output in the snapshot; a summariser model call; search over tool output |
 | W2 | (A data) `fill` in the three CLM payloads; `ctx_tokens`, `ctx_window` on `der_fan_traces` (lane write) + the same ALTER in the inheritance migration; `context_gauge` live tap; the strand's `context` series | yes | a TG-2 small-model run records per-step fill with real variance (not one constant, not all at a clamp) and its edits carry `fill` | storing the view's contents; new event labels; a `live_view` table |
 | W3 | (A visual) the corridor band, shards, return sparks, glitch, calm line; timeline fill rings and notches; the nucleus motes fed live | no | a replay of a TG-2 small conversation draws its edits at the right steps; a cloud conversation draws the calm band and its true line; fps within budget | per-token detail; animating every block in a long run |
-| W4 | (C) the galaxy cortex "A + C" (§8): one spiral (an arm per root sector), satellite galaxies with tidal streams, arm-following hyphae lit by use, sector halos of the seven spaces (§9.2), pins (§10); first behind `?cortex=galaxy` on the REAL memory so the owner can compare, then the default; the old forest/mist/arbor code removed in the same change that makes it default | no | the owner chooses after seeing it on real memory; ≥ 28 fps at DPR 1.6 on this machine; brightness flat over 10 minutes; the old tissue code gone | a second engine; a bloom pipeline; stars that stand for nothing |
+| W4 | (C) the galaxy cortex "A + C" (§8): one spiral (an arm per root sector) that fills the volume, satellite galaxies with tidal streams, arm-following hyphae lit by use, the arm-woven shell with its recall pulse (§8.7-8.8), sector halos of the seven spaces (§9.2), pins (§10); first behind `?cortex=galaxy` on the REAL memory so the owner can compare, then the default; the old forest/mist/arbor code removed in the same change that makes it default | no | the owner chooses after seeing it on real memory; ≥ 28 fps at DPR 1.6 on this machine; brightness flat over 10 minutes; the old tissue code gone | a second engine; a bloom pipeline; stars that stand for nothing |
 
 W1 is the cheapest and most useful now. W2 needs the TG-2 small-model runs (they are the only runs
 that make CLM edits) to prove its values.
@@ -279,8 +279,9 @@ that make CLM edits) to prove its values.
    without the chat dropdown; the output is already on this machine, shown only to its owner.
 4. **Eval runs evict the user's tool outputs:** TAKEN AS RECOMMENDED - eval and dev
    conversations are evicted first, same caps (part of W1; the owner may reverse it).
-5. **Inside the orb:** RESOLVED - replace the neuron forest, mist and arbors; keep the skin,
-   wire, rings, pupil and the claim crystal (the owner: keep the overall aesthetic).
+5. **Inside the orb and its shell:** RESOLVED - replace the neuron forest, mist and arbors,
+   and (§8.7) the hex skin, wire and rings with the arm-woven shell; keep the pupil, the claim
+   crystal and the overall look (palette, points and lines, dark field).
 6. **Order:** TAKEN AS RECOMMENDED - W0 → W1 (strand contents), W2 → W3 (context), W4 (galaxy);
    W4 may start in parallel now that the concept is chosen.
 7. **No spaces lens** (owner): the spaces are drawn inside each sector (§9.2).
@@ -312,6 +313,30 @@ a real `pin_id`, §10); the noise child sectors are folded (§8.6).
    fruiting = a claim proven; decay = threads thin and pull back.
 6. The noise child sectors are fixed at the birth rule (`sectors.term_can_name_child`) and
    folded by `scripts/repair_noise_sectors.py` (22 of 23 live children).
+7. **The shell is woven from the arms (owner, 2026-11-22, after four shell mockups).** No
+   separate sphere: the hex skin, the wire and the decorative rings go. Each spiral arm runs
+   past the disc's rim, splits into three strands and spirals up to a top pole and down to a
+   bottom pole, carrying its sector's tint and star dust that flows toward the poles. The
+   anchor hyphae and the shell are the same threads.
+   - **Weave:** cross-hyphae join neighbouring strands at three heights; a cross-hypha = two
+     sectors that share claims, its thickness = how many (landmark edges across sectors).
+   - **Shape:** a lemon, flatter than a ball and never a perfect sphere. A larger sector
+     pushes its strands further out (size from the sector's landmark count); strands near a
+     satellite galaxy bow out around it and the bow travels with the satellite's orbit.
+   - **Kyudo** keeps its membrane meaning in the weave: an untrusted or weak source leaves
+     thinner strands and gaps; a safety event makes the weave near it tighten and flicker.
+   - **Recall pulse:** claim → along its arm → up its arm's strand (the cross-hyphae it passes
+     light) → the pole flashes once → the light flows back down every strand on that side.
+     One recall answered by the whole organism; driven by real recall events only.
+   - **Breathing** follows the physics (Σ x/y), not a timer.
+8. **The galaxies fill the volume (owner).** Not flat: a thick disc whose arms rise and fall
+   as they reach the rim (so they flow into the strands), a round central bulge, a faint
+   cloud of stars that fills the shell up to the poles (each tinted by the nearest arm's
+   sector), and satellites that are tilted 3D galaxies. Depth is shown by brightness (nearer
+   = brighter). In data terms the cloud is the sector's moments (count ∝ log of real rows),
+   the disc its claims and their evidence; the shader approach of §4.4 is unchanged.
+   Kept from today: the claim crystal glyph (at close range), the Oracle's pupil and lens,
+   cards, HUD, tunnel, brand palette and the dark field.
 
 ## 9. Landmarks in their sector, and every event family
 
