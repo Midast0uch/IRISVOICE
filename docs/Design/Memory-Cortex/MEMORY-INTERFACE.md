@@ -1,6 +1,6 @@
 # IRIS Memory — the interface and its foundation (final)
 
-**Status: FINAL (2026-10-27).** This is the one document for IRIS's memory: **Part I** (§1–§14) is the memory
+**Status: FINAL (2026-10-27; the cortex rewritten 2026-11-23: the galaxy is the default, §3.1–§3.2).** This is the one document for IRIS's memory: **Part I** (§1–§14) is the memory
 interface (the Memory surface of the dashboard); **Part II** (§F0–§F16) is the memory foundation it shows (folded in
 from `MEMORY-FOUNDATION-ANALYSIS.md`). It replaces three working documents that were removed on 2026-10-27:
 `MEMORY-DASHBOARD-DESIGN.md` (the first design, 2026-10-13 → 10-19), `MEMORY-SURFACE-BUILD.md` (the build plan,
@@ -66,7 +66,7 @@ desync glitch, a reorganization a pulse that resettles).
 |---|---|---|
 | Fragment | the atom: an event, a context chunk, a coordinate node | a small low-poly shard of pale light; its solidity is its trust |
 | Strand | continuity: a conversation, a route between ideas | a thin continuous line; a conversation is a DOUBLE strand (chat + memory) with rungs where a moment belongs to a turn |
-| Glyph | meaning: a claim | one glyph design everywhere; its spokes are its evidence |
+| Glyph | meaning: a claim | a seed of the weave (§3.1): its weave is its evidence, its shape its kind of work |
 | Sync | proof and confidence | a 0–100% value on every claim, strand and territory; high = sharp and assembled, low = soft and drifting |
 | Desync | contradiction, failure, threat | a short glitch (≤ 300 ms): chromatic offset, fragments jolt, a scan line |
 | Assembly / dissolution | recall / forgetting | recalled memory flies together; decaying memory loosens and fades |
@@ -78,40 +78,65 @@ palette is followed live (`useBrandPalette`).
 
 ## 3. The views
 
-### 3.1 Cortex — a map of what IRIS knows
+### 3.1 Cortex — a cluster of galaxies in a woven shell
 
-The hex-lattice orb. **Territories** (topic domains, or the sector registry when it has rows) are tinted regions of
-the skin's own lattice. **Claims** (landmarks) are glyph cells inside, joined by frost bridges (landmark edges);
-**pins** are bracketed crystals set into the wall; **sparks** run from the core to a territory when a moment is
-recorded, and from a claim to the core when memory is delivered.
+**The galaxy cortex is the default since 2026-11-23** (owner). Decisions and measurements:
+`LIVE-CONTEXT-AND-GALAXY-PLAN.md` §8 and `docs/plans/2026-11-23-memory-projects-and-constellations-design.md`. The old
+hex-lattice orb stays behind `?cortex=tissue` (the off switch); its skin's 42,000 points still form the timeline helix
+and the artifact tissue.
 
-- **Territory labels** (for the territories facing you, the rest on hover): name · moments · sync bar · "N of M
-  claims proven" · "+N new this week · N contradicted" · the two most-used claims ("knows: …").
-- **Hover** a territory, claim or pin: its card. **Click** a territory: dive in. **Click** a claim: its cell card
-  (centred on the claim, the text kept inside the cell's curved edge) with its paths (§6.1).
-- **Layers (`s`):** one faint geodesic shell per coordinate space, tinted by its write lock; nodes on their shells;
-  each shell names itself and who may write there.
-- **Health view (`k`):** territories tinted cyan (proven) → amber (learning) → red (contradicted); a one-line
-  reading at the top (proven · still learning · contradicted · cleaned or merged · dissolved this week); claims
-  dissolved in the last 7 days as **dashed ghost outlines** on their territory — hover gives the claim and the
-  reason in plain words ("too many different claims shared its place", "no use and no evidence — last touched 74
-  active days ago").
-- **Membrane (Kyudo trust):** a strong source keeps a glyph's ring sealed and warm; a weak one leaves gaps and a
-  pale, cooler hue; it only ever dims. **Fading:** opacity follows the earned part of confidence; nothing brightens
-  with age. **Immune response:** a quorum signal tightens and flickers its territory briefly; a reset relaxes it.
+**Outside.** A lemon-shaped shell woven from streams of light that meet at two poles. Inside it, one galaxy per
+**territory** (topic domain), placed by how related the domains are. A galaxy's shape comes from its data: its
+heaviest claims are suns, linked claims form groups, a domain with no claims is a featureless cloud.
 
-### 3.2 Inside a territory — the room grows
+- **The aurora** follows the shell: three ribbons that are great circles of the lemon's own profile, turning on the pole
+  axis, with a running head of light and colours that drift along the ribbon and in time; quicker while IRIS works.
+- **Territory names rest**: 2.6 s after the last pointer move they fade, so the shell shows by itself; any move brings
+  them back. Hover a galaxy or its name to light it; click to go in.
+- **Recall, live:** a light runs from the claim to its galaxy's edge, up a strand to the pole, and down the weave.
 
-Diving in, **you shrink**: the room is set by what it holds, not by the orb's size (owner, 2026-10-26: "treat the
-inside as almost infinite space"). The scale takes the territory's median nearest-neighbour gap up to one orb radius
-(×1–×24; live "everyday" ×7). Movement, glides, the wheel, the idle drift, the stop in front of a claim and its
-evidence satellites divide by the scale; claim cells and nuclei keep their size (`uRoom`), so gaps open up instead of
-everything zooming; the wall stays put in the world, so from inside it moves out. **Speed follows the nearest claim:**
-×0.3 beside one, up to ×4 in empty space. The hint names the room's size.
+**Every mark must be readable with no prior knowledge.** Only claims are saturated in colour; dust, stars and gas are grey
+and never respond to the pointer.
 
-The title shows the territory's **health line**: "N claims · N from inside IRIS · N from you" (by trust channel) and
-"N fading · last cleaning 3 h ago" (the decay law on the active-day clock, and the newest integrity pass). The 5
-nearest claims carry labels that fade with distance; depth means sureness (surer = deeper).
+**A claim is a seed of the weave** — the shell's own crossing threads in little, round a core of light:
+
+| What it says | How |
+|---|---|
+| how sure IRIS is | **colour and how finished the weave is**: gold, closed = proven · blue, woven up from below = still learning · pink, loose = new this week · ember, frayed = fading |
+| what kind of work it is | **its shape** (`work`, §10.3): crossed lemon = changes code · globe = the web · two pods = about you · helix = runs and checks · layers = files · six-petal knot = how IRIS was built · ripples = answers in words |
+| what happened to it most | the bead at its pole, in the colour of its strongest event family |
+| how much it weighs | its size; a group's main claim is the largest |
+
+**Constellations, not a web.** The claims of a group are joined by the minimum spanning tree of their places: beads on a
+thread in the group's own tint (its label has the same tint), with light flowing out from its sun, faster in a group
+with new claims. The real claim links (hyphae) and a claim's node threads show only for the claim you hover or open.
+**Pins are moons** that turn round their group.
+
+### 3.2 Inside a galaxy — infinite black space
+
+The click carries you through the shell into black space; the shell's parts step away and the other galaxies move off to
+four times their distance. Dust recedes so the claims stand out.
+
+- **No claim covers another.** A group is sized by its count and its claims are pushed apart in 3D (median spacing in the
+  densest galaxy 0.028 → 0.083 of its radius); a claim is never drawn wider than the room to its nearest neighbour.
+- **The pointer is a lens.** Claims near it spread apart and swell into their full weave. The spread is radial and
+  monotone, so the nearest claim stays the nearest and what you see is what you pick (within 28 px).
+- **Click: the seed opens.** Its threads loosen and unwind, the core shows, a faint ripple leaves it, and light runs out
+  along its constellation one claim at a time (0.17 s a hop). It stays a little open beside its card and weaves shut when
+  the card closes. Reduced motion: it opens, nothing runs.
+- **Click a group's name** to fly to it. **← →** walk the galaxy's claims, newest first. The nav bar: go to another galaxy
+  (most connected first), previous / next, closer / further, back to the whole.
+- **The legend** is always on screen: the kinds of work and the states present here, as drawn, with counts; a click keeps
+  only those. Names never overlap: galaxies first, then groups, then coordinate spaces; a name that would cover another is
+  not drawn. The title shows the territory's **health line** (claims from inside IRIS / from you, fading, last cleaning).
+
+**Projects: the second axis.** A territory says what the work is ABOUT, a project says WHERE it happened (IRIS itself, an
+app, an MCP server). The **◇** control lists them with their claims; one choice lights that project's claims and
+constellations in every galaxy and dims the rest; nothing moves. IRIS's own work warms the nucleus. Recording began on
+2026-11-23 (§10.7): older claims mostly have none, and the list says so.
+
+**Not yet carried over from the orb** (§13): the health view's tint (`k`), the layers (`s`), the Kyudo membrane and the immune
+response.
 
 ### 3.3 Timeline — the helix of conversations
 
@@ -128,6 +153,9 @@ rest on hover.
 - **Strand card:** age · duration · outcome · #tags · what was asked · sync · tasks · "the memory gave it …"
   (recall arches from earlier steps); **click** = step inside (the corridor).
 - **Turn zoom (Ctrl+wheel):** each bead opens into its turns; a turn's card names the claims it touched (§6.1).
+- **Any conversation opens** (2026-11-23), not only the newest 48: a claim's card and a pin's card open the conversation they
+  name (`/thread-model/{id}`, §10.2). One whose chat is gone is told from its events and runs; it is named by its run or by
+  what it planned ("research task, 3 steps").
 - **Filter chips** (outcome, territory) dim what does not match, never remove it; they hide while a group has one
   value.
 - **Live:** the strand a turn is writing to pulses (12 s after its last live event, then settles with one ring); a
@@ -191,12 +219,28 @@ typing anywhere in the app.
 ### 4.3 Cards
 
 Hover intent 80 ms; a card stays 250 ms after the pointer leaves and while the pointer is on it, so its links are
-reachable; a card never covers the thing it describes (leader line, side chosen away from it). The claim card is a
-**cell** centred on its claim; its first and last rows stay narrow so the text sits inside the curved edge; a long
-title stops at 4 lines with "…" and the full text on hover. Two links on one card never run together. Text reveals
+reachable; a card never covers the thing it describes (leader line, side chosen away from it). Two links on one card never run together. Text reveals
 with a scramble on **words only** — digits always show their real value.
 
-### 4.4 The key (bottom right)
+**The claim card (2026-11-23)** is docked at the right and the view shifts so the claim stays visible beside it. It answers what a
+reader asks, in order:
+
+1. **what is it** — the kind of work · how sure; the task's first sentence, the rest small;
+2. **can it be trusted** — proven by N checks, or "not proven yet - N signs"; contradicted or never; last checked;
+3. **what it found** — kept at birth, else the last step of the newest run that asked the same task;
+4. **how it does it** — its tools in order, failures marked;
+5. **track record** — conversations it worked in, times used, how long, what you said of it;
+6. **its conversations** — where it was learned, proved, used; "N of M open"; a click opens one in the timeline; one with nothing
+   left says "no longer kept" (never a silent blank);
+7. its project, then the paths (§6.1).
+
+Lines 1–2 come with the snapshot, the rest from `/claims/{id}/story` (measured 0.25–0.55 s). **Measured cause:** the source chat is
+kept for 2 of 389 claims, so the old card said "not kept"; 252 have events for a conversation that taught or proved them, and
+with the conversations that used them almost every claim opens one.
+
+### 4.4 The key and projects (bottom right)
+
+Two small icons (◇ projects, ◎ key) so they never cover the scene or take its clicks; they open on a click.
 
 Legend, filter and help in one: a count beside each kind in the current scope, a click isolates a kind, "? keys" at
 its foot. In the tidy view it shows icons and counts; the words appear on hover.
@@ -220,13 +264,13 @@ its foot. In the tidy view it shows icons and counts; the words appear on hover.
 
 | Focused | Paths |
 |---|---|
-| claim | where it was learned (corridor) · every time it was used (recall arches on the helix; the newest use in chat) · step into that strand · ask IRIS about it (a `#claim` chip in the composer) · pin it · that's right · that's wrong · forget this · drag to the chat |
+| claim | every conversation it was learned, proved or used in (corridor) · ask IRIS about it (a `#claim` chip in the composer) · pin it · that's right · that's wrong · forget this · drag to the chat |
 | strand | step inside · continue in chat · its thread (fan) · what memory gave it (arches) · rename · pin thread · forget what IRIS learned here · purge its words · drag · link |
 | turn / task | the claims it touched → the claim · open in chat at this turn |
 | thread | its strands round the axis · (rename / pin from any of its strands) |
 | helper strand | reports back → the parent strand at the moment of the report |
 | artifact | open · step into the thread it was made in · drag to the chat |
-| pin | what it holds · the strand it was pinned in |
+| pin | what it holds · the conversation it is from (corridor) |
 
 ### 6.2 Chat ↔ memory
 
@@ -367,7 +411,8 @@ error.
 ### 10.2 Endpoints
 
 `/api/memory/snapshot` (the whole model the scene draws) · `/overview` (counts, territories, last integrity pass —
-the health read) · `/claims`, `/claims/{id}`, `/claims/{id}/uses` · `/threads` · `/strand/{id}` ·
+the health read) · `/claims`, `/claims/{id}`, `/claims/{id}/uses`, `/claims/{id}/source` · **`/claims/{id}/story`** (found, how, runs, proof, uses, every
+connected conversation with whether it opens) · **`/thread-model/{id}`** (any conversation in the snapshot's own shapes) · `/threads` · `/strand/{id}` ·
 `/turn/{conversation}/{turn}` · `/search` · `/oracle` · `POST /correct`, `/correct/undo`, `GET /corrections`.
 Chat side: `/api/threads`, `/api/threads/{id}/strands` (GET, POST with `reports_to`), `PATCH /api/strands/{id}`,
 `POST /api/strands/{id}/report`, `PATCH /api/threads/{id}`.
@@ -377,10 +422,10 @@ Chat side: `/api/threads`, `/api/threads/{id}/strands` (GET, POST with `reports_
 `meta` {source, generated, counts, eval_share, warnings, available, **last_integrity_pass**} · `famCounts` ·
 `domCounts` · `sessions` (one per strand: id, objective, started, ended, exit, traj, eval, episodes, messages {role,
 ts, text preview, len, **report**}, strands (forks), ghost, **thread**, **tags**, **reports_to**, **reports**) ·
-`events` · `landmarks` (… evidence, activations, contradictions, channel, **fading**, steps, domain) · `edges` ·
+`events` · `landmarks` (… evidence, activations, contradictions, channel, **fading**, steps, domain, **`work`** (the kind of work, `claim_work`), **`project`**, `project_inferred`) · `edges` ·
 `episodes` · `artifacts` · `oracle` · `mind` · `sectors` · `pins` · `spaces` · `nodes` · `nodeEdges` · `quorum` ·
-`recalls` · **`ghosts`** (claims dissolved in the last 7 days, with the reason). The newest 48 threads are held;
-older memory is reached by search. Pinned by `backend/tests/contract/test_memory_snapshot_contract.py`;
+`recalls` · **`ghosts`** (claims dissolved in the last 7 days, with the reason) · **`projects`** (id, name, kind, path, claims, inferred). The newest
+48 threads are held; any other conversation opens on demand (`/thread-model/{id}`). Pinned by `backend/tests/contract/test_memory_snapshot_contract.py`;
 `export_snapshot.py` (this folder) is a thin command-line tool over the same function.
 
 ### 10.4 Live
@@ -422,6 +467,17 @@ text times · 24 very long threads page by turn · 25 deep links carry ids, neve
 keyboard · 27 any script in titles · 28 an empty memory → a calm, true empty state · 29 an older store missing
 optional tables → "none" · 30 shader safety: no `pow(` with a negative base, no `asm` as a name; a black-frame check.
 
+### 10.7 Projects, recorded at the source (2026-11-23)
+
+Measured before: `conversations.project_id` empty on all 1,137 rows, `project_registry` 0 rows, so another app's or an MCP server's
+work was mixed into the topics for good. Now one resolver names a folder's project (`backend/memory/projects.py`: the first root
+marker upward; IRIS itself / app / MCP server; a git worktree of IRIS is IRIS by its `.git` file; an evaluation workspace is never a
+project). The tool bridge notes it once per conversation and folder on the `projects` lane (registry row, conversation stamp);
+a new claim keeps it. A claim's project: its finding's, else its conversation's, else the folder its text names (no disk read,
+marked inferred). The live gate found two faults the unit tests missed (the direct answer path never bound its conversation;
+notes were de-duplicated per session, and the app has one session for every chat). Guards: `test_project_record_contract.py`,
+`test_claim_story_contract.py`.
+
 ## 11. Budgets and standards
 
 | What | Budget / measured |
@@ -432,7 +488,10 @@ optional tables → "none" · 30 shader safety: no `pow(` with a negative base, 
 | long jump | ≤ 0.9 s through the fragment tunnel |
 | GPU | DPR ≤ 1.6, dropped under 28 fps; nothing drawn while hidden |
 | live effects | ≤ 6 at once; brightness never builds |
-| inside room | ×1–×24 by claim spacing |
+| inside room | a claim is never wider than the room to its nearest neighbour; other galaxies ×4 away |
+| galaxy, whole view | ≥ 28 fps at DPR 1. 30.7 measured 2026-11-23 before the woven claims; 13–28 after, with Discord taking two cores: **not confirmed on a quiet machine**. Per layer (hide one, synchronous read, 16 rounds): aurora 0.1 ms, claims and constellations nothing measurable |
+| galaxy, inside | 33–44 fps measured |
+| claim story | 0.25–0.55 s on a click; thread model 0.06 s |
 | logs | `logs/iris.log` ≤ 256 MB (S124) |
 
 The surface only reads, off the answer path: an evaluation run with it open must show no change in reply time.
@@ -443,6 +502,8 @@ The surface only reads, off the answer path: an evaluation run with it open must
 |---|---|
 | `components/memory/MemorySurface.tsx` | the surface root: loading / resting / empty states, live forwarding, focus requests |
 | `lib/memory/scene/engine.ts` | the scene: all views, grammar, cards, paths, live grammar, tunnel, tidy HUD |
+| `lib/memory/scene/galaxy.ts` | the galaxy cortex: layout (domains → galaxies → groups → claims), woven claims, constellations, moons' orbits, shell, aurora |
+| `backend/memory/projects.py` | the project resolver and its one writer |
 | `lib/memory/scene/markup.ts` | the HUD markup and styles (scoped to `.iris-memory`) |
 | `lib/memory/api.ts` | the typed client (`fetchMemorySnapshot` retries a cold first read) |
 | `backend/api/memory.py` | `/api/memory/*` |
@@ -470,8 +531,11 @@ The design is complete; the largest remaining gains are in the **data the design
 3. **Recall reached only the newest 200 chunks of its filter** — reach done 2026-10-27 (S128: fingerprints, recall@10
    0.90-0.975 vs exact search); honest vectors, exact words, compression, budgets and memory-native ranking are
    specified in `specs/memory-recall-reach/` and measured by `evals/memory_bench.py`.
-4. **The view holds the newest 48 threads**; older ones are reached by search only. Loading a thread on demand makes
-   the timeline the whole history.
+4. **The timeline holds the newest 48 threads**; any other conversation opens from a claim or a pin (2026-11-23). Older beads on the
+   helix itself still wait for loading by scroll.
+5. **The galaxy does not yet show** the health tint (`k`), the layers (`s`), the Kyudo membrane and the immune response: they were
+   painted on the old orb's skin. The health line, the states and the ghosts' list remain.
+6. **The old orb** (`?cortex=tissue`) can go once item 5 is settled; the skin's points must stay (helix, artifact tissue).
 
 Polish beyond the plan, in a simpler form today: claim arches per use and frost-bridge walking; the focused object
 travelling between views (the camera flies instead); a recorded back stack (Esc steps one structural level); the

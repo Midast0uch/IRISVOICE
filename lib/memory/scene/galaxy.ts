@@ -272,8 +272,9 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   const sats = [];
   const g = new THREE.Group();
   const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 }, uIso: { value: 0 },
-    uNearZ: { value: 0 }, uSpan: { value: R * 2 }, uProj: { value: -1 }, uPtr: { value: new THREE.Vector2(9, 9) }, uAsp: { value: 1 }, uHpx: { value: 400 }, uOff: { value: Array.from({ length: 12 }, () => new V3()) }, uIsoK: { value: 0 } };
+    uNearZ: { value: 0 }, uSpan: { value: R * 2 }, uProj: { value: -1 }, uPtr: { value: new THREE.Vector2(9, 9) }, uAsp: { value: 1 }, uHpx: { value: 400 }, uOpenT: { value: -99 }, uShut: { value: new THREE.Vector2(-1, -99) }, uOff: { value: Array.from({ length: 12 }, () => new V3()) }, uIsoK: { value: 0 } };
   const disposables = [];
+  let hopAttr = null, hopIdx = [], hopLine = null, hopA = [], hopB = [], openedK = -1;
   const W = new THREE.Color('#ffffff'), WARM = new THREE.Color('#ffe2b8'), COOL = new THREE.Color('#bfe0ff');
   const bez = (A0, M0, B0, u) => { const q = 1 - u; return new V3(q * q * A0.x + 2 * q * u * M0.x + u * u * B0.x, q * q * A0.y + 2 * q * u * M0.y + u * u * B0.y, q * q * A0.z + 2 * q * u * M0.z + u * u * B0.z); };
   const addPoints = (P, C, A, PH, SZ, RG = null, vs = STAR_VS, fs = STAR_FS) => {
@@ -397,7 +398,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
 
   // ── the claims ARE stars of their galaxy: a core in the domain's tint; a ring = proven (solid) or still learning
   //    (dashed); brightness = sync; they grow as you go inside (uIn); hover and focus ring them white ──────────────
-  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso,uProj,uHalo,uHpx;attribute vec4 aM,aN;attribute vec3 aO;
+  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso,uProj,uHalo,uHpx,uOpenT;uniform vec2 uShut;attribute vec4 aM,aN;attribute vec3 aO;attribute float aHop;varying float vOp,vRip;
 #define aIdx aM.x
 #define aReg aM.y
 #define aPh aM.z
@@ -414,6 +415,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     ${FOCUS_GLSL}${FISH_GLSL}
     void main(){vec4 mv=modelViewMatrix*vec4(position+offOf(aReg),1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5),hi=max(h,sel);
       gl_Position=fish(projectionMatrix*mv,uIn*step(abs(aReg-uHalo),.5));vec2 nd=gl_Position.xy/max(gl_Position.w,.001)-uPtr;nd.x*=uAsp;float near=smoothstep(.3,.02,length(nd))*uIn;   // claims swell near the pointer: where you can click
+      float oa=uTime-uOpenT,burst=smoothstep(0.,.2,oa)*exp(-max(0.,oa-.2)*2.2),hopW=oa/.17-aHop,reach=aHop>.5&&aHop<12.?exp(-hopW*hopW*.9)*exp(-oa*.8):0.;
+      vOp=sel*(.42*smoothstep(0.,.8,oa)+.75*burst)+step(abs(aIdx-uShut.x),.5)*(1.-sel)*.42*exp(-(uTime-uShut.y)*3.);vRip=sel*step(0.,oa)*step(oa,1.3)*(oa/1.3)+reach*-1.;   // opened; closing; reached by the light (negative)
       vC=aC;vH=hi;vSt=aState;vPh=aPh;vKind=aKind;vFam=aFam;vFamC=aFamC;vNear=near;float own=step(abs(aReg-uHalo),.5);
       float tw=abs(aState-4.)<.5?.75:.93+.07*sin(uTime*(.4+aPh)+aPh*30.);
       float iso=(uIso<.5?1.:(abs(aState-uIso)<.5?1.2:.08))*(uIsoK<.5?1.:(abs(aKind-uIsoK)<.5?1.2:.08));
@@ -422,7 +425,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       float far=clamp(60./max(-mv.z,.1),.2,30.),tok=(17.+5.*aMass+22.*aSun)*clamp(far*.16,.8,2.2);
       float room=aNN*projectionMatrix[1][1]*uHpx/max(-mv.z,.1);tok=min(tok,max(9.5,room*1.15+6.*aSun));   // never wider than the room it has: claims do not cover each other
       float sz0=(1.6+1.2*aSync)*(.8+1.*aMass)*1.6*far;
-      float px=mix(clamp(sz0,2.,8.),mix(clamp(sz0,2.5,6.),clamp(tok,9.5,92.),own),uIn);px=mix(px,max(px,min(34.,px+20.)),near*near*own)+14.*hi*own;vPx=px;
+      float px=mix(clamp(sz0,2.,8.),mix(clamp(sz0,2.5,6.),clamp(tok,9.5,92.),own),uIn);px=mix(px,max(px,min(34.,px+20.)),near*near*own)+14.*hi*own+(16.*vOp+9.*reach)*own;vPx=px;
       gl_PointSize=px*uPix;}`;
   // a claim is a SEED OF THE WEAVE (owner 2026-11-23: 'similar to the weave, but good contrast'): the same crossing threads
   // of light that meet at two poles, in little, round a core. How finished the weave is = how sure it is: proven - both
@@ -430,7 +433,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   // fading - frayed. Its shape = the kind of WORK the claim is about: 1 code - the shell's own crossed lemon; 2 the web - a
   // globe; 3 you - two joined pods; 4 running things - a helix; 5 how IRIS was built - a six-petal knot; 6 files - layers;
   // 7 answers in words - ripples. The bead at the pole wears its strongest event.
-  const CLAIM_FS = `uniform float uTime;varying vec3 vC,vFamC;varying float vA,vH,vSt,vPh,vKind,vFam,vIn,vPx,vNear;
+  const CLAIM_FS = `uniform float uTime;varying vec3 vC,vFamC;varying float vA,vH,vSt,vPh,vKind,vFam,vIn,vPx,vNear,vOp,vRip;
     float hs(float n){return fract(sin(n*127.1)*43758.5);}
     vec2 rot(vec2 p,float a){float c=cos(a),s=sin(a);return vec2(c*p.x-s*p.y,s*p.x+c*p.y);}
     float half_(float y,float k){if(k>1.5&&k<2.5)return sqrt(max(0.,.4-y*y));if(k>2.5&&k<3.5)return .47*pow(abs(sin(3.1416*clamp(y/.84,-1.,1.))),.7);
@@ -442,17 +445,17 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     float proven=step(vSt,1.5),learn=step(1.5,vSt)*step(vSt,2.5),young=step(2.5,vSt)*step(vSt,3.5),fade=step(3.5,vSt);
     vec2 p=rot(p0,(vPh-.5)*1.1);float W=0.,body=0.,lod=smoothstep(24.,50.,vPx);float beadF=vPx*.13;
     if(vKind>3.5&&vKind<4.5){                                                                          // about when: the double helix
-      for(int s=0;s<2;s++){float a=p.y*5.2+t*2.+float(s)*3.1416,x=.36*sin(a)*smoothstep(.92,.6,abs(p.y)),z=cos(a);
+      for(int s=0;s<2;s++){float a=p.y*(5.2-2.*vOp)+t*2.+vOp*1.6+float(s)*3.1416,x=(.36+.12*vOp)*sin(a)*smoothstep(.92,.6,abs(p.y)),z=cos(a);
         float d=(p.x-x)/(1.+abs(1.6*cos(a)));W+=exp(-d*d/(.0045+px*px))*(.65+.35*z)*step(abs(p.y),.9);}
       float rg=abs(fract(p.y*4.2+t*1.6)-.5);W+=exp(-rg*rg*160.)*step(abs(p.x),abs(.36*sin(p.y*5.2+t*2.)))*.3*lod;body=smoothstep(.5,.2,abs(p.x))*smoothstep(.95,.7,abs(p.y));
     }else if(vKind>6.5){                                                                                // in words: ripples from a centre
-      for(int s=0;s<3;s++){float R1=.34+.25*float(s),d=r-R1;W+=exp(-d*d/(.0011+px*px*.45))*(1.-.25*float(s))*(.35+.65*step(.3,fract((atan(p.y,p.x)/6.2832+float(s)*.17)*mix(8.,14.,lod)+t*(.6-.4*float(s)))));}body=smoothstep(.9,.4,r)*.7;
+      for(int s=0;s<3;s++){float R1=.34+.25*float(s)+.07*vOp,d=r-R1;W+=exp(-d*d/(.0011+px*px*.45))*(1.-.25*float(s))*(.35+.65*step(.3,fract((atan(p.y,p.x)/6.2832+float(s)*.17)*mix(8.,14.,lod)+t*(.6-.4*float(s)))));}body=smoothstep(.9,.4,r)*.7;
     }else if(vKind>4.5&&vKind<5.5){                                                                     // how IRIS was built: a six-petal knot
-      float an=atan(p.y,p.x)+t*.4;for(int s=0;s<3;s++){float sc=.84-.2*float(s);float d=abs(r-sc*abs(cos(an*3.+float(s)*.35)))/(1.+2.2*abs(sin(an*3.)));W+=exp(-d*d/(.0009+px*px*.3))*(.8-.2*float(s));}
+      float an=atan(p.y,p.x)+t*.4;for(int s=0;s<3;s++){float sc=.84-.2*float(s)+.1*vOp*float(s);float d=abs(r-sc*abs(cos(an*3.+float(s)*.35)))/(1.+2.2*abs(sin(an*3.)));W+=exp(-d*d/(.0009+px*px*.3))*(.8-.2*float(s));}
       body=smoothstep(.75,.3,r);
-    }else{float hw=half_(p.y,vKind),in_=step(abs(p.x),hw);body=smoothstep(hw+.1,hw-.12,abs(p.x))*step(.02,hw);
+    }else{float hw=half_(p.y,vKind)*(1.+.3*vOp),in_=step(abs(p.x),hw);body=smoothstep(hw+.1,hw-.12,abs(p.x))*step(.02,hw);
       float lo=asin(clamp(p.x/max(hw,.02),-1.,1.)),bk=3.1416-lo,fr=.55+.45*pow(abs(p.x)/max(hw,.02),2.);
-      float N=mix(3.,7.,lod),w=mix(.1,.058,lod)+px*.42,tw=2.3;
+      float N=mix(3.,7.,lod),w=mix(.1,.058,lod)+px*.42,tw=2.3-1.7*vOp;t+=vOp*.9;
       if(vKind>1.5&&vKind<2.5){float lat=abs(fract(p.y*mix(2.6,3.8,lod)+.5)-.5);float par=exp(-lat*lat/(.012+px*px*4.))*(proven+young*.4+fade*.5);
         W=(thr(lo+t,N,w)+.35*thr(bk+t,N,w))*.95+par*.6;}                                                 // a fact: meridians and parallels
       else if(vKind>5.5){float la=abs(fract(p.y*mix(2.6,4.4,lod)+.5+t*.12)-.5);W=exp(-la*la/(.008+px*px*3.))*1.15*(proven+.8*learn+.8*young+.6*fade)+thr(lo+t,2.,w)*.25*lod;}   // files: layers
@@ -467,7 +470,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     vec3 L=mix(vC,vec3(1.),.12)*W*(.95-.08*learn-.3*fade)+mix(vC,vec3(1.),.72)*core+vC*exp(-c2*5.)*(.05*proven+.04*learn+.16*young+.03*fade)*body;
     L+=vC*exp(-r*r*3.2)*.03;
     if(vFam>.5){vec2 pole=vec2(0.,vKind>1.5&&vKind<2.5?.64:.86);float b2=length(p-pole)/.085;L+=(vFamC*1.1+.15)*(smoothstep(1.+px*9.,.7,b2)+.45*exp(-b2*b2*.4));}   // the bead at its pole
-    L*=1.+.35*vNear+.6*vH;L+=mix(vC,vec3(1.),.5)*exp(-r*r*4.)*(.1*vNear+.32*vH);L*=edge;
+    L+=mix(vC,vec3(1.),.6)*exp(-c2*22.)*.4*vOp;if(vRip>.001){float rr=r-(.3+.68*vRip);L+=mix(vC,vec3(1.),.35)*exp(-rr*rr*900.)*(1.-vRip)*.5;}   // it opens: the core shows, a faint ripple leaves it
+    L*=1.+.8*max(0.,-vRip);L*=1.+.35*vNear+.3*vH;L+=mix(vC,vec3(1.),.4)*exp(-r*r*4.)*(.08*vNear+.12*vH);L*=edge;
     float well=max(body*.8,.5*exp(-r*r*2.6))*edge;                                                      // the dark well: the weave stands clear of the dust
     vec3 oL=mix(mix(vC,vec3(1.),.35)*clamp(star,0.,1.)*.3,L,vIn);float oA=mix(0.,clamp(well,0.,.92),vIn);
     gl_FragColor=vec4(oL,oA)*clamp(vA,0.,1.2);}`;
@@ -484,7 +488,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       const n4 = IX.length, M4 = new Float32Array(n4 * 4), N4 = new Float32Array(n4 * 4), O3 = new Float32Array(n4 * 3);   // packed: a GPU has 16 attribute slots
       for (let q = 0; q < n4; q++) { M4.set([IX[q], RG[q], PH[q], MS[q]], q * 4); N4.set([ST[q], KD[q], FA[q], PJ[q]], q * 4); O3.set([SY[q], SU[q], NN[q]], q * 3); }
       geo.setAttribute('aM', new THREE.BufferAttribute(M4, 4)); geo.setAttribute('aN', new THREE.BufferAttribute(N4, 4)); geo.setAttribute('aO', new THREE.BufferAttribute(O3, 3));
-      geo.setAttribute('aFamC', new THREE.Float32BufferAttribute(FC, 3));
+      geo.setAttribute('aFamC', new THREE.Float32BufferAttribute(FC, 3)); hopAttr = new THREE.BufferAttribute(new Float32Array(n4).fill(99), 1); geo.setAttribute('aHop', hopAttr); hopIdx = IX;
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: CLAIM_VS, fragmentShader: CLAIM_FS, transparent: true, depthWrite: false, blending: THREE.NormalBlending, premultipliedAlpha: true });   // it emits light AND parts the dust behind it
       const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.renderOrder = 6; g.add(o); disposables.push(geo, mat);
     }
@@ -522,14 +526,15 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   //    their places, grown from its sun - the shape of the group, never a tangle. Thin lines that stop short of the
   //    stars (a star chart); light leaves the sun and flows outward along the tree (faster in a group with new claims).
   //    The real claim links (hyphae, below) show only for the claim you hover or open, and when a recall walks them. ──
-  const CONST_VS = `uniform float uTime,uVis,uIn,uFoc,uHov,uSel,uProj,uHalo;attribute float aU,aD,aReg,aA,aB,aPA,aPB,aSp,aLen;attribute vec3 aC;varying vec3 vC;varying float vA,vB;
+  const CONST_VS = `uniform float uTime,uVis,uIn,uFoc,uHov,uSel,uProj,uHalo,uOpenT;attribute vec2 aHops;attribute float aU,aD,aReg,aA,aB,aPA,aPB,aSp,aLen;attribute vec3 aC;varying vec3 vC;varying float vA,vB;
     ${FOCUS_GLSL}${FISH_GLSL}
     void main(){float h=max(max(step(abs(aA-uHov),.5),step(abs(aB-uHov),.5)),max(step(abs(aA-uSel),.5),step(abs(aB-uSel),.5)));
       float pj=uProj<-.5?1.:(abs(aPA-uProj)<.5&&abs(aPB-uProj)<.5?1.5:.08);
       float band=fract((aD+aU)*.3-uTime*aSp),flow=exp(-pow((band-.08)/.035,2.));
       float gap=smoothstep(.0,.16,aU)*smoothstep(1.,.84,aU);vB=aU*aLen-uTime*.12;
-      vC=mix(aC,vec3(1.),.45*flow+.35*h);
-      vA=((.045+.2*uIn)+.42*flow*(.35+.65*uIn)+.3*h)*gap*uVis*focusDim(aReg,uFoc)*pj;
+      float oa=uTime-uOpenT,hp=mix(aHops.x,aHops.y,aU),df=oa/.17-hp,run=hp<12.?exp(-df*df*5.)*exp(-oa*.7):0.;
+      vC=mix(aC,vec3(1.),clamp(.45*flow+.35*h+.8*run,0.,1.));
+      vA=((.045+.2*uIn)+.42*flow*(.35+.65*uIn)+.3*h+.9*run)*gap*uVis*focusDim(aReg,uFoc)*pj;
       gl_Position=fish(projectionMatrix*modelViewMatrix*vec4(position+offOf(aReg),1.),uIn*step(abs(aReg-uHalo),.5));}`;
   const constellationOf = new Map();   // claim -> its constellation neighbours (for the card and the reader)
   {
@@ -560,7 +565,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       geo.setAttribute('aD', new THREE.Float32BufferAttribute(DD, 1)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG, 1));
       geo.setAttribute('aA', new THREE.Float32BufferAttribute(AA, 1)); geo.setAttribute('aB', new THREE.Float32BufferAttribute(BB, 1));
       geo.setAttribute('aPA', new THREE.Float32BufferAttribute(PA, 1)); geo.setAttribute('aPB', new THREE.Float32BufferAttribute(PB, 1));
-      geo.setAttribute('aSp', new THREE.Float32BufferAttribute(SP, 1)); geo.setAttribute('aLen', new THREE.Float32BufferAttribute(LN, 1)); geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
+      geo.setAttribute('aSp', new THREE.Float32BufferAttribute(SP, 1)); geo.setAttribute('aLen', new THREE.Float32BufferAttribute(LN, 1)); hopLine = new THREE.BufferAttribute(new Float32Array(AA.length * 2).fill(99), 2); geo.setAttribute('aHops', hopLine); hopA = AA; hopB = BB; geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: CONST_VS, fragmentShader: LINE_FS_C, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
       const o = new THREE.LineSegments(geo, mat); o.frustumCulled = false; o.renderOrder = 1; g.add(o); disposables.push(geo, mat);
     }
@@ -899,6 +904,17 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   function isolateProject(i) { uni.uProj.value = i == null || i < 0 ? -1 : i; }
   /** the pointer (NDC) and the aspect: claims near it swell inside a galaxy */
   function pointer(x, y, asp, h) { uni.uPtr.value.set(x, y); uni.uAsp.value = asp; uni.uHpx.value = h / 2; }
-  return { group: g, update, pulse, pointer, auroraStep, dispose, arms, sats, focus, mark, isolate, isolateKind, isolateProject, interior, offsetOf,
+  /** a click on a claim (owner 2026-11-23): the seed opens, and light runs out along its constellation, one claim at a time
+   *  (hops over the same tree that is drawn). `still` (reduced motion): it opens, nothing runs. */
+  function open(k, still = false) {
+    openedK = k; uni.uOpenT.value = now - (still ? 3 : 0);
+    const hop = new Map([[k, 0]]), q = [k]; while (q.length) { const x = q.shift(), h = hop.get(x); if (h >= 11) continue; (constellationOf.get(x) || []).forEach(y => { if (!hop.has(y)) { hop.set(y, h + 1); q.push(y); } }); }
+    const hv = x => (hop.has(x) ? hop.get(x) : 99);
+    if (hopAttr) { hopIdx.forEach((x, i) => { hopAttr.array[i] = hv(x); }); hopAttr.needsUpdate = true; }
+    if (hopLine) { for (let i = 0; i < hopA.length; i++) { const a = hv(hopA[i]), b = hv(hopB[i]), on = a < 99 && b < 99; hopLine.array[i * 2] = on ? a : 99; hopLine.array[i * 2 + 1] = on ? b : 99; } hopLine.needsUpdate = true; }
+  }
+  /** the card closed: the seed weaves shut */
+  function shut() { if (openedK < 0) return; uni.uShut.value.set(openedK, now); openedK = -1; }
+  return { group: g, update, pulse, pointer, auroraStep, open, shut, dispose, arms, sats, focus, mark, isolate, isolateKind, isolateProject, interior, offsetOf,
     constellation: k => constellationOf.get(k) || [] };
 }

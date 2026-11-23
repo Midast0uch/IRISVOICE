@@ -505,9 +505,9 @@ function normalizeMemory(M){
 // index.html?real shows the exported snapshot of this machine's memory; the default is the
 // schema-faithful demo, so the page always opens with the full experience.
 const USE_REAL=!!opts.data;
-// W4 (memory cortex plan): the galaxy cortex, first behind ?cortex=galaxy on the real memory so the owner can compare
-// it with today's cortex; it becomes the default (and the old tissue goes) in a later change.
-const GALAXY=(()=>{try{return new URLSearchParams(window.location.search).get('cortex')==='galaxy'}catch(_){return false}})();
+// W4 (memory cortex plan): the galaxy cortex IS the cortex (owner, 2026-11-23). `?cortex=tissue` shows the old orb: the off
+// switch, and the old skin's 42,000 points still form the timeline helix and the artifact tissue.
+const GALAXY=(()=>{try{return new URLSearchParams(window.location.search).get('cortex')!=='tissue'}catch(_){return true}})();
 const M=normalizeMemory(USE_REAL?opts.data:synthMemory());
 // the Oracle view's richer record (GET /api/memory/oracle: job, the bar as a ladder, history, calibration curve)
 if(Array.isArray(opts.oracle)){const by=new Map(opts.oracle.map(o=>[o.consumer,o]));for(const o of M.oracle){const r=by.get(o.consumer);if(r)Object.assign(o,r)}}
@@ -1404,7 +1404,7 @@ const KIND_OF={toolpath:1,domain:2,conduct:3,style:3,chrono:4,capability:5};
 // the claim's steps) was one value for 283 of 389 claims.
 const WORKS=[['code','changes code','code'],['web','looks things up on the web','web'],['you','about you','you'],['run','runs and checks things','runs'],['built','how IRIS was built','built'],['files','reads and writes files','files'],['words','answers in words','words']];
 const WORKI=Object.fromEntries(WORKS.map(([k],i)=>[k,i+1]));
-const claimKind=l=>{if(l.work&&WORKI[l.work])return WORKI[l.work];const by={};(l.steps||[]).forEach(st=>{const k=KIND_OF[st.space];if(k)by[k]=(by[k]||0)+1});
+const claimKind=l=>{if(l.work&&WORKI[l.work])return WORKI[l.work];if(GALAXY)return 0;const by={};(l.steps||[]).forEach(st=>{const k=KIND_OF[st.space];if(k)by[k]=(by[k]||0)+1});
   const top=Object.entries(by).sort((a,b)=>b[1]-a[1])[0];return top?+top[0]:0};
 const LM_FAM=(()=>{const by=new Map();for(const e of M.events)if(typeof e.landmark==='number'&&e.family){const m=by.get(e.landmark)||new Map();m.set(e.family,(m.get(e.family)||0)+1);by.set(e.landmark,m)}
   const out=new Map();by.forEach((m,k)=>{const top=[...m.entries()].sort((a,b)=>b[1]-a[1])[0];if(top)out.set(k,top[0])});return out})();
@@ -3239,7 +3239,7 @@ function fillClaimSource(k){if(!opts.claimSource)return;const l=LM[k];
     else h=`<br><em>its source</em> · an evaluation run - its conversation is not kept in this memory`;
     box.insertAdjacentHTML('beforeend',`<div class="src">${h}</div>`)}).catch(()=>{})}
 function flyToSoma(k){
-  if(galaxy&&cam.mode==='orbit'){setFocusSoma(k);cam.targetT.copy(somaWorld(k));cam.distT=clamp(cam.distT,R*.05,R*.14);cam.idle=0;
+  if(galaxy&&cam.mode==='orbit'){setFocusSoma(k);galaxy.open(k,REDUCED);cam.targetT.copy(somaWorld(k));cam.distT=clamp(cam.distT,R*.05,R*.14);cam.idle=0;
     setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,dock:true});clearAnno('hover');satellites(k);fillStory(k);return}
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
   setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
@@ -3934,7 +3934,7 @@ const _frame=()=>{
     {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
       state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
       galaxy.update(t,clamp(state.vis.forest,0,1)*(.3+.7*_gk),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
-      galaxy.mark(state.hoverSoma,state.focusSoma);galaxy.pointer(mouse.over===false?9:mouse.nx,mouse.over===false?9:mouse.ny,innerWidth/Math.max(1,innerHeight),innerHeight);
+      if(state.focusSoma<0)galaxy.shut();galaxy.mark(state.hoverSoma,state.focusSoma);galaxy.pointer(mouse.over===false?9:mouse.nx,mouse.over===false?9:mouse.ny,innerWidth/Math.max(1,innerHeight),innerHeight);
       if(Math.abs((state._offK??-1)-state.galIn)>.002||state.diving||(state._offT=(state._offT||0)+dt)<1.5){if(state.diving)state._offT=0;state._offK=state.galIn;   // pins and nodes follow their galaxy - only while the space opens or you travel
         const na=nodeGeo.attributes.position;NDS.forEach((n,j)=>{const r=NODE_REG[j],o=r>=0?galaxy.offsetOf(r):null,b=nodePos[j];na.setXYZ(j,b.x+(o?o.x:0),b.y+(o?o.y:0),b.z+(o?o.z:0))});na.needsUpdate=true}
       galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null);
