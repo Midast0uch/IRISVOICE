@@ -939,10 +939,10 @@ const somaPos=LM.map(l=>{const fi=l.dom;
 let GAL_LAYOUT=null;
 if(GALAXY){
   GAL_LAYOUT=layoutGalaxy({R,regs:REG.map(d=>({key:d,size:M.domCounts[d]||0,col:domCol(d)})),
-    claims:LM.map(l=>({reg:l.dom,born:l.born||0})),seed:7});
+    claims:LM.map(l=>({reg:l.dom,born:l.born||0,proven:l.tier!=='candidate',act:l.activations||0})),
+    links:M.edges.filter(e=>e.a<LM.length&&e.b<LM.length).map(e=>({a:e.a,b:e.b})),seed:7});
   GAL_LAYOUT.posWorld.forEach((p,k)=>{if(p)somaPos[k].copy(p)});   // the tilted positions: picking, cards and the dive
-  GAL_LAYOUT.arms.forEach(a=>{const th=a.ang+.6*4.2,m=new V3(Math.cos(th)*.6,a.lift*.1,Math.sin(th)*.6).normalize().applyQuaternion(GAL_LAYOUT.tilt);regC[a.reg].copy(m)});
-  GAL_LAYOUT.sats.forEach(sa=>{regC[sa.reg].copy(sa.pos.clone().normalize().applyQuaternion(GAL_LAYOUT.tilt))});
+  GAL_LAYOUT.arms.forEach(a=>{regC[a.reg].copy(a.c.lengthSq()>1e-4?a.c.clone().normalize():new V3(0,1,0))});   // each domain's direction = its galaxy
 }
 const lmBest=LM.map(bestEvidence);
 const iP=[],iSoma=[],iT=[],iRand=[],iCol=[],iBorn=[];
@@ -1378,7 +1378,7 @@ if(GAL_LAYOUT){const touch=new Map();
     const hc=HALO_COUNTS.get(reg)||{};hc[n.space]=(hc[n.space]||0)+1;HALO_COUNTS.set(reg,hc)});
   grp.forEach((js,key)=>{const cut=key.indexOf('|'),reg=+key.slice(0,cut),o=GAL_LAYOUT.haloOrbit(reg,key.slice(cut+1)),rad=R*(.006+.0035*Math.sqrt(js.length));
     js.forEach((j,i)=>{const a=i*2.399963,rr=rad*(.55+.45*Math.sqrt((i+.5)/js.length));
-      nodePos[j].copy(new V3(Math.cos(a)*rr,R*.004*Math.sin(i*1.7),Math.sin(a)*rr).applyQuaternion(GAL_LAYOUT.tilt).add(o))})})}
+      nodePos[j].copy(new V3(Math.cos(a)*rr,R*.004*Math.sin(i*1.7),Math.sin(a)*rr).applyQuaternion(GAL_LAYOUT.haloQ(reg)).add(o))})})}
 // W4 (section 9.2): a claim's hyphae run to the nodes its steps walked, in its sector's halo
 const CLAIM_NODES=[];
 if(GAL_LAYOUT){const nodeJ=new Map(NDS.map((n,j)=>[n.id,j]));
@@ -2462,13 +2462,14 @@ function placeDial(show){
     el.innerHTML=`<span style="color:${domCol(REG[reg])};font-weight:600">● ${esc(domWord(REG[reg]))}</span> <span style="opacity:.6">${fmt((somaByReg[reg]||[]).length)}</span>`;
     el.title=`${fmt((somaByReg[reg]||[]).length)} claims · ${fmt(M.domCounts[REG[reg]]||0)} moments · click to go in`;
     el.addEventListener('pointerenter',()=>{dialHover=reg});el.addEventListener('pointerleave',()=>{if(dialHover===reg)dialHover=-1});
-    el.addEventListener('click',e=>{e.stopPropagation();dialHover=-1;dive(reg)});labelsEl.appendChild(el);return {el,reg}});
+    el.addEventListener('click',e=>{e.stopPropagation();dialHover=-1;goGalaxy(reg)});labelsEl.appendChild(el);return {el,reg}});
   const lit=dialHover>=0?dialHover:state.hoverReg;
   // names never overlap: per side, in screen order, each at least one line below the one above it
-  const items=[];dialEls.forEach(D=>{const w=show?GAL_LAYOUT.labelAt(D.reg):null,a=w&&project(w);
+  const items=[];dialEls.forEach(D=>{const ga=GAL_LAYOUT.arms[D.reg],w=!show||!ga?null:state.inside?ga.c.clone().add(new V3(0,ga.rad*1.15,0)):GAL_LAYOUT.labelAt(D.reg),a=w&&project(w);
     if(!a||!a.front){D.el.style.opacity=0;D.el.style.pointerEvents='none';return}items.push({D,a,right:a.x>innerWidth/2,y:a.y-8})});
   for(const side of [false,true]){const col=items.filter(o=>o.right===side).sort((p,q)=>p.y-q.y);for(let i=1;i<col.length;i++)col[i].y=Math.max(col[i].y,col[i-1].y+15)}
-  items.forEach(({D,a,right,y})=>{D.el.style.pointerEvents='auto';D.el.style.opacity=lit===D.reg?1:lit>=0?.3:.78;
+  items.forEach(({D,a,right,y})=>{const here=state.inside&&D.reg===state.diveReg;D.el.style.pointerEvents=here?'none':'auto';
+    D.el.style.opacity=here?.45:lit===D.reg?1:lit>=0?.3:.78;
     const wd=D.el.offsetWidth;D.el.style.textAlign=right?'left':'right';
     D.el.style.left=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4)+'px';D.el.style.top=y+'px'})}
 function placeHaloLabels(reg){
@@ -2763,16 +2764,25 @@ function regionWorld(i,s=R){return regC[i].clone().multiplyScalar(s)}
 // W4 (owner, 2026-11-23: inside, the camera seemed stuck): in the galaxy you ORBIT a pivot - the sector's centre, then
 // the claim you pick. Drag turns round it, the wheel goes closer or further (past the far limit it leaves the sector),
 // shift- or right-drag moves the pivot; the nav bar does the same with buttons.
-function sectorPivot(i){const ks=somaByReg[i]||[];if(!ks.length)return regC[i].clone().multiplyScalar(R*.4);
-  const c=new V3();ks.forEach(k=>c.add(somaPos[k]));return c.multiplyScalar(1/ks.length)}
+function setSectorTitle(i){const T=$('title');
+  T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this domain · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1}
 function diveGalaxy(i){
-  if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');dialHover=-1;
-  const P=sectorPivot(i),out=P.clone().setY(0).normalize(),end=P.clone().addScaledVector(out,R*.34).add(new V3(0,R*.2,0));
-  const arc=arcTo(camera.position,end.clone().normalize(),Math.max(R*1.6,end.length()),3);
-  tweenPath([camera.position.clone(),...arc,end],[cam.look.clone(),P.clone().multiplyScalar(.3),P.clone().multiplyScalar(.7),P.clone(),P.clone()],
-    52,REDUCED?.01:1.3,{kick:5,done:()=>{cam.mode='orbit';orbitFrom(camera.position,P);state.inside=true;state.diving=false;cam.idle=0;
-      hint('drag · turn round &nbsp; wheel · closer / further &nbsp; shift-drag · move<br>click a claim · read it &nbsp; ← → · walk the arm &nbsp; esc · back out');
-      const T=$('title');T.innerHTML=`${esc(domWord(REG[i]))}<small>the thoughts of this territory · ${fmt(M.domCounts[REG[i]]||0)} moments<br>${healthLine(REG[i])}</small>`;T.style.opacity=1}})}
+  if(state.diving||state.inside)return;const v=GAL_LAYOUT.viewOf(i);if(!v)return;
+  state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');dialHover=-1;
+  const arc=arcTo(camera.position,v.eye.clone().normalize(),Math.max(R*1.6,v.eye.length()),3);
+  tweenPath([camera.position.clone(),...arc,v.eye],[cam.look.clone(),v.pivot.clone().multiplyScalar(.3),v.pivot.clone().multiplyScalar(.7),v.pivot.clone(),v.pivot.clone()],
+    52,REDUCED?.01:1.3,{kick:5,done:()=>{cam.mode='orbit';orbitFrom(camera.position,v.pivot);state.inside=true;state.diving=false;cam.idle=0;
+      hint('drag · turn round &nbsp; wheel · closer / further &nbsp; shift-drag · move<br>click a claim · read it &nbsp; ← → · walk the arm &nbsp; a galaxy\'s name · travel there');
+      setSectorTitle(i)}})}
+// from one galaxy to another, along the cosmic-web filament between them (or straight, when they share none)
+function goGalaxy(reg){
+  if(!galaxy||!GAL_LAYOUT)return;if(!state.inside){dive(reg);return}
+  if(reg===state.diveReg||cam.tween||state.diving)return;const v=GAL_LAYOUT.viewOf(reg);if(!v)return;
+  setFocusSoma(-1);clearAnno('focus');clearAnno('hover');satellites(-1);dialHover=-1;goOpen(false);
+  const path=GAL_LAYOUT.pathBetween(state.diveReg,reg),mid=path?path[1].clone():camera.position.clone().lerp(v.eye,.5);
+  state.diving=true;
+  tweenPath([camera.position.clone(),mid.clone().add(new V3(0,R*.05,0)),v.eye],[cam.look.clone(),mid,v.pivot],56,REDUCED?.01:1.6,{kick:4,
+    done:()=>{cam.mode='orbit';orbitFrom(camera.position,v.pivot);state.diveReg=reg;state.diving=false;cam.idle=0;setSectorTitle(reg)}})}
 function dive(i){
   if(galaxy){diveGalaxy(i);return}
   if(state.diving||state.inside)return;state.diving=true;state.diveReg=i;cam.k=1;clearAnno('hover');
@@ -2928,19 +2938,30 @@ function readStep(dir){if(!state.inside||cam.tween||state.diving)return;const o=
 const readerEl=document.createElement('div');readerEl.className='rlabel gnav';
 Object.assign(readerEl.style,{left:'auto',right:'14px',top:'44px',bottom:'auto',textAlign:'right',opacity:0,pointerEvents:'none',
   display:'flex',gap:'6px',alignItems:'center',whiteSpace:'nowrap'});
-readerEl.innerHTML=`<button data-g="prev" title="the newer claim (←)">‹</button><b data-g="n"></b><button data-g="next" title="the older claim (→)">›</button>`+
+readerEl.innerHTML=`<button data-g="go" title="travel to another domain">go to ▾</button><span style="opacity:.4">|</span><button data-g="prev" title="the newer claim (←)">‹</button><b data-g="n"></b><button data-g="next" title="the older claim (→)">›</button>`+
   `<span style="opacity:.4">|</span><button data-g="in" title="closer (wheel)">+</button><button data-g="out" title="further (wheel)">−</button>`+
   `<span style="opacity:.4">|</span><button data-g="up" title="back to the whole galaxy (esc)">⤒ galaxy</button>`;
 readerEl.querySelectorAll('button').forEach(b=>Object.assign(b.style,{background:'rgba(127,232,255,.08)',border:'1px solid rgba(127,232,255,.28)',
   color:'#cdefff',borderRadius:'6px',padding:'1px 8px',font:'inherit',cursor:'pointer'}));
 readerEl.addEventListener('click',e=>{const g=e.target.closest('[data-g]')?.dataset.g;if(!g)return;e.stopPropagation();cam.idle=0;
+  if(g==='go'){goOpen(goEl.style.display==='none');return}
   if(g==='prev'||g==='next')readStep(g==='next'?1:-1);
   else if(g==='in')cam.distT=clamp(cam.distT*.65,R*.025,R*1.7);else if(g==='out')cam.distT=clamp(cam.distT*1.5,R*.025,R*1.7);
   else if(g==='up'){setFocusSoma(-1);clearAnno('focus');satellites(-1);exitInterior()}});
+const goEl=document.createElement('div');goEl.className='rlabel ggo';
+Object.assign(goEl.style,{right:'14px',left:'auto',top:'70px',display:'none',pointerEvents:'auto',padding:'6px 8px',background:'rgba(4,10,16,.86)',
+  border:'1px solid rgba(127,232,255,.22)',borderRadius:'8px',textAlign:'left',opacity:1,maxHeight:'60%',overflowY:'auto'});
+function goOpen(on){goEl.style.display=on?'block':'none';if(!on||!GAL_LAYOUT)return;if(!goEl.parentNode)labelsEl.appendChild(goEl);
+  const cur=state.diveReg,rel=new Map(GAL_LAYOUT.related(cur).map(o=>[o.reg,o.s]));
+  const list=GAL_LAYOUT.arms.map(a=>a.reg).filter(r=>r!==cur).sort((x,y)=>(rel.get(y)||0)-(rel.get(x)||0)||((somaByReg[y]||[]).length-(somaByReg[x]||[]).length));
+  goEl.innerHTML=`<div style="opacity:.55;margin-bottom:4px">travel to · the most connected first</div>`+list.map(r=>`<div data-go="${r}" style="cursor:pointer;padding:2px 0">`+
+    `<span style="color:${domCol(REG[r])}">● ${esc(domWord(REG[r]))}</span> <span style="opacity:.55">${fmt((somaByReg[r]||[]).length)} claims${rel.get(r)?` · ${fmt(rel.get(r))} links to here`:''}</span></div>`).join('')}
+goEl.addEventListener('click',e=>{const d=e.target.closest('[data-go]');if(!d)return;e.stopPropagation();goGalaxy(+d.dataset.go)});
 let readerKey='';
-function placeReader(){const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex';readerEl.style.opacity=on?.92:0;readerEl.style.pointerEvents=on?'auto':'none';if(!on)return;
+function placeReader(){if(!(galaxy&&state.inside&&!state.diving))goOpen(false);const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex';readerEl.style.opacity=on?.92:0;readerEl.style.pointerEvents=on?'auto':'none';if(!on)return;
   const o=readOrder(state.diveReg),i=o.indexOf(state.focusSoma),key=state.diveReg+':'+i;if(key===readerKey)return;readerKey=key;
-  readerEl.querySelector('[data-g="n"]').textContent=i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims · newest → oldest`}
+  const n=readerEl.querySelector('[data-g="n"]');
+  n.innerHTML=`<span style="color:${domCol(REG[state.diveReg])}">● ${esc(domWord(REG[state.diveReg]))}</span> · `+(i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims`)}
 function flyToSoma(k){
   if(galaxy&&cam.mode==='orbit'){setFocusSoma(k);cam.targetT.copy(somaWorld(k));cam.distT=clamp(cam.distT,R*.05,R*.14);cam.idle=0;
     setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');satellites(k);return}
@@ -3625,7 +3646,7 @@ const _frame=()=>{
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=!on;else if(o.userData.tracts)o.visible=!on||(state.insideK||0)>.05})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
     if(on){galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9);
       galaxy.mark(state.hoverSoma,state.focusSoma);
-      galaxy.focus(state.inside||state.diving?state.diveReg:dialHover>=0?dialHover:state.hoverReg>=0?state.hoverReg:null)}}
+      galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null)}}   // inside: every galaxy stays visible
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
   const sx=Math.sin(t*.13)+.4*Math.sin(t*.31),su=.5+.5*Math.sin(t*.07);
   // morph the organism
@@ -3734,7 +3755,7 @@ const _frame=()=>{
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(!galaxy&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
   if(galaxy){placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader();
-    placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.inside&&!state.diving&&!cam.tween)}
+    placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!cam.tween)}
   else placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);

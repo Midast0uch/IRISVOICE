@@ -357,6 +357,17 @@ a real `pin_id`, §10); the noise child sectors are folded (§8.6).
      detail by distance); far regions are their tinted star cloud. The star budget of §4.4
      holds at every depth.
 
+10. **A cluster of galaxies, placed by their relations (owner, 2026-11-23, replaces the single spiral of 8.1).**
+   Inside the shell each domain is its own 3D galaxy, alike and each its own: a spiral when it holds
+   enough claims (arms 2-4 by claim count, tightness by the proven share, core brightness by use), an
+   irregular companion beside a bigger galaxy it is linked to, otherwise a quiet elliptical. Galaxies whose
+   claims are linked pull closer (closer the more links) and lean toward each other; a cosmic-web filament
+   of stars joins them (wider with more links) and single claim links ride it as bundled cords; every
+   galaxy has a thread to the nucleus. Each galaxy sends an anchor thread to the shell's equator that
+   becomes its strands (the weave of 8.7 is kept). Outside: deep space and far galaxies. Inside you orbit
+   a galaxy, see the others named in place, and travel along the filaments (a click on a name, or the
+   nav bar's "go to" list, most connected first). Built behind `?cortex=galaxy` (commit after fc07c0ae).
+
 ## 9. Landmarks in their sector, and every event family
 
 ### 9.1 How an event finds its place (measured 2026-11-22, 107,539 events)
