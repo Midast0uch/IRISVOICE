@@ -223,9 +223,9 @@ const STAR_VS = `uniform float uTime,uPix,uVis,uFoc;attribute float aA,aPh,aSz,a
 const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
   gl_FragColor=vec4(vC,(smoothstep(.5,.0,d)*.55+smoothstep(.18,.0,d)*.6)*vA);}`;
 // soft glows (galaxy cores and halos, nebula clumps, far galaxies): large, faint, gaussian
-const GLOW_VS = `uniform float uPix,uVis,uFoc;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
+const GLOW_VS = `uniform float uPix,uVis,uFoc,uIn;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
-  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aC;vA=aA*uVis*focusDim(aReg,uFoc)*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z);
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aC;vA=aA*uVis*focusDim(aReg,uFoc)*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z)*(1.-.55*uIn);
     gl_PointSize=clamp(aSz*uPix*(300./-mv.z),2.*uPix,180.*uPix);gl_Position=projectionMatrix*mv;}`;
 const GLOW_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=dot(c,c)*4.;if(d>1.)discard;gl_FragColor=vec4(vC,exp(-d*3.2)*vA);}`;
 
@@ -302,7 +302,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
         for (let i = 0; i < budget * 0.8; i++) { const v = new V3(gauss(), gauss() * 0.75, gauss()), r = clamp(v.length() / 1.4, 0, 1); v.multiplyScalar(a.rad * 0.45);
           put(toWorld(a, v.x, v.y, v.z), coreC.clone().lerp(a.col, 0.5 * r), 0.06 + 0.14 * (1 - r), 1.0 + rng() * 0.6, a.reg); }
         halo(Math.round(budget * 0.2), 0.035);
-        glow(a.c, coreC, 0.06, a.rad / R * 6, a.reg); glow(a.c, a.col, 0.04, a.rad / R * 22, a.reg);
+        glow(a.c, coreC, 0.06, a.rad / R * 6, a.reg); glow(a.c, a.col, 0.018, a.rad / R * 12, a.reg);
         return;
       }
       const mass = ks.map(k => place[k].mass || 0.3), msum = mass.reduce((x, y) => x + y, 0) || 1;
@@ -334,7 +334,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
           for (let rI = 1; rI <= rings; rI++) { const rr = a.rad * (0.04 + 0.035 * rI) * (0.7 + m);
             for (let j = 0; j < 48; j++) { const th = j / 48 * TAU; put(toWorld(a, pl.x + Math.cos(th) * rr, pl.y, pl.z + Math.sin(th) * rr), col.clone().lerp(W, 0.4), 0.09, 0.8, a.reg); } } }
         if (i === 0) spikes.push({ p: p.clone(), c: col.clone().lerp(W, 0.5), a: 0.35, sz: a.rad / R * 6, reg: a.reg }); });
-      glow(a.c, a.col, 0.04, a.rad / R * 24, a.reg);   // the faint light of the whole galaxy
+      glow(a.c, a.col, 0.018, a.rad / R * 13, a.reg);   // the faint light of the whole galaxy (wide glows made a navy haze)
       (layout.systems[a.reg] || []).forEach(sy => glow(sy.c, sunCol(a, sy.sun).lerp(a.col, 0.5), 0.05 + 0.09 * Math.sqrt(sy.mass), sy.r / R * 14, a.reg));   // a system's light
     });
     addPoints(P, C, A, PH, SZ, RG);
@@ -353,7 +353,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     const NEB = [new THREE.Color('#7a5cff'), new THREE.Color('#2fd4c8'), new THREE.Color('#ff6fae'), new THREE.Color('#4f8dff')];
     for (let k = 0; k < 10; k++) { const y = (k / 9 * 2 - 1) * HH * 0.55, th = (hashKey('neb' + k) % 628) / 100, rho = shellR(y) * (0.3 + 0.4 * rng());
       const c0 = new V3(Math.cos(th) * rho, y, Math.sin(th) * rho), col = NEB[k % NEB.length];
-      for (let j = 0; j < 2; j++) glow(c0.clone().add(new V3(gauss(), gauss() * 0.6, gauss()).multiplyScalar(R * 0.08)), col, 0.016 + 0.01 * rng(), 5 + 4 * rng()); }
+      for (let j = 0; j < 2; j++) glow(c0.clone().add(new V3(gauss(), gauss() * 0.6, gauss()).multiplyScalar(R * 0.08)), col, 0.007 + 0.005 * rng(), 4 + 3 * rng()); }
   }
   // the double-helix spine: a filament of stars through the galaxies in helix order (two strands, the Caducean pair)
   const SPINE = [];
@@ -365,19 +365,22 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   // ── the claims ARE stars of their galaxy: a core in the domain's tint; a ring = proven (solid) or still learning
   //    (dashed); brightness = sync; they grow as you go inside (uIn); hover and focus ring them white ──────────────
   const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso;attribute float aIdx,aProven,aSync,aReg,aPh,aMass,aState;attribute vec3 aC;
-    varying vec3 vC;varying float vA,vP,vH,vS;
+    varying vec3 vC;varying float vA,vP,vH,vS,vSt;
     ${FOCUS_GLSL}
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
-      vC=aC;vP=aProven;vH=h;vS=sel;float tw=.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
+      vC=aC;vP=aProven;vH=h;vS=sel;vSt=aState;float tw=abs(aState-4.)<.5?.55+.45*sin(uTime*2.6+aPh*20.):.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
       float iso=uIso<.5?1.:(abs(aState-uIso)<.5?1.4:.08);
       vA=(.3+.55*aSync)*mix(.4,1.,aMass)*tw*uVis*focusDim(aReg,uFoc)*iso*(1.+.6*max(h,sel));
-      float sz=(1.3+1.3*aSync)*(.75+1.1*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel));
+      float sz=(1.3+1.3*aSync)*(.75+1.1*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel))*(abs(aState-1.)<.5?1.6:abs(aState-3.)<.5?1.35:1.);
       gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(8.+5.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
-  const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-    float core=smoothstep(.17,.0,d),glow=smoothstep(.5,.0,d)*.28,ang=atan(c.y,c.x);
-    float hi=max(vH,vS),ring=smoothstep(.045,.0,abs(d-.38))*hi;   // the ring: only on hover / focus
-    vec3 col=mix(vC,vec3(1.),.3+.4*hi);
-    gl_FragColor=vec4(col,(core*.95+glow*1.3+ring*.9)*vA);}`;
+  const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS,vSt;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    vec2 q=abs(c*2.);float hi=max(vH,vS),a=0.;
+    if(vSt<1.5){a=smoothstep(.1,.0,d)+smoothstep(.5,.0,d)*.22+(exp(-q.y*16.)*(1.-q.x)+exp(-q.x*16.)*(1.-q.y))*.8;}          // proven: a sparkle
+    else if(vSt<2.5){a=smoothstep(.5,.06,d)*.5+smoothstep(.09,.0,d)*.35;}                                                   // still learning: hazy
+    else if(vSt<3.5){a=smoothstep(.12,.0,d)+smoothstep(.04,.0,abs(d-.3))*.75+smoothstep(.5,.0,d)*.15;}                     // new: a thin ring (newborn)
+    else{a=smoothstep(.13,.0,d)*.8+smoothstep(.45,.0,d)*.12;}                                                               // fading: dim, flickers
+    a+=smoothstep(.035,.0,abs(d-.46))*hi*.9;                                                                                  // hover / focus
+    gl_FragColor=vec4(mix(vC,vec3(1.),.25+.4*hi),a*vA);}`;
   {
     const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [], ST = [];
     pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {}, info = claimInfo[k] || {}, a = pl.arm != null ? arms[pl.arm] : null;
@@ -495,7 +498,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       if(age>=2.1&&p.y==aDir){float e=age-2.1;float back=max(0.,1.-e/1.6);lit=max(lit,.55*back*exp(-pow((1.-aS)-e*.8,2.)/.006));}}
       vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.7+.3*sin(uTime*(.5+aPh*.8)+aPh*40.);
       float base=(aS<0.?.06+.12*pow(1.+aS,1.5):.3*(1.-.5*aS))*(uFocArm<-.5?1.:(abs(aArm-uFocArm)<.5?1.3:.3));
-      vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(base*tw*(1.-.85*uIn)+.9*lit)*uVis*smoothstep(.4,3.,-mv.z);
+      vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(base*tw*(1.-.2*uIn)+.9*lit)*uVis*smoothstep(.4,3.,-mv.z);   // the weave stays round you inside
       gl_PointSize=clamp((aSz+1.4*lit)*uPix*(60./-mv.z),1.4*uPix,(4.+3.*lit)*uPix);gl_Position=projectionMatrix*mv;}`;
   const LINE_FS = `varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`;
   uni.uSP = { value: Array.from({ length: 4 }, () => new V3(-1, 0, -99)) };
@@ -619,7 +622,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       fragmentShader: `uniform float uTime,uVis,uIn;varying vec3 vC,vN,vV,vP;void main(){float f=pow(1.-abs(dot(vN,vV)),2.6);
         float ph=atan(vP.z,vP.x),y=vP.y*${(4 / HH).toFixed(4)};
         float w=pow(abs(sin(ph*9.+y*1.6+uTime*.05)*sin(ph*9.-y*1.6-uTime*.04)),.35);
-        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-.85*uIn));}` });
+        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-.25*uIn));}` });
     const o = new THREE.Mesh(geo, mat); o.frustumCulled = false; o.renderOrder = -1; g.add(o); disposables.push(geo, mat);
   }
   // the dial: a faint ring of stars at the equator, a tick of each domain's colour at its galaxy's compass angle

@@ -2491,7 +2491,7 @@ function placeSystems(reg){
     if(reg>=0&&GAL_LAYOUT&&GAL_LAYOUT.systems[reg])sysEls=GAL_LAYOUT.systems[reg].map(sy=>{const el=document.createElement('div');el.className='rlabel gsys';
       Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0});
       el.innerHTML=`<span style="color:#e8f6ff">✦ ${esc(sysName(sy))}</span> <span style="opacity:.55">${fmt(sy.members.length)}</span>`;
-      el.title='a star system: landmarks that link to each other · click to go there';
+      el.title='a group of claims that link to each other · click to go there';
       el.addEventListener('click',e=>{e.stopPropagation();setFocusSoma(-1);clearAnno('focus');satellites(-1);cam.targetT.copy(sy.c);cam.distT=clamp(sy.r*3.6,R*.05,R*1.2);cam.idle=0});
       labelsEl.appendChild(el);return {el,sy}})}
   const items=[];sysEls.forEach(L=>{const a=project(L.sy.c.clone().add(new V3(0,L.sy.r*.6,0)));if(!a.front){L.el.style.opacity=0;L.el.style.pointerEvents='none';return}items.push({L,a,y:a.y-8})});
@@ -2579,16 +2579,20 @@ let hintT=null;
 function showHint(){const h=$('hint');h.classList.add('fresh');clearTimeout(hintT);hintT=setTimeout(()=>h.classList.remove('fresh'),7000)}
 function hint(t){const h=$('hint');if(h.innerHTML!==t){h.innerHTML=t;showHint()}}
 // THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
-const KEY=GALAXY?[['claim','a sun · proven'],['learning','a sun · still learning'],['young','a sun · new this week'],['fading','a sun · fading'],
-    ['system','a system · suns that link'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a halo dot · a space it touches']]
+const KEY=GALAXY?[['claim','a claim · proven'],['learning','a claim · still learning'],['young','a claim · new this week'],['fading','a claim · fading'],
+    ['system','a group · claims that link'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a halo dot · a space it touches']]
   :[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
 function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
   g.lineWidth=1.6;
   // the galaxy's own marks: a star in its state's colour, a system's soft light, a halo dot on its orbit
   const STAR_KEY={claim:['#ffffff','#bfe0ff',1],learning:['#9fe6ff','#3a8fb0',.75],young:['#ffd0e6','#ff8fc4',1],fading:['#ffd9a8','#ffb46b',.85]};
-  if(GALAXY&&STAR_KEY[kind]){const [c0,c1,al]=STAR_KEY[kind],gr=g.createRadialGradient(0,0,0,0,0,13);gr.addColorStop(0,c0);gr.addColorStop(.22,c1);gr.addColorStop(1,'rgba(0,0,0,0)');
-    g.globalAlpha=al;g.fillStyle=gr;g.beginPath();g.arc(0,0,13,0,7);g.fill();g.globalAlpha=.9*al;g.fillStyle=c0;g.beginPath();g.arc(0,0,2.4,0,7);g.fill();return c}
+  if(GALAXY&&STAR_KEY[kind]){const [c0,c1,al]=STAR_KEY[kind],soft=kind==='learning',gr=g.createRadialGradient(0,0,0,0,0,soft?12:9);
+    gr.addColorStop(0,c0);gr.addColorStop(soft?.5:.25,c1);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=soft?.5:al;g.fillStyle=gr;g.beginPath();g.arc(0,0,soft?12:9,0,7);g.fill();
+    g.globalAlpha=al;g.fillStyle=c0;if(!soft){g.beginPath();g.arc(0,0,kind==='fading'?2:2.6,0,7);g.fill()}
+    if(kind==='claim'){g.strokeStyle=c0;g.lineWidth=1;g.globalAlpha=.85;g.beginPath();g.moveTo(-15,0);g.lineTo(15,0);g.moveTo(0,-15);g.lineTo(0,15);g.stroke()}   // a sparkle
+    if(kind==='young'){g.strokeStyle=c1;g.lineWidth=1.2;g.beginPath();g.arc(0,0,7,0,7);g.stroke()}                                                          // a newborn ring
+    return c}
   if(GALAXY&&kind==='system'){const gr=g.createRadialGradient(0,0,0,0,0,15);gr.addColorStop(0,'rgba(191,224,255,.35)');gr.addColorStop(1,'rgba(191,224,255,0)');
     g.fillStyle=gr;g.beginPath();g.arc(0,0,15,0,7);g.fill();g.fillStyle='#fff';for(const [x,y,r] of [[0,0,2.6],[-7,4,1.4],[6,-5,1.2],[5,6,1]]){g.beginPath();g.arc(x,y,r,0,7);g.fill()}return c}
   if(GALAXY&&kind==='node'){g.globalAlpha=.35;g.strokeStyle='#bfe0ff';g.lineWidth=1;g.beginPath();g.arc(0,0,10,0,7);g.stroke();
@@ -3735,8 +3739,9 @@ const _frame=()=>{
   // dims by where the camera IS, so the core never flares while a flight passes through the skin
   const camR=camera.position.length()/R;
   state.insideK=lerp(state.insideK||0,cortex.visible?clamp((1.6-camR)/.7,0,1):0,1-Math.pow(.02,dt));
-  core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55);
-  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85);
+  core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55)*(galaxy?.35:1);
+  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85)*(galaxy?.3:1);
+  if(galaxy)coreHalo.scale.setScalar(R*.45);   // the nucleus: a soft light, not a wash over the shell
   cells.scale.setScalar(b);coreHalo.scale.setScalar(R*(1.0+.1*sx)*pupilS);
   for(let i=0;i<MAXSEC;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
   {let o=0;const det=.52+.48*(.5+.5*Math.sin(t/4.2*Math.PI*2));const flat=state.morph.i;
