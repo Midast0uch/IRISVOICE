@@ -36,7 +36,8 @@ REPO = Path(__file__).resolve().parents[3]
 
 # the keys of the exporter's snap dict: what the frontend reads
 TOP_KEYS = ["meta", "famCounts", "domCounts", "sessions", "events", "landmarks", "edges", "episodes", "artifacts", "oracle",
-            "mind", "sectors", "pins", "spaces", "nodes", "nodeEdges", "quorum", "recalls", "ghosts"]
+            "mind", "sectors", "pins", "spaces", "nodes", "nodeEdges", "quorum", "recalls", "ghosts",
+            "projects"]   # 2026-11-23: the project lens (test_project_record_contract.py)
 META_KEYS = {"source", "generated", "counts", "eval_share", "warnings", "available", "last_integrity_pass"}
 COUNT_KEYS = {"events", "chain", "landmarks", "landmarks_absorbed", "edges", "merges", "episodes", "fragments", "artifacts",
               "sessions", "recall_turns"}

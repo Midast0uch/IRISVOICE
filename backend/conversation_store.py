@@ -558,6 +558,33 @@ def update_conversation_title(conversation_id: str, title: str) -> bool:
     return True
 
 
+def set_project_if_empty(conversation_id: str, project_id: str) -> bool:
+    """Name the project a conversation works in - only while it has none, so the first project a conversation
+    works in names it (backend/memory/projects.py; owner 2026-11-23). Called on the `projects` lane."""
+    if not conversation_id or not project_id:
+        return False
+    with _lock:
+        conv = _conversations.get(conversation_id)
+        if conv is not None and conv.get("project_id"):
+            return False
+        cur = _get_conn().execute(
+            "UPDATE conversations SET project_id = ? WHERE id = ? AND (project_id IS NULL OR project_id = '')",
+            (project_id, conversation_id),
+        )
+        if cur.rowcount and conv is not None:
+            conv["project_id"] = project_id
+        return bool(cur.rowcount)
+
+
+def project_of_conversation(conversation_id: str) -> str | None:
+    """The project id a conversation works in, or None (one primary-key read)."""
+    if not conversation_id:
+        return None
+    with _lock:
+        row = _get_conn().execute("SELECT project_id FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
+    return (row[0] or None) if row else None
+
+
 def toggle_pin_conversation(conversation_id: str) -> bool:
     """Toggle the pinned status of a conversation."""
     with _lock:

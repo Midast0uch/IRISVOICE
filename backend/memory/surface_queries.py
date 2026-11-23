@@ -495,6 +495,90 @@ def _card(r: sqlite3.Row, sector: Optional[str], domain: str, channel: Optional[
             "absorbed": bool(r["absorbed"])}
 
 
+# what KIND OF WORK a claim is about (owner 2026-11-23: the type of indicator must mean something to the reader). The old
+# kind came from the coordinate space of its steps: 283 of 389 were one kind. Order matters: the first match wins.
+CLAIM_WORKS = ("built", "you", "web", "code", "run", "files", "words")
+_WORK_RULES = tuple((k, re.compile(p)) for k, p in (
+    ("you", r"\bremember (this|that)\b|\bmy (favou?rite|preference|default|name)\b|\bdo i (prefer|like|want)\b|\bi (prefer|like|always)\b"),
+    ("code", r"\b(add|fix|rename|refactor|implement|edit|correct|rewrite)\b.{0,160}(function|class|method|module|\bbugs?\b|tests?\b|flag|\w+\.(py|js|ts|tsx|json|ini|toml)\b)"
+             r"|\b(change|replace|update|make)\b.{0,120}\w+\.(py|js|ts|tsx|json|ini|toml)\b"),
+    ("web", r"https?://|\bweb ?(site|page)|\bonline\b|wikipedia|\blook (it )?up\b|\bsearch (the web|for)\b|live browser|\blatest\b"),
+    ("run", r"\brun (the|this|it|main|all|a|\w+\.py)\b|\bexecute\b|\bwhat (it|\w+\.py) prints\b"),
+    ("files", r"\b(list|count|find|read|which|show|how many|report|tell me)\b.{0,120}(\bfiles?\b|folder|director|\w+\.(py|csv|ini|json|md|txt|log|toml)\b)|\bwrite the text\b|\bcreate (a )?(file|folder)\b"),
+))
+_TASK_PREFIX = re.compile(r"^The project is in .+?\.\s+(?=\S)", re.S)
+
+
+def claim_work(text: Any, task_class: Any = None) -> str:
+    """The kind of work a claim is about: built / you / web / code / run / files / words (a question answered in words)."""
+    if task_class == "bootstrap":
+        return "built"
+    t = _TASK_PREFIX.sub("", str(text or "")).lower()[:1200]
+    return next((k for k, rx in _WORK_RULES if rx.search(t)), "words")
+
+
+_PROJECT_IN_TEXT = re.compile(r"^The project is in (.+?)\.\s")
+PROJECT_KINDS = ("iris", "app", "mcp")
+
+
+def _claim_projects(con: sqlite3.Connection, landmarks: list[dict], lm_rows: list, chat_path, have: set) -> list[dict]:
+    """Projects (owner 2026-11-23, "Lens + record at source"): WHERE each claim was learned. Sets landmark["project"]
+    (an id or None) and landmark["project_inferred"]; returns [{id, name, kind, path, claims, inferred}] for the lens.
+
+    A claim's project, in order: its finding's project (kept at birth), its conversation's project_id (the tool bridge
+    stamps it), else the folder its text names ("The project is in <folder>." - old eval claims), resolved WITHOUT
+    the disk (the folder may be gone) and marked inferred. The registry names and kinds them. Read-only."""
+    from backend.memory import projects as _projects
+
+    known: dict[str, dict] = {}
+    if "project_registry" in have:
+        cols = table_cols(con, "project_registry")
+        want = [c for c in ("project_id", "name", "path", "kind") if c in cols]
+        if "project_id" in want:
+            # PLAN  SELECT project_id, name, path, kind FROM project_registry -> SCAN project_registry (one row a folder)
+            for r in con.execute(f"SELECT {', '.join(want)} FROM project_registry LIMIT 500"):
+                d = dict(zip(want, tuple(r)))
+                known[d["project_id"]] = {"id": d["project_id"], "name": d.get("name") or d["project_id"],
+                                          "path": d.get("path"), "kind": d.get("kind") if d.get("kind") in PROJECT_KINDS else "app"}
+    refs = sorted({r["conversation_ref"] for r in lm_rows if r["conversation_ref"]})
+    conv_project: dict[str, str] = {}
+    if refs:
+        with _optional_chat_store(chat_path) as cdb:
+            if cdb is not None and "project_id" in table_cols(cdb, "conversations"):
+                for part in _chunks(refs):
+                    # PLAN  SELECT id, project_id FROM conversations WHERE id IN (…) -> SEARCH conversations USING INDEX
+                    #       sqlite_autoindex_conversations_1 (id=?)  (the primary key)
+                    conv_project.update({r[0]: r[1] for r in cdb.execute(
+                        f"SELECT id, project_id FROM conversations WHERE id IN ({_marks(len(part))}) AND project_id IS NOT NULL",
+                        part)})
+    out: dict[str, dict] = {}
+    for lm, r in zip(landmarks, lm_rows):
+        p, inferred = None, False
+        kept = _projects.from_json(r["finding"]) if "finding" in r.keys() else None
+        if kept:
+            p = kept
+        elif conv_project.get(r["conversation_ref"]):
+            p = {"id": conv_project[r["conversation_ref"]]}
+        else:
+            m = _PROJECT_IN_TEXT.match(lm["claim"] or "")   # the served text: the label when there is no abstract (most claims)
+            if m:
+                p, inferred = _projects.short(_projects.project_of(m.group(1), probe=False)), True
+        pid = p.get("id") if p else None
+        lm["project"], lm["project_inferred"] = pid, inferred if pid else False
+        if not pid:
+            continue
+        row = out.get(pid)
+        if row is None:
+            base = known.get(pid) or {"id": pid, "name": p.get("name") or pid, "path": None,
+                                      "kind": p.get("kind") if p.get("kind") in PROJECT_KINDS else "app"}
+            row = out[pid] = {**base, "claims": 0, "inferred": inferred}
+        row["claims"] += 1
+        row["inferred"] = row["inferred"] and inferred
+    for pid, d in known.items():   # a registered project with no claim yet still shows (its work is new)
+        out.setdefault(pid, {**d, "claims": 0, "inferred": False})
+    return sorted(out.values(), key=lambda d: (PROJECT_KINDS.index(d["kind"]), -d["claims"], d["name"].lower()))
+
+
 def _channels(con: sqlite3.Connection, ids: list[str]) -> dict[str, int]:
     """Kyudo trust channel: the highest channel that ever observed the landmark."""
     cols = table_cols(con, "mycelium_episode_index")
@@ -1285,7 +1369,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         #       -> SCAN mycelium_landmarks + TEMP B-TREE FOR ORDER BY (3.3k rows, small table)
         lm_want = ("landmark_id", "label", "task_class", "micro_abstract_text", "tier", "is_permanent", "evidence",
                    "activation_count", "contradictions", "last_activated", "last_verified", "created_at", "conversation_ref",
-                   "traversal_sequence", "cumulative_score")
+                   "traversal_sequence", "cumulative_score", "finding")
         lm_rows = con.execute(f"SELECT {pick_cols(lm_cols, lm_want)} FROM mycelium_landmarks {live_sql} "
                               f"ORDER BY created_at DESC LIMIT ?", (SNAPSHOT_LANDMARKS,)).fetchall() if lm_cols else []
         lm_ids = [r["landmark_id"] for r in lm_rows]
@@ -1340,6 +1424,7 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             ranked = sorted(lm_fams.get(r["landmark_id"], {}).items(), key=lambda kv: -kv[1])[:3]   # stable: ties keep event order
             fams = [FAMILIES.index(f) for f, _ in ranked if f in FAMILIES] or [3, 6]
             landmarks.append({"id": r["landmark_id"], "claim": text, "cls": r["task_class"] or "other",
+                              "work": claim_work(text, r["task_class"]),
                               "tier": r["tier"] or "candidate", "permanent": bool(r["is_permanent"]), "evidence": ev,
                               "evidence_counts": dict(kinds), "activations": r["activation_count"] or 0,
                               "contradictions": r["contradictions"] or 0, "fading": fading,
@@ -1353,6 +1438,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
         if not any(r["micro_abstract_text"] for r in lm_rows):
             warnings.append("no live landmark has micro_abstract_text")
         lap("landmarks")
+        project_list = _claim_projects(con, landmarks, lm_rows, chat_path, have)
+        lap("projects")
         # PLAN  SELECT … FROM mycelium_landmark_edges WHERE from_landmark_id IN (…) AND to_landmark_id IN (…) LIMIT 3000
         #       -> SEARCH mycelium_landmark_edges USING INDEX idx_landmark_edges_from (from_landmark_id=?) (466 rows, small)
         edges = []
@@ -1737,7 +1824,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
             "famCounts": fam_counts, "domCounts": dom_counts, "sessions": sessions, "events": out_events,
             "landmarks": landmarks, "edges": edges, "episodes": episodes, "artifacts": artifacts,
             "oracle": oracle, "mind": [], "sectors": sectors, "pins": pins, "spaces": spaces,
-            "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum, "recalls": recalls, "ghosts": ghosts}
+            "nodes": nodes, "nodeEdges": node_edges, "quorum": quorum, "recalls": recalls, "ghosts": ghosts,
+            "projects": project_list}
 
 
 
@@ -2881,6 +2969,188 @@ def claim_source(claim_id: str) -> dict:
                                                  " FROM tool_results WHERE conversation_id = ? AND turn_id = ? ORDER BY id LIMIT ?",
                                                  (conv["id"], ans["turn_id"], CLAIM_SOURCE_STEPS))]
     return out
+
+
+CLAIM_STORY_SESSIONS = 120   # conversations of one claim looked at (learned in, proved in, used in), newest first
+CLAIM_STORY_LIST = 12        # ... and listed on its card
+CLAIM_STORY_EPISODES = 60    # runs of the task read for what it found and how it went
+CLAIM_STORY_RESULT = 700     # characters of what the best run produced
+THREAD_MODEL_EVENTS = 400    # moments of one conversation built for its corridor
+
+
+def _last_step_text(content: Any) -> str:
+    c = str(content or "")
+    if "[Step " in c:
+        c = c.rsplit("[Step ", 1)[-1]
+        if "] " in c:
+            c = c.split("] ", 1)[1]
+    return " ".join(c.split())
+
+
+def _plan_titles(con: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
+    """A name for a conversation whose chat is gone: what it planned ("research task, 3 steps"), from its first PLAN_MADE."""
+    out: dict[str, str] = {}
+    for part in _chunks(ids):
+        # PLAN  … FROM memory_events WHERE thread_id IN (…) AND label = 'PLAN_MADE' -> SEARCH … USING INDEX idx_memory_events_thread_ts
+        for r in con.execute(f"SELECT thread_id, payload FROM memory_events WHERE thread_id IN ({_marks(len(part))}) "
+                             "AND label = 'PLAN_MADE' ORDER BY ts", part):
+            p = jload(r[1], {})
+            if r[0] not in out and isinstance(p, dict) and p.get("task_class"):
+                n = p.get("steps")
+                out[r[0]] = str(p["task_class"]).replace("_", " ") + (f", {n} step{'' if n == 1 else 's'}" if isinstance(n, int) and n else "")
+    return out
+
+
+def claim_story(claim_id: str) -> dict:
+    """What a reader wants of one claim (owner 2026-11-23: the cards were "not resourceful"): what IRIS found, how it
+    does it, how often it held, and EVERY conversation it is connected to - the one it was learned in, those that
+    proved it, those that used it - each with whether it can still be opened.
+
+    Measured: the source chat is kept for 2 of 389 claims, but 252 have events in memory for a conversation that taught
+    or proved them, and 123 have a full run. A run counts as the claim's only when its task shares
+    CLAIM_SOURCE_MATCH of the claim's words (an evidence session can hold other tasks). Read-only."""
+    uses = claim_uses(claim_id, limit=60)
+    with read_only(memory_db_path()) as mem, _optional_chat_store() as cdb:
+        # PLAN  SELECT … FROM mycelium_landmarks WHERE landmark_id = ? -> SEARCH USING INDEX (landmark_id=?) (primary key)
+        cols = table_cols(mem, "mycelium_landmarks")
+        want = ("conversation_ref", "created_at", "micro_abstract_text", "label", "evidence", "task_class", "finding")
+        row = mem.execute(f"SELECT {pick_cols(cols, want)} FROM mycelium_landmarks WHERE landmark_id = ?", (claim_id,)).fetchone()
+        if row is None:
+            raise NotFound(claim_id)
+        text = row["micro_abstract_text"] or (row["label"] or "").replace("_", " ")
+        conv: dict[str, dict] = {}
+
+        def touch(sid, role, at):
+            if not sid or sid == "bootstrap_seed":
+                return
+            c = conv.setdefault(str(sid), {"id": str(sid), "roles": [], "ts": 0.0})
+            if role not in c["roles"]:
+                c["roles"].append(role)
+            c["ts"] = max(c["ts"], ts_of(at) or 0.0)
+
+        touch(row["conversation_ref"], "learned", row["created_at"])
+        proofs: dict[str, int] = {}
+        proof_in: set = set()
+        for e in jload(row["evidence"], []):
+            if isinstance(e, dict):
+                k = LM_EVIDENCE.get(str(e.get("kind")), "claim")
+                proofs[k] = proofs.get(k, 0) + 1
+                if e.get("session"):
+                    proof_in.add(str(e["session"]))
+                touch(e.get("session"), "proved", e.get("at"))
+        for u in uses["uses"]:
+            touch(u.get("thread"), "used", u.get("ts"))
+        total = len(conv)
+        ids = [c["id"] for c in sorted(conv.values(), key=lambda c: -c["ts"])[:CLAIM_STORY_SESSIONS]]
+        if row["conversation_ref"] and row["conversation_ref"] in conv and row["conversation_ref"] not in ids:
+            ids.append(row["conversation_ref"])
+        moments: dict[str, int] = {}
+        if ids and "thread_id" in table_cols(mem, "memory_events"):
+            for part in _chunks(ids):
+                # PLAN  SELECT thread_id, COUNT(*) … WHERE thread_id IN (…) GROUP BY thread_id
+                #       -> SEARCH memory_events USING COVERING INDEX idx_memory_events_thread_ts (thread_id=?)
+                moments.update({r[0]: r[1] for r in mem.execute(
+                    f"SELECT thread_id, COUNT(*) FROM memory_events WHERE thread_id IN ({_marks(len(part))}) GROUP BY thread_id", part)})
+        title: dict[str, str] = {}
+        if ids and cdb is not None:
+            for part in _chunks(ids):
+                # PLAN  SELECT id, title FROM conversations WHERE id IN (…) -> SEARCH USING INDEX sqlite_autoindex_conversations_1
+                title.update({r[0]: r[1] for r in cdb.execute(
+                    f"SELECT id, title FROM conversations WHERE id IN ({_marks(len(part))})", part)})
+        # the runs of this task, newest first
+        runs, words = [], _words(_TASK_PREFIX.sub("", text))
+        summary: dict[str, str] = {}
+        if ids and "session_id" in table_cols(mem, "episodes"):
+            for part in _chunks(ids):
+                # PLAN  … FROM episodes WHERE session_id IN (…) ORDER BY timestamp DESC LIMIT ?
+                #       -> SEARCH episodes USING INDEX idx_ep_session (session_id=?) + TEMP B-TREE FOR ORDER BY
+                for r in mem.execute("SELECT session_id, task_summary, outcome_type, duration_ms, tool_sequence, timestamp, "
+                                     f"substr(full_content, -6000) AS tail FROM episodes WHERE session_id IN ({_marks(len(part))}) "
+                                     "ORDER BY timestamp DESC LIMIT ?", part + [CLAIM_STORY_EPISODES]):
+                    summary.setdefault(r["session_id"], clip(_TASK_PREFIX.sub("", r["task_summary"] or ""), 80) or "")
+                    if words and len(words & _words(r["task_summary"])) / len(words) >= CLAIM_SOURCE_MATCH:
+                        runs.append(r)
+        best = next((r for r in runs if r["outcome_type"] == "success" and _last_step_text(r["tail"])), None)
+        kept = jload(row["finding"], None) if "finding" in cols else None
+        found, steps, src = None, [], None
+        if isinstance(kept, dict) and (kept.get("result") or kept.get("tools")):
+            found, src = clip(kept.get("result"), CLAIM_STORY_RESULT), kept.get("conversation")
+            steps = [{"tool": t.get("tool"), "target": clip(t.get("target"), 80), "ok": t.get("ok", True)}
+                     for t in (kept.get("tools") or [])[:8] if isinstance(t, dict)]
+        if best is not None:
+            if not found:
+                found, src = clip(_last_step_text(best["tail"]), CLAIM_STORY_RESULT), best["session_id"]
+            if not steps:
+                steps = [{"tool": s.get("tool"), "target": clip(str(s.get("target") or ""), 80), "ok": bool(s.get("success", True))}
+                         for s in jload(best["tool_sequence"], []) if isinstance(s, dict) and s.get("tool") and s.get("tool") != "none"][:8]
+        planned = _plan_titles(mem, [x for x in ids if moments.get(x) and not title.get(x) and not summary.get(x)]) if moments else {}
+        listed = []
+        for sid in ids:
+            c = conv[sid]
+            c["opens"] = "chat" if sid in title else "memory" if moments.get(sid) else None
+            c["moments"], c["title"] = moments.get(sid, 0), title.get(sid) or summary.get(sid) or planned.get(sid)
+            listed.append(c)
+        listed.sort(key=lambda c: (c["opens"] is None, "learned" not in c["roles"], "proved" not in c["roles"], -c["ts"]))
+        durs = [r["duration_ms"] / 1000.0 for r in runs if r["duration_ms"]]
+        return {"claim": claim_id, "work": claim_work(text, row["task_class"]), "found": found, "found_in": src, "steps": steps,
+                "runs": {"n": len(runs), "ok": sum(1 for r in runs if r["outcome_type"] == "success"),
+                         "failed": sum(1 for r in runs if r["outcome_type"] == "failure"),
+                         "seconds": round(sum(durs) / len(durs), 1) if durs else None},
+                "proof": {"kinds": proofs, "conversations": len(proof_in)},
+                "uses": {"total": uses["total"], "helped": sum(1 for u in uses["uses"] if u.get("outcome") == "helped"),
+                         "misled": sum(1 for u in uses["uses"] if u.get("outcome") == "misled"),
+                         "last": max((u["ts"] for u in uses["uses"] if u.get("ts")), default=None)},
+                "conversations": listed[:CLAIM_STORY_LIST], "conversations_total": total,
+                "conversations_open": sum(1 for c in listed if c["opens"])}
+
+
+def thread_model(thread_id: str) -> dict:
+    """ONE conversation in the snapshot's own shapes - {session, events, episodes} - so the surface can open ANY
+    conversation a claim is connected to, not only the snapshot's newest threads. Built from the memory (events, runs)
+    and the chat when it is kept. NotFound when the memory holds neither. Read-only, bounded."""
+    with read_only(memory_db_path()) as mem, _optional_chat_store() as cdb:
+        events, episodes, messages, title = [], [], [], None
+        if "thread_id" in table_cols(mem, "memory_events"):
+            # PLAN  … FROM memory_events WHERE thread_id = ? ORDER BY ts DESC LIMIT ?
+            #       -> SEARCH memory_events USING INDEX idx_memory_events_thread_ts (thread_id=?)
+            for r in mem.execute("SELECT event_id, ts, family, label, valence, actor, evidence, episode_id, links, payload, topic_domain "
+                                 "FROM memory_events WHERE thread_id = ? ORDER BY ts DESC LIMIT ?", (thread_id, THREAD_MODEL_EVENTS)):
+                links, payload = jload(r["links"], {}), jload(r["payload"], {})
+                lid = ((links.get("landmark_id") or links.get("landmark")) if isinstance(links, dict) else None) or \
+                      (payload.get("landmark") if isinstance(payload, dict) else None)
+                events.append({"id": r["event_id"], "ts": r["ts"], "family": r["family"], "label": r["label"], "valence": r["valence"],
+                               "actor": r["actor"], "evidence": r["evidence"], "episode": r["episode_id"], "session": thread_id,
+                               "domain": r["topic_domain"] or "general", "landmark": lid, "clm": _clm_detail(r["label"], payload)})
+        if "session_id" in table_cols(mem, "episodes"):
+            # PLAN  … FROM episodes WHERE session_id = ? -> SEARCH episodes USING INDEX idx_ep_session (session_id=?)
+            for r in mem.execute("SELECT id, task_summary, outcome_type, outcome_score, failure_reason, user_corrected, user_confirmed, "
+                                 "duration_ms, tool_sequence, timestamp FROM episodes WHERE session_id = ? ORDER BY timestamp DESC "
+                                 "LIMIT ?", (thread_id, EPISODES_CAP)):
+                tools, steps, n_steps = episode_steps(r["tool_sequence"], STEPS_PER_EPISODE)
+                episodes.append({"id": r["id"], "session": thread_id, "summary": (r["task_summary"] or "")[:160],
+                                 "outcome": r["outcome_type"] or "partial", "score": r["outcome_score"] or 0.0,
+                                 "failure_reason": clip(r["failure_reason"], 200), "corrected": bool(r["user_corrected"]),
+                                 "confirmed": bool(r["user_confirmed"]), "duration": (r["duration_ms"] or 0) / 1000.0,
+                                 "tools": tools, "steps": steps, "step_count": n_steps, "ts": ts_of(r["timestamp"])})
+        if cdb is not None:
+            # PLAN  SELECT title FROM conversations WHERE id = ? -> SEARCH USING INDEX sqlite_autoindex_conversations_1
+            c = cdb.execute("SELECT title FROM conversations WHERE id = ?", (thread_id,)).fetchone()
+            title = c[0] if c else None
+            if c is not None:
+                # PLAN  … FROM messages WHERE conversation_id = ? -> SEARCH USING INDEX idx_messages_conv
+                messages = [{"ts": ts_of(r["timestamp"]), "role": r["role"], "turn": r["turn_id"], "text": clip(r["text"], 160)}
+                            for r in cdb.execute("SELECT role, substr(text, 1, 400) AS text, turn_id, timestamp FROM messages WHERE "
+                                                 "conversation_id = ? ORDER BY timestamp, id LIMIT 200", (thread_id,))]
+        events.reverse()
+        times = [e["ts"] for e in events if e["ts"]] + [e["ts"] for e in episodes if e["ts"]] + [m["ts"] for m in messages if m["ts"]]
+        if not times:
+            raise NotFound(thread_id)
+        name = title or next((clip(_TASK_PREFIX.sub("", e["summary"]), 90) for e in reversed(episodes) if e["summary"]), None) or _plan_titles(mem, [thread_id]).get(thread_id) or pretty_thread(thread_id)
+        return {"session": {"id": thread_id, "objective": name, "started": min(times), "ended": max(times), "exit": "natural", "traj": [],
+                            "eval": _is_eval_thread(thread_id, title), "episodes": [e["id"] for e in episodes],
+                            "messages": [m for m in messages if m["ts"]], "strands": [], "thread": thread_id, "tags": [],
+                            "reports_to": None, "reports": [], "ghost": title is None, "ctx_peak": None},
+                "events": events, "episodes": episodes}
 
 
 def tool_output(conversation_id: str, tool: Optional[str] = None, target: Optional[str] = None,

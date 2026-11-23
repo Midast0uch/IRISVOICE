@@ -18,7 +18,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { MemoryEngine } from "@/lib/memory/scene/engine"
-import { claimUses, correctMemory, correctTarget, fetchMemorySnapshot, fetchOracleView, fetchClaimSource, fetchStrand, fetchToolResult, fetchTranscript, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
+import { claimUses, correctMemory, correctTarget, fetchMemorySnapshot, fetchOracleView, fetchClaimSource, fetchClaimStory, fetchStrand, fetchThreadModel, fetchToolResult, fetchTranscript, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
 
 export interface MemorySurfaceProps {
   /** Memory is the surface on screen (and the dashboard is open). */
@@ -95,6 +95,8 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
           toolResult: model ? fetchToolResult : undefined,   // W1: a step's exact output on click (the real memory only)
           strandDetail: model ? fetchStrand : undefined,     // W3: the corridor's context band (the real memory only)
           claimSource: model ? fetchClaimSource : undefined, // W4: where a claim was learned and what it found
+          claimStory: model ? fetchClaimStory : undefined,   // W4: the card: found, how, track record, its conversations
+          threadModel: model ? fetchThreadModel : undefined, // W4: open any conversation a claim names
           transcript: model ? fetchTranscript : undefined,   // W4: the corridor's readable transcript (full messages)
           onError: (e) => {
             console.warn("[MemorySurface] the scene stopped:", e)

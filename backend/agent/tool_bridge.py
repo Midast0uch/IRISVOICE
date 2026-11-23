@@ -3420,6 +3420,7 @@ class AgentToolBridge:
                 params = routed["params"]
                 sandbox_note = routed.get("note")
 
+            self._note_project(session_id, tool_name, params)
             if tool_name in mcp_tools:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
                 result = await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
@@ -4036,6 +4037,43 @@ class AgentToolBridge:
         """Bind the resolved session workdir for this turn's tool executions."""
         self.__init_bridge_state__()
         self._session_workdirs[session_id] = workdir
+        self._note_project(session_id, "", {"path": workdir})
+
+    # Projects (owner 2026-11-23, "record at source"): the tools that work IN a folder. A new folder for a session is
+    # noted on the `projects` lane (backend/memory/projects.py: disk walk + registry + conversation stamp); here only
+    # a dict lookup - nothing touches the disk on the answer path.
+    _PROJECT_TOOLS = frozenset(("read_file", "write_file", "edit_file", "list_directory", "glob_files", "grep_files",
+                                "create_directory", "delete_file", "run_command", "git_status", "git_diff"))
+    _PROJECT_SEEN_MAX = 512
+
+    def _note_project(self, session_id: str, tool_name: str, params: Dict) -> None:
+        try:
+            if tool_name and tool_name not in self._PROJECT_TOOLS:
+                return
+            from backend.tool_args import path_arg
+
+            wd = (getattr(self, "_session_workdirs", None) or {}).get(session_id)
+            raw = path_arg(params) if isinstance(params, dict) else ""
+            if not raw and isinstance(params, dict):
+                raw = next((params[k] for k in ("repo_path", "cwd", "directory") if isinstance(params.get(k), str) and params[k].strip()), "")
+            target = raw or wd or self._DEFAULT_REPO   # no path: the command runs in the project folder
+            folder = target if not os.path.splitext(target)[1] else os.path.dirname(target)
+            seen = getattr(self, "_project_seen", None)
+            if seen is None:
+                seen = self._project_seen = {}
+            # per CONVERSATION, not per session: the app keeps one session for every chat (live 2026-11-23)
+            conv = (getattr(self, "_active_conversation_id", None) or {}).get(session_id) or None
+            key = (conv or session_id, folder)
+            if key in seen:
+                return
+            if len(seen) >= self._PROJECT_SEEN_MAX:
+                seen.clear()
+            seen[key] = True
+            from backend.memory import projects
+
+            projects.note_path(conv, target, wd)
+        except Exception as exc:  # noqa: BLE001 - a project label never blocks a tool call
+            logger.warning("[ToolBridge] session=%s project not noted tool=%s: %s", session_id, tool_name, exc)
 
     _FILE_PATH_KEYS = ("path", "file_path")
 

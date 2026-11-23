@@ -9,7 +9,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Delaunay } from 'd3-delaunay';
 import { MEMORY_CSS, MEMORY_HTML } from './markup';
-import { createGalaxy, layoutGalaxy } from './galaxy';
+import { createGalaxy, CLAIM_STATE_COL, GROUP_COL, layoutGalaxy } from './galaxy';
 
 export interface MemoryEngineOptions {
   /** The memory model (the snapshot / API shape). Absent: the synthetic generator draws (development only). */
@@ -38,6 +38,8 @@ export interface MemoryEngineOptions {
   claimSource?: (id: string) => Promise<any>;
   /** W4: a conversation's full messages for the corridor's transcript. */
   transcript?: (id: string) => Promise<any>;
+  claimStory?: (id: string) => Promise<any>;
+  threadModel?: (id: string) => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -920,6 +922,12 @@ function curvePoint(t,s){return [(7*Math.cos(t)-3*s*Math.cos(9*t))/10,(7*Math.si
 // 5. the knowledge forest inside: landmarks as neurons (video 1), edges as axons
 // ═══════════════════════════════════════════════════════════════════════════
 const LM=M.landmarks;
+// PROJECTS (owner 2026-11-23): WHERE a claim was learned - IRIS itself, an app, an MCP server. A lens over the galaxies,
+// never a region of its own: the map stays the meaning, the lens lights one project across it.
+const PROJ=Array.isArray(M.projects)?M.projects:[],PROJI=new Map(PROJ.map((p,i)=>[p.id,i]));
+const projOfClaim=l=>l&&l.project!=null&&PROJI.has(l.project)?PROJ[PROJI.get(l.project)]:null;
+const PROJ_KIND={iris:'IRIS itself',app:'an app',mcp:'an MCP server'};
+const projWord=p=>p.kind==='iris'?'IRIS itself':`${p.kind==='mcp'?'the MCP server':'the app'} ${p.name}`;
 const NL=LM.length;
 // the objects of each kind of memory, so the key can single one kind out
 const KIND_OBJ={claim:[],pin:[],moment:[],node:[]};
@@ -1392,7 +1400,11 @@ if(GAL_LAYOUT){const touch=new Map();
 // a fact, how you like it, when, what IRIS can do); its MOTE = the family of its most frequent real event (none, when
 // the snapshot holds no event on it - nothing is invented)
 const KIND_OF={toolpath:1,domain:2,conduct:3,style:3,chrono:4,capability:5};
-const claimKind=l=>{const by={};(l.steps||[]).forEach(st=>{const k=KIND_OF[st.space];if(k)by[k]=(by[k]||0)+1});
+// the kind of WORK (the backend names it: claim_work): what the reader can tell apart. The old kind (the coordinate space of
+// the claim's steps) was one value for 283 of 389 claims.
+const WORKS=[['code','changes code','code'],['web','looks things up on the web','web'],['you','about you','you'],['run','runs and checks things','runs'],['built','how IRIS was built','built'],['files','reads and writes files','files'],['words','answers in words','words']];
+const WORKI=Object.fromEntries(WORKS.map(([k],i)=>[k,i+1]));
+const claimKind=l=>{if(l.work&&WORKI[l.work])return WORKI[l.work];const by={};(l.steps||[]).forEach(st=>{const k=KIND_OF[st.space];if(k)by[k]=(by[k]||0)+1});
   const top=Object.entries(by).sort((a,b)=>b[1]-a[1])[0];return top?+top[0]:0};
 const LM_FAM=(()=>{const by=new Map();for(const e of M.events)if(typeof e.landmark==='number'&&e.family){const m=by.get(e.landmark)||new Map();m.set(e.family,(m.get(e.family)||0)+1);by.set(e.landmark,m)}
   const out=new Map();by.forEach((m,k)=>{const top=[...m.entries()].sort((a,b)=>b[1]-a[1])[0];if(top)out.set(k,top[0])});return out})();
@@ -1456,7 +1468,7 @@ const PIN_VS=`uniform float uTime,uPix,uVis,uH,uMax;attribute vec3 aCol;attribut
 const PIN_FRAG=`uniform float uTime,uMax;varying vec3 vC;varying float vA,vH;
   void main(){vec2 p=(gl_PointCoord-.5)*2.;vec2 q=abs(p);
     if(uMax<20.){float r=length(p)/.62;if(r>1.6)discard;vec3 n=vec3(p/.62,sqrt(max(0.,1.-r*r)));float sh=clamp(dot(n,normalize(vec3(-.6,.55,.6))),0.,1.);
-      float disc=smoothstep(1.,.92,r),rim=smoothstep(.08,.0,abs(r-1.))*vH;vec3 col=mix(vec3(.5,.5,.54),vec3(.96,.93,.86),sh);
+      float disc=smoothstep(1.,.92,r),rim=smoothstep(.08,.0,abs(r-1.))*vH;vec3 col=mix(vec3(.2,.2,.23),mix(vec3(.5,.48,.46),vec3(.96,.93,.86),vH),sh);
       gl_FragColor=vec4(col+rim*.6,(disc*(.18+.82*sh)+exp(-r*r*1.5)*.08+rim*.7)*vA);return;}   // a moon: held still, lit from one side
     float hx=max(q.x*.866+q.y*.5,q.y),shard=1.-smoothstep(.36,.4,hx),edge=smoothstep(.28,.36,hx)*shard;
     float facet=step(0.,p.x*p.y);                                                   // two lit facets, two in shade
@@ -1476,8 +1488,8 @@ const pinJ=new Map();let pinObjG=null;
 const pinInfo=PINS.map(p=>{let ri=REGI[p.domain]??0;
   if(GAL_LAYOUT){const by=new Map();for(const r of p.refs||[])if(r.t==='landmark'){const k=M.lmIndex.get(r.id);if(k!=null)by.set(LM[k].dom,(by.get(LM[k].dom)||0)+1)}
     let bn=0;by.forEach((n,r)=>{if(n>bn){bn=n;ri=r}});const reg=GAL_LAYOUT.hasHalo(ri)?ri:-1,j=pinJ.get(reg)||0;pinJ.set(reg,j+1);
-    const tip=GAL_LAYOUT.pinAt(reg,j),s=R*(.004+.002*Math.sqrt(Math.max(1,p.links||1)));   // W4 (§10): a fixed star the arm slides past
-    return {p,reg,dir:tip.clone().normalize(),base:tip.clone(),s,tip,col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}}
+    const tip=GAL_LAYOUT.pinAt(reg,j),s=R*(.004+.002*Math.sqrt(Math.max(1,p.links||1))),orb=GAL_LAYOUT.pinOrbit?GAL_LAYOUT.pinOrbit(reg,j):null;   // W4: a moon of its group
+    return {p,reg,dir:tip.clone().normalize(),base:tip.clone(),s,tip:orb?orb.at(0):tip,orb,w:(orb?orb.at(0):tip).clone(),col:new THREE.Color(pinType(p.type).col),held:p.held?1:0}}
   let c=regC[ri],rad=regRad[ri];
   if(p.sector&&SUBI[p.sector]!=null){c=subC[SUBI[p.sector]];rad=subRad[SUBI[p.sector]]}
   const dir=c.clone().add(new V3(gauss(),gauss(),gauss()).multiplyScalar(rad*.45)).normalize(),s=R*(.02+.011*Math.sqrt(Math.max(1,p.links||1)));
@@ -1502,7 +1514,7 @@ if(PINS.length){
 const galaxy=GALAXY&&GAL_LAYOUT?createGalaxy({R,U,layout:GAL_LAYOUT,seed:11,
   links:M.edges.filter(e=>e.a<NL&&e.b<NL).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),
   claimNodes:CLAIM_NODES,claimInfo:LM.map((l,k)=>({proven:l.tier!=='candidate',sync:syncClaim(l),young:!!(l.born&&nowS()-l.born<7*86400),fading:!!l.fading,
-    kind:claimKind(l),famCol:LM_FAM.has(k)?(FAM[FAMI[LM_FAM.get(k)]]||{}).color||null:null})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
+    kind:claimKind(l),famCol:LM_FAM.has(k)?(FAM[FAMI[LM_FAM.get(k)]]||{}).color||null:null,proj:PROJI.has(l.project)?PROJI.get(l.project):-1})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
   halos:[...new Set([...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg),...HALO_COUNTS.keys()])].map(reg=>({reg,counts:HALO_COUNTS.get(reg)||{}}))}):null;
 if(galaxy)cortex.add(galaxy.group);
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
@@ -2500,7 +2512,7 @@ function setAnno(name,key,anchorFn,html,o={}){const s=anno(name);if(s.lingerT){c
     if(s.pend?.key!==key){clearTimeout(s.intentT);s.intentT=setTimeout(()=>{s.intentT=null;const p=s.pend;s.pend=null;if(p)showAnno(...p)},HOVER_INTENT_MS)}
     s.pend=Object.assign([name,key,anchorFn,html,o],{key});return}
   showAnno(name,key,anchorFn,html,o)}
-function showAnno(name,key,anchorFn,html,{hot=false,cell=false,col=null}={}){const s=anno(name);
+function showAnno(name,key,anchorFn,html,{hot=false,cell=false,col=null,dock=false}={}){const s=anno(name);s.dock=dock;s.el.classList.toggle('dock',dock);s.path.style.display=dock?'none':'';
   if(s.cell!==cell){s.cell=cell;s.el.classList.toggle('cell',cell);s.key=null}
   if(col)s.el.style.setProperty('--cell',col);
   if(s.key!==key){s.el.innerHTML=html;s.key=key;const t=s.el.querySelector('.t');if(t&&t.textContent.length<=40)scramble(t,t.textContent,18);   // never on long text: it read as jumbled words
@@ -2545,24 +2557,30 @@ let haloLabelEls=null;
 const ARRIVE_MS=3000;let arriveT=0;
 function reveal(ax,ay){const near=clamp(1-(Math.hypot(ax-mouse.x,ay-mouse.y)-50)/150,0,1),arr=clamp(1-(performance.now()-arriveT-ARRIVE_MS)/800,0,1);return Math.max(near,arr*.85)}
 let dialHover=-1,dialEls=null;
+// one place per label (owner 2026-11-23: 'make sure the text doesnt get messy'): galaxy names first, then groups, then
+// coordinate spaces; a later label that would cover an earlier one, the title or the ticker is not drawn this frame
+const DIAL_REST_MS=2600;let lblRects=[];const lblTaken=(x,y,w)=>lblRects.some(r=>x<r.x+r.w+4&&x+w+4>r.x&&y<r.y+r.h&&y+13>r.y);
+const lblReset=()=>{lblRects=state.inside?[{x:0,y:0,w:280,h:160},{x:0,y:innerHeight-150,w:300,h:150}]:[]};
 function placeDial(show){
   if(!GAL_LAYOUT)return;
   if(!dialEls)dialEls=[...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg)].map(reg=>{const el=document.createElement('div');el.className='rlabel gdial';
-    Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0});
+    Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0,transition:'opacity .7s'});
     el.innerHTML=`<span style="color:${domCol(REG[reg])};font-weight:600">●</span><span class="nm" style="color:${domCol(REG[reg])};font-weight:600"> ${esc(domWord(REG[reg]))}</span><span class="nm" style="opacity:.6"> ${fmt((somaByReg[reg]||[]).length)}</span>`;
     el.title=`${fmt((somaByReg[reg]||[]).length)} claims · ${fmt(M.domCounts[REG[reg]]||0)} moments · click to go in`;
     el.addEventListener('pointerenter',()=>{dialHover=reg});el.addEventListener('pointerleave',()=>{if(dialHover===reg)dialHover=-1});
     el.addEventListener('click',e=>{e.stopPropagation();dialHover=-1;goGalaxy(reg)});labelsEl.appendChild(el);return {el,reg}});
   const lit=dialHover>=0?dialHover:state.hoverReg;
+  const rest=!state.inside&&dialHover<0&&performance.now()-(mouse.moved||0)>DIAL_REST_MS;   // owner 2026-11-23: untouched, the shell shows by itself
   // names never overlap: per side, in screen order, each at least one line below the one above it
   const items=[];dialEls.forEach(D=>{const ga=GAL_LAYOUT.arms[D.reg],w=!show||!ga?null:state.inside?ga.c.clone().add(galaxy.offsetOf(D.reg)).add(new V3(0,ga.rad*1.15,0)):GAL_LAYOUT.labelAt(D.reg),a=w&&project(w);
-    if(!a||!a.front){D.el.style.opacity=0;D.el.style.pointerEvents='none';return}items.push({D,a,right:a.x>innerWidth/2,y:a.y-8})});
-  for(const side of [false,true]){const col=items.filter(o=>o.right===side).sort((p,q)=>p.y-q.y);for(let i=1;i<col.length;i++)col[i].y=Math.max(col[i].y,col[i-1].y+15)}
+    if(!a||!a.front||(state.inside&&!(somaByReg[D.reg]||[]).length)){D.el.style.opacity=0;D.el.style.pointerEvents='none';return}items.push({D,a,right:a.x>innerWidth/2,y:a.y-8})});   // inside: a domain with no claim is nowhere to go
+  for(const side of [false,true]){const col=items.filter(o=>o.right===side).sort((p,q)=>p.y-q.y);if(state.inside)col.forEach(o=>{o.y=clamp(o.y,o.right?72:176,innerHeight-170)});for(let i=1;i<col.length;i++)col[i].y=Math.max(col[i].y,col[i-1].y+15)}
   items.forEach(({D,a,right,y})=>{const here=state.inside&&D.reg===state.diveReg;D.el.style.pointerEvents=here?'none':'auto';
+    if(here){D.el.style.opacity=0;return}   // the title names the galaxy you are in
     const rv=1;D.el.querySelectorAll('.nm').forEach(x=>{x.style.opacity=rv});   // tier 1: galaxy names always
-    D.el.style.opacity=here?.45:lit===D.reg?1:lit>=0?.3:.78;
+    D.el.style.opacity=rest?0:here?.45:lit===D.reg?1:lit>=0?.3:.78;if(rest)D.el.style.pointerEvents='none';
     const wd=D.el.offsetWidth;D.el.style.textAlign=right?'left':'right';
-    D.el.style.left=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4)+'px';D.el.style.top=y+'px'})}
+    const lx=clamp(right?a.x+6:a.x-6-wd,4,innerWidth-wd-4);D.el.style.left=lx+'px';D.el.style.top=y+'px';lblRects.push({x:lx,y,w:wd,h:13})})}
 // W4 (owner, 2026-11-23: where to look inside a galaxy): its star systems, named from their suns' kind of work (else
 // the heaviest sun's words), at the centre of each system's light; a click goes to that system
 let sysEls=[],sysFor=-2;
@@ -2573,15 +2591,16 @@ function placeSystems(reg){
   if(reg!==sysFor){sysEls.forEach(L=>L.el.remove());sysEls=[];sysFor=reg;
     if(reg>=0&&GAL_LAYOUT&&GAL_LAYOUT.systems[reg])sysEls=GAL_LAYOUT.systems[reg].map(sy=>{const el=document.createElement('div');el.className='rlabel gsys';
       Object.assign(el.style,{cursor:'pointer',whiteSpace:'nowrap',opacity:0});
-      el.innerHTML=`<span style="color:#e8f6ff">✦ ${esc(sysName(sy))}</span> <span style="opacity:.55">${fmt(sy.members.length)}</span>`;
+      el.innerHTML=`<span style="color:${GROUP_COL[sy.id%GROUP_COL.length]}">✦ ${esc(sysName(sy))}</span> <span style="opacity:.55">${fmt(sy.members.length)}</span>`;
       el.title='a group of claims that link to each other · click to go there';
       el.addEventListener('click',e=>{e.stopPropagation();setFocusSoma(-1);clearAnno('focus');satellites(-1);cam.targetT.copy(sy.c);cam.distT=clamp(sy.r*3.6,R*.05,R*1.2);cam.idle=0});
       labelsEl.appendChild(el);return {el,sy}})}
   const items=[];sysEls.forEach(L=>{const a=project(L.sy.c.clone().add(galaxy.offsetOf(L.sy.reg)).add(new V3(0,L.sy.r*.6,0)));if(!a.front){L.el.style.opacity=0;L.el.style.pointerEvents='none';return}items.push({L,a,y:a.y-8})});
   items.sort((p,q)=>p.y-q.y);for(let i=1;i<items.length;i++)if(Math.abs(items[i].a.x-items[i-1].a.x)<140)items[i].y=Math.max(items[i].y,items[i-1].y+15);
   let mid=null,md=1e9;items.forEach(o=>{const dd=Math.hypot(o.a.x-innerWidth/2,o.a.y-innerHeight/2);if(dd<md){md=dd;mid=o}});
-  const cardOpen=state.focusSoma>=0;
-  items.forEach(o=>{const {L,a,y}=o,rv=cardOpen?.18:o===mid?1:Math.max(.55,reveal(a.x,a.y));L.el.style.pointerEvents=rv>.2?'auto':'none';L.el.style.opacity=.9*rv;const w=L.el.offsetWidth;L.el.style.left=clamp(a.x-w/2,4,innerWidth-w-4)+'px';L.el.style.top=y+'px'})}
+  const cardOpen=state.focusSoma>=0||state.hoverSoma>=0;   // one voice at a time: the group names step back for the claim
+  items.forEach(o=>{const {L,a,y}=o,rv=cardOpen?.18:o===mid?1:Math.max(.8,reveal(a.x,a.y));L.el.style.pointerEvents=rv>.2?'auto':'none';L.el.style.opacity=.9*rv;const w=L.el.offsetWidth,lx=clamp(a.x-w/2,4,innerWidth-w-4);L.el.style.left=lx+'px';L.el.style.top=y+'px';
+    if(lblTaken(lx,y,w)){L.el.style.opacity=0;L.el.style.pointerEvents='none'}else lblRects.push({x:lx,y,w,h:13})})}
 function placeHaloLabels(reg){
   if(!haloLabelEls)haloLabelEls=SPACES.map(sp=>{const el=document.createElement('div');el.className='rlabel';labelsEl.appendChild(el);return {el,sp:sp.id,n:-1}});
   if(!readerEl.parentNode)labelsEl.appendChild(readerEl);
@@ -2589,7 +2608,7 @@ function placeHaloLabels(reg){
   haloLabelEls.forEach(L=>{const n=hc[L.sp]||0,pt=ok&&n?project(GAL_LAYOUT.haloOrbit(reg,L.sp).add(galaxy.offsetOf(reg))):null;
     if(!pt||!pt.front){L.el.style.opacity=0;return}
     if(L.n!==n){L.n=n;L.el.innerHTML=`<b>${esc(SPACE_WORD[L.sp]||L.sp)}</b><i>${fmt(n)} here</i>`}
-    L.el.style.opacity=state.focusSoma>=0?0:.8*reveal(pt.x,pt.y);L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
+    L.el.style.opacity=state.focusSoma>=0||pt.x<0||lblTaken(pt.x+8,pt.y-8,L.el.offsetWidth)?0:.8*reveal(pt.x,pt.y);L.el.style.left=(pt.x+8)+'px';L.el.style.top=(pt.y-8)+'px';L.el.style.textAlign='left'});
   spaceLabelEls.forEach(L=>{L.el.style.opacity=0;L.p.setAttribute('d','')})}
 function placeSpaceLabels(show){
   const c=project(new V3()),e=project(new V3(R,0,0).applyQuaternion(camera.quaternion)),rs=Math.abs(e.x-c.x)||200;
@@ -2663,31 +2682,33 @@ let hintT=null;
 function showHint(){const h=$('hint');h.classList.add('fresh');clearTimeout(hintT);hintT=setTimeout(()=>h.classList.remove('fresh'),7000)}
 function hint(t){const h=$('hint');if(h.innerHTML!==t){h.innerHTML=t;showHint()}}
 // THE KEY: the five shapes of memory, drawn the way the scene draws them; click one to see only that kind
-const KEY=GALAXY?[['k1','a way of doing a task'],['k2','a fact about the world'],['k3','how you like things'],['k4','about when'],['k5','what IRIS can do'],
-    ['states','colour · how sure it is'],['events','mote · what happened to it'],['system','a group · claims that link'],['pin','a moon · a pin, held on purpose'],['moment','a moment, as it happens']]
+const KEY=GALAXY?[...WORKS.map(([k,w],i)=>['k'+(i+1),w]),
+    ['states','colour and weave · how sure it is'],['events','bead at the pole · what happened to it'],['system','a group · claims that link'],['pin','a moon · a pin, held on purpose'],['moment','a moment, as it happens']]
   :[['claim','a claim, proven'],['learning','a claim, still learning'],['pin','a pin, held on purpose'],['moment','a moment, as it happens'],['node','a node in a layer']];
 function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height=44;const g=c.getContext('2d');g.translate(22,22);
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
   g.lineWidth=1.6;
   // the galaxy's own marks: a star in its state's colour, a system's soft light, a halo dot on its orbit
-  const STAR_KEY={claim:['#eef6ff'],learning:['#86dcff'],young:['#ff80c4'],fading:['#ff8a4c']};
-  if(GALAXY&&/^k[1-5]$/.test(kind)){const n=+kind[1],W='#eef6ff';const glowAt=(x,y,r,a)=>{const gr=g.createRadialGradient(x,y,0,x,y,r);gr.addColorStop(0,W);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=a;g.fillStyle=gr;g.beginPath();g.arc(x,y,r,0,7);g.fill()};
-    g.strokeStyle=W;g.lineWidth=1.1;
-    if(n===1){glowAt(0,0,6,1);g.globalAlpha=.7;g.save();g.scale(1,.42);g.beginPath();g.arc(0,0,14,0,7);g.stroke();g.restore()}                         // a star with its orbit
-    else if(n===2){glowAt(0,0,6,1);g.globalAlpha=.8;g.beginPath();g.moveTo(-15,0);g.lineTo(15,0);g.moveTo(0,-15);g.lineTo(0,15);g.stroke()}            // a fixed star, spikes
-    else if(n===3){glowAt(-5,0,5,1);glowAt(5,0,4.4,.85)}                                                                                              // a binary star
-    else if(n===4){const gr=g.createLinearGradient(2,-2,-15,15);gr.addColorStop(0,'rgba(238,246,255,.7)');gr.addColorStop(1,'rgba(238,246,255,0)');g.globalAlpha=1;g.strokeStyle=gr;g.lineWidth=4;g.beginPath();g.moveTo(1,-1);g.lineTo(-14,14);g.stroke();glowAt(3,-3,6,1)}   // a comet
-    else{glowAt(0,0,6,1);g.globalAlpha=.75;for(let i=0;i<6;i++){const a=i/6*Math.PI*2;g.beginPath();g.moveTo(Math.cos(a)*5,Math.sin(a)*5);g.lineTo(Math.cos(a)*14,Math.sin(a)*14);g.stroke()}}   // a nova
-    return c}
-  if(GALAXY&&kind==='states'){[['#eef6ff',-12],['#86dcff',-4],['#ff80c4',4],['#ff8a4c',12]].forEach(([cc,x])=>{const gr=g.createRadialGradient(x,0,0,x,0,5);gr.addColorStop(0,cc);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=1;g.fillStyle=gr;g.beginPath();g.arc(x,0,5,0,7);g.fill()});return c}
+  // the seed of weave a claim is drawn as (galaxy.ts CLAIM_FS), in little: how finished = how sure, its shape = its kind
+  const token=(x,y,R0,kd,st)=>{const col=CLAIM_STATE_COL[st];g.save();g.translate(x,y);g.strokeStyle=col;g.lineWidth=Math.max(.8,R0*.085);
+    const hw=v=>kd===2?Math.sqrt(Math.max(0,.4-v*v)):kd===3?.47*Math.pow(Math.abs(Math.sin(Math.PI*clamp(v/.84,-1,1))),.7):.6*Math.pow(Math.max(0,Math.cos(Math.PI/2*clamp(v/.86,-1,1))),.82);
+    const line=(f,a)=>{g.globalAlpha=a;g.beginPath();let on=false;for(let i=0;i<=40;i++){const v=-.9+i*.045;if(st===2&&v>.1){break}if(st===4&&(i%9)>5){on=false;continue}const q=f(v);if(q==null){on=false;continue}
+      g[on?'lineTo':'moveTo'](q*R0*1.15,-v*R0*1.15);on=true}g.stroke()};
+    if(kd===4)for(const o of [0,Math.PI])line(v=>.36*Math.sin(v*5.2+o),.95);
+    else if(kd===7){for(const q of [.42,.72,1.02]){g.globalAlpha=1.05-q*.55;g.setLineDash([R0*.4,R0*.18]);g.beginPath();g.arc(0,0,R0*q,0,7);g.stroke()}g.setLineDash([])}
+    else if(kd===5){g.globalAlpha=.95;g.beginPath();for(let i=0;i<=96;i++){const a=i/96*Math.PI*2,r=.9*Math.abs(Math.cos(a*3));g[i?'lineTo':'moveTo'](Math.cos(a)*r*R0*1.1,Math.sin(a)*r*R0*1.1)}g.stroke()}
+    else{for(const sg of [-1,1])line(v=>sg*hw(v),.95);
+      if(kd===6){for(const v of [-.6,-.36,-.12,.12,.36,.6]){g.globalAlpha=.85;g.beginPath();g.moveTo(-hw(v)*R0*1.15,-v*R0*1.15);g.quadraticCurveTo(0,-v*R0*1.15+R0*.16,hw(v)*R0*1.15,-v*R0*1.15);g.stroke()}}
+      else if(kd===2){for(const m of [-.5,0,.5])line(v=>hw(v)*Math.sin(m*1.9),.7);for(const v of [-.3,0,.3]){g.globalAlpha=.7;g.beginPath();g.moveTo(-hw(v)*R0*1.15,v*R0*1.15);g.lineTo(hw(v)*R0*1.15,v*R0*1.15);g.stroke()}}
+      else{const n=st===3?1:2;for(let k=0;k<n;k++)for(const sg of st===2?[1]:[-1,1])line(v=>hw(v)*Math.sin(sg*v*2.6+k*1.5-.75),.85)}}
+    const gr=g.createRadialGradient(0,0,0,0,0,R0*.5);gr.addColorStop(0,'#fff');gr.addColorStop(.3,col);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=st===4?.5:1;g.fillStyle=gr;g.beginPath();g.arc(0,0,R0*.5,0,7);g.fill();
+    g.restore();g.globalAlpha=1};
+  const STAR_KEY={claim:1,learning:2,young:3,fading:4};
+  if(GALAXY&&/^k[1-7]$/.test(kind)){token(0,0,14,+kind[1],1);return c}
+  if(GALAXY&&kind==='states'){[1,2,3,4].forEach((st,i)=>token(-15+i*10,0,7,1,st));return c}
+  if(GALAXY&&STAR_KEY[kind]){token(0,0,13,1,STAR_KEY[kind]);return c}
   if(GALAXY&&kind==='events'){const gr=g.createRadialGradient(0,0,0,0,0,7);gr.addColorStop(0,'#eef6ff');gr.addColorStop(1,'rgba(0,0,0,0)');g.fillStyle=gr;g.beginPath();g.arc(0,0,7,0,7);g.fill();
     g.globalAlpha=.35;g.strokeStyle='#eef6ff';g.beginPath();g.arc(0,0,12,0,7);g.stroke();g.globalAlpha=1;g.fillStyle='#ffd36b';g.beginPath();g.arc(8.5,-8.5,2.6,0,7);g.fill();return c}
-  if(GALAXY&&STAR_KEY[kind]){const [c0]=STAR_KEY[kind],glowAt=(r,cc,a)=>{const gr=g.createRadialGradient(0,0,0,0,0,r);gr.addColorStop(0,cc);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=a;g.fillStyle=gr;g.beginPath();g.arc(0,0,r,0,7);g.fill()};
-    if(kind==='claim'){glowAt(10,c0,.5);g.globalAlpha=.9;g.strokeStyle=c0;g.lineWidth=1;g.beginPath();g.moveTo(-16,0);g.lineTo(16,0);g.moveTo(0,-16);g.lineTo(0,16);g.stroke();glowAt(3.2,'#ffffff',1)}   // proven: a brilliant star
-    else if(kind==='learning'){g.save();g.rotate(-.5);g.scale(1,.36);g.globalAlpha=.75;g.strokeStyle=c0;g.lineWidth=2.6;g.beginPath();g.arc(0,0,10,0,7);g.stroke();g.restore();glowAt(4,c0,.85)}   // a protostar in its disc
-    else if(kind==='young'){glowAt(14,c0,.55);glowAt(3,'#ffffff',1)}                                                     // a newborn star in its nebula
-    else{glowAt(9,c0,.6)}                                                                                                   // fading: a dim red giant
-    return c}
   if(GALAXY&&kind==='system'){const gr=g.createRadialGradient(0,0,0,0,0,15);gr.addColorStop(0,'rgba(191,224,255,.35)');gr.addColorStop(1,'rgba(191,224,255,0)');
     g.fillStyle=gr;g.beginPath();g.arc(0,0,15,0,7);g.fill();g.fillStyle='#fff';for(const [x,y,r] of [[0,0,2.6],[-7,4,1.4],[6,-5,1.2],[5,6,1]]){g.beginPath();g.arc(x,y,r,0,7);g.fill()}return c}
   if(GALAXY&&kind==='node'){g.globalAlpha=.35;g.strokeStyle='#bfe0ff';g.lineWidth=1;g.beginPath();g.arc(0,0,10,0,7);g.stroke();
@@ -2707,7 +2728,7 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
 let keyFocus=null;
 const GAL_ISO={claim:1,learning:2,young:3,fading:4};
 function setKindFocus(k){
-  if(galaxy&&k&&/^k[1-5]$/.test(k)){galaxy.isolateKind(+k[1]);keyFocus=k;$('key').classList.toggle('iso',true);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}
+  if(galaxy&&k&&/^k[1-7]$/.test(k)){galaxy.isolateKind(+k[1]);keyFocus=k;$('key').classList.toggle('iso',true);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}
   if(galaxy&&(k==='states'||k==='events'))return;   // a legend row, nothing to single out
   if(galaxy){galaxy.isolate(GAL_ISO[k]||0);if(!k)galaxy.isolateKind(0);if(k in GAL_ISO||k==='system'){keyFocus=k;$('key').classList.toggle('iso',true);
     document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k));return}}
@@ -2720,14 +2741,14 @@ function setKindFocus(k){
   $('key').classList.toggle('iso',!!k);document.querySelectorAll('#key a').forEach(a=>a.classList.toggle('on',a.dataset.k===k))}
 const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.filter(l=>l.tier==='candidate').length,pin:PINS.length,
   young:LM.filter(l=>l.born&&nowS()-l.born<7*86400).length,
-  ...(GALAXY?Object.fromEntries([1,2,3,4,5].map(n=>['k'+n,LM.filter(l=>claimKind(l)===n).length])):{}),fading:LM.filter(l=>l.fading).length,system:GAL_LAYOUT?GAL_LAYOUT.systems.reduce((x,y)=>x+y.length,0):0,
+  ...(GALAXY?Object.fromEntries([1,2,3,4,5,6,7].map(n=>['k'+n,LM.filter(l=>claimKind(l)===n).length])):{}),fading:LM.filter(l=>l.fading).length,system:GAL_LAYOUT?GAL_LAYOUT.systems.reduce((x,y)=>x+y.length,0):0,
   moment:M.meta?.counts?.events||M.events.length,node:NDS.length};
 KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
   a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:k==='states'||k==='events'?'':fmt(KEY_COUNT[k]||0)}),keyIcon(k));
   a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
 // the galaxy: the key folds into one small button (owner, 2026-11-23: the open column caught clicks meant for the scene)
-if(GALAXY){const kt=document.createElement('a');kt.className='kt';kt.textContent='◎ key';const K=$('key');K.classList.add('gfold');
-  kt.onclick=e=>{e.stopPropagation();const open=K.classList.toggle('gopen');K.classList.toggle('gfold',!open);kt.textContent=open?'✕ close the key':'◎ key'};K.appendChild(kt)}
+if(GALAXY){const kt=document.createElement('a');kt.className='kt';kt.textContent='◎';kt.title='the key: what the marks mean';const K=$('key');K.classList.add('gfold');
+  kt.onclick=e=>{e.stopPropagation();const open=K.classList.toggle('gopen');K.classList.toggle('gfold',!open);kt.textContent=open?'✕':'◎'};K.appendChild(kt)}
 // THE CONTROL SHEET (UX-PLAN 3.3): `?` (or "? keys" at the foot of the key) lists the gestures of the view you are in.
 // Only bindings that exist (the keydown handler, click(), the wheel): a sheet that promises a key is worse than none.
 const HELP={
@@ -2802,8 +2823,8 @@ function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the
   if(cam.mode==='tunnel'&&tunnel){const root=threadRoot(tunnel.session);parts.push('timeline');if(root!==tunnel.session.id)parts.push('thread · '+titleOf(root));
     parts.push('strand · '+tunnel.session.objective);if(tunnel.sel>=0&&LM[tunnel.sel])parts.push('claim · '+LM[tunnel.sel].claim)}
   else{const lw={cortex:'cortex',timeline:'timeline',artifacts:'artifacts',oracle:'oracle'}[state.lens];if(lw)parts.push(lw);
-    if(state.inside&&state.diveReg>=0)parts.push('territory · '+domWord(REG[state.diveReg]));
-    if(state.inside&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
+    if(state.inside&&state.diveReg>=0&&!galaxy)parts.push('territory · '+domWord(REG[state.diveReg]));   // the galaxy's nav bar names it, in the same place
+    if(state.inside&&!galaxy&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
     if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
   const when=cursorNow()?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
   const s_=cam.mode==='tunnel'&&tunnel?tunnel.session:null,inChat=!!s_&&!!(s_.messages||[]).length;
@@ -2981,7 +3002,48 @@ const EV_WORD={RECALL_DELIVERED:'given to IRIS',RECALL_USED:'used in an answer',
 const evLabel=l=>EV_WORD[l]||String(l||'').toLowerCase().replace(/_/g,' ');
 const lmEvents=new Map();for(const e of M.events)if(typeof e.landmark==='number'){const m=lmEvents.get(e.landmark)||new Map();m.set(e.label,(m.get(e.label)||0)+1);lmEvents.set(e.landmark,m)}
 const claimState=l=>l.fading?'fading':(l.born&&nowS()-l.born<7*86400)?'new this week':l.tier==='candidate'?'still learning':'proven';
-function landmarkHTML(k,deep){const l=LM[k];
+// THE CLAIM'S CARD (owner 2026-11-23: 'more useful ... resourceful to someone looking through their agent's memory'). In the
+// order a reader asks: what is it - what did IRIS find - how does it do it - can I trust it - where is it from. The first
+// lines come from the snapshot; the rest (claim_story) fills in a moment later. Every conversation that taught, proved or
+// used the claim is listed; a click opens it in the timeline.
+const ROLE_WORD={learned:'learned here',proved:'proved here',used:'used here'};
+const plain=t=>String(t||'').replace(/\*\*|__|`/g,'').replace(/^#+\s*/gm,'').replace(/\s*Actions?:\s*-\s.*$/s,'').replace(/\s+/g,' ').trim();
+const cutTo=(t,n)=>t.length>n?t.slice(0,n-1)+'…':t;
+function claimHead(k){const l=LM[k],w=WORKS[claimKind(l)-1],txt=plain(l.claim),first=(txt.match(/^.{18,130}?[.!?](?=\s|$)/)||[txt])[0],rest=txt.slice(first.length).trim();
+  return `<div class="k" style="color:${CLAIM_STATE_COL[l.fading?4:(l.born&&nowS()-l.born<7*86400)?3:l.tier==='candidate'?2:1]}">${esc(w?w[1]:'a claim')} · ${claimState(l)}</div>
+    <div class="t" title="${esc(txt)}">${esc(cutTo(first,130))}</div>${rest?`<div class="m sub">${esc(cutTo(rest,150))}</div>`:''}`}
+function claimCardHTML(k){const l=LM[k],pj=projOfClaim(l),n=(l.evidence_counts&&Object.values(l.evidence_counts).reduce((a,b)=>a+b,0))||l.evidence.length;
+  return claimHead(k)+`<div class="m"><div class="sec"><em>can it be trusted</em>${l.tier==='candidate'?(n?`not proven yet - ${fmt(n)} sign${n===1?'':'s'} that it worked, not enough to rely on`:'not proven yet - nothing has checked it'):`yes - proven by ${fmt(n)} check${n===1?'':'s'}${l.last_verified?', last '+ago(l.last_verified):''}`}${l.contradictions?` · <span class="w">contradicted ${fmt(l.contradictions)}×</span>`:' · never contradicted'}</div>
+    <div class="sec st" data-story="${k}"><span class="dimm">reading its story…</span></div>
+        ${pj||l.where?`<div class="sec"><em>project</em>${pj?esc(projWord(pj)):esc(l.where)}</div>`:''}</div>
+    ${opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${dragHandle('claim:'+l.id,'claim · '+l.claim)}${correctionHTML(k)}`}
+function storyHTML(k,r,all){const l=LM[k],steps=[];(r.steps||[]).forEach(st=>{const w=String(st.tool||'').replace(/_/g,' '),p=steps[steps.length-1];if(p&&p.w===w&&p.ok===st.ok){p.n++;return}steps.push({w,n:1,ok:st.ok!==false,t:st.target})});
+  const found=plain(r.found),R_=r.runs||{},U_=r.uses||{},pr=r.proof||{};
+  const conv=(r.conversations||[]),shown=all?conv:conv.slice(0,4);
+  return `${found?`<div class="sec"><em>${R_.ok||l.tier!=='candidate'?'what it found':'what its last run gave'}</em>${esc(cutTo(found,300))}</div>`:''}
+    ${steps.length?`<div class="sec"><em>how it does it</em>${steps.slice(0,6).map(p=>`<span class="chip${p.ok?'':' bad'}" title="${esc(p.t||'')}">${esc(p.w)}${p.n>1?' ×'+p.n:''}${p.ok?'':' ✗'}</span>`).join('<i class="arr">→</i>')}</div>`:''}
+    <div class="sec"><em>track record</em>${pr.conversations?`it worked in ${fmt(pr.conversations)} conversation${pr.conversations===1?'':'s'}`:'no run of it is recorded'}${U_.total?` · used ${fmt(U_.total)} time${U_.total===1?'':'s'}${U_.last?', last '+ago(U_.last):''}`:' · not used yet'}${R_.seconds?` · about ${span(R_.seconds)}`:''}${U_.helped?` · <span class="u">you said it helped ${U_.helped}×</span>`:''}${U_.misled?` · <span class="w">it misled ${U_.misled}×</span>`:''}</div>
+    ${conv.length?`<div class="sec"><em>its conversations · ${fmt(r.conversations_open)} of ${fmt(r.conversations_total)} open</em>${shown.map(c=>c.opens?`<span class="cv" data-thread="${esc(c.id)}" title="open it in the timeline"><b>${esc(cutTo(plain(c.title)||pretty(c.id),44))}</b><small>${c.roles.map(x=>ROLE_WORD[x]||x).join(', ')}${c.ts?' · '+ago(c.ts):''}${c.opens==='chat'?' · full chat':c.moments?` · ${fmt(c.moments)} moments`:''}</small></span>`
+        :`<span class="cv off" title="nothing of this conversation is kept any more"><b>${esc(cutTo(plain(c.title)||pretty(c.id),44))}</b><small>${c.roles.map(x=>ROLE_WORD[x]||x).join(', ')} · no longer kept</small></span>`).join('')}
+        ${!all&&conv.length>4?`<span class="go" data-story-all="${k}">→ ${fmt(conv.length-4)} more</span>`:''}</div>`:''}`}
+const pretty=id=>/^conv-\d+$/.test(id)?'conversation '+id.slice(5):/^eval-/.test(id)?'evaluation · '+id.slice(5).replace(/-[0-9a-f]{6}$/,'').replace(/_/g,' '):id;
+const storyOf=new Map();
+function fillStory(k,all){const l=LM[k];if(!opts.claimStory)return fillClaimSource(k);
+  const put=r=>{const box=slots.focus?.on&&state.focusSoma===k?slots.focus.el.querySelector('[data-story]'):null;if(box)box.innerHTML=storyHTML(k,r,all)};
+  if(storyOf.has(l.id))return put(storyOf.get(l.id));
+  opts.claimStory(l.id).then(r=>{storyOf.set(l.id,r);if(storyOf.size>80)storyOf.delete(storyOf.keys().next().value);put(r)})
+    .catch(()=>{const box=slots.focus?.on&&state.focusSoma===k?slots.focus.el.querySelector('[data-story]'):null;if(box)box.innerHTML='<span class="dimm">its story could not be read just now</span>'})}
+// any conversation a claim names: the snapshot's when it holds it, else its own model from the memory (the corridor is the
+// same; a conversation whose chat is gone is told from its events and runs)
+const threadBusy=new Set();
+function openThread(id,el){const s=M.sById.get(id);if(s){enterTunnel(s);return}
+  if(!opts.threadModel||threadBusy.has(id))return;threadBusy.add(id);if(el)el.classList.add('busy');
+  opts.threadModel(id).then(d=>{const t=d.session,dom=x=>REGI[x]!=null?x:REG[0];
+    t.objective=threadTitle(t.objective||t.id);t.events=(d.events||[]).map(e=>({...e,domain:dom(e.domain),landmark:typeof e.landmark==='string'&&M.lmIndex.has(e.landmark)?M.lmIndex.get(e.landmark):null})).sort((a,b)=>a.ts-b.ts);
+    (d.episodes||[]).forEach(e=>M.epById.set(e.id,e));const c={};t.events.forEach(e=>c[e.domain]=(c[e.domain]||0)+1);t.domain=Object.entries(c).sort((a,b)=>b[1]-a[1])[0]?.[0]||REG[0];
+    t.traj=t.traj||[];t.strands=t.strands||[];t.messages=t.messages||[];M.sById.set(t.id,t);enterTunnel(t)})
+    .catch(()=>{if(el){el.classList.add('off');const sm=el.querySelector('small');if(sm)sm.textContent='it could not be opened'}}).finally(()=>{threadBusy.delete(id);el?.classList.remove('busy')})}
+function landmarkHTML(k,deep){const l=LM[k];if(galaxy&&deep)return claimCardHTML(k);
   const counts=l.evidence_counts?{...l.evidence_counts}:{};if(!l.evidence_counts)l.evidence.forEach(e=>counts[e.kind]=(counts[e.kind]||0)+1);
   const ev=Object.entries(counts).sort((a,b)=>(EVID[b[0]]||0)-(EVID[a[0]]||0)).map(([kd,n])=>`<span class="${kd==='user'?'u':''}">${EVID_WORD[kd]||kd}${n>1?' ×'+n:''}</span>`).join(' · ');
   const s=M.sById.get(l.session);
@@ -2994,7 +3056,7 @@ function landmarkHTML(k,deep){const l=LM[k];
     <div class="m"><em>what proves it</em> · ${ev||'nothing outside yet - only the run it came from'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     <br><em>what happened to it</em> · used ${fmt(l.activations)} times${l.last_activated?' · last '+ago(l.last_activated):''}${happened?' · '+happened:''}
-    ${how?`<br><em>how it was done</em> · ${esc(how.replace(/^how:\s*/,''))}`:''}${l.where?`<br><em>in the project</em> · ${esc(l.where)}`:''}
+    ${how?`<br><em>how it was done</em> · ${esc(how.replace(/^how:\s*/,''))}`:''}${(pj=>pj?`<br><em>learned in</em> · ${esc(projWord(pj))}${l.project_inferred?' <span style="opacity:.55">(read from its text)</span>':''}`:l.where?`<br><em>in the project</em> · ${esc(l.where)}`:'')(projOfClaim(l))}
     ${deep&&s?`<br><em>learned in</em> · ${esc(s.objective)}${s.ts?' · '+ago(s.ts):''}`:''}${steps?`<div class="m" style="opacity:.85">${steps}</div>`:''}</div>
     ${deep&&s?`<span class="go" data-go="${s.id}">→ open that conversation and its context</span>`:''}${deep?dragHandle('claim:'+l.id,'claim · '+l.claim):''}${deep&&opts.uses?`<span class="go" data-uses="${k}">→ every time it was used</span>`:''}${deep&&opts.correct?`<span class="go" data-ask="${k}">→ ask IRIS about it</span>`:''}${deep&&opts.correctTarget?`<span class="go" data-pin="${k}">→ pin it</span>`:''}${deep?correctionHTML(k):''}`}
 // EVERY TIME IT WAS USED (UX-PLAN 7.4): the turns that were given this claim - the timeline lights the beads of their
@@ -3023,7 +3085,9 @@ function strandAction(act,id,el){if(!opts.correctTarget)return;
 // store's own methods, through /api/memory/correct; undo in your corrections).
 function focusPin(pk){const p=PINS[pk];if(!p)return;if(slots.focus)slots.focus.key=null;
   const acts=opts.correctTarget?`<div class="acts"><a data-pinact="${p.held?'release':'hold'}" data-pk="${pk}">${p.held?'release it from context':'hold it in context'}</a> · <a data-pinact="unpin" data-pk="${pk}">unpin</a></div>`:'';
-  setAnno('focus','pinf'+pk,()=>project(pinInfo[pk].tip),pinHTML(pk)+acts,{cell:true,col:pinType(p.type).col});clearAnno('hover')}
+  const th=p.session||(p.refs||[]).find(r=>r.t==='thread'||r.t==='session')?.id;
+  const go=th&&(M.sById.has(th)||opts.threadModel)?`<span class="go" data-thread="${esc(th)}">→ open the conversation it is from</span>`:'';
+  setAnno('focus','pinf'+pk,()=>project(pinInfo[pk].w||pinInfo[pk].tip),pinHTML(pk)+go+acts,galaxy?{dock:true}:{cell:true,col:pinType(p.type).col});clearAnno('hover')}
 function pinAction(pk,act,el){const p=PINS[pk];if(!p||!opts.correctTarget)return;el.textContent='working…';
   opts.correctTarget(act,'pin:'+p.id).then(r=>{const a=r.after||{};if(a.held!=null)p.held=!!a.held;
     el.textContent=act==='unpin'?'unpinned · undo it in your corrections':(p.held?'held in context':'released');drawMine(true)})
@@ -3038,7 +3102,7 @@ function correctionHTML(k){if(!opts.correct)return '';const c=corr[k];
   if(c?.id&&c.until>nowS())return `<div class="acts"><span class="u">${CORR_WORD[c.action]}</span> · <a data-undo="${k}">undo (${Math.max(1,Math.ceil((c.until-nowS())/60))} min)</a>${c.error?`<br><span class="w">${esc(c.error)}</span>`:''}</div>`;
   return `<div class="acts"><a data-correct="confirm" data-k="${k}">that's right</a> · <a data-correct="wrong" data-k="${k}">that's wrong</a> · <a data-correct="forget" data-k="${k}">forget this</a>${c?.error?`<br><span class="w">${esc(c.error)}</span>`:''}</div>`}
 function showClaimCard(k){if(state.focusSoma!==k||!slots.focus)return;slots.focus.key=null;
-  setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)})}
+  setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...(galaxy?{dock:true}:lmCell(k))});if(galaxy)fillStory(k)}
 function applyClaimState(k,st,userDelta){const l=LM[k];if(!l||!st)return;
   l.tier=st.tier||l.tier;l.contradictions=st.contradictions||0;
   if(userDelta>0)l.evidence.push({kind:'user',at:nowS()});
@@ -3073,6 +3137,8 @@ mineEl.addEventListener('click',e=>{const u=e.target.closest('[data-undo-id]');i
 drawMine(true);
 annosEl.addEventListener('click',e=>{
   const cr=e.target.closest('[data-correct]');if(cr){runCorrection(+cr.dataset.k,cr.dataset.correct);return}
+  const th=e.target.closest('[data-thread]');if(th){openThread(th.dataset.thread,th);return}
+  const sa=e.target.closest('[data-story-all]');if(sa){fillStory(+sa.dataset.storyAll,true);return}
   const us=e.target.closest('[data-uses]');if(us){showUses(+us.dataset.uses);return}
   const pa=e.target.closest('[data-pinact]');if(pa){pinAction(+pa.dataset.pk,pa.dataset.pinact,pa);return}
   const pn=e.target.closest('[data-pin]');if(pn){const l=LM[+pn.dataset.pin];if(l&&opts.correctTarget)opts.correctTarget('pin','claim:'+l.id)
@@ -3089,7 +3155,7 @@ annosEl.addEventListener('click',e=>{
   const sp=e.target.closest('[data-step]');if(sp){showStepOutput(sp);return}   // W1: the step's exact output, on click
   const g=e.target.closest('[data-go]');if(!g)return;const s=M.sById.get(g.dataset.go);if(s)enterTunnel(s)});
 // W4 reading inside a sector (owner, 2026-11-23): hover = one line; click = the card; the arrow keys walk the arm
-const claimTag=k=>{const c=String(LM[k].claim||'');return `<div class="t">${esc(c.length>72?c.slice(0,71)+'…':c)}</div><div class="k">click · read it &nbsp; ← → · walk the arm</div>`};
+const claimTag=k=>{const c=String(LM[k].claim||'');return `<div class="t" style="font-size:13px;line-height:1.35;background:rgba(2,5,9,.82);border-radius:7px;padding:4px 8px;max-width:260px;white-space:normal;overflow-wrap:anywhere">${esc(c.length>72?c.slice(0,71)+'…':c)}</div><div class="k" style="margin-top:3px">${esc((WORKS[claimKind(LM[k])-1]||[])[1]||'a claim')} · ${claimState(LM[k])} · click to read</div>`};
 const readOrder=reg=>LM.map((l,i)=>l.dom===reg?i:-1).filter(i=>i>=0).sort((a,b)=>(LM[b].born||0)-(LM[a].born||0));   // newest (core) -> oldest (rim)
 function readStep(dir){if(!state.inside||cam.tween||state.diving)return;const o=readOrder(state.diveReg);if(!o.length)return;
   let i=o.indexOf(state.focusSoma);
@@ -3117,11 +3183,47 @@ function goOpen(on){goEl.style.display=on?'block':'none';if(!on||!GAL_LAYOUT)ret
   goEl.innerHTML=`<div style="opacity:.55;margin-bottom:4px">travel to · the most connected first</div>`+list.map(r=>`<div data-go="${r}" style="cursor:pointer;padding:2px 0">`+
     `<span style="color:${domCol(REG[r])}">● ${esc(domWord(REG[r]))}</span> <span style="opacity:.55">${fmt((somaByReg[r]||[]).length)} claims${rel.get(r)?` · ${fmt(rel.get(r))} links to here`:''}</span></div>`).join('')}
 goEl.addEventListener('click',e=>{const d=e.target.closest('[data-go]');if(!d)return;e.stopPropagation();goGalaxy(+d.dataset.go)});
+// THE LEGEND ROW (owner 2026-11-23: 'difficult to sort out things without any prior information'): one line inside a
+// galaxy, the marks as drawn and how many are here; hover says it, a click keeps only those
+const legEl=document.createElement('div');legEl.className='gleg';let legKey='';
+function placeLegend(){const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex'&&state.focusSoma<0;legEl.style.opacity=on?1:0;legEl.style.display=on?'flex':'none';rootEl.classList.toggle('gin',!!galaxy&&state.inside);if(!on)return;
+  if(!legEl.parentNode)$('hud').appendChild(legEl);const key=state.diveReg+':'+keyFocus;if(key===legKey)return;legKey=key;
+  const here=LM.filter(l=>l.dom===state.diveReg),yg=l=>l.born&&nowS()-l.born<7*86400,n={young:here.filter(yg).length,fading:here.filter(l=>!yg(l)&&l.fading).length};
+  n.claim=here.filter(l=>!yg(l)&&!l.fading&&l.tier!=='candidate').length;n.learning=here.filter(l=>!yg(l)&&!l.fading&&l.tier==='candidate').length;
+  const item=(k,w,t,c)=>{const a=document.createElement('a');a.title=t+' · click to see only these';a.classList.toggle('on',keyFocus===k);a.append(keyIcon(k),` ${w} `,Object.assign(document.createElement('i'),{textContent:fmt(c)}));
+    a.onclick=e=>{e.stopPropagation();setKindFocus(keyFocus===k?null:k);legKey=''};return a};
+  const row=(...xs)=>{const d=document.createElement('div');d.append(...xs);return d};
+  legEl.replaceChildren(row(...WORKS.map(([,w,short],i)=>['k'+(i+1),short,'a claim that '+w,here.filter(l=>claimKind(l)===i+1).length]).filter(x=>x[3]).map(x=>item(...x))),
+    row(...[['claim','proven','outside evidence says it is true'],['learning','learning','no outside evidence yet'],['young','new','learned this week'],['fading','fading','not used for a while']].filter(([k])=>n[k]).map(([k,w,t])=>item(k,w,'a claim · '+t,n[k])),
+      ...(PINS.length?[(()=>{const a=document.createElement('a');a.title='a pin: held on purpose';a.append(keyIcon('pin'),' pin');return a})()]:[])))}
+// THE PROJECT LENS (owner 2026-11-23): the projects the memory knows - IRIS itself, the apps, the MCP servers - with
+// their claims; one choice lights that project's claims and constellations in every galaxy and dims the rest.
+if(GALAXY&&galaxy){const K=$('key'),pb=document.createElement('a');pb.className='kt';pb.title='projects: light one across the galaxies';
+  const projEl=document.createElement('div');projEl.className='rlabel gproj';
+  Object.assign(projEl.style,{right:'14px',left:'auto',bottom:'74px',top:'auto',display:'none',maxWidth:'270px',whiteSpace:'normal',pointerEvents:'auto',padding:'8px 10px',background:'rgba(0,0,0,.8)',
+    border:'1px solid rgba(127,232,255,.18)',borderRadius:'10px',textAlign:'left',opacity:1,maxHeight:'52%',overflowY:'auto',minWidth:'220px'});
+  const label=()=>{const p=state.projLens>=0?PROJ[state.projLens]:null;const nm=p?(p.kind==='iris'?'IRIS itself':p.name):'';pb.textContent=p?`◇ ${nm.length>16?nm.slice(0,15)+'…':nm} ✕`:'◇'};
+  const setLens=i=>{state.projLens=i;galaxy.isolateProject(i);const p=i>=0?PROJ[i]:null;state.projIris=!!p&&p.kind==='iris';
+    coreHalo.material.color.copy(state.projIris?new THREE.Color('#ffd9a6'):BRAND);label();projEl.style.display='none'};
+  const open=()=>{if(!projEl.parentNode)labelsEl.appendChild(projEl);
+    const none=LM.filter(l=>!projOfClaim(l)).length;
+    const grp=kind=>PROJ.map((p,i)=>({p,i})).filter(o=>o.p.kind===kind);
+    const row=({p,i})=>`<div data-pj="${i}" style="cursor:pointer;padding:2px 0;${state.projLens===i?'color:#fff':''}">◇ ${esc(p.kind==='iris'?'IRIS itself':p.name)} <span style="opacity:.55">${fmt(p.claims)} claim${p.claims===1?'':'s'}${p.inferred?' · read from claim text':''}</span></div>`;
+    const sec=(kind,w)=>{const g=grp(kind);return g.length?`<div style="opacity:.5;margin:6px 0 2px">${w}</div>`+g.map(row).join(''):''};
+    projEl.innerHTML=`<div style="opacity:.6;margin-bottom:2px">where the work happened</div>`+
+      `<div data-pj="-1" style="cursor:pointer;padding:2px 0;${state.projLens<0?'color:#fff':''}">◎ everything <span style="opacity:.55">${fmt(LM.length)} claims</span></div>`+
+      sec('iris','IRIS working on itself')+sec('app','apps')+sec('mcp','MCP servers')+
+      (none?`<div style="opacity:.45;margin-top:6px">${fmt(none)} claim${none===1?'':'s'} with no project: a search or a chat, or learned before projects were recorded</div>`:'')+
+      (PROJ.length?'':`<div style="opacity:.55;margin-top:4px">no project is recorded yet: IRIS records one when it works in a folder</div>`);
+    projEl.style.display='block'};
+  pb.onclick=e=>{e.stopPropagation();if(state.projLens>=0){setLens(-1);return}projEl.style.display==='none'?open():projEl.style.display='none'};
+  projEl.addEventListener('click',e=>{const d=e.target.closest('[data-pj]');if(!d)return;e.stopPropagation();setLens(+d.dataset.pj)});
+  state.projLens=-1;label();K.insertBefore(pb,K.querySelector('a.kt'))}
 let readerKey='';
 function placeReader(){if(!(galaxy&&state.inside&&!state.diving))goOpen(false);const on=!!galaxy&&state.inside&&!state.diving&&state.lens==='cortex';readerEl.style.opacity=on?.92:0;readerEl.style.pointerEvents=on?'auto':'none';if(!on)return;
   const o=readOrder(state.diveReg),i=o.indexOf(state.focusSoma),key=state.diveReg+':'+i;if(key===readerKey)return;readerKey=key;
   const n=readerEl.querySelector('[data-g="n"]');
-  n.innerHTML=`<span style="color:${domCol(REG[state.diveReg])}">● ${esc(domWord(REG[state.diveReg]))}</span> · `+(i>=0?`claim ${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims`)}
+  n.innerHTML=`<span style="color:${domCol(REG[state.diveReg])}">● ${esc(domWord(REG[state.diveReg]))}</span> · `+(i>=0?`${fmt(i+1)} of ${fmt(o.length)}`:`${fmt(o.length)} claims`)}
 // W4 (owner, 2026-11-23: a card "does not give me much"): the card adds what the claim's turn FOUND - the question,
 // IRIS's answer, the tool results (a click shows the full output) - or says plainly that its source is not kept here
 function fillClaimSource(k){if(!opts.claimSource)return;const l=LM[k];
@@ -3138,7 +3240,7 @@ function fillClaimSource(k){if(!opts.claimSource)return;const l=LM[k];
     box.insertAdjacentHTML('beforeend',`<div class="src">${h}</div>`)}).catch(()=>{})}
 function flyToSoma(k){
   if(galaxy&&cam.mode==='orbit'){setFocusSoma(k);cam.targetT.copy(somaWorld(k));cam.distT=clamp(cam.distT,R*.05,R*.14);cam.idle=0;
-    setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true});clearAnno('hover');satellites(k);fillClaimSource(k);return}
+    setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,dock:true});clearAnno('hover');satellites(k);fillStory(k);return}
   const p=somaWorld(k);const back=camera.position.clone().sub(p).normalize();const to=p.clone().addScaledVector(back,R*.16/innerKT());
   setFocusSoma(k);tweenTo(to,p,64,1.1,()=>{cam.mode='fly';flyFrom(camera.position,p)});
   setAnno('focus','soma'+k,()=>project(somaWorld(k)),landmarkHTML(k,true),{hot:true,...lmCell(k)});clearAnno('hover');
@@ -3426,11 +3528,11 @@ function coreHit(x,y){const c=project(new V3()),e=project(new V3(R*.2,0,0).apply
 // pins and nodes answer a hover with a swelling cell at their own point (cortex level only)
 function hoverThing(x,y){
   const ok=state.inside?p=>p.distanceTo(camera.position)<R*1.1:p=>p.dot(camera.position)>0;
-  const pk=nearestScreen(pinInfo.map(q=>ok(q.tip)?q.tip:null),x,y,state.inside?15:9);   // smaller from outside: the territories come first
-  if(pk>=0){canvas.style.cursor='default';setAnno('hover','pin'+pk,()=>project(pinInfo[pk].tip),pinHTML(pk),{cell:true,col:pinType(PINS[pk].type).col});return true}
+  const pk=nearestScreen(pinInfo.map(q=>{const w=q.w||q.tip;return ok(w)?w:null}),x,y,state.inside?15:9);   // smaller from outside: the territories come first
+  if(pk>=0){canvas.style.cursor='default';setAnno('hover','pin'+pk,()=>project(pinInfo[pk].w||pinInfo[pk].tip),galaxy&&state.inside?`<div class="t">${esc(String(PINS[pk].title||'').slice(0,72))}</div><div class="k">a pin · held on purpose</div>`:pinHTML(pk),galaxy&&state.inside?{}:{cell:true,col:pinType(PINS[pk].type).col});return true}
   // nodes are inside the orb, on the layer shells: from outside they are hovered only with the layers shown (s) or
   // singled out in the key - otherwise they covered the whole front of the orb and no territory could be clicked
-  const nodesOn=state.inside||state.showSpaces||keyFocus==='node';
+  const nodesOn=(state.inside&&!galaxy)||state.showSpaces||keyFocus==='node';   // in a galaxy the nodes are its dust: background, never a target
   const nk=nodesOn?nearestScreen(nodePos.map(p=>ok(p)?p:null),x,y,11):-1;
   if(nk>=0){canvas.style.cursor='default';setAnno('hover','node'+nk,()=>project(nodePos[nk]),nodeHTML(nk),{cell:true,col:chanTint(NDS[nk].chan)});return true}
   if(slots.hover?.key&&/^(pin|node)/.test(slots.hover.key))clearAnno('hover');
@@ -3487,7 +3589,7 @@ function hover(x,y){
       setAnno('hover','art'+i,()=>({x:c.cx,y:c.cy,front:true}),`<div class="k">${KIND_WORD[c.a.kind]||c.a.kind} · ${esc(c.a.folder||'unsorted')} · ${ago(c.a.ts)}</div><div class="t">${esc(c.a.name)}</div>`)}
     else lingerClear('hover');return}
   if(state.inside){
-    const k=nearestScreen(LM.map((_,i)=>somaData[i*8+3]>0&&somaWorld(i).distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,16);state.hoverSoma=k;
+    const k=nearestScreen(LM.map((_,i)=>galaxy?(LM[i].dom===state.diveReg?somaWorld(i):null):somaData[i*8+3]>0&&somaWorld(i).distanceTo(camera.position)<R*1.1?somaWorld(i):null),x,y,galaxy?28:16);state.hoverSoma=k;
     if(k>=0&&k!==state.focusSoma){canvas.style.cursor='pointer';setAnno('hover','soma'+k,()=>project(somaWorld(k)),galaxy?claimTag(k):landmarkHTML(k,false),galaxy?{}:lmCell(k));
       for(let j=0;j<NL;j++)if(j!==state.focusSoma)somaData[j*8+2]=j===k?1:0;somaTex.needsUpdate=true}
     else{if(k<0){if(!hoverThing(x,y))lingerClear('hover');for(let j=0;j<NL;j++)if(j!==state.focusSoma&&!state.search)somaData[j*8+2]=0;somaTex.needsUpdate=true}}
@@ -3564,7 +3666,8 @@ function setHealth(on){state.health=on;
   healthEl.classList.toggle('on',on)}
 function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on&&m.state==='off'){clearAnno(n);return}if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
   if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
-canvas.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);mouse.nx=_px(e)/innerWidth*2-1;mouse.ny=-(_py(e)/innerHeight*2-1);
+canvas.addEventListener('pointerleave',()=>{mouse.over=false});host.addEventListener('pointermove',()=>{mouse.moved=performance.now()},{passive:true});
+canvas.addEventListener('pointermove',e=>{mouse.over=true;mouse.x=_px(e);mouse.y=_py(e);mouse.nx=_px(e)/innerWidth*2-1;mouse.ny=-(_py(e)/innerHeight*2-1);
   if(mouse.down&&e.buttons===0)mouse.down=false; // a lost pointerup must not turn hovering into dragging
   if(mouse.down){const dx=_px(e)-mouse.lx,dy=_py(e)-mouse.ly;mouse.dragged+=Math.abs(dx)+Math.abs(dy);mouse.lx=_px(e);mouse.ly=_py(e);cam.idle=0;
     if(cam.mode==='orbit'&&galaxy&&state.inside&&(e.shiftKey||(e.buttons&2))){const rt=new V3(1,0,0).applyQuaternion(camera.quaternion),up=new V3(0,1,0).applyQuaternion(camera.quaternion),f=cam.dist*.0016;
@@ -3824,17 +3927,20 @@ const _frame=()=>{
     galaxy.group.visible=cam.mode!=='tunnel';galaxy.interior(_gk>.03);
     {const sc=lerp(galaxy.group.scale.x,state.lens==='artifacts'?1.28:1,1-Math.pow(.03,dt));galaxy.group.scale.setScalar(sc)}   // the artifacts tab: the galaxy as large as the orb it replaces
     for(const o of [wire,cells,xur,mist,arbors])o.visible=false;
-    rings.forEach(r=>{r.visible=(state.galIn||0)<.5;r.scale.setScalar(.68)});   // the aurora (owner, 2026-11-23): back, fitted to the lemon; it steps away inside
+    rings.forEach(r=>{r.visible=false});   // the old rings were circles for a sphere; the galaxy draws the aurora of its own shell
+    galaxy.auroraStep(dt,state.busyK||0,clamp(state.vis.rings,0,1)*(1-clamp((state.galIn||0)*2,0,1)));
     skin.visible=!on||_mm>.02||(state.morph.i||0)>.02;forest.visible=false;somaCells.visible=false;   // the skin's 42,000 points ARE the helix / the artifact tissue / the oracle's map; in the cortex the galaxy replaces it
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=false;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
     {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
       state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
       galaxy.update(t,clamp(state.vis.forest,0,1)*(.3+.7*_gk),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
-      galaxy.mark(state.hoverSoma,state.focusSoma);
+      galaxy.mark(state.hoverSoma,state.focusSoma);galaxy.pointer(mouse.over===false?9:mouse.nx,mouse.over===false?9:mouse.ny,innerWidth/Math.max(1,innerHeight),innerHeight);
       if(Math.abs((state._offK??-1)-state.galIn)>.002||state.diving||(state._offT=(state._offT||0)+dt)<1.5){if(state.diving)state._offT=0;state._offK=state.galIn;   // pins and nodes follow their galaxy - only while the space opens or you travel
-        if(pinObjG){const pa=pinObjG.geometry.attributes.position;pinInfo.forEach((q,i)=>{const o=q.reg!=null&&q.reg>=0?galaxy.offsetOf(q.reg):null;pa.setXYZ(i,q.tip.x+(o?o.x:0),q.tip.y+(o?o.y:0),q.tip.z+(o?o.z:0))});pa.needsUpdate=true}
         const na=nodeGeo.attributes.position;NDS.forEach((n,j)=>{const r=NODE_REG[j],o=r>=0?galaxy.offsetOf(r):null,b=nodePos[j];na.setXYZ(j,b.x+(o?o.x:0),b.y+(o?o.y:0),b.z+(o?o.z:0))});na.needsUpdate=true}
-      galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null)}}   // inside: every galaxy stays visible
+      galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null);
+      // the moons turn round their groups (owner 2026-11-23, design B): at most 80, on the CPU so hover and click stay exact
+      if(pinObjG&&_gk>.03){const pa=pinObjG.geometry.attributes.position;pinInfo.forEach((q,i)=>{if(q.orb)q.tip.copy(q.orb.at(t));const o=q.reg!=null&&q.reg>=0?galaxy.offsetOf(q.reg):null;
+        q.w=q.w||new V3();q.w.set(q.tip.x+(o?o.x:0),q.tip.y+(o?o.y:0),q.tip.z+(o?o.z:0));pa.setXYZ(i,q.w.x,q.w.y,q.w.z)});pa.needsUpdate=true}}}   // inside: every galaxy stays visible
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
   const sx=Math.sin(t*.13)+.4*Math.sin(t*.31),su=.5+.5*Math.sin(t*.07);
   // morph the organism
@@ -3882,7 +3988,8 @@ const _frame=()=>{
   const camR=camera.position.length()/R;
   state.insideK=lerp(state.insideK||0,cortex.visible?clamp((1.6-camR)/.7,0,1):0,1-Math.pow(.02,dt));
   core.scale.setScalar((1+sx*.06)*b*pupilS);coreMat.uniforms.uGain.value=.6*state.vis.core*(1-state.morph.i*.6)*(1-state.insideK*.55)*(galaxy?.6:1);
-  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85)*(galaxy?.55:1);
+  coreHalo.material.opacity=(.08+.04*sx+(state.hoverCore?.16:0))*state.vis.core*(1-state.morph.i*.8)*(1-state.insideK*.85)*(galaxy?.55*(1-.8*(state.galIn||0)):1);
+  if(galaxy&&state.projIris)coreHalo.material.opacity=Math.min(.5,coreHalo.material.opacity*2.2+.05);   // IRIS's own work: the nucleus warms
   if(galaxy)coreHalo.scale.setScalar(R*.38);   // the nucleus: bright, but a tight halo (a wide one washed the shell)   // the nucleus: a soft light, not a wash over the shell
   cells.scale.setScalar(b);coreHalo.scale.setScalar(R*(1.0+.1*sx)*pupilS);
   for(let i=0;i<MAXSEC;i++){state.secPulse[i]=Math.max(0,state.secPulse[i]-dt*.7);skinMat.uniforms.uSecPulse.value[i]=state.secPulse[i]}
@@ -3908,7 +4015,7 @@ const _frame=()=>{
         xurPos[oi]=v.x;xurPos[oi+1]=v.y;xurPos[oi+2]=v.z;xurA[o+k]=a}
       o+=sh.n})}
   xurGeo.attributes.position.needsUpdate=xurGeo.attributes.aA.needsUpdate=true;
-  rings.forEach(r=>r.rotateZ(dt*.4*r.userData.sp*(.6+su)*(galaxy?.6:1)));   // the galaxy: a slower, smoother sweep (still faster when IRIS is busy)
+  state.busyK=su;rings.forEach(r=>r.rotateZ(dt*.4*r.userData.sp*(.6+su)*(galaxy?.6:1)));   // the galaxy: a slower, smoother sweep (still faster when IRIS is busy)
   // motes
   motes.forEach((m,i)=>{m.r=lerp(m.r,m.rT,1-Math.pow(.4,dt));m.ang+=dt*m.speed;const v=new V3(Math.cos(m.ang),Math.sin(m.ang),0).multiplyScalar(m.r).applyAxisAngle(m.axis,.9);
     m.pos.copy(v);moteP.set([v.x,v.y,v.z],i*3);moteA[i]=(m.state==='in'?.9:m.state==='out'?.25:0)*(1-state.morph.h)*(1-state.morph.i)});
@@ -3943,9 +4050,11 @@ const _frame=()=>{
   calmLiveBead();
   placeGhosts(state.health&&state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!state.showSpaces);
   placeRegionLabels(!galaxy&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving&&!state.showSpaces&&(state.hoverReg>=0||cam.idle<1.5&&mouse.x>0));
-  if(galaxy){placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader();
+  if(galaxy){const dk=slots.focus?.on&&slots.focus.dock&&cam.mode!=='tunnel'?Math.min(286,innerWidth*.56)/2+6:0;state.dockX=lerp(state.dockX||0,dk,.12);   // the claim stays in view beside its card
+    if(state.dockX>.5)camera.setViewOffset(innerWidth,innerHeight,state.dockX,0,innerWidth,innerHeight);else if(camera.view){camera.clearViewOffset();state.dockX=0}
+    lblReset();placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!cam.tween);
     placeSystems(state.lens==='cortex'&&state.inside&&!state.diving&&!cam.tween?state.diveReg:-1);
-    placeDial(state.lens==='cortex'&&cam.mode==='orbit'&&!state.diving&&!cam.tween)}
+    placeHaloLabels(state.lens==='cortex'&&state.inside&&!cam.tween?state.diveReg:-9);placeReader();placeLegend()}
   else placeSpaceLabels(state.showSpaces&&state.lens==='cortex'&&cam.mode==='orbit'&&!cam.tween&&!state.diving);
   placeAnnos();
   placeJobLabels(state.lens==='oracle'&&cam.mode==='orbit'&&!cam.tween);
@@ -3959,7 +4068,7 @@ const _frame=()=>{
   drawLiveDecision();
   drawTissue(dt);
   clearAnno('decision');   // the decision line is drawn under the arc ring by drawLiveDecision
-  bloom.strength=(galaxy?.42-state.insideK*.2:.85-state.insideK*.35)+sh*.8;   // the galaxy: bright light blooms, the void stays black
+  bloom.strength=(galaxy?.42-Math.max(state.insideK*.2,(state.galIn||0)*.24):.85-state.insideK*.35)+sh*.8;   // the galaxy: bright light blooms, the void stays black
   // keep the drawing buffer the size of the window (emulated viewports do not always fire resize)
   if(Math.abs(renderer.domElement.width-Math.floor(innerWidth*DPR))>2||Math.abs(renderer.domElement.height-Math.floor(innerHeight*DPR))>2){
     renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix()}

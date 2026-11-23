@@ -22,6 +22,39 @@ CLAIM_FINDING_RESULT = 500   # characters of what the turn produced (its last st
 CLAIM_FINDING_TOOLS = 6      # tool calls named (tool, target, ok)
 
 
+CLAIM_PROJECT_TOOLS = ("read_file", "write_file", "edit_file", "list_directory", "glob_files", "grep_files",
+                       "create_directory", "delete_file")
+
+
+def claim_project(ep: Any) -> Optional[dict]:
+    """The project a claim was learned in (owner 2026-11-23, "record at source"): the conversation's project (the
+    tool bridge stamped it, session workdir aware), else the first file tool's folder. {id[, name, kind]} or None -
+    a web search or a chat has no project. Never raises."""
+    try:
+        from backend.memory import projects
+
+        for t in (getattr(ep, "tool_sequence", None) or []):
+            if isinstance(t, dict) and t.get("tool") in CLAIM_PROJECT_TOOLS and t.get("target"):
+                p = projects.project_of_path(str(t["target"]))
+                if p:
+                    found = projects.short(p)
+                    break
+        else:
+            found = None
+        conv = getattr(ep, "session_id", None)
+        pid = None
+        if conv:
+            from backend import conversation_store
+
+            pid = conversation_store.project_of_conversation(str(conv))
+        if pid and (not found or found["id"] != pid):
+            return {"id": pid}   # the conversation knows its folder better than a relative target does
+        return found
+    except Exception as exc:  # noqa: BLE001 - a claim without its project still stands
+        logger.warning("[MemoryInterface] claim project not resolved: %s", exc)
+        return None
+
+
 def claim_finding(ep: Any) -> Optional[str]:
     """W4 (memory cortex, owner 2026-11-23): what the turn that teaches a claim FOUND, as a small JSON string kept on
     the claim at birth - its turn, its conversation, the tools it called (tool, target <= 80, ok) and the last step's
@@ -38,8 +71,12 @@ def claim_finding(ep: Any) -> Optional[str]:
         result = " ".join(last.split())[:CLAIM_FINDING_RESULT]
         if not tools and not result:
             return None
-        return json.dumps({"turn": getattr(ep, "turn_id", None), "conversation": getattr(ep, "session_id", None),
-                           "tools": tools, "result": result}, ensure_ascii=False)
+        out = {"turn": getattr(ep, "turn_id", None), "conversation": getattr(ep, "session_id", None),
+               "tools": tools, "result": result}
+        project = claim_project(ep)
+        if project:
+            out["project"] = project
+        return json.dumps(out, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - a claim without its finding still stands
         logger.warning("[MemoryInterface] claim finding not built: %s", exc)
         return None

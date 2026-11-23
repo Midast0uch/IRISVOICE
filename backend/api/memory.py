@@ -100,6 +100,18 @@ def memory_claim_source(claim_id: str):
     return _serve("claim-source", sq.claim_source, claim_id)
 
 
+@router.get("/claims/{claim_id}/story")
+def memory_claim_story(claim_id: str):
+    """W4: what the claim found, how, how often it held, and every conversation it is connected to."""
+    return _serve("claim-story", sq.claim_story, claim_id)
+
+
+@router.get("/thread-model/{thread_id}")
+def memory_thread_model(thread_id: str):
+    """W4: one conversation in the snapshot's shapes, so any conversation a claim names can be opened."""
+    return _serve("thread-model", sq.thread_model, thread_id)
+
+
 @router.get("/threads")
 def memory_threads(limit: int = 30, include_eval: bool = False):
     return _serve("threads", sq.threads, limit=limit, include_eval=include_eval)

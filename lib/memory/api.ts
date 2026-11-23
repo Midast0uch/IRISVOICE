@@ -195,6 +195,20 @@ export async function fetchClaimSource(id: string): Promise<{
 }
 
 /** W3: one strand's detail (GET /api/memory/strand/<id>) - the corridor reads its `context` series (the context band). */
+/** W4: what a claim found, how, how often it held, and every conversation it is connected to. */
+export async function fetchClaimStory(id: string): Promise<any> {
+  const res = await fetch(`/api/memory/claims/${encodeURIComponent(id)}/story`, { signal: AbortSignal.timeout(20_000) })
+  if (!res.ok) throw new Error(`story ${res.status}`)
+  return res.json()
+}
+
+/** W4: one conversation in the snapshot's shapes, so any conversation a claim names can be opened. */
+export async function fetchThreadModel(id: string): Promise<any> {
+  const res = await fetch(`/api/memory/thread-model/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(20_000) })
+  if (!res.ok) throw new Error(`thread-model ${res.status}`)
+  return res.json()
+}
+
 export async function fetchStrand(id: string): Promise<any> {
   const res = await fetch(`/api/memory/strand/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(20_000) })
   if (!res.ok) throw new MemoryResting(res.status, "the strand could not be read")

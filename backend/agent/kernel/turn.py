@@ -514,6 +514,11 @@ class TurnMixin:
             getattr(self, "_turn_session_id", None)
             or self.session_id or self.conversation_id or "voice"
         )
+        # ... and the bridge learns which conversation that session is in NOW (the DER path binds it in
+        # _der_before_call; this path did not, so a direct read_file stamped no conversation - live 2026-11-23).
+        _conv_map = getattr(self._tool_bridge, "_active_conversation_id", None)
+        if _tool_calls and isinstance(_conv_map, dict):
+            _conv_map[_tool_session] = self.conversation_id or ""
         while _tool_calls and _round < _MAX_TOOL_ROUNDS:
             _round += 1
             messages.append({

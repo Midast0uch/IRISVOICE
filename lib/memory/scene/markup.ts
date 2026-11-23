@@ -138,6 +138,18 @@ export const MEMORY_CSS = String.raw`
 @keyframes iris-mem-live{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.iris-memory #follow .dot.on,.iris-memory #crumb .when.pulse{animation:none}}
 .iris-memory #ticker .dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:.7em;vertical-align:1px}
+.iris-memory .rlabel.gsys,.iris-memory .rlabel.gdial{background:rgba(2,5,9,.74);border-radius:5px;padding:1px 6px}
+.iris-memory .gleg{position:absolute;left:50%;bottom:40px;transform:translateX(-50%);display:flex;flex-direction:column;gap:1px;align-items:center;white-space:nowrap;font-size:9.5px;color:var(--dim);transition:opacity .4s;pointer-events:none}
+.iris-memory .gleg div{display:flex;gap:9px;align-items:center;background:rgba(0,2,5,.66);border-radius:7px;padding:0 8px}.iris-memory .gleg a{display:flex;align-items:center;gap:3px;cursor:pointer;pointer-events:auto}.iris-memory .gleg a:hover,.iris-memory .gleg a.on{color:#fff}.iris-memory .gleg canvas{width:20px;height:20px}.iris-memory .gleg i{font-style:normal;opacity:.5}
+.iris-memory .anno.dock{left:auto!important;right:12px!important;top:72px!important;width:min(286px,56%);max-width:none;max-height:calc(100% - 178px);overflow-y:auto;overflow-x:hidden;background:rgba(2,6,10,.88);border:1px solid rgba(127,232,255,.16);border-radius:12px;padding:11px 13px 12px;text-shadow:none;pointer-events:auto;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);scrollbar-width:thin}
+.iris-memory .anno.dock::-webkit-scrollbar{width:5px}.iris-memory .anno.dock::-webkit-scrollbar-track{background:transparent}.iris-memory .anno.dock::-webkit-scrollbar-thumb{background:rgba(127,232,255,.25);border-radius:3px}.iris-memory .anno.dock{scrollbar-color:rgba(127,232,255,.25) transparent}
+.iris-memory.gin #crumb .path,.iris-memory.gin #brand+div:not(#crumb){opacity:0;pointer-events:none}
+.iris-memory.gin #ticker,.iris-memory.gin #follow,.iris-memory.gin #mine{transform:translateY(-32px)}.iris-memory.gin #ticker .line.old{display:none}
+.iris-memory .anno.dock:not(.on){pointer-events:none}
+.iris-memory .anno.dock .t{font-size:15px;line-height:1.32;overflow-wrap:anywhere}.iris-memory .anno.dock .m.sub{opacity:.7;margin-bottom:4px;overflow-wrap:anywhere}
+.iris-memory .anno.dock .sec{margin:7px 0;line-height:1.55;overflow-wrap:anywhere;white-space:normal}.iris-memory .anno.dock .sec em{display:block;font-style:normal;font-size:9px;letter-spacing:.1em;color:#7f9aa8;margin-bottom:1px}
+.iris-memory .anno.dock .dimm{opacity:.5}.iris-memory .anno.dock .chip{display:inline-block;border:1px solid rgba(127,232,255,.24);border-radius:5px;padding:0 5px;margin:1px 0;font-size:9.5px;color:#cfe9f5}.iris-memory .anno.dock .chip.bad{border-color:rgba(255,138,106,.5);color:#ffb7a3}.iris-memory .anno.dock .arr{font-style:normal;opacity:.4;margin:0 3px}
+.iris-memory .anno.dock .cv{display:block;cursor:pointer;padding:4px 7px;margin:2px 0;border-radius:6px;background:rgba(127,232,255,.06)}.iris-memory .anno.dock .cv:hover{background:rgba(127,232,255,.16)}.iris-memory .anno.dock .cv b{display:block;font-weight:500;color:#e6f5fb}.iris-memory .anno.dock .cv small{font-size:9px;opacity:.6}.iris-memory .anno.dock .cv.off{cursor:default;opacity:.4;background:none}.iris-memory .anno.dock .cv.busy{opacity:.5}
 .iris-memory #lenses{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);display:flex;gap:26px;pointer-events:auto}
 .iris-memory #lenses a{font-size:11px;letter-spacing:.22em;color:var(--faint);cursor:pointer;text-transform:lowercase;user-select:none;transition:color .25s}
 .iris-memory #lenses a:hover{color:var(--dim)} .iris-memory #lenses a.on{color:var(--white);text-shadow:0 0 12px rgba(0,212,255,.6)}
@@ -146,9 +158,9 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #key a{display:flex;align-items:center;justify-content:flex-end;gap:9px;font-size:10px;letter-spacing:.08em;color:var(--faint);cursor:pointer;user-select:none;transition:color .25s,opacity .25s}
 .iris-memory #key a:hover{color:var(--dim)}.iris-memory #key a .kn{font-style:normal;color:var(--dim);font-variant-numeric:tabular-nums;min-width:3.4em;text-align:right;opacity:.8}.iris-memory #key a.on{color:var(--white)}.iris-memory #key.iso a:not(.on){opacity:.35}.iris-memory #key canvas{width:22px;height:22px}
 .iris-memory #hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
-.iris-memory #key.gfold a:not(.kt){display:none}.iris-memory #key.gfold{gap:0}
+.iris-memory #key.gfold a:not(.kt){display:none}.iris-memory #key.gfold{gap:5px;flex-direction:row;right:14px;bottom:14px}.iris-memory #key.gopen{right:14px;bottom:14px;max-height:62%;overflow-y:auto}
 .iris-memory #key.gopen{background:rgba(0,0,0,.72);border:1px solid rgba(127,232,255,.14);border-radius:10px;padding:10px 12px}
-.iris-memory #key a.kt{color:var(--dim);border:1px solid rgba(127,232,255,.22);border-radius:7px;padding:3px 9px;justify-content:center}
+.iris-memory #key a.kt{color:var(--dim);border:1px solid rgba(127,232,255,.22);border-radius:6px;padding:1px 6px;font-size:10px;line-height:15px;min-width:20px;justify-content:center;background:rgba(2,6,10,.5)}
 .iris-memory #key a.helpk{margin-top:4px;color:var(--dim)}.iris-memory #key a.helpk:hover{color:#cfe3ee}
 /* the control sheet (UX-PLAN 3.3): thin-line HUD, never a modal; the keys of the view you are in */
 .iris-memory #help{position:absolute;right:22px;top:96px;min-width:260px;max-width:340px;padding:12px 14px 10px;border:1px solid rgba(160,200,220,.22);background:rgba(4,8,12,.72);

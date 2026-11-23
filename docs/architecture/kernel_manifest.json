@@ -277,7 +277,7 @@
   "method:_record_reformat_edge": "5e806a309bdf5e0e5de6657be13e75d303fc513a8d8229f7eb7112967f98e5e1",
   "method:_register_card": "e2ef58613e3f019e53de6145cd92d6c65d8eb1a08d73ec486f1e88968817ff5e",
   "method:_resolve_card_identity": "3e64f40b32b41b25b314a3da4a3b6cbef7c090ac4a5ff5f9e9807243b08c3a8f",
-  "method:_respond_direct": "426d2514f0dfde76d81fdd4c1fceb61c3818b7f17f8ae4197a812e81ad4f10ab",
+  "method:_respond_direct": "f74e0188a94f4ffe4709358c931a8a1f18f5b74e4f70f8c92e4f2eea489d967f",
   "method:_route_v2_frame": "10e223d903ab95bf19452403afe0b53ddbd5f773771933b0fb12fd49fcb24473",
   "method:_route_v2_route": "d54a8c9bf1ac6d6ff025c7bdf8d7cd037f4d23fd36af9c78c2badb5571f2e521",
   "method:_run_step_direct": "409d9c408c6fc07483f897fa13e278815693c903f8c0948866d571de3bd6812e",
