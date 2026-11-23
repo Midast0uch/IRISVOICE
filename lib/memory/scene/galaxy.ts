@@ -38,7 +38,7 @@ const MAX_LINKS = 600;
  * domain linked to a bigger one is its irregular companion beside it; only domains with enough claims are spirals.
  * Coordinates are world (the group is not tilted: every galaxy has its own tilt).
  */
-export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {
+export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {   // links: [{a, b, w}]
   const rng = rngOf(seed);
   const gauss = () => (rng() + rng() + rng() + rng()) / 2 - 1;
   const GR = R * 0.62, HH = R * 0.72;
@@ -61,72 +61,96 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {
     const nArms = kind === 'spiral' ? (st.n > 60 ? 3 : 2) + (h % 3 === 0 && st.n > 120 ? 1 : 0) : 0;
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(((h % 97) / 97 - 0.5) * 1.9, (h % 360) / 360 * TAU, (((h >> 8) % 89) / 89 - 0.5) * 1.5));
     return { key: r.key, reg: i, col: new THREE.Color(r.col), kind, nArms, n: st.n, size: w, partner: best, partnerS: bs, companion: kind === 'irregular',
-      rad: R * (kind === 'spiral' ? 0.09 + 0.14 * Math.sqrt(w) : 0.06 + 0.07 * Math.sqrt(w)), tight: 2.8 + 3.0 * (st.n ? st.proven / st.n : 0.3),
+      rad: R * (kind === 'spiral' ? 0.12 + 0.12 * Math.sqrt(w) : kind === 'irregular' ? 0.065 + 0.05 * Math.sqrt(w) : 0.075 + 0.06 * Math.sqrt(w)), tight: 2.8 + 3.0 * (st.n ? st.proven / st.n : 0.3),
       bar: kind === 'spiral' && h % 4 === 1, core: 0.35 + 0.65 * Math.sqrt(st.act / maxAct), q,
       c: new V3(), az: 0, ph: (h % 1000) / 1000 * TAU, clumps: [] };
   });
-  // start from a stable compass (angle and height from the key), then relax: linked galaxies pull to a distance that
-  // shrinks with how many links they share, a companion sits right beside its partner, none overlap, all stay inside
-  arms.forEach((a, i) => { const h = hashKey(a.key + 'p'), an = (h % 628) / 100, y = ((hashKey(a.key + 'y') % 100) / 100 * 2 - 1) * HH * 0.45;
-    const rr = i === 0 ? R * 0.16 : R * (0.34 + 0.14 * ((h >> 4) % 100) / 100); a.c.set(Math.cos(an) * rr, y, Math.sin(an) * rr); });
-  arms.forEach(a => { if (a.companion) { const p = arms[a.partner]; a.c.copy(p.c).add(new V3(gauss(), gauss() * 0.5, gauss()).normalize().multiplyScalar(p.rad + a.rad)); } });
-  for (let it = 0; it < 240; it++) {
-    const F = arms.map(() => new V3());
-    for (let i = 0; i < NG; i++) for (let j = i + 1; j < NG; j++) {
-      const a = arms[i], b = arms[j], d = a.c.clone().sub(b.c), L = d.length() || 1e-3; d.multiplyScalar(1 / L);
-      const s = S[i][j], comp = (a.companion && a.partner === j) || (b.companion && b.partner === i);
-      let f = 0;
-      if (L < (a.rad + b.rad) * 1.3) f += ((a.rad + b.rad) * 1.3 - L) * 0.5;                     // never overlap
-      else f += 0.002 * R * R / (L * L);                                                           // the unrelated spread out
-      if (comp) f -= (L - (a.rad + b.rad) * 1.15) * 0.12;                                           // a companion beside its partner
-      else if (s > 0) f -= (L - (a.rad + b.rad) * (1.4 + 2.2 / (1 + Math.log2(1 + s)))) * 0.05;   // related: closer, the more links
-      F[i].addScaledVector(d, f); F[j].addScaledVector(d, -f);
-    }
-    arms.forEach((a, i) => {
-      a.c.add(F[i]);
-      const L0 = a.c.length(), keep = R * 0.1 + a.rad * 0.7;   // clear of the nucleus
-      if (L0 < keep) a.c.addScaledVector(L0 > 1e-4 ? a.c.clone().normalize() : new V3(1, 0, 0), keep - L0);
-      a.c.y = clamp(a.c.y, -HH * 0.55 + a.rad, HH * 0.55 - a.rad);
-      const lim = Math.max(R * 0.05, shellR(a.c.y) * 0.8 - a.rad), hr = Math.hypot(a.c.x, a.c.z);
-      if (hr > lim) { a.c.x *= lim / hr; a.c.z *= lim / hr; }
-    });
+  // ── the arrangement (owner, 2026-11-23: fill the 3D space; inside need not mirror the outside - organise it,
+  //    efficient and beautiful): a DOUBLE HELIX of galaxies round the nucleus axis, pole to pole - the Caducean pair
+  //    of the physics. Order = relations: from the largest at the equator, two chains grow up and down, each next
+  //    galaxy the one most linked to that chain's end; along the height the galaxies alternate strands, so related
+  //    galaxies sit next to each other across the axis and their filaments weave it. A companion sits beside its
+  //    partner. Every disc faces outward at its own angle (seen open, never as a line).
+  const chain = arms.filter(a => !a.companion);
+  let seq = [];
+  if (chain.length) {
+    const root = chain[0].reg, left = new Set(chain.slice(1).map(a => a.reg)), up = [], down = [];
+    let endU = root, endD = root, turn = 0;
+    while (left.size) { const end = turn % 2 ? endD : endU; let best = -1, bs = -1;
+      left.forEach(r => { const sc = S[end][r] * 1000 + arms[r].size; if (sc > bs) { bs = sc; best = r; } });
+      left.delete(best); if (turn % 2) { down.push(best); endD = best; } else { up.push(best); endU = best; } turn++; }
+    seq = [...down.reverse(), root, ...up];
   }
-  // each galaxy leans partly toward its strongest partner (linked discs face each other, like interacting galaxies)
+  const YMAX = HH * 0.62, phi0 = (hashKey('caduceus') % 628) / 100, N = seq.length;
+  seq.forEach((reg, i) => { const a = arms[reg], y = N > 1 ? -YMAX + 2 * YMAX * i / (N - 1) : 0, strand = i % 2;
+    const phi = phi0 + (y / YMAX) * 1.7 * Math.PI + strand * Math.PI;
+    const rho = Math.max(R * 0.14, shellR(y) * 0.5);
+    a.c.set(Math.cos(phi) * rho, y, Math.sin(phi) * rho); a.helix = { i, strand, phi }; });
+  arms.forEach(a => { if (!a.companion) return; const p = arms[a.partner], out = p.c.clone().setY(0);
+    if (out.lengthSq() < 1e-4) out.set(1, 0, 0); out.normalize(); const tan = new V3(-out.z, 0, out.x);
+    a.c.copy(p.c).addScaledVector(tan, (p.rad + a.rad) * 1.05 * (hashKey(a.key) % 2 ? 1 : -1)).add(new V3(0, (p.rad + a.rad) * 0.35, 0)); });
+  for (let it = 0; it < 80; it++) arms.forEach((a, i) => {   // only what the helix cannot promise: no overlap, inside the shell
+    arms.forEach((b, j) => { if (i === j) return; const d = a.c.clone().sub(b.c), L = d.length() || 1e-3, need = (a.rad + b.rad) * 1.08;
+      if (L < need) a.c.addScaledVector(d.multiplyScalar(1 / L), (need - L) * 0.5); });
+    a.c.y = clamp(a.c.y, -HH * 0.66 + a.rad * 0.5, HH * 0.66 - a.rad * 0.5);
+    const lim = Math.max(R * 0.05, shellR(a.c.y) * 0.86 - a.rad * 0.6), hr = Math.hypot(a.c.x, a.c.z);
+    if (hr > lim) { a.c.x *= lim / hr; a.c.z *= lim / hr; } });
   arms.forEach(a => {
-    const nrm = new V3(0, 1, 0).applyQuaternion(a.q);
-    if (a.partner >= 0) { const to = arms[a.partner].c.clone().sub(a.c).normalize(), want = nrm.dot(to) < 0 ? to.negate() : to;
-      const n2 = nrm.clone().lerp(want, a.companion ? 0.55 : 0.35).normalize(); a.q = new THREE.Quaternion().setFromUnitVectors(nrm, n2).multiply(a.q); }
+    const h = hashKey(a.key + 'n'), out = a.c.clone().setY(0); if (out.lengthSq() < 1e-4) out.set(1, 0, 0); out.normalize();
+    const tan = new V3(-out.z, 0, out.x), up = new V3(0, Math.sign(a.c.y) || 1, 0);
+    let nrm = out.clone().multiplyScalar(0.72).addScaledVector(up, 0.42 + 0.2 * ((h % 50) / 50)).addScaledVector(tan, ((h % 100) / 100 - 0.5) * 0.9);
+    if (a.partner >= 0) { const to = arms[a.partner].c.clone().sub(a.c).normalize(); nrm.addScaledVector(nrm.dot(to) < 0 ? to.negate() : to, a.companion ? 0.5 : 0.2); }
+    nrm.normalize();
+    a.q = new THREE.Quaternion().setFromUnitVectors(new V3(0, 1, 0), nrm).multiply(new THREE.Quaternion().setFromAxisAngle(new V3(0, 1, 0), (h % 628) / 100));
     a.nrm = new V3(0, 1, 0).applyQuaternion(a.q); a.ax = new V3(1, 0, 0).applyQuaternion(a.q); a.az2 = new V3(0, 0, 1).applyQuaternion(a.q);
     a.az = Math.atan2(a.c.z, a.c.x); a.lift = Math.sign(a.c.y) || 1; a.ang = a.az;
-    if (a.kind === 'irregular') { const h = hashKey(a.key + 'c'); for (let k = 0; k < 3 + (h % 3); k++)
-      a.clumps.push(new V3(gauss(), gauss() * 0.5, gauss()).multiplyScalar(a.rad * 0.45)); }
+    if (a.kind === 'irregular') { const hc = hashKey(a.key + 'c'); for (let k = 0; k < 3 + (hc % 3); k++)
+      a.clumps.push(new V3(gauss(), gauss() * 0.7, gauss()).multiplyScalar(a.rad * 0.45)); }
   });
   // a point of a galaxy in its own frame (x along ax, y along its normal, z along az2) -> world
   const toWorld = (a, x, y, z) => a.c.clone().addScaledVector(a.ax, x).addScaledVector(a.nrm, y).addScaledVector(a.az2, z);
   const spiralLocal = (a, j, r, dth = 0) => { const th = a.ph + j * TAU / Math.max(1, a.nArms) + r * a.tight + dth;
     return [Math.cos(th) * r * a.rad, Math.sin(th) * r * a.rad]; };
-  // claims: spirals along their arms (the newest near the core, the oldest at the rim: time runs outward);
-  // irregulars in their clumps; ellipticals in their body
+  // ── the shape of a galaxy comes from its DATA (owner, 2026-11-23: "landmarks almost like a sun"): every landmark
+  //    is a SUN with a mass (use, evidence, proven). Linked suns pull together (springs, stronger with traversals),
+  //    heavy suns sink toward the core and keep their space (mass repulsion), time runs outward (the start), and a
+  //    more proven domain settles flatter (more ordered). The disc then turns differentially, so CHAINS of linked
+  //    suns wind into arms - only where the data has chains; clusters stay clumps; no landmarks, no structure. ─────
   const pos = new Array(claims.length), place = new Array(claims.length);
   const groups = new Map();
   claims.forEach((c, i) => { const gg = groups.get(c.reg) || []; gg.push(i); groups.set(c.reg, gg); });
+  const linkW = new Map(); links.forEach(l => { if (l.a !== l.b) linkW.set(l.a + '|' + l.b, (linkW.get(l.a + '|' + l.b) || 0) + 0.3 + (l.w || 0)); });
   for (const [reg, idx] of groups) {
-    idx.sort((p, q) => (claims[q].born || 0) - (claims[p].born || 0));
     const a = reg >= 0 && reg < arms.length ? arms[reg] : null;
-    idx.forEach((ci, k) => {
-      const t = idx.length > 1 ? k / (idx.length - 1) : 0.5;
-      if (a && a.kind === 'spiral') {
-        const j = k % a.nArms, r = clamp(0.16 + 0.78 * t + gauss() * 0.05, 0.1, 0.98), dth = gauss() * 0.22 * (1 - r * 0.3);
-        const [x, z] = spiralLocal(a, j, r, dth), y = gauss() * a.rad * (0.03 + 0.05 * (1 - r));
-        pos[ci] = toWorld(a, x, y, z); place[ci] = { arm: reg, j, r, th: a.ph + j * TAU / a.nArms + r * a.tight + dth, y };
-      } else if (a) {
-        const base = a.kind === 'irregular' ? a.clumps[k % a.clumps.length] : new V3();
-        const v = base.clone().add(new V3(gauss(), gauss() * 0.6, gauss()).multiplyScalar(a.rad * (a.kind === 'irregular' ? 0.14 : 0.36)));
-        pos[ci] = toWorld(a, v.x, v.y, v.z); place[ci] = { arm: reg, j: 0, r: clamp(Math.hypot(v.x, v.z) / a.rad, 0, 1), th: Math.atan2(v.z, v.x), y: v.y };
-      } else {   // beyond the drawn galaxies: the nucleus side, still a place of its own
-        pos[ci] = new V3(gauss(), gauss(), gauss()).multiplyScalar(R * 0.05); place[ci] = { halo: true };
+    if (!a) { idx.forEach(ci => { pos[ci] = new V3(gauss(), gauss(), gauss()).multiplyScalar(R * 0.05); place[ci] = { halo: true }; }); continue; }
+    const n = idx.length, at = new Map(idx.map((ci, i) => [ci, i]));
+    const m = idx.map(ci => Math.max(0.5, claims[ci].mass || 1)), mMax = Math.max(...m);
+    const order = idx.map((_, i) => i).sort((p, q) => (claims[idx[q]].born || 0) - (claims[idx[p]].born || 0));
+    const P = new Array(n);
+    order.forEach((i, k) => { const t = n > 1 ? k / (n - 1) : 0, r = 0.06 + 0.9 * Math.sqrt(t), th = k * 2.399963 + a.ph;
+      P[i] = new V3(Math.cos(th) * r, gauss() * 0.06, Math.sin(th) * r); });
+    const E = []; linkW.forEach((w, key) => { const [x, y] = key.split('|').map(Number), ia = at.get(x), ib = at.get(y); if (ia != null && ib != null) E.push([ia, ib, w]); });
+    const flat = 0.25 + 0.6 * (a.n ? (stat[reg].proven / Math.max(1, stat[reg].n)) : 0.3), F = P.map(() => new V3());
+    for (let it = 0; it < (n > 150 ? 70 : 110); it++) {
+      F.forEach(f => f.set(0, 0, 0));
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const dx = P[i].x - P[j].x, dy = P[i].y - P[j].y, dz = P[i].z - P[j].z, L2 = Math.max(dx * dx + dy * dy + dz * dz, 4e-4);
+        const k = 0.0016 * (0.6 + (m[i] * m[j]) / (mMax * mMax) * 2.2) / L2;   // heavy suns keep their space
+        F[i].x += dx * k; F[i].y += dy * k; F[i].z += dz * k; F[j].x -= dx * k; F[j].y -= dy * k; F[j].z -= dz * k;
       }
-    });
+      E.forEach(([i, j, w]) => { const d = P[j].clone().sub(P[i]), L = d.length() || 1e-3, f = 0.05 * Math.min(3, w) * (L - 0.1) / L;
+        F[i].addScaledVector(d, f); F[j].addScaledVector(d, -f); });
+      for (let i = 0; i < n; i++) { const g0 = 0.018 * (0.4 + 1.2 * m[i] / mMax);   // the heavy sink to the core
+        F[i].x -= P[i].x * g0; F[i].z -= P[i].z * g0; F[i].y -= P[i].y * (g0 + 0.12 * flat);
+        const L = F[i].length(); if (L > 0.05) F[i].multiplyScalar(0.05 / L); P[i].add(F[i]); }
+    }
+    const rs = P.map(v => Math.hypot(v.x, v.z)).sort((p, q) => p - q), r90 = rs[Math.floor(rs.length * 0.9)] || 1;
+    for (let i = 0; i < n; i++) {
+      const v = P[i].multiplyScalar(1 / Math.max(0.05, r90)), r = Math.hypot(v.x, v.z), tw = a.tight * 0.55 * r;   // the differential turn
+      const c = Math.cos(tw), sn = Math.sin(tw), x = (v.x * c - v.z * sn) * a.rad * 0.9, z = (v.x * sn + v.z * c) * a.rad * 0.9, y = v.y * a.rad * 0.9;
+      const ci = idx[i]; pos[ci] = toWorld(a, x, y, z);
+      place[ci] = { arm: reg, j: 0, r: clamp(Math.hypot(x, z) / a.rad, 0, 1.4), th: Math.atan2(z, x), y, x, z, mass: m[i] / mMax };
+    }
   }
   // §9.2 a domain's halo: seven orbits in its galaxy's plane, beside it; reg -1 = the nucleus side
   const HALO_R = R * 0.05;
@@ -158,20 +182,21 @@ export function layoutGalaxy({ R, regs, claims, links = [], seed = 7 }) {
   return { GR, HH, R, arms, sats: [], pos, place, tilt: new THREE.Quaternion(), posWorld: pos.map(p => (p ? p.clone() : p)),
     shellR, toWorld, spiralLocal, HALO_R, hasHalo, haloCentre: reg => haloFrame(reg).c, haloOrbit: orbit, haloOrbitLocal: orbit,
     haloQ: reg => { const a = galOf(reg); return a ? a.q.clone() : new THREE.Quaternion(); },
-    pinAt, labelAt, viewOf, pathBetween, related, S, DIAL_R };
+    pinAt, labelAt, viewOf, pathBetween, related, S, DIAL_R, seq };
 }
 
-const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(reg-foc)<.5?1.2:(reg<-.5?.55:.22));}`;
+const FOCUS_GLSL = `float focusDim(float reg,float foc){return foc<-.5?1.:(abs(reg-foc)<.5?1.2:(reg<-.5?.55:.22));}
+  uniform float uNearZ,uSpan;float depthK(float z){return clamp(1.3-(z-uNearZ)/uSpan,.3,1.3);}`;
 const STAR_VS = `uniform float uTime,uPix,uVis,uFoc;attribute float aA,aPh,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.78+.22*sin(uTime*(.6+aPh*.9)+aPh*40.);
-    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
+    vC=aC;vA=aA*tw*uVis*smoothstep(.4,3.,-mv.z)*focusDim(aReg,uFoc)*depthK(-mv.z);gl_PointSize=min(aSz*uPix*(60./-mv.z),6.*uPix);gl_Position=projectionMatrix*mv;}`;
 const STAR_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
   gl_FragColor=vec4(vC,(smoothstep(.5,.0,d)*.55+smoothstep(.18,.0,d)*.6)*vA);}`;
 // soft glows (galaxy cores and halos, nebula clumps, far galaxies): large, faint, gaussian
 const GLOW_VS = `uniform float uPix,uVis,uFoc;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
   ${FOCUS_GLSL}
-  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aC;vA=aA*uVis*focusDim(aReg,uFoc)*smoothstep(.3,2.5,-mv.z);
+  void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vC=aC;vA=aA*uVis*focusDim(aReg,uFoc)*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z);
     gl_PointSize=clamp(aSz*uPix*(300./-mv.z),2.*uPix,180.*uPix);gl_Position=projectionMatrix*mv;}`;
 const GLOW_FS = `varying vec3 vC;varying float vA;void main(){vec2 c=gl_PointCoord-.5;float d=dot(c,c)*4.;if(d>1.)discard;gl_FragColor=vec4(vC,exp(-d*3.2)*vA);}`;
 
@@ -185,7 +210,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   const { GR, HH, arms, pos, place, shellR, toWorld, spiralLocal } = layout;
   const sats = [];
   const g = new THREE.Group();
-  const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 } };
+  const uni = { ...U, uVis: { value: 1 }, uIn: { value: 0 }, uHalo: { value: -9 }, uFoc: { value: -1 }, uFocArm: { value: -1 }, uHov: { value: -1 }, uSel: { value: -1 },
+    uNearZ: { value: 0 }, uSpan: { value: R * 2 } };
   const disposables = [];
   const W = new THREE.Color('#ffffff'), WARM = new THREE.Color('#ffe2b8'), COOL = new THREE.Color('#bfe0ff');
   const bez = (A0, M0, B0, u) => { const q = 1 - u; return new V3(q * q * A0.x + 2 * q * u * M0.x + u * u * B0.x, q * q * A0.y + 2 * q * u * M0.y + u * u * B0.y, q * q * A0.z + 2 * q * u * M0.z + u * u * B0.z); };
@@ -207,7 +233,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   //    galaxies beyond the shell. The memory is one of many. ─────────────────────────────────────────────────────
   {
     const P = [], C = [], A = [], PH = [], SZ = [];
-    for (let i = 0; i < 2600; i++) { const u = rng() * 2 - 1, ph = rng() * TAU, q = Math.sqrt(1 - u * u), rr = R * (14 + 8 * rng());
+    for (let i = 0; i < 1800; i++) { const u = rng() * 2 - 1, ph = rng() * TAU, q = Math.sqrt(1 - u * u), rr = R * (14 + 8 * rng());
       P.push(Math.cos(ph) * q * rr, u * rr, Math.sin(ph) * q * rr); const c = COOL.clone().lerp(WARM, rng()); C.push(c.r, c.g, c.b);
       A.push(0.08 + 0.3 * Math.pow(rng(), 3)); PH.push(rng()); SZ.push(1.6 + rng() * 2.4); }
     for (let k = 0; k < 7; k++) {
@@ -222,47 +248,99 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     addPoints(P, C, A, PH, SZ);
   }
 
-  // ── the galaxies: one per domain - spiral (enough claims), irregular companion (linked to a bigger one), elliptical ─
+  // ── the galaxies, drawn FROM their suns (owner, 2026-11-23): each landmark's own system (a cloud sized by its mass,
+  //    orbit rings round the heaviest), bridges of stars along its strongest links (the arms ARE links), a disc that
+  //    follows where the suns are, a faint halo of old stars. Colour = the landmark's state: young (this week) pink
+  //    like newborn stars, proven bright and white, still learning in the domain's tint, fading amber. A domain
+  //    with no landmarks has no structure: a soft featureless cloud. The heaviest sun is the core, with spikes. ────
+  const PINK = new THREE.Color('#ff8fc4'), AMBER = new THREE.Color('#ffb46b');
+  const spikes = [];
+  const byGal = arms.map(() => []);
+  pos.forEach((p, k) => { const pl = place[k]; if (p && pl && pl.arm != null && byGal[pl.arm]) byGal[pl.arm].push(k); });
+  const sunCol = (a, k) => { const info = claimInfo[k] || {};
+    if (info.young) return PINK.clone().lerp(W, 0.25);
+    if (info.fading) return AMBER.clone();
+    return info.proven ? a.col.clone().lerp(W, 0.55) : a.col.clone().lerp(W, 0.15); };
   {
     const P = [], C = [], A = [], PH = [], SZ = [], RG = [];
-    const total = 15000, wsum = arms.reduce((s, a) => s + 0.25 + a.size, 0) || 1;
+    const put = (p, c, al, sz, reg) => { P.push(p.x, p.y, p.z); C.push(c.r, c.g, c.b); A.push(al); PH.push(rng()); SZ.push(sz); RG.push(reg); };
+    const total = 13000, wsum = arms.reduce((sum, a) => sum + 0.25 + a.size, 0) || 1;   // the frame budget (28 fps at DPR 1, measured)
     arms.forEach(a => {
-      const n = Math.round(total * (0.25 + a.size) / wsum), coreC = WARM.clone().lerp(a.col, 0.25);
-      for (let i = 0; i < n; i++) {
-        let x, y, z, r;
-        if (a.kind === 'spiral') {
-          r = Math.pow(rng(), 0.75);
-          if (a.bar && r < 0.3 && rng() < 0.5) { const s = (rng() * 2 - 1) * 0.3; x = Math.cos(a.ph) * s * a.rad + gauss() * a.rad * 0.03; z = Math.sin(a.ph) * s * a.rad + gauss() * a.rad * 0.03; }
-          else { const j = Math.floor(rng() * a.nArms), dth = gauss() * 0.32 * (1 - r * 0.3); [x, z] = spiralLocal(a, j, r, dth); }
-          y = gauss() * a.rad * (0.02 + 0.09 * Math.exp(-r * 4));   // a thin disc, a swollen bulge
-        } else if (a.kind === 'irregular') {
-          const cl = a.clumps[Math.floor(rng() * a.clumps.length)], v = cl.clone().add(new V3(gauss(), gauss() * 0.5, gauss()).multiplyScalar(a.rad * 0.18));
-          x = v.x; y = v.y; z = v.z; r = clamp(v.length() / a.rad, 0, 1);
-        } else {
-          const v = new V3(gauss(), gauss() * 0.65, gauss()); r = clamp(v.length() / 1.4, 0, 1); v.multiplyScalar(a.rad * 0.42); x = v.x; y = v.y; z = v.z;
-        }
-        const p = toWorld(a, x, y, z); P.push(p.x, p.y, p.z);
-        const c = a.kind === 'elliptical' ? coreC.clone().lerp(a.col, 0.4 * r) : a.col.clone().lerp(coreC, Math.pow(1 - r, 2.2)).lerp(W, 0.12 * (1 - r));
-        C.push(c.r, c.g, c.b); A.push((0.08 + 0.2 * (1 - r)) * (a.kind === 'spiral' ? 1 : 0.85)); PH.push(rng()); SZ.push(1.0 + rng() * 0.9); RG.push(a.reg);
+      const budget = Math.round(total * (0.25 + a.size) / wsum), ks = byGal[a.reg], coreC = WARM.clone().lerp(a.col, 0.25);
+      const halo = (cnt, al) => { for (let i = 0; i < cnt; i++) { const u = rng() * 2 - 1, ph = rng() * TAU, q = Math.sqrt(1 - u * u), rr = a.rad * (0.3 + 1.0 * Math.pow(rng(), 0.6));
+        put(toWorld(a, Math.cos(ph) * q * rr, u * rr * 0.8, Math.sin(ph) * q * rr), coreC.clone().lerp(a.col, 0.5), al * (0.6 + 0.8 * rng()), 0.9, a.reg); } };
+      if (!ks.length) {   // no landmarks: a featureless cloud (its moments, no structure yet)
+        for (let i = 0; i < budget * 0.8; i++) { const v = new V3(gauss(), gauss() * 0.75, gauss()), r = clamp(v.length() / 1.4, 0, 1); v.multiplyScalar(a.rad * 0.45);
+          put(toWorld(a, v.x, v.y, v.z), coreC.clone().lerp(a.col, 0.5 * r), 0.06 + 0.14 * (1 - r), 1.0 + rng() * 0.6, a.reg); }
+        halo(Math.round(budget * 0.2), 0.035);
+        glow(a.c, coreC, 0.06, a.rad / R * 6, a.reg); glow(a.c, a.col, 0.04, a.rad / R * 22, a.reg);
+        return;
       }
-      // the core: its brightness = how much this domain's claims were used
-      for (let i = 0; i < 70; i++) { const v = new V3(gauss(), gauss() * 0.7, gauss()).multiplyScalar(a.rad * 0.06); const p = toWorld(a, v.x, v.y, v.z);
-        P.push(p.x, p.y, p.z); C.push(coreC.r, coreC.g, coreC.b); A.push(0.25 * a.core); PH.push(rng()); SZ.push(1.8); RG.push(a.reg); }
-      glow(a.c, coreC, 0.16 * a.core, a.rad / R * 9, a.reg);
-      glow(a.c, a.col, 0.045, a.rad / R * 26, a.reg);   // the faint halo of the whole galaxy
+      const mass = ks.map(k => place[k].mass || 0.3), msum = mass.reduce((x, y) => x + y, 0) || 1;
+      const flatY = v => v.y * 0.45;
+      // (1) each sun's system: a cloud sized by its mass (45% of the budget)
+      ks.forEach((k, i) => { const pl = place[k], cnt = Math.max(4, Math.round(budget * 0.45 * mass[i] / msum)), col = sunCol(a, k), sr = a.rad * (0.025 + 0.07 * Math.sqrt(mass[i]));
+        for (let j = 0; j < cnt; j++) { const v = new V3(gauss(), gauss(), gauss()).multiplyScalar(sr); v.y = flatY(v);
+          put(toWorld(a, pl.x + v.x, pl.y + v.y, pl.z + v.z), col.clone().lerp(W, 0.15 * rng()), 0.07 + 0.16 * rng(), 1.0 + rng() * 0.7, a.reg); } });
+      // (2) bridges: stars along the strongest links between this galaxy's suns (20%) - the arms are the links
+      const inner = links.filter(l => { const pa = place[l.a], pb = place[l.b]; return pa && pb && pa.arm === a.reg && pb.arm === a.reg; })
+        .sort((x, y) => (y.w || 0) - (x.w || 0)).slice(0, 260);
+      const bridgeN = Math.round(budget * 0.2 / Math.max(1, inner.length));
+      inner.forEach(l => { const pa = place[l.a], pb = place[l.b], mid = new V3((pa.x + pb.x) / 2 * 0.85, (pa.y + pb.y) / 2, (pa.z + pb.z) / 2 * 0.85);
+        const ca = sunCol(a, l.a), cb = sunCol(a, l.b);
+        for (let j = 0; j < bridgeN; j++) { const u = rng(), q = 1 - u, x = q * q * pa.x + 2 * q * u * mid.x + u * u * pb.x, y = q * q * pa.y + 2 * q * u * mid.y + u * u * pb.y, z = q * q * pa.z + 2 * q * u * mid.z + u * u * pb.z;
+          const sp = a.rad * 0.012; put(toWorld(a, x + gauss() * sp, y + gauss() * sp * 0.5, z + gauss() * sp), ca.clone().lerp(cb, u), 0.06 + 0.1 * rng(), 0.9 + rng() * 0.5, a.reg); } });
+      // (3) the disc follows the suns' density: a sun picked by mass, a wider, flatter offset (20%)
+      const cum = []; let acc = 0; mass.forEach(x => { acc += x; cum.push(acc); });
+      for (let i = 0; i < budget * 0.2; i++) { const u = rng() * acc; let lo = 0; while (cum[lo] < u) lo++; const pl = place[ks[lo]];
+        const v = new V3(gauss(), gauss() * 0.3, gauss()).multiplyScalar(a.rad * 0.16);
+        put(toWorld(a, pl.x + v.x, pl.y + v.y, pl.z + v.z), a.col.clone().lerp(coreC, 0.3 * rng()), 0.04 + 0.08 * rng(), 0.9, a.reg); }
+      // (4) a faint halo of old stars (15%)
+      halo(Math.round(budget * 0.15), 0.035);
+      // the heaviest suns: a glow each; orbit rings (their systems) round the three heaviest; spikes on the core sun
+      const top = ks.map((k, i) => ({ k, m: mass[i] })).sort((x, y) => y.m - x.m);
+      top.slice(0, 4).forEach(({ k, m }, i) => { const p = pos[k], col = sunCol(a, k);   // 4 glows a galaxy: large sprites cost fill rate
+        glow(p, col, 0.06 + 0.1 * m, a.rad / R * (1.8 + 2.6 * m), a.reg);
+        if (i < 3) { const pl = place[k], rings = 1 + Math.min(2, Math.round(m * 2));
+          for (let rI = 1; rI <= rings; rI++) { const rr = a.rad * (0.04 + 0.035 * rI) * (0.7 + m);
+            for (let j = 0; j < 48; j++) { const th = j / 48 * TAU; put(toWorld(a, pl.x + Math.cos(th) * rr, pl.y, pl.z + Math.sin(th) * rr), col.clone().lerp(W, 0.4), 0.09, 0.8, a.reg); } } }
+        if (i === 0) spikes.push({ p: p.clone(), c: col.clone().lerp(W, 0.5), a: 0.35, sz: a.rad / R * 6, reg: a.reg }); });
+      glow(a.c, a.col, 0.04, a.rad / R * 24, a.reg);   // the faint light of the whole galaxy
     });
     addPoints(P, C, A, PH, SZ, RG);
   }
 
+  // ── the space between the galaxies: interstellar stars that fill the shell (tinted by the nearest galaxy),
+  //    nebula clouds round the helix, and the luminous double-helix spine that joins the galaxies in order ─────────
+  {
+    const P = [], C = [], A = [], PH = [], SZ = [], RG = [];
+    for (let i = 0; i < 1800; i++) { const y = (rng() * 2 - 1) * HH * 0.9, rm = shellR(y) * 0.95, rho = rm * Math.pow(rng(), 0.45), th = rng() * TAU;
+      const p = new V3(Math.cos(th) * rho, y, Math.sin(th) * rho); let best = null, bd = 1e9;
+      arms.forEach(a => { const d = a.c.distanceTo(p) / a.rad; if (d < bd) { bd = d; best = a; } });
+      const c = best ? best.col.clone().lerp(COOL, 0.5) : COOL; P.push(p.x, p.y, p.z); C.push(c.r, c.g, c.b);
+      A.push(0.018 + 0.05 * Math.pow(rng(), 2)); PH.push(rng()); SZ.push(0.9 + rng() * 0.5); RG.push(-1); }
+    addPoints(P, C, A, PH, SZ, RG);
+    const NEB = [new THREE.Color('#7a5cff'), new THREE.Color('#2fd4c8'), new THREE.Color('#ff6fae'), new THREE.Color('#4f8dff')];
+    for (let k = 0; k < 10; k++) { const y = (k / 9 * 2 - 1) * HH * 0.55, th = (hashKey('neb' + k) % 628) / 100, rho = shellR(y) * (0.3 + 0.4 * rng());
+      const c0 = new V3(Math.cos(th) * rho, y, Math.sin(th) * rho), col = NEB[k % NEB.length];
+      for (let j = 0; j < 2; j++) glow(c0.clone().add(new V3(gauss(), gauss() * 0.6, gauss()).multiplyScalar(R * 0.08)), col, 0.016 + 0.01 * rng(), 5 + 4 * rng()); }
+  }
+  // the double-helix spine: a filament of stars through the galaxies in helix order (two strands, the Caducean pair)
+  const SPINE = [];
+  if (layout.seq && layout.seq.length > 1) {
+    const pts = layout.seq.map(r => arms[r].c.clone()), curve = new THREE.CatmullRomCurve3([new V3(0, -HH * 0.95, 0), ...pts, new V3(0, HH * 0.95, 0)], false, 'centripetal');
+    SPINE.push({ curve, cols: [new THREE.Color('#9fe6ff'), new THREE.Color('#ffe2b8')] });
+  }
+
   // ── the claims ARE stars of their galaxy: a core in the domain's tint; a ring = proven (solid) or still learning
   //    (dashed); brightness = sync; they grow as you go inside (uIn); hover and focus ring them white ──────────────
-  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel;attribute float aIdx,aProven,aSync,aReg,aPh;attribute vec3 aC;
+  const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel;attribute float aIdx,aProven,aSync,aReg,aPh,aMass;attribute vec3 aC;
     varying vec3 vC;varying float vA,vP,vH,vS;
     ${FOCUS_GLSL}
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
       vC=aC;vP=aProven;vH=h;vS=sel;float tw=.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
       vA=(.3+.55*aSync)*tw*uVis*focusDim(aReg,uFoc)*(1.+.6*max(h,sel));
-      float sz=(1.6+1.6*aSync)*(1.+1.2*uIn)*(1.+.7*max(h,sel));
+      float sz=(1.3+1.3*aSync)*(.75+1.1*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel));
       gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(8.+5.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
   const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
     float core=smoothstep(.17,.0,d),glow=smoothstep(.5,.0,d)*.28,ang=atan(c.y,c.x);
@@ -270,16 +348,16 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     float hi=max(vH,vS);vec3 col=mix(vC,vec3(1.),.35+.4*hi);
     gl_FragColor=vec4(col,(core*.95+glow+ring*(.45+.55*hi))*vA);}`;
   {
-    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [];
+    const P = [], C = [], IX = [], PR = [], SY = [], RG = [], PH = [], MS = [];
     pos.forEach((p, k) => { if (!p) return; const pl = place[k] || {}, info = claimInfo[k] || {}, a = pl.arm != null ? arms[pl.arm] : null;
-      const col = a ? a.col.clone().lerp(W, 0.45) : new THREE.Color('#cfe9f5');
+      const col = a ? sunCol(a, k) : new THREE.Color('#cfe9f5'); MS.push(pl.mass || 0.3);
       P.push(p.x, p.y, p.z); C.push(col.r, col.g, col.b); IX.push(k); PR.push(info.proven ? 1 : 0); SY.push(clamp(info.sync ?? 0.4, 0, 1)); RG.push(a ? a.reg : -1); PH.push(rng()); });
     if (P.length) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3));
       geo.setAttribute('aIdx', new THREE.Float32BufferAttribute(IX, 1)); geo.setAttribute('aProven', new THREE.Float32BufferAttribute(PR, 1));
       geo.setAttribute('aSync', new THREE.Float32BufferAttribute(SY, 1)); geo.setAttribute('aReg', new THREE.Float32BufferAttribute(RG, 1));
-      geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1));
+      geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1)); geo.setAttribute('aMass', new THREE.Float32BufferAttribute(MS, 1));
       const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: CLAIM_VS, fragmentShader: CLAIM_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
       const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.renderOrder = 2; g.add(o); disposables.push(geo, mat);
     }
@@ -292,7 +370,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     ${FOCUS_GLSL}
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float flow=.55+.45*sin(aU*38.-uTime*1.3+aPh*2.);
       float fd=max(focusDim(aReg,uFoc),focusDim(aRegB,uFoc));
-      vC=aC;vA=aA*flow*uVis*fd*smoothstep(.3,2.5,-mv.z);gl_PointSize=clamp(aSz*uPix*(60./-mv.z),1.3*uPix,5.*uPix);gl_Position=projectionMatrix*mv;}`;
+      vC=aC;vA=aA*flow*uVis*fd*smoothstep(.3,2.5,-mv.z)*depthK(-mv.z);gl_PointSize=clamp(aSz*uPix*(60./-mv.z),1.3*uPix,5.*uPix);gl_Position=projectionMatrix*mv;}`;
   const S = layout.S || [];
   {
     const P = [], C = [], A = [], PH = [], SZ = [], RG = [], RB = [], UU = [];
@@ -303,9 +381,12 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       const cnt = (S[i] && S[i][j]) || 0; if (!cnt) continue; const path = layout.pathBetween(i, j); if (!path) continue;
       const s = Math.log2(1 + cnt);
       fil(path[0], path[1], path[2], arms[i].col, arms[j].col, Math.round(90 + 70 * s), R * (0.006 + 0.004 * s), 0.1 + 0.04 * Math.min(4, s), i, j);
-      for (let k = 0; k < 3; k++) glow(bez(path[0], path[1], path[2], 0.3 + 0.2 * k), arms[i].col.clone().lerp(arms[j].col, 0.3 + 0.2 * k), 0.018, 3 + 2 * rng());   // nebula dust where they meet
+      glow(path[1], arms[i].col.clone().lerp(arms[j].col, 0.5), 0.02, 3.5 + 2 * rng());   // nebula dust where they meet
     }
     arms.forEach(a => { const m = a.c.clone().multiplyScalar(0.5).add(new V3(0, R * 0.04, 0)); fil(a.c, m, new V3(), a.col, WARM, 70, R * 0.004, 0.07, a.reg, a.reg); });
+    SPINE.forEach(sp => { for (let i = 0; i < 1400; i++) { const u = rng(), p = sp.curve.getPoint(u), sprd = R * 0.012;
+      P.push(p.x + gauss() * sprd, p.y + gauss() * sprd, p.z + gauss() * sprd); const c = sp.cols[0].clone().lerp(sp.cols[1], u);
+      C.push(c.r, c.g, c.b); A.push(0.07 + 0.06 * rng()); PH.push(rng()); SZ.push(1.1 + rng() * 0.6); RG.push(-1); RB.push(-1); UU.push(u * 3); } });
     if (P.length) { const o = addPoints(P, C, A, PH, SZ, RG, FIL_VS);
       o.geometry.setAttribute('aU', new THREE.Float32BufferAttribute(UU, 1)); o.geometry.setAttribute('aRegB', new THREE.Float32BufferAttribute(RB, 1)); }
   }
@@ -332,14 +413,14 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       const pa = place[ln.a], pb = place[ln.b]; if (!pa || !pb || !pos[ln.a] || !pos[ln.b] || pa.arm == null || pb.arm == null) return;
       const pts = [];
       if (pa.arm === pb.arm) {
-        const a = arms[pa.arm];
-        for (let k = 0; k <= 14; k++) { const u = k / 14, env = Math.sin(u * Math.PI), r = lerp(pa.r, pb.r, u), th = lerp(pa.th, pb.th, u) + ((id * 0.618) % 1 - 0.5) * 0.25 * env;
-          const y = lerp(pa.y, pb.y, u) + ((id * 0.7548) % 1 - 0.5) * a.rad * 0.08 * env;
-          pts.push(toWorld(a, Math.cos(th) * r * a.rad, y, Math.sin(th) * r * a.rad)); }
+        const a = arms[pa.arm], lane = ((id * 0.618) % 1 - 0.5) * a.rad * 0.06;
+        const mid = new V3((pa.x + pb.x) / 2 * 0.85 + lane, (pa.y + pb.y) / 2 + lane * 0.5, (pa.z + pb.z) / 2 * 0.85 - lane);
+        for (let k = 0; k <= 12; k++) { const u = k / 12, q = 1 - u;   // a curve between two suns, bowed a little toward the core
+          pts.push(toWorld(a, q * q * pa.x + 2 * q * u * mid.x + u * u * pb.x, q * q * pa.y + 2 * q * u * mid.y + u * u * pb.y, q * q * pa.z + 2 * q * u * mid.z + u * u * pb.z)); }
       } else {
         const A0 = pos[ln.a], B0 = pos[ln.b], ca = arms[pa.arm].c, cb = arms[pb.arm].c, path = layout.pathBetween(pa.arm, pb.arm);
         const m = path ? path[1] : ca.clone().add(cb).multiplyScalar(0.5), jit = new V3(gauss(), gauss(), gauss()).multiplyScalar(R * 0.01);
-        const c1 = ca.clone().lerp(m, 0.35).add(jit), c2 = cb.clone().lerp(m, 0.35).add(jit);
+        const c1 = A0.clone().lerp(m, 0.5).add(jit), c2 = B0.clone().lerp(m, 0.5).add(jit);   // from the claim toward the web (never through the core: a starburst)
         for (let k = 0; k <= 18; k++) { const u = k / 18, q = 1 - u;
           pts.push(new V3(q * q * q * A0.x + 3 * q * q * u * c1.x + 3 * q * u * u * c2.x + u * u * u * B0.x,
             q * q * q * A0.y + 3 * q * q * u * c1.y + 3 * q * u * u * c2.y + u * u * u * B0.y,
@@ -471,16 +552,14 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       for (let k = 1; k <= n; k++) { const u = k / n, pt = bez(A0, ctl, B0, u);
         P.push(prev.x, prev.y, prev.z, pt.x, pt.y, pt.z); CL.push(claim, claim); UU.push((k - 1) / n, u);
         const fa = a0 * (0.55 + 0.45 * Math.sin(u * Math.PI)); AA.push(fa, fa); C.push(col.r, col.g, col.b, col.r, col.g, col.b); prev = pt; } };
-    pos.forEach((p, k) => { const pl = place[k] || {}; if (!p || pl.arm == null) return; const a = arms[pl.arm];
-      if (a.kind === 'spiral') { const [x, z] = spiralLocal(a, pl.j, pl.r), f = toWorld(a, x, 0, z); curve(p, f, p.clone().lerp(f, 0.5), 4, k, 0.035, a.col); }
-      else curve(p, a.c, p.clone().lerp(a.c, 0.5), 4, k, 0.03, a.col); });
     claimNodes.slice(0, 3000).forEach(cn => { const p = pos[cn.k]; if (!p) return; const pl = place[cn.k] || {}, ctl = p.clone().lerp(cn.p, 0.5);
       ctl.y = lerp(p.y, cn.p.y, 0.15); curve(p, cn.p, ctl, 8, cn.k, 0.008, colOfReg(pl.arm != null ? pl.arm : -1)); });
     halos.forEach(h => { const c = layout.haloCentre(h.reg), a = h.reg >= 0 ? arms[h.reg] : null, base = a ? a.c.clone() : new V3();
       const col = colOfReg(h.reg); curve(base, c, base.clone().lerp(c, 0.5).add(new V3(0, R * 0.01, 0)), 8, -1, 0.07, col);
       HALO_SPACES.forEach(sp => { const o = layout.haloOrbitLocal(h.reg, sp), n = (h.counts && h.counts[sp]) || 0;
         curve(c, o, c.clone().lerp(o, 0.5), 2, -1, n > 0 ? 0.07 : 0.025, col); }); });
-    pins.forEach(pn => { const a = pn.reg >= 0 ? arms[pn.reg] : null, to = a ? a.c : new V3();
+    pins.forEach(pn => { const a = pn.reg >= 0 ? arms[pn.reg] : null;   // held to its arm: a short line into the disc beside it (to the core, 58 tethers made a starburst)
+      let to = new V3(); if (a) { const v = pn.p.clone().sub(a.c); to = toWorld(a, v.dot(a.ax) * 0.88, 0, v.dot(a.az2) * 0.88); }
       P.push(pn.p.x, pn.p.y, pn.p.z, to.x, to.y, to.z); CL.push(-1, -1); UU.push(0, 1); AA.push(0.1, 0.1); C.push(1, 0.86, 0.62, 1, 0.86, 0.62); });
     if (P.length) {
       const geo = new THREE.BufferGeometry();
@@ -522,6 +601,12 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   }
   // the soft glows (galaxy cores and halos, nebula dust, far galaxies), drawn once
   if (glows.P.length) addPoints(glows.P, glows.C, glows.A, glows.PH, glows.SZ, glows.RG, GLOW_VS, GLOW_FS);
+  // diffraction spikes on the bright cores (the photographic touch: a star seen through a telescope)
+  if (spikes.length) addPoints(spikes.flatMap(k => [k.p.x, k.p.y, k.p.z]), spikes.flatMap(k => [k.c.r, k.c.g, k.c.b]), spikes.map(k => k.a),
+    spikes.map(() => 0), spikes.map(k => k.sz), spikes.map(k => k.reg), GLOW_VS,
+    `varying vec3 vC;varying float vA;void main(){vec2 c=(gl_PointCoord-.5)*2.;float a=abs(c.x),b=abs(c.y);
+      float sp=exp(-b*40.)*(1.-a)+exp(-a*40.)*(1.-b)+.5*exp(-abs(a-b)*55.)*(1.-max(a,b));float core=exp(-dot(c,c)*30.);
+      gl_FragColor=vec4(vC,(sp*.6+core)*vA);}`);
 
   // the poles: where the strands meet; they flash once when a recall pulse arrives
   const poleGeo = new THREE.BufferGeometry();
@@ -555,8 +640,9 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     if (pulses.length > PULSE_SLOTS) pulses.shift();
   }
 
-  function update(t, vis, inside = 0, haloReg = -9) {
+  function update(t, vis, inside = 0, haloReg = -9, camD = R * 5.8) {
     now = t; uni.uVis.value = vis; uni.uIn.value = inside; uni.uHalo.value = haloReg;
+    uni.uNearZ.value = Math.max(0, camD - R); uni.uSpan.value = R * 2;   // the shell's near side is the brightest
     strands.forEach((sd, n) => dust[n].forEach((d, j) => { const q = (d.s + t * d.v) % 1, onLeg = q < LEG_SHARE;
       const s = onLeg ? q / LEG_SHARE : (q - LEG_SHARE) / (1 - LEG_SHARE), path = onLeg ? LEG[n] : SAMPLES[n], ns = onLeg ? LEG_NS : NS;
       const f = s * ns, i0 = Math.floor(f), w = f - i0, A = path[i0], B = path[Math.min(ns, i0 + 1)], idx = (n * DUST + j) * 3;

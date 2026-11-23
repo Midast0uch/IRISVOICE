@@ -939,8 +939,10 @@ const somaPos=LM.map(l=>{const fi=l.dom;
 let GAL_LAYOUT=null;
 if(GALAXY){
   GAL_LAYOUT=layoutGalaxy({R,regs:REG.map(d=>({key:d,size:M.domCounts[d]||0,col:domCol(d)})),
-    claims:LM.map(l=>({reg:l.dom,born:l.born||0,proven:l.tier!=='candidate',act:l.activations||0})),
-    links:M.edges.filter(e=>e.a<LM.length&&e.b<LM.length).map(e=>({a:e.a,b:e.b})),seed:7});
+    // a landmark's MASS (it is a sun): its use, its outside evidence, proven
+    claims:LM.map(l=>({reg:l.dom,born:l.born||0,proven:l.tier!=='candidate',act:l.activations||0,
+      mass:1+Math.log2(1+(l.activations||0))+.35*Object.values(l.evidence_counts||{}).reduce((x,y)=>x+y,0)+(l.tier!=='candidate'?1:0)})),
+    links:M.edges.filter(e=>e.a<LM.length&&e.b<LM.length).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),seed:7});
   GAL_LAYOUT.posWorld.forEach((p,k)=>{if(p)somaPos[k].copy(p)});   // the tilted positions: picking, cards and the dive
   GAL_LAYOUT.arms.forEach(a=>{regC[a.reg].copy(a.c.lengthSq()>1e-4?a.c.clone().normalize():new V3(0,1,0))});   // each domain's direction = its galaxy
 }
@@ -1479,7 +1481,7 @@ if(PINS.length){
 // W4: the galaxy (its own module); links = the landmark edges, lit by their traversals and by live recalls
 const galaxy=GALAXY&&GAL_LAYOUT?createGalaxy({R,U,layout:GAL_LAYOUT,seed:11,
   links:M.edges.filter(e=>e.a<NL&&e.b<NL).map(e=>({a:e.a,b:e.b,w:clamp(Math.log10(1+(e.traversals||0))/1.8,0,1)})),
-  claimNodes:CLAIM_NODES,claimInfo:LM.map(l=>({proven:l.tier!=='candidate',sync:syncClaim(l)})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
+  claimNodes:CLAIM_NODES,claimInfo:LM.map(l=>({proven:l.tier!=='candidate',sync:syncClaim(l),young:!!(l.born&&nowS()-l.born<7*86400),fading:!!l.fading})),pins:pinInfo.filter(q=>q.reg!=null).map(q=>({p:q.tip,reg:q.reg})),
   halos:[...new Set([...GAL_LAYOUT.arms.map(a=>a.reg),...GAL_LAYOUT.sats.map(sa=>sa.reg),...HALO_COUNTS.keys()])].map(reg=>({reg,counts:HALO_COUNTS.get(reg)||{}}))}):null;
 if(galaxy)cortex.add(galaxy.group);
 const pinHTML=k=>{const p=PINS[k],t=pinType(p.type),th=p.refs.filter(r=>r.t==='thread'||r.t==='session').length;
@@ -2274,7 +2276,8 @@ function tissueUp(){if(tissue.focus>=0){tissue.focus=-1;clearAnno('focus');retur
 // 9. camera: orbit (outside), fly (inside the brain), tunnel (inside a session)
 // ═══════════════════════════════════════════════════════════════════════════
 const clock=new THREE.Clock();
-const cam={mode:'orbit',target:new V3(),targetT:new V3(),az:.7,el:.16,dist:58,azT:.7,elT:.16,distT:58,fov:38,fovT:38,
+const CORTEX_DIST=GALAXY?R*3.4:58;   // the galaxy is framed closer: the cluster fills the view (owner, 2026-11-23)
+const cam={mode:'orbit',target:new V3(),targetT:new V3(),az:.7,el:.22,dist:CORTEX_DIST,azT:.7,elT:.22,distT:CORTEX_DIST,fov:38,fovT:38,
   yaw:0,pitch:0,yawT:0,pitchT:0,lean:new THREE.Vector2(),roll:0,pos:new V3(),vel:new V3(),tp:0,tpT:0,tween:null,look:new V3(),idle:0};
 const mouse={x:innerWidth/2,y:innerHeight/2,nx:0,ny:0,down:false,dragged:0,lx:0,ly:0};
 function tweenTo(pos,look,fov,dur,done){cam.tween={p0:camera.position.clone(),l0:cam.look.clone(),f0:camera.fov,p1:pos.clone(),l1:look.clone(),f1:fov,
@@ -2751,7 +2754,7 @@ function setLens(l){
   $('scrub').classList.toggle('on',SCRUB_LENS.has(l));
   const T=$('title');T.style.opacity=0;
   cam.mode='orbit';
-  if(l==='cortex'){cam.targetT.set(0,0,0);cam.distT=58;cam.elT=.16}
+  if(l==='cortex'){cam.targetT.set(0,0,0);cam.distT=CORTEX_DIST;cam.elT=GALAXY?.22:.16}
   if(l==='timeline'){cam.targetT.set(0,0,0);cam.distT=66;cam.elT=.05}
   if(l==='oracle'){cam.targetT.set(0,0,0);cam.distT=44;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0}
   if(l==='artifacts'){cam.targetT.set(-1.0*R,0,0);cam.distT=62;cam.azT=Math.round(cam.az/(Math.PI*2))*Math.PI*2;cam.elT=0;setTimeout(()=>layoutTissue(false),900)}
@@ -2809,7 +2812,7 @@ function exitInterior(done){
   LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;$('title').style.opacity=0;
   state.inside=false;state.diving=true;state.openT=1;satellites(-1);
   // back out the way we came: through the opening, pulling away while the gaze settles on the whole mind
-  const end=c.clone().multiplyScalar(58).add(new V3(0,R*.4,0));
+  const end=c.clone().multiplyScalar(CORTEX_DIST).add(new V3(0,R*.4,0));
   const pts=[camera.position.clone(),c.clone().multiplyScalar(R*.62),c.clone().multiplyScalar(R*1.1),c.clone().multiplyScalar(R*2.6),end];
   const looks=[cam.look.clone(),c.clone().multiplyScalar(-R*.1),new V3(),new V3(),new V3()];
   tweenPath(pts,looks,38,REDUCED?.01:1.2,{kick:6,
@@ -3644,7 +3647,7 @@ const _frame=()=>{
     for(const o of [skin,wire,cells,xur,mist,arbors])o.visible=!on;rings.forEach(r=>{r.visible=!on});
     forest.visible=!on;somaCells.visible=!on;   // the claims are the galaxy's own stars (galaxy.ts)
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=!on;else if(o.userData.tracts)o.visible=!on||(state.insideK||0)>.05})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
-    if(on){galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9);
+    if(on){galaxy.update(t,clamp(state.vis.forest,0,1),state.insideK||0,state.inside||state.diving?state.diveReg:-9,camera.position.length());
       galaxy.mark(state.hoverSoma,state.focusSoma);
       galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null)}}   // inside: every galaxy stays visible
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm
