@@ -146,6 +146,9 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #key a{display:flex;align-items:center;justify-content:flex-end;gap:9px;font-size:10px;letter-spacing:.08em;color:var(--faint);cursor:pointer;user-select:none;transition:color .25s,opacity .25s}
 .iris-memory #key a:hover{color:var(--dim)}.iris-memory #key a .kn{font-style:normal;color:var(--dim);font-variant-numeric:tabular-nums;min-width:3.4em;text-align:right;opacity:.8}.iris-memory #key a.on{color:var(--white)}.iris-memory #key.iso a:not(.on){opacity:.35}.iris-memory #key canvas{width:22px;height:22px}
 .iris-memory #hint{position:absolute;right:22px;bottom:22px;font-size:10px;color:var(--faint);text-align:right;line-height:1.8}
+.iris-memory #key.gfold a:not(.kt){display:none}.iris-memory #key.gfold{gap:0}
+.iris-memory #key.gopen{background:rgba(0,0,0,.72);border:1px solid rgba(127,232,255,.14);border-radius:10px;padding:10px 12px}
+.iris-memory #key a.kt{color:var(--dim);border:1px solid rgba(127,232,255,.22);border-radius:7px;padding:3px 9px;justify-content:center}
 .iris-memory #key a.helpk{margin-top:4px;color:var(--dim)}.iris-memory #key a.helpk:hover{color:#cfe3ee}
 /* the control sheet (UX-PLAN 3.3): thin-line HUD, never a modal; the keys of the view you are in */
 .iris-memory #help{position:absolute;right:22px;top:96px;min-width:260px;max-width:340px;padding:12px 14px 10px;border:1px solid rgba(160,200,220,.22);background:rgba(4,8,12,.72);

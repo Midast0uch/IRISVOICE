@@ -2725,6 +2725,9 @@ const KEY_COUNT={claim:LM.filter(l=>l.tier!=='candidate').length,learning:LM.fil
 KEY.forEach(([k,w])=>{const a=document.createElement('a');a.dataset.k=k;
   a.append(Object.assign(document.createElement('span'),{textContent:w}),Object.assign(document.createElement('em'),{className:'kn',textContent:k==='states'||k==='events'?'':fmt(KEY_COUNT[k]||0)}),keyIcon(k));
   a.onclick=()=>setKindFocus(keyFocus===k?null:k);$('key').appendChild(a)});
+// the galaxy: the key folds into one small button (owner, 2026-11-23: the open column caught clicks meant for the scene)
+if(GALAXY){const kt=document.createElement('a');kt.className='kt';kt.textContent='◎ key';const K=$('key');K.classList.add('gfold');
+  kt.onclick=e=>{e.stopPropagation();const open=K.classList.toggle('gopen');K.classList.toggle('gfold',!open);kt.textContent=open?'✕ close the key':'◎ key'};K.appendChild(kt)}
 // THE CONTROL SHEET (UX-PLAN 3.3): `?` (or "? keys" at the foot of the key) lists the gestures of the view you are in.
 // Only bindings that exist (the keydown handler, click(), the wheel): a sheet that promises a key is worse than none.
 const HELP={
@@ -2987,7 +2990,7 @@ function landmarkHTML(k,deep){const l=LM[k];
   const happened=[...(lmEvents.get(k)||new Map()).entries()].sort((a,b)=>b[1]-a[1]).slice(0,5).map(([lb,n])=>`${esc(evLabel(lb))}${n>1?' ×'+n:''}`).join(' · ');
   const eps=s?(s.episodes||[]).map(id=>M.epById.get(id)).filter(Boolean):[],steps=deep&&eps.length?stepsHTML(eps,s.id,4):'';
   return `<div class="k">a claim · ${claimState(l)}${l.permanent?' · permanent':''}${cw?' · '+esc(cw):''}</div>
-    <div class="t" title="${esc(l.claim)}">${esc(l.claim)}</div>
+    <div class="t" title="${esc(l.claim)}">${esc(String(l.claim||'').length>180?String(l.claim).slice(0,179)+'…':l.claim)}</div>
     <div class="m"><em>what proves it</em> · ${ev||'nothing outside yet - only the run it came from'}
     ${l.contradictions?`<br><span class="w">contradicted ${l.contradictions===1?'once':l.contradictions+' times'}</span>`:''}
     <br><em>what happened to it</em> · used ${fmt(l.activations)} times${l.last_activated?' · last '+ago(l.last_activated):''}${happened?' · '+happened:''}
@@ -3811,13 +3814,22 @@ const _frame=()=>{
   const dt=Math.min(clock.getDelta(),.1),t=clock.elapsedTime; // flights keep real time on slow frames
   U.uTime.value=t;
   simulate(dt);
-  if(galaxy){const on=state.lens==='cortex';galaxy.group.visible=cam.mode!=='tunnel';galaxy.interior(on);   // owner, 2026-11-23: the new shell in every tab
-    for(const o of [wire,cells,xur,mist,arbors])o.visible=false;skin.visible=state.lens==='oracle';rings.forEach(r=>{r.visible=false});
-    forest.visible=false;somaCells.visible=false;   // the claims are the galaxy's own stars (galaxy.ts)
+  if(galaxy){const on=state.lens==='cortex';
+    // the tabs as one movement (owner, 2026-11-23: the timeline's helix and the artifacts were lost): leaving the cortex,
+    // the galaxy's interior fades while the old tissue (the forest - 42,000 particles) morphs into the helix / the
+    // artifact tissue as it always did; coming back, the morph returns and the galaxy fades in. The new woven shell
+    // stays in every tab as a faint frame; the old orb's shell parts stay hidden.
+    const _mm=state.morph.h||0;   // the timeline: the orb becomes the helix (the galaxy steps back); the artifacts tab keeps the orb - the galaxy - beside the tissue
+    state.galVis=lerp(state.galVis??1,on||state.lens==='artifacts'?1:0,1-Math.pow(.03,dt));const _gk=Math.min(state.galVis,1-_mm);
+    galaxy.group.visible=cam.mode!=='tunnel';galaxy.interior(_gk>.03);
+    {const sc=lerp(galaxy.group.scale.x,state.lens==='artifacts'?1.28:1,1-Math.pow(.03,dt));galaxy.group.scale.setScalar(sc)}   // the artifacts tab: the galaxy as large as the orb it replaces
+    for(const o of [wire,cells,xur,mist,arbors])o.visible=false;
+    rings.forEach(r=>{r.visible=(state.galIn||0)<.5;r.scale.setScalar(.68)});   // the aurora (owner, 2026-11-23): back, fitted to the lemon; it steps away inside
+    skin.visible=!on||_mm>.02||(state.morph.i||0)>.02;forest.visible=false;somaCells.visible=false;   // the skin's 42,000 points ARE the helix / the artifact tissue / the oracle's map; in the cortex the galaxy replaces it
     KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=false;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
     {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
       state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
-      galaxy.update(t,clamp(state.vis.forest,0,1),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
+      galaxy.update(t,clamp(state.vis.forest,0,1)*(.3+.7*_gk),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
       galaxy.mark(state.hoverSoma,state.focusSoma);
       if(Math.abs((state._offK??-1)-state.galIn)>.002||state.diving||(state._offT=(state._offT||0)+dt)<1.5){if(state.diving)state._offT=0;state._offK=state.galIn;   // pins and nodes follow their galaxy - only while the space opens or you travel
         if(pinObjG){const pa=pinObjG.geometry.attributes.position;pinInfo.forEach((q,i)=>{const o=q.reg!=null&&q.reg>=0?galaxy.offsetOf(q.reg):null;pa.setXYZ(i,q.tip.x+(o?o.x:0),q.tip.y+(o?o.y:0),q.tip.z+(o?o.z:0))});pa.needsUpdate=true}
@@ -3896,7 +3908,7 @@ const _frame=()=>{
         xurPos[oi]=v.x;xurPos[oi+1]=v.y;xurPos[oi+2]=v.z;xurA[o+k]=a}
       o+=sh.n})}
   xurGeo.attributes.position.needsUpdate=xurGeo.attributes.aA.needsUpdate=true;
-  rings.forEach(r=>r.rotateZ(dt*.4*r.userData.sp*(.6+su)));
+  rings.forEach(r=>r.rotateZ(dt*.4*r.userData.sp*(.6+su)*(galaxy?.6:1)));   // the galaxy: a slower, smoother sweep (still faster when IRIS is busy)
   // motes
   motes.forEach((m,i)=>{m.r=lerp(m.r,m.rT,1-Math.pow(.4,dt));m.ang+=dt*m.speed;const v=new V3(Math.cos(m.ang),Math.sin(m.ang),0).multiplyScalar(m.r).applyAxisAngle(m.axis,.9);
     m.pos.copy(v);moteP.set([v.x,v.y,v.z],i*3);moteA[i]=(m.state==='in'?.9:m.state==='out'?.25:0)*(1-state.morph.h)*(1-state.morph.i)});
