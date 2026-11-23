@@ -854,6 +854,28 @@ def _safe_look(ctx: NodeContext, shot: str, question: str) -> str:
     return reading[:1500]
 
 
+def _note_peak(ctx: "NodeContext", messages, tools) -> None:
+    """W2: the largest input this node sends to its model (the gauge's own estimate), in
+    ctx.stats["peak_tokens"]. A character count per call; never raises."""
+    try:
+        n = _estimate_tokens(messages, tools)
+        if n > int(ctx.stats.get("peak_tokens") or 0):
+            ctx.stats["peak_tokens"] = n
+    except Exception as exc:  # noqa: BLE001 - a missing number never stops a node
+        logger.debug("[run_node] conv=%s peak estimate failed: %r", ctx.conv_id, exc)
+
+
+def _fill(ctx: "NodeContext", view, tools) -> Optional[float]:
+    """W2: how full the view is right now, as a share of the window (None when unknown)."""
+    try:
+        if not ctx.window or view is None:
+            return None
+        return round(_estimate_tokens(view.render(), tools) / ctx.window, 3)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[run_node] conv=%s fill estimate failed: %r", ctx.conv_id, exc)
+        return None
+
+
 def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     """Run one node to completion. Never raises."""
     allowed = {t.get("function", {}).get("name") for t in ctx.tools}
@@ -943,7 +965,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 if ctx.on_clm_event is not None:
                     ctx.on_clm_event("RESTRETCHED", {
                         "refs": [f"{b.ref.kind}:{b.ref.id}" for b in unit.results],
-                        "trigger": trigger, "by": "harness"})
+                        "trigger": trigger, "by": "harness", "fill": _fill(ctx, view, ctx.tools)})
         except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
             _clm_stats["shrink_failures"] += 1
             logger.warning("[run_node] conv=%s re-stretch failed: %r", ctx.conv_id, exc)
@@ -989,7 +1011,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             if ctx.on_clm_event is not None:
                 ctx.on_clm_event("OFFLOADED", {
                     "refs": [f"tool_result:{i}" for i in ids], "tools": u.tool_names(),
-                    "saving": saving, "by": "model", "reason": reason, "window": ctx.window})
+                    "saving": saving, "by": "model", "reason": reason, "window": ctx.window,
+                    "fill": _fill(ctx, view, ctx.tools)})
         _clm_stats["model_set_aside_refused"] += len(refused)
         out: Dict[str, Any] = {"success": bool(chosen), "set_aside": out_refs, "refused": refused}
         summary = " ".join(str(params.get("summary") or "").split())[:600]
@@ -1052,7 +1075,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 if ctx.on_clm_event is not None:
                     ctx.on_clm_event("OFFLOADED", {
                         "refs": [f"tool_result:{i}" for i in ids], "tools": u.tool_names(),
-                        "saving": saving, "need": need, "window": ctx.window})
+                        "saving": saving, "need": need, "window": ctx.window,
+                        "fill": _fill(ctx, view, ctx.tools)})
             logger.info("[run_node] conv=%s set aside %d unit(s), ~%d tokens (needed %d, window %d)",
                         ctx.conv_id, len(chosen), freed, need, ctx.window)
         except Exception as exc:  # noqa: BLE001 - counted, never blocks a step
@@ -1161,9 +1185,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                  if (t.get("function") or {}).get("name") == forced] or tools
                     gen_extra["tool_choice"] = forced
             _shrink(gen_tools)
+            _msgs = _outgoing()
+            _note_peak(ctx, _msgs, gen_tools)
             try:
                 text, _think, tool_calls = ctx.generate(
-                    role, _outgoing(), tools=gen_tools, max_tokens=ctx.max_tokens,
+                    role, _msgs, tools=gen_tools, max_tokens=ctx.max_tokens,
                     temperature=0.2, timeout_s=min(remaining, 300.0), thinking=False,
                     **gen_extra,
                 )
@@ -1253,7 +1279,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     if _xr.startswith("tool_result:") and _xr[len("tool_result:"):] in offloaded_ids:
                         _clm_stats["premature_evictions"] = _clm_stats.get("premature_evictions", 0) + 1
                         try:
-                            ctx.on_clm_event("PREMATURE_EVICTION", {"ref": _xr, "calls": len(calls)})
+                            ctx.on_clm_event("PREMATURE_EVICTION", {"ref": _xr, "calls": len(calls),
+                                                                     "fill": _fill(ctx, view, ctx.tools)})
                         except Exception as exc:  # noqa: BLE001 - an event never blocks a step
                             logger.warning("[run_node] conv=%s premature-eviction event failed: %r",
                                            ctx.conv_id, exc)
@@ -1600,7 +1627,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         # CLM TG-2 replay finding: the closing call skipped the shrink, so on a
         # small window the router cut it blind. Off when ctx.window is 0.
         _shrink([])
-        text, _think, _ = ctx.generate(role, _outgoing(), tools=None, max_tokens=1024,
+        _msgs = _outgoing()
+        _note_peak(ctx, _msgs, None)
+        text, _think, _ = ctx.generate(role, _msgs, tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
         # AC14.2: a call-limit or time-budget break never adjudicated a claim
         # (the forced STATUS is the same model grading itself with no fresh

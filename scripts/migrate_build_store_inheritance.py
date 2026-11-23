@@ -83,6 +83,26 @@ def migrate(build_db: Path, dry_run: bool = False) -> int:
             except Exception as exc:  # pragma: no cover — concurrent-writer guard
                 print(f"[inherit]   (skipped, already present or locked: {exc})")
 
+        # W2 (memory cortex plan, 2026-11-22): der_fan_traces gains the columns the app
+        # engine adds (caducean_trajectory._ensure_table), so the shared table stays
+        # schema-identical. Only when the BUILD store has the table at all.
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='der_fan_traces'").fetchone():
+            have = {r[1] for r in conn.execute("PRAGMA table_info(der_fan_traces)")}
+            for col, decl in (("conversation_id", "TEXT"), ("turn_id", "TEXT"),
+                              ("ctx_tokens", "INTEGER"), ("ctx_window", "INTEGER")):
+                if col in have:
+                    continue
+                applied += 1
+                if dry_run:
+                    print(f"[inherit] WOULD ALTER der_fan_traces ADD COLUMN {col}")
+                    continue
+                try:
+                    conn.execute(f"ALTER TABLE der_fan_traces ADD COLUMN {col} {decl}")
+                    conn.commit()
+                    print(f"[inherit] ALTER der_fan_traces ADD COLUMN {col} — done")
+                except Exception as exc:  # pragma: no cover — concurrent-writer guard
+                    print(f"[inherit]   (skipped, already present or locked: {exc})")
+
         # Orphan memory_chain_v2: 0 rows, no writer, two DBs (REQ-2 AC4).
         has_v2 = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_chain_v2'"

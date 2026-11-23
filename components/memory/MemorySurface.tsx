@@ -18,7 +18,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import type { MemoryEngine } from "@/lib/memory/scene/engine"
-import { claimUses, correctMemory, correctTarget, fetchMemorySnapshot, fetchOracleView, fetchToolResult, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
+import { claimUses, correctMemory, correctTarget, fetchMemorySnapshot, fetchOracleView, fetchStrand, fetchToolResult, listCorrections, MemoryResting, searchMemory, takeMemoryFocus, undoCorrection, type MemoryModel } from "@/lib/memory/api"
 
 export interface MemorySurfaceProps {
   /** Memory is the surface on screen (and the dashboard is open). */
@@ -32,7 +32,7 @@ export interface MemorySurfaceProps {
 type Load = { kind: "loading" } | { kind: "ready"; model: MemoryModel | null } | { kind: "resting"; why: string }
 
 const INK = "#d4ecf6", DIM = "#6c8796"
-const LIVE_TYPES = new Set(["memory_event", "landmark_update", "oracle_decision"])
+const LIVE_TYPES = new Set(["memory_event", "landmark_update", "oracle_decision", "context_gauge"])
 const LINE: React.CSSProperties = { fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontSize: 11, letterSpacing: ".22em", textTransform: "lowercase" }
 
 /** The synthetic memory draws only on request, in development (?memory=demo). */
@@ -93,6 +93,7 @@ export function MemorySurface({ isActive, isFlat, onRequestSpotlight }: MemorySu
           uses: model ? claimUses : undefined,
           correctTarget: model ? correctTarget : undefined,
           toolResult: model ? fetchToolResult : undefined,   // W1: a step's exact output on click (the real memory only)
+          strandDetail: model ? fetchStrand : undefined,     // W3: the corridor's context band (the real memory only)
           onError: (e) => {
             console.warn("[MemorySurface] the scene stopped:", e)
             setFailed("The memory view needs WebGL2, and it is not available here.")

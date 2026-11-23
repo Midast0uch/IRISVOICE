@@ -8,6 +8,7 @@ messages reach the frontend as the window event ``iris:ws_message`` with
   {"type": "memory_event",    "payload": {"events":    [<memory_event>, ...],    "dropped": int}}
   {"type": "landmark_update", "payload": {"updates":   [<landmark_update>, ...], "dropped": int}}
   {"type": "oracle_decision", "payload": {"decisions": [<oracle_decision>, ...], "dropped": int}}
+  {"type": "context_gauge",   "payload": {"gauges":    [<context_gauge>, ...],   "dropped": int}}
 
 ``memory_event`` item keys (all always present, null when the row has no value):
   event_id, ts, family, label, valence, actor, evidence, episode_id, thread_id,
@@ -63,7 +64,7 @@ DRAIN_IDLE_S = 1.0     # the drain re-reads the buffers at least this often, wok
 
 # message type -> the payload key that holds its list
 _LIST_KEY = {"memory_event": "events", "landmark_update": "updates",
-             "oracle_decision": "decisions"}
+             "oracle_decision": "decisions", "context_gauge": "gauges"}
 
 _lock = threading.Lock()
 _bufs: Dict[str, Deque[dict]] = {k: deque() for k in _LIST_KEY}
@@ -162,6 +163,24 @@ def memory_event(*, event_id: str, ts: float, family: Optional[str], label: str,
         })
     except Exception as exc:  # noqa: BLE001 - a tap never breaks its writer
         logger.warning("[memory_live] tap failed kind=memory_event event=%s: %s", event_id, exc)
+
+
+def context_gauge(*, conversation_id: str, turn_id: str, step_id: str, tokens: int,
+                  window: int) -> None:
+    """W2 (memory cortex plan): how full a DER node's context got - its peak input estimate and
+    the role's window - once per node, at its end. The corridor's context band and the cortex's
+    nucleus read it live. Numbers and ids only."""
+    try:
+        if not enabled():
+            return
+        _push("context_gauge", {
+            "conversation_id": _clip(conversation_id, 80), "turn_id": _clip(turn_id, 64),
+            "step_id": _clip(step_id, 64), "tokens": int(tokens), "window": int(window),
+            "fill": round(tokens / window, 3) if window else None, "ts": time.time(),
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_live] tap failed kind=context_gauge conv=%s step=%s: %s",
+                       conversation_id, step_id, exc)
 
 
 def landmark_update(landmark_id: str, kind: str, *, activation_count: Optional[int] = None,

@@ -79,6 +79,7 @@ EVENTS_CAP = 400            # the exporter's per-thread bound
 MESSAGES_CAP = 80
 TRAJECTORY_CAP = 80
 EPISODES_CAP = 100
+CONTEXT_STEPS_CAP = 300       # W2: der_fan_traces rows of one strand (one per DER node)
 CHILDREN_CAP = 50
 PINS_CAP = 50
 RECALL_ROWS_CAP = 400
@@ -746,15 +747,39 @@ _EVENT_COLS = ("event_id, ts, family, label, valence, actor, evidence, episode_i
                "payload, topic_domain")
 
 
+_CLM_LABELS = frozenset({"OFFLOADED", "RESTRETCHED", "PREMATURE_EVICTION"})
+
+
+def _clm_detail(label: Any, payload: Any) -> Optional[dict]:
+    """W2: what a CLM edit did, for the corridor's context band - refs (ids), tool names, the
+    tokens saved, the window and the fill after the edit, and who made it. Bounded; ids and
+    numbers only, never content. None for every other label."""
+    if label not in _CLM_LABELS or not isinstance(payload, dict):
+        return None
+    refs = payload.get("refs") if isinstance(payload.get("refs"), list) else (
+        [payload["ref"]] if payload.get("ref") else [])
+
+    def num(v, kind):
+        try:
+            return kind(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+    return {"refs": [str(x)[:64] for x in refs[:4]],
+            "tools": [str(t)[:40] for t in (payload.get("tools") or [])[:4]] if isinstance(payload.get("tools"), list) else [],
+            "saving": num(payload.get("saving"), int), "window": num(payload.get("window"), int),
+            "fill": num(payload.get("fill"), float), "by": clip(payload.get("by"), 16)}
+
+
 def _event(r: sqlite3.Row) -> dict:
-    """The exporter's event shape (payload is read only to name a landmark; it is never returned)."""
+    """The exporter's event shape (payload is read to name a landmark and, for the three CLM
+    labels, the bounded `clm` detail; the payload itself is never returned)."""
     links, payload = jload(r["links"], {}), jload(r["payload"], {})
     lid = ((links.get("landmark_id") or links.get("landmark")) if isinstance(links, dict) else None) or \
           (payload.get("landmark") if isinstance(payload, dict) else None)
     return {"id": r["event_id"], "ts": r["ts"], "family": r["family"], "label": r["label"], "valence": r["valence"],
             "actor": r["actor"], "evidence": r["evidence"], "episode": r["episode_id"], "step": r["step_index"],
             "session": r["thread_id"], "domain": r["topic_domain"] or "general",
-            "landmark": lid if isinstance(lid, str) else None}
+            "landmark": lid if isinstance(lid, str) else None, "clm": _clm_detail(r["label"], payload)}
 
 
 # ── threads / strands ────────────────────────────────────────────────────────────────────────────
@@ -934,6 +959,19 @@ def strand(strand_id: str) -> dict:
                                  "confirmed": bool(r["user_confirmed"]), "duration": (r["duration_ms"] or 0) / 1000.0,
                                  "tools": tools, "steps": steps, "step_count": n_steps, "ts": ts_of(r["timestamp"])})
 
+        # W2: how full each DER node's context got, in order - the corridor's context band
+        context: list[dict] = []
+        if {"conversation_id", "ctx_tokens"} <= table_cols(mem, "der_fan_traces"):
+            # PLAN  SELECT ... FROM der_fan_traces WHERE conversation_id = ? AND ctx_tokens IS NOT NULL ORDER BY id LIMIT ?
+            #       -> SEARCH der_fan_traces USING INDEX idx_ft_conv (conversation_id=?)
+            for r in mem.execute("SELECT step_id, turn_id, ts, ctx_tokens, ctx_window, outcome FROM der_fan_traces "
+                                 "WHERE conversation_id = ? AND ctx_tokens IS NOT NULL ORDER BY id LIMIT ?",
+                                 (strand_id, CONTEXT_STEPS_CAP)):
+                tok, win = int(r["ctx_tokens"] or 0), int(r["ctx_window"] or 0)
+                context.append({"step": r["step_id"], "turn": r["turn_id"], "ts": ts_of(r["ts"]), "tokens": tok,
+                                "window": win, "fill": round(tok / win, 3) if win else None,
+                                "outcome": r["outcome"]})
+
         messages: list[dict] = []
         children: list[dict] = []
         if cdb is not None:
@@ -976,7 +1014,8 @@ def strand(strand_id: str) -> dict:
             "parent": conv["parent_id"] if conv is not None else None, "reports_to": conv["reports_to"] if conv is not None else None,
             "started": started, "ended": None if live else ended, "exit": "live" if live else exit_kind,
             "activity": {**act, "events": len(events), "events_partial": partial, "events_how": how},
-            "traj": traj, "events": events, "episodes": episodes, "messages": messages, "strands": children, "pins": pins}
+            "traj": traj, "events": events, "episodes": episodes, "context": context, "messages": messages,
+            "strands": children, "pins": pins}
 
 
 # ── turn ─────────────────────────────────────────────────────────────────────────────────────────
@@ -1265,7 +1304,8 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                 out_events.append({"id": r["event_id"], "ts": r["ts"], "family": r["family"], "label": r["label"],
                                    "valence": r["valence"], "actor": r["actor"], "evidence": r["evidence"],
                                    "episode": r["episode_id"], "session": t, "domain": r["topic_domain"] or "general",
-                                   "landmark": lid if lid in lm_index else None})
+                                   "landmark": lid if lid in lm_index else None,
+                                   "clm": _clm_detail(r["label"], payload)})   # W2: the corridor's set-aside shards
         # the steps of a claim: the nodes its traversal walked, in order, as {space, label}. ONE batched read of the
         # nodes of all claims together; an id the store no longer holds is skipped.
         # PLAN  SELECT node_id, space_id, label FROM mycelium_nodes WHERE node_id IN (…)
@@ -1444,6 +1484,20 @@ def snapshot(threads: int = 48, events: int = 6000, include_eval: bool = False, 
                              "messages": [m for m in messages.get(t, []) if m["ts"]], "strands": children.get(t, []),
                              "thread": thread_of.get(t, conv_of.get(t, t)), "tags": tags_of.get(t, []), "reports_to": helpers.get(t, {}).get("reports_to"), "reports": helpers.get(t, {}).get("reports", []),
                              "ghost": t in ghosts})
+
+        # W3: each strand's peak context fill (the timeline bead's ring), ONE grouped read on idx_ft_conv; strands
+        # older than W2 have no row and carry None (the card says "not recorded", never a guess)
+        peak: dict[str, float] = {}
+        if thread_ids and {"conversation_id", "ctx_tokens", "ctx_window"} <= table_cols(con, "der_fan_traces"):
+            for chunk in _chunks(list(thread_ids)):
+                # PLAN  SELECT conversation_id, MAX(…) FROM der_fan_traces WHERE conversation_id IN (…) GROUP BY …
+                #       -> SEARCH der_fan_traces USING INDEX idx_ft_conv (conversation_id=?)
+                for cid, pk in con.execute(
+                        f"SELECT conversation_id, MAX(CAST(ctx_tokens AS REAL) / ctx_window) FROM der_fan_traces "
+                        f"WHERE conversation_id IN ({_marks(len(chunk))}) AND ctx_window > 0 GROUP BY conversation_id", chunk):
+                    peak[cid] = round(float(pk), 3)
+        for s_ in sessions:
+            s_["ctx_peak"] = peak.get(s_["id"])
 
         lap("sessions")
         # ⑤ episodes (task runs)

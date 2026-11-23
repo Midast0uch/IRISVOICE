@@ -1153,6 +1153,10 @@ class DerReportMixin:
                 outcome=str(verified_label or "UNKNOWN"),
                 u=_cad.get("u"),
                 xi=_cad.get("xi"),
+                conversation_id=getattr(self, "conversation_id", None) or None,
+                turn_id=getattr(self, "_der_turn_id", None) or None,
+                ctx_tokens=getattr(item, "_ctx_tokens", None),
+                ctx_window=getattr(item, "_ctx_window", None),
             )
             _write_counters.bump("fan_trace.written")
         except Exception as _ft_exc:

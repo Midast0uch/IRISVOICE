@@ -174,3 +174,10 @@ export async function fetchToolResult(conversation: string, tool: string, target
   if (!res.ok) throw new MemoryResting(res.status, "the step's output could not be read")
   return res.json()
 }
+
+/** W3: one strand's detail (GET /api/memory/strand/<id>) - the corridor reads its `context` series (the context band). */
+export async function fetchStrand(id: string): Promise<any> {
+  const res = await fetch(`/api/memory/strand/${encodeURIComponent(id)}`, { signal: AbortSignal.timeout(20_000) })
+  if (!res.ok) throw new MemoryResting(res.status, "the strand could not be read")
+  return res.json()
+}

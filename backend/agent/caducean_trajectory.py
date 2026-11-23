@@ -70,7 +70,11 @@ CREATE TABLE IF NOT EXISTS der_fan_traces (
     args_hash   TEXT,
     outcome     TEXT,
     u           REAL,
-    xi          REAL
+    xi          REAL,
+    conversation_id TEXT,
+    turn_id     TEXT,
+    ctx_tokens  INTEGER,
+    ctx_window  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ft_session ON der_fan_traces(session_id);
 
@@ -236,12 +240,26 @@ class CaduceanTrajectoryRecorder:
             # ADDITIVE: session_id is untouched, so the 431 existing rows and
             # every existing query keep working; joins move to conversation_id.
             "ALTER TABLE caducean_session_exits ADD COLUMN conversation_id TEXT",
+            # W2 (memory cortex plan, 2026-11-22): the same gap on der_fan_traces - its
+            # session_id is the WebSocket session (eval-c47_...-ac8a62), never the strand's
+            # conversation - plus how full the node's context got, for the corridor band.
+            "ALTER TABLE der_fan_traces ADD COLUMN conversation_id TEXT",
+            "ALTER TABLE der_fan_traces ADD COLUMN turn_id TEXT",
+            "ALTER TABLE der_fan_traces ADD COLUMN ctx_tokens INTEGER",
+            "ALTER TABLE der_fan_traces ADD COLUMN ctx_window INTEGER",
         ):
             try:
                 self._conn.execute(_alter)
                 self._conn.commit()
             except Exception:
                 pass  # column already exists — expected on fresh installs
+        # after the ALTERs: an old store gets the column first, then its index
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ft_conv ON der_fan_traces(conversation_id)")
+            self._conn.commit()
+        except Exception as exc:
+            logger.warning("[CaduceanTrajectory] idx_ft_conv not created: %s", exc)
 
     def record(
         self,
@@ -318,16 +336,26 @@ class CaduceanTrajectoryRecorder:
         outcome: str,
         u: Optional[float] = None,
         xi: Optional[float] = None,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        ctx_tokens: Optional[int] = None,
+        ctx_window: Optional[int] = None,
     ) -> None:
         """DER Phase 0 (D0.8): write a structural trace of a tool call that DCP is about
-        to prune/drop. Preserves the fan shape without bloating the prompt. Cheap, WAL-safe."""
+        to prune/drop. Preserves the fan shape without bloating the prompt. Cheap, WAL-safe.
+
+        W2 (memory cortex plan, 2026-11-22): the row also names its conversation and turn
+        (session_id is the WebSocket session, not the strand) and how full the node's
+        context got (peak input estimate, the role's window) - the corridor's context band."""
         try:
             with self._write_lock:
                 app_write(self._conn,
                     "INSERT INTO der_fan_traces "
-                    "(ts, session_id, step_id, tool, args_hash, outcome, u, xi) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (time.time(), session_id, step_id, tool, args_hash, outcome, u, xi),
+                    "(ts, session_id, step_id, tool, args_hash, outcome, u, xi, "
+                    "conversation_id, turn_id, ctx_tokens, ctx_window) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (time.time(), session_id, step_id, tool, args_hash, outcome, u, xi,
+                     conversation_id, turn_id, ctx_tokens, ctx_window),
                 )
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_fan_trace failed: %s", exc)

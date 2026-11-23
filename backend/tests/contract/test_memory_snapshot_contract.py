@@ -42,7 +42,8 @@ COUNT_KEYS = {"events", "chain", "landmarks", "landmarks_absorbed", "edges", "me
               "sessions", "recall_turns"}
 SHAPES = {
     "sessions": {"id", "objective", "started", "ended", "exit", "traj", "eval", "episodes", "messages", "strands", "ghost"},
-    "events": {"id", "ts", "family", "label", "valence", "actor", "evidence", "episode", "session", "domain", "landmark"},
+    "events": {"id", "ts", "family", "label", "valence", "actor", "evidence", "episode", "session", "domain", "landmark",
+               "clm"},  # clm: W2 (2026-11-22, owner-approved) - the bounded detail of a CLM edit
     "landmarks": {"id", "claim", "cls", "tier", "permanent", "evidence", "evidence_counts", "activations", "contradictions",
                   "last_activated", "last_verified", "born", "session", "fams", "domain", "steps", "fading"},
     "edges": {"id", "a", "b", "score", "traversals", "hits", "misses", "last"},

@@ -1151,6 +1151,31 @@ from backend.agent.kernel.planning import (
 )
 
 
+def _note_context_fill(kernel, item, ctxs, turn_id) -> None:
+    """W2 (memory cortex plan, 2026-11-22): how full this node's context got - the largest peak
+    input estimate run_node recorded in ANY context the node ran (the Workbench ctx has its own
+    stats dict, built with stats={}; measured live: every code node wrote no fill until this
+    took them all) - and the role's window. Saved on the item for its der_fan_traces row, and
+    sent live to the Memory surface (memory_live.context_gauge). Numbers only; never raises."""
+    try:
+        ctxs = [c for c in (ctxs if isinstance(ctxs, (list, tuple)) else [ctxs]) if c is not None]
+        peak = max([int(((getattr(c, "stats", None) or {}).get("peak_tokens")) or 0) for c in ctxs] or [0])
+        if peak <= 0:
+            return
+        window = max([int(getattr(c, "window", 0) or 0) for c in ctxs] or [0])
+        if window <= 0:
+            window = int(kernel.resolve_context_window_with_source("tool_execution").tokens)
+        item._ctx_tokens, item._ctx_window = peak, window
+        from backend.utils import memory_live
+
+        memory_live.context_gauge(conversation_id=str(getattr(kernel, "conversation_id", "") or ""),
+                                  turn_id=str(turn_id or ""), step_id=str(getattr(item, "step_id", "") or ""),
+                                  tokens=peak, window=window)
+    except Exception as exc:  # noqa: BLE001 - a missing number never stops a step
+        logger.warning("[clm] conv=%s step=%s context fill not noted: %r",
+                       getattr(kernel, "conversation_id", ""), getattr(item, "step_id", ""), exc)
+
+
 def _node_claim_of(tool: str) -> Optional[str]:
     for _claim, _tools in _NODE_CLAIMS.items():
         if tool in _tools:
@@ -2611,6 +2636,7 @@ class DerNodeMixin:
             **(_clm_node_hooks(self, item, _turn_id, session=_session, goal=goal)
                if _clm_offload_on() else {}),
             )
+            _peak_ctxs = [_node_ctx]   # W2: every context this node runs (a Workbench ctx is added)
             _node_state["ctx"] = _node_ctx
             _full_tools = self._get_openai_tools() if _wb_on() else []
             _wb_go = False
@@ -2794,6 +2820,7 @@ class DerNodeMixin:
                     clear_workbench_dispatch, set_workbench_dispatch)
 
                 set_workbench_dispatch(_wb_conv, _wb_handler, _wb_node)
+                _peak_ctxs.append(_wb_ctx)
                 try:
                     result = run_node(goal, _wb_ctx)
                 finally:
@@ -2833,6 +2860,7 @@ class DerNodeMixin:
                 _sw = getattr(self._tool_bridge, "_session_workdirs", None)
                 if isinstance(_sw, dict) and _sw.get(_session) == _wb_bound[0]:
                     _sw.pop(_session, None)
+        _note_context_fill(self, item, _peak_ctxs, _turn_id)   # W2: the corridor's context band
         # What the node actually did, for the step's physics action (REQ-8 redo).
         try:
             item.node_calls = [

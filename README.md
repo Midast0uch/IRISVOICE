@@ -165,6 +165,11 @@ Part I the interface, Part II the memory foundation — growth/decay law, Kyudo,
 - **What a strand did, without opening the chat:** hover a strand on the timeline, or a task in its corridor, and the
   card lists its steps (✓ / ✗, the tool, what it acted on; "+N more"), read from the episode's own record. Click a step
   for its exact output from the chat record (plain text on this machine), or "IRIS no longer keeps this output".
+- **The context, step by step:** a strand's corridor carries a pale band on its floor - how full the model's working
+  context was at each step (the 75 % margin is a dotted line) - with a mark on the wall wherever IRIS set a thought
+  aside (amber when it let one go too early). The title says "the context never had to make room · peak N%" or how
+  often it did; the timeline bead has a ring for its peak; the orb's nucleus lights with the live context of the step
+  IRIS is running. Recorded from 2026-11-22 on (older strands say "not recorded").
 - **Live:** while IRIS works, inward sparks = remembering, outward = recording, rays = deciding; a new claim assembles;
   a finished turn settles. Tidy / full view switch for the HUD.
 - **Store:** the app memory lives at `D:/IRIS/store/memory.db` (SSD; `data/memory_config.json` `db_path`), always

@@ -31,6 +31,8 @@ export interface MemoryEngineOptions {
   correctTarget?: (action: string, target: string, extra?: Record<string, unknown>) => Promise<any>;
   /** W1: the exact output of a strand's step, on click only (GET /api/memory/tool-result). Absent: step lines are text only. */
   toolResult?: (conversation: string, tool: string, target: string) => Promise<any>;
+  /** W3: one strand's detail (GET /api/memory/strand/<id>), read when its corridor opens - the context band's series. */
+  strandDetail?: (id: string) => Promise<any>;
 }
 
 export interface MemoryEngine {
@@ -1165,7 +1167,11 @@ const mistMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:forestU.uVis,uMist:{
 const mist=new THREE.Points(mistGeo,mistMat);mist.frustumCulled=false;cortex.add(mist);
 
 // on-mind motes (CLM window / aperture): orbit the core; set-aside ones drift out
-const motes=M.mind.slice(0,12).map((label,i)=>({label,state:i<9?'in':'out',r:i<9?R*.3:R*.55,rT:i<9?R*.3:R*.55,ang:rng()*6.28,
+// W3 (memory cortex plan): on the REAL memory the nucleus has 12 motes that start hidden ('off'); the live context
+// gauge lights about fill x 12 of them, a set-aside sends one out, a brought-back one comes in. Never invented: nothing
+// shows until a real gauge arrives (M.mind is empty on the real memory).
+const MOTE_SRC=M.mind.length?M.mind.slice(0,12):(USE_REAL?Array(12).fill(''):[]);
+const motes=MOTE_SRC.map((label,i)=>({label,state:M.mind.length?(i<9?'in':'out'):'off',r:i<9?R*.3:R*.55,rT:i<9?R*.3:R*.55,ang:rng()*6.28,
   axis:new V3(gauss(),gauss(),gauss()).normalize(),speed:rand(.15,.4),pos:new V3()}));
 const moteGeo=new THREE.BufferGeometry();const moteP=new Float32Array(motes.length*3),moteA=new Float32Array(motes.length);
 moteGeo.setAttribute('position',new THREE.BufferAttribute(moteP,3));moteGeo.setAttribute('aA',new THREE.BufferAttribute(moteA,1));
@@ -1246,6 +1252,19 @@ const threadRoot=s=>{if(s.thread)return s.thread;let id=s.id;for(let n=0;n<8&&PA
 // thread and its strands as a short fan; click = the thread's beads open round the axis so each can be picked (Esc folds).
 const THREADS=new Map();sess.forEach((s,i)=>{const r=threadRoot(s),a=THREADS.get(r)||[];a.push(i);THREADS.set(r,a)});
 const fan={root:null};
+// W3: the context ring of a strand's bead = its peak context fill (der_fan_traces, snapshot `ctx_peak`); amber past the
+// 75 % margin. Only strands with a recorded fill (W2 and later) get one; positions follow the beads in the frame loop.
+const ringIdx=sess.map((s,i)=>s.ctx_peak!=null?i:-1).filter(i=>i>=0);
+const ringGeo=new THREE.BufferGeometry();const rP=new Float32Array(Math.max(1,ringIdx.length)*3),rF=new Float32Array(Math.max(1,ringIdx.length));
+ringIdx.forEach((i,k)=>{rF[k]=clamp(+sess[i].ctx_peak||0,0,1.2)});
+ringGeo.setAttribute('position',new THREE.BufferAttribute(rP,3));ringGeo.setAttribute('aF',new THREE.BufferAttribute(rF,1));ringGeo.setDrawRange(0,ringIdx.length);
+const ringMat=new THREE.ShaderMaterial({uniforms:{...U,uVis:{value:0}},
+  vertexShader:`uniform float uPix,uVis;attribute float aF;varying float vF,vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vF=aF;vA=uVis;
+    gl_PointSize=min((12.+16.*aF)*uPix*(60./-mv.z),52.*uPix);gl_Position=projectionMatrix*mv;}`,
+  fragmentShader:`varying float vF,vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);float ring=smoothstep(.5,.46,d)*smoothstep(.40,.44,d);
+    vec3 col=mix(vec3(.55,.85,.95),vec3(1.,.71,.28),step(.75,vF));gl_FragColor=vec4(col,ring*.55*vA);}`,
+  transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+const ctxRings=new THREE.Points(ringGeo,ringMat);ctxRings.frustumCulled=false;cortex.add(ctxRings);
 function beadPos(i){const s=sess[i],p=new V3(0,helixY(sessS(s)),0);
   if(fan.root&&threadRoot(s)===fan.root){const m=THREADS.get(fan.root),th=m.indexOf(i)/m.length*Math.PI*2+.4;p.x+=Math.cos(th)*R*.34;p.z+=Math.sin(th)*R*.34}
   return p}
@@ -1922,6 +1941,45 @@ function buildTunnel(s){
   return {g,curve,frameAt,session:s,items,stars,gates,threadU,linked,sel:-1,stops:null,hl:null,strands:pairs,hlU,fibU,partU,tileU,pins:pinList,
     door:{mesh:door,world:P1.clone().add(TUN_OFF),next,report},back:{mesh:backDoor,world:backP.clone().add(TUN_OFF)},forks,onWall,uOf};
 }
+// W3 (memory cortex plan §2): the CONTEXT BAND - how full the model's working context was at each DER node of this
+// strand, a translucent ribbon near the corridor's axis (width = fill), a faint line at the 75 % margin where CLM starts
+// to make room, and a mark on the wall for each set-aside (amber when it was let go too early, dim when it came back).
+// The series is the strand's der_fan_traces rows (GET /api/memory/strand/<id> `context`), read when the corridor opens.
+const BAND_MARGIN=.75;
+function addContextBand(T,ctx){
+  if(!T||!T.curve)return null;const s=T.session,pts=(ctx||[]).filter(c=>c&&c.fill!=null&&c.ts!=null).sort((a,b)=>a.ts-b.ts);
+  const edits=(s.events||[]).filter(e=>e.clm&&(e.label==='OFFLOADED'||e.label==='RESTRETCHED'||e.label==='PREMATURE_EVICTION'));
+  const peak=pts.reduce((m,c)=>Math.max(m,+c.fill||0),0);
+  T.band={n:pts.length,peak,edits:edits.length};
+  if(!pts.length&&!edits.length)return T.band;
+  const fillAt=u=>{if(!pts.length)return 0;let a=pts[0],b=pts[pts.length-1];
+    for(let i=0;i<pts.length;i++){const ui=T.uOf(pts[i].ts);if(ui<=u)a=pts[i];if(ui>=u){b=pts[i];break}}
+    const ua=T.uOf(a.ts),ub=T.uOf(b.ts),t=ub>ua?smooth01((u-ua)/(ub-ua)):0;return lerp(+a.fill||0,+b.fill||0,t)};
+  // on the corridor's floor, out of the camera's path (the camera rides the centre line); width = fill
+  const W0=.06,WMAX=1.1,N=240,pos=[],idx=[],mpos=[],eL=[],eR=[];
+  for(let k=0;k<N;k++){const u=.02+.94*k/(N-1),{B}=T.frameAt(u),f=pts.length?fillAt(u):0;
+    const C=T.onWall(u,Math.PI*1.5,.72),w=W0+WMAX*clamp(f,0,1.2);
+    const l=C.clone().addScaledVector(B,-w/2),r=C.clone().addScaledVector(B,w/2);eL.push(l);eR.push(r);
+    pos.push(...l.toArray(),...r.toArray());
+    if(k<N-1){const i=2*k;idx.push(i,i+1,i+2,i+1,i+3,i+2)}
+    if(k%3===0){mpos.push(...C.clone().addScaledVector(B,-(W0+WMAX*BAND_MARGIN)/2).toArray(),...C.clone().addScaledVector(B,(W0+WMAX*BAND_MARGIN)/2).toArray())}}
+  const g=new THREE.Group();
+  if(pts.length){const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));geo.setIndex(idx);
+    g.add(new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:BRAND,transparent:true,opacity:.07,side:THREE.DoubleSide,depthWrite:false,blending:THREE.AdditiveBlending})));
+    for(const E of [eL,eR])g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(E),new THREE.LineBasicMaterial({color:'#9fe6ff',transparent:true,opacity:.65,depthWrite:false})));
+    const mg=new THREE.BufferGeometry();mg.setAttribute('position',new THREE.Float32BufferAttribute(mpos,3));
+    g.add(new THREE.Points(mg,new THREE.PointsMaterial({color:'#9fd6ee',size:.06,transparent:true,opacity:.35,depthWrite:false})))}
+  // the set-aside marks on the wall, one per edit (RESTRETCHED dims the mark of the ref it brought back)
+  const back=new Set();edits.forEach(e=>{if(e.label==='RESTRETCHED')(e.clm.refs||[]).forEach(r=>back.add(r))});
+  const spos=[],scol=[];edits.forEach((e,i)=>{if(e.label==='RESTRETCHED')return;const u=T.uOf(e.ts),th=1.1+i*.7,P=T.onWall(u,th,.93);
+    const c=new THREE.Color(e.label==='PREMATURE_EVICTION'?'#ffb547':'#d4ecf6').multiplyScalar((e.clm.refs||[]).some(r=>back.has(r))?.35:1);
+    spos.push(P.x,P.y,P.z);scol.push(c.r,c.g,c.b)});
+  if(spos.length){const sg=new THREE.BufferGeometry();sg.setAttribute('position',new THREE.Float32BufferAttribute(spos,3));sg.setAttribute('color',new THREE.Float32BufferAttribute(scol,3));
+    g.add(new THREE.Points(sg,new THREE.PointsMaterial({size:.45,vertexColors:true,transparent:true,opacity:.9,depthWrite:false})))}
+  T.g.add(g);return T.band}
+function bandLine(b){if(!b)return '';if(!b.n&&!b.edits)return 'context size not recorded for this strand';
+  const pk=Math.round(b.peak*100);return b.edits?`the context made room ${b.edits} time${b.edits===1?'':'s'} · peak ${pk}%`
+    :b.peak<BAND_MARGIN?`the context never had to make room · peak ${pk}%`:`the context neared its limit · peak ${pk}%`}
 // light an item and everything it is linked to (a message and its moments, or a moment and its turn)
 function tunnelHighlight(it){
   const T=tunnel;if(!T||T.hl===it)return;T.hl=it;
@@ -2827,7 +2885,10 @@ function enterTunnel(s,{at=null}={}){
   clearAnno('focus');clearAnno('hover');satellites(-1);
   const goIn=()=>{flash(true,REDUCED?1:220);setTimeout(()=>{
       if(state.inside){state.inside=false;state.openT=0;LM.forEach((l,k)=>{somaData[k*8+6]=0});somaTex.needsUpdate=true;state.focusDimT=0}
-      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);state.voidT=REDUCED?0:1;tunnel.tileU.uAsm.value=REDUCED?1:0;cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
+      showMind(false);tunnel=buildTunnel(s);rail.build(tunnel);
+      if(opts.strandDetail&&!s.ghost){const T0_=tunnel;opts.strandDetail(s.id).then(d=>{if(tunnel!==T0_)return;const b=addContextBand(T0_,d&&d.context);
+        const sm=$('title')?.querySelector('small');if(sm&&b)sm.insertAdjacentHTML('beforeend',` · ${esc(bandLine(b))}`)})
+        .catch(err=>console.warn('[memory] strand detail',s.id,err))}state.voidT=REDUCED?0:1;tunnel.tileU.uAsm.value=REDUCED?1:0;cortex.visible=false;tcv.classList.remove('on');tissue.on=false;tissue.t=0;
       cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
       if(at!=null){cam.tp=cam.tpT=Math.max(0,tunnel.uOf(at)-.02);cam.idle=-9}   // arrive at a moment (a helper's report)
       const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
@@ -2986,10 +3047,22 @@ function calmLiveBead(){const calm=performance.now()-liveAt>=LIVE_DOT_S*1000;
   // TURN-END SETTLE (UX-PLAN 6.3): the strand's moments stopped coming - its bead settles with one soft ring
   if(state.lens==='timeline'&&cam.mode==='orbit')pulseRing(beadPos(liveBead),THEMES[themeIdx][1],R*.14,1.3);
   liveBead=-1}
+// W3: the nucleus = the context of the node IRIS is running now (memory_live.context_gauge, once per node)
+const mind={at:0,fill:0};const MIND_REST_MS=20000;
+function mindGauge(g){if(!g||!motes.length)return;const f=clamp(+g.fill||0,0,1.2);mind.at=performance.now();mind.fill=f;
+  const want=clamp(Math.round(f*12),1,12);let on=0;
+  motes.forEach(m=>{if(m.state==='in')on++});
+  motes.forEach(m=>{if(on<want&&m.state==='off'){m.state='in';m.rT=R*(.18+.14*f);on++}});
+  motes.forEach(m=>{if(on>want&&m.state==='in'){m.state='off';on--}});
+  motes.forEach(m=>{if(m.state==='in')m.rT=R*(.18+.14*f)})}
+function mindEdit(dir){if(!motes.length)return;mind.at=performance.now();
+  const m=motes.find(x=>x.state===(dir<0?'in':'out'));if(!m)return;m.state=dir<0?'out':'in';m.rT=dir<0?R*.58:R*(.18+.14*mind.fill)}
 function liveMsg(msg){
   if(!USE_REAL||!msg)return;const p=msg.payload||{};
   if(msg.type==='memory_event'||msg.type==='oracle_decision')liveAt=performance.now();
   if(msg.type==='memory_event')for(const r of p.events||[])if(r&&r.thread_id)markLiveBead(r.thread_id);
+  if(msg.type==='context_gauge'){for(const g of p.gauges||[])mindGauge(g)}
+  if(msg.type==='memory_event')for(const r of p.events||[]){if(r&&r.label==='OFFLOADED')mindEdit(-1);else if(r&&r.label==='RESTRETCHED')mindEdit(1)}
   if(p.dropped>0){follow.missed+=p.dropped;drawFollow()}
   if(!follow.on)return;
   if(msg.type==='memory_event'){for(const r of p.events||[]){
@@ -3096,7 +3169,7 @@ function hover(x,y){
         <div class="m">${EVID_WORD[e.evidence]||'unconfirmed'} · ${e.valence==='advances'?'helped the goal':e.valence==='sets_back'?'<span class="w">set the goal back</span>':'neither helped nor hurt'}
         · by ${e.actor==='user'?'<span class="u">you</span>':e.actor==='agent'?'IRIS':e.actor==='tool'?'a tool':e.actor==='subagent'?'a helper':'the world'}
         ${turn?`<br>in the turn where ${turn.m.role==='user'?'you wrote':'IRIS replied'}${turn.m.text?': <em>'+esc(turn.m.text.slice(0,70))+'</em>':''}`:''}
-        ${ep?`<br>during: <em>${esc(ep.summary)}</em>`:''}</div>`,{hot:e.evidence==='user'});return}
+        ${ep?`<br>during: <em>${esc(ep.summary)}</em>`:''}${e.clm?`<br>${(e.clm.tools||[]).map(t=>esc(String(t).replace(/_/g,' '))).join(', ')||'a result'}${e.clm.saving?` · ${fmt(e.clm.saving)} tokens`:''}${e.clm.fill!=null?` · context ${Math.round(e.clm.fill*100)}% after`:''}`:''}</div>`,{hot:e.evidence==='user'});return}
     tunnelHighlight(null);
     if(gt>=0){const g=tunnel.gates[gt],ep=g.ep;
       setAnno('hover','gate'+gt,()=>project(g.world),`<div class="k">task · ${ep.outcome==='running'?'running now':ep.outcome==='success'?'went well':ep.outcome==='partial'?'partly done':'did not work'}</div>
@@ -3129,7 +3202,8 @@ function hover(x,y){
       const done=eps.filter(e=>e.outcome!=='running'),good=done.filter(e=>e.outcome==='success').length;
       const ask=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text||eps[0]?.summary;   // what was asked, in the words used
       setAnno('hover','bead'+k,()=>project(beadPos(k)),`<div class="k">${s.ghost?'deleted in chat · ':outsideChat(s)?'outside chat · ':''}${ago(s.started)}${s.ended?' · '+span(s.ended-s.started):' · happening now'}</div><div class="t">${esc(s.objective)}</div>
-        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}${(()=>{const h=stepsHTML(eps,s.ghost?null:s.id,5);return h?'<br>what IRIS did:'+h:''})()}</div><span class="go">click · step inside</span>${fanLinkHTML(s)}`)}
+        <div class="m">${(s.tags||[]).length?s.tags.map(t=>'#'+esc(t)).join(' ')+'<br>':''}${ask&&ask!==s.objective?`asked: <em>${esc(ask.length>90?ask.slice(0,89)+'…':ask)}</em><br>`:''}${syncHTML(syncSession(s))} ${done.length?`· ${good} of ${done.length} tasks went well`:'· no task result yet'}<br>${fmt(s.events.length)} moments · ${eps.length} tasks${corr?' · <span class="u">you corrected IRIS here</span>':''}${s.exit==='drift'?' · <span class="w">drifted before it finished</span>':''}${rs?`<br>the memory gave it <em>${rs.refs}</em> earlier step${rs.refs===1?'':'s'} from <em>${rs.from}</em> strand${rs.from===1?'':'s'} ·${rs.helped} of ${rs.steps} helped${rs.misled?` · <span class="w">${rs.misled} misled</span>`:''}`:''}${(()=>{const h=stepsHTML(eps,s.ghost?null:s.id,5);return h?'<br>what IRIS did:'+h:''})()}${s.ctx_peak!=null?(()=>{const n=s.events.filter(e=>e.label==='OFFLOADED').length;
+          return `<br>context peak <em>${Math.round(s.ctx_peak*100)}%</em>${n?` · made room ${n} time${n===1?'':'s'}`:' · never had to make room'}`})():''}</div><span class="go">click · step inside</span>${fanLinkHTML(s)}`)}
     else if(newBead.visible&&liveNew&&nearestScreen([newBead.position],x,y,18)===0){state.hoverNew=true;state.hoverBraid=null;canvas.style.cursor='pointer';
       setAnno('hover','newbead'+liveNew.tid,()=>project(newBead.position),`<div class="k">being written now · not in this view yet</div><div class="t">${esc(prettyThread(liveNew.tid))}</div><div class="m">it takes its place on the helix the next time the memory opens</div><span class="go">click · continue it in chat</span>`)}
     else{state.hoverNew=false;const bi=nearestScreen(braidPts.map(b=>b.p),x,y,12);state.hoverBraid=bi>=0?braidPts[bi].root:null;
@@ -3183,7 +3257,7 @@ function setHealth(on){state.health=on;
   const L=M.landmarks,c=M.meta?.counts||{};
   healthEl.innerHTML=on?`health · <em>${fmt(L.filter(l=>l.tier!=='candidate').length)}</em> proven · <em>${fmt(L.filter(l=>l.tier==='candidate').length)}</em> still learning · <span class="w">${fmt(L.filter(l=>l.contradictions>0).length)} contradicted</span> · <em>${fmt(c.landmarks_absorbed||0)}</em> cleaned or merged in all · <em>${fmt(M.ghosts.length)}</em> dissolved this week (dashed outlines)<br><span class="dim">cyan holds · amber learning · red contradicted &nbsp; k · back to the territories' colours</span>`:'';
   healthEl.classList.toggle('on',on)}
-function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
+function showMind(on){motes.forEach((m,i)=>{const n='mote'+i;if(on&&m.state==='off'){clearAnno(n);return}if(on){setAnno(n,n+m.state,()=>project(m.pos),`<div class="m" style="color:${m.state==='in'?'#d4ecf6':'#33454f'}">${esc(m.label)}${m.state==='in'?'':' · set aside'}</div>`)}else clearAnno(n)});
   if(on)setAnno('mindk','mind',()=>{const c=project(new V3(0,-R*.2,0));return {x:c.x,y:c.y,front:true}},`<div class="k">on IRIS's mind right now</div>`);else clearAnno('mindk')}
 canvas.addEventListener('pointermove',e=>{mouse.x=_px(e);mouse.y=_py(e);mouse.nx=_px(e)/innerWidth*2-1;mouse.ny=-(_py(e)/innerHeight*2-1);
   if(mouse.down&&e.buttons===0)mouse.down=false; // a lost pointerup must not turn hovering into dragging
@@ -3435,7 +3509,8 @@ const _frame=()=>{
   skinMat.uniforms.uMH.value=state.morph.h;skinMat.uniforms.uMI.value=state.morph.i;skinMat.uniforms.uMC.value=state.morph.c;
   for(const k in state.vis)state.vis[k]=lerp(state.vis[k],state.visT[k],1-Math.pow(.08,dt));
   forestU.uVis.value=state.vis.forest;forestU.uNear.value=state.insideK||0;mistMat.uniforms.uMist.value=1-(state.insideK||0)*.75;wireMat.uniforms.uVis.value=state.vis.wire*(1-state.morph.h)*(1-state.morph.i)*(1-(state.insideK||0)*.7);   // from inside, the shell's long lines would cross the whole view
-  xurMat.uniforms.uVis.value=state.vis.xur;beadMat.uniforms.uVis.value=state.vis.beads;rings.forEach(r=>r.material.uniforms.uVis.value=state.vis.rings*(1-(state.insideK||0)));
+  xurMat.uniforms.uVis.value=state.vis.xur;beadMat.uniforms.uVis.value=state.vis.beads;ringMat.uniforms.uVis.value=state.vis.beads;
+  if(ringIdx.length&&state.vis.beads>.01){ringIdx.forEach((i,k)=>{const q=beadPos(i);rP[k*3]=q.x;rP[k*3+1]=q.y;rP[k*3+2]=q.z});ringGeo.attributes.position.needsUpdate=true}rings.forEach(r=>r.material.uniforms.uVis.value=state.vis.rings*(1-(state.insideK||0)));
   forestU.uFocusDim.value=lerp(forestU.uFocusDim.value,state.focusDimT,1-Math.pow(.1,dt));
   // aperture
   const op=skinMat.uniforms.uOpen;op.value=lerp(op.value,state.openT,1-Math.pow(.02,dt));skinMat.uniforms.uOpenReg.value=op.value>.005||state.openT>0?state.diveReg:-1;
@@ -3502,7 +3577,8 @@ const _frame=()=>{
   rings.forEach(r=>r.rotateZ(dt*.4*r.userData.sp*(.6+su)));
   // motes
   motes.forEach((m,i)=>{m.r=lerp(m.r,m.rT,1-Math.pow(.4,dt));m.ang+=dt*m.speed;const v=new V3(Math.cos(m.ang),Math.sin(m.ang),0).multiplyScalar(m.r).applyAxisAngle(m.axis,.9);
-    m.pos.copy(v);moteP.set([v.x,v.y,v.z],i*3);moteA[i]=(m.state==='in'?.9:.25)*(1-state.morph.h)*(1-state.morph.i)});
+    m.pos.copy(v);moteP.set([v.x,v.y,v.z],i*3);moteA[i]=(m.state==='in'?.9:m.state==='out'?.25:0)*(1-state.morph.h)*(1-state.morph.i)});
+  if(USE_REAL&&mind.at&&performance.now()-mind.at>MIND_REST_MS){mind.at=0;motes.forEach(m=>{m.state='off';m.rT=R*.3})}   // the turn is over: rest
   moteGeo.attributes.position.needsUpdate=moteGeo.attributes.aA.needsUpdate=true;
   // impulses
   updateSparks(dt);updateRings(dt);updateThreads(dt);updateSatellites(t);

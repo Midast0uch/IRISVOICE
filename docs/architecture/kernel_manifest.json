@@ -3,7 +3,7 @@
  "note": "sha256(ast.dump(node, include_attributes=False)); key = kind:name; methods of AgentKernel and *Mixin classes are one namespace",
  "counts": {
   "method": 242,
-  "function": 108,
+  "function": 109,
   "class": 1
  },
  "entries": {
@@ -52,6 +52,7 @@
   "function:_node_call_parallel_ok": "80e881771157f128d2e650744ca92e8d3cb274ff52128bded00047b502d3c545",
   "function:_node_claim_of": "e33128c8b2d3f5403a581e7d9426fec5ffec208e32883c49d7fceb7958eb0ba0",
   "function:_node_failed_after_change": "dfdeec70a3e73c56b382ccf941427db6859bc43376b964e97e8f808f7b84e8e0",
+  "function:_note_context_fill": "09e18990a2965bbf69ef2d0f888680b9f6d4ce49d7c65ec95f2f4312118dd1c0",
   "function:_page_seed_on": "1e6eae6a8701b3548462450a29006409a8ed8a6fd7a3099c23bde29bd57ca8b8",
   "function:_plan_step_brief": "3439dc440b701b0319c0207f776e45d78df650e7e93dc29bcdd08065b966c15c",
   "function:_plan_step_deps": "b6380b65cdb28f1f7e4060f957902bdc446456f596f5fee4facbb8ca26e5c986",
@@ -150,7 +151,7 @@
   "method:_der_deterministic_failure_summary": "66c2922ff549f89ca1bfb28d26a9ebf35a03a448098e18581cd44e7a82ecb85d",
   "method:_der_deterministic_success_summary": "5fd608125b7e4ccadc3cff64b4998d637783afe84f45c5e5a7f24d79aa86d48c",
   "method:_der_emit_card_settle": "be115fb6624f0b290da263900e8b622276bcfe885f8bee8cfaa809d5560f46ed",
-  "method:_der_emit_fan_trace": "07c41f767b036cac443bf469cb25601a946b323ed798e0aff652f600ebfd4a83",
+  "method:_der_emit_fan_trace": "4650e1deba1465907661d2bb21fbcb817f15fdb33e8fc8880d762edd23e9e510",
   "method:_der_enqueue_recovery": "6deda64cc285d0f36883ec0f93cab5d5531ac818829ac83e40f5089b7d6f93df",
   "method:_der_evidence_cap": "3a5d1d04bc46d4dc3b9d27628f0fb113d9a6a4b657795d705b5fbcbd0d2fbabb",
   "method:_der_execute_with_recovery": "2ae81aa2339ba2bfc55859e69dec99edfa905681fa54b472f283d65f5f4eab08",
@@ -177,7 +178,7 @@
   "method:_der_route_step_failure": "cac2e68eb2f76f5f4b40ec68b9dffa615db017f7e58a1bb3583d61a1d389131d",
   "method:_der_route_subloop_children": "850360b39962b3bbbb757e14146d60d5b38367b5031279a0656f7df546dcad19",
   "method:_der_run_direct_node": "6dc728e593315653515a5366be3bb4e567455bd154b469e55b4f5dd7150d097c",
-  "method:_der_run_node": "0c9ddc6defa0b0898c779b27774599d3fac00b3af91f476f3f80a8020acbf277",
+  "method:_der_run_node": "8fceadeb63f88d5585361a7c64d45b96d8c0a0ab22f175470c4053e3adc113e9",
   "method:_der_run_step_execution": "5d58779da15e63b5a885b95c7cb912e615946e28ebd8956063e0fc1eeae4a83a",
   "method:_der_score_step_outcome": "00e722b0d6dfad5babc5fa1f62c3109a3e1a211af6a06b1ad8946f8a534bb0cb",
   "method:_der_split_blocker": "4e9f119fb7f7fc015c670c178f10d9bf92e7a395be114a4cd1e0de3054315000",
