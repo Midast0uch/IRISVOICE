@@ -145,8 +145,8 @@ constellations in every galaxy and dims the rest; nothing moves. IRIS's own work
   and sit on their layer; the galaxies dim. Each layer is named with its count ("nothing yet" when empty; hover: who may write
   there). Measured: toolpath 549, chrono 46, domain 3, capability 2, the other three empty.
 - **Trust membrane (Kyudo).** A fine envelope round a claim: sealed and warm when it came from you or the system, broken and pale
-  from a weaker source (it only ever dims), none when the source is unknown. The card says it in words. Live: 124 from you, 265
-  unknown; the weak forms have no live claim to show yet.
+  from a weaker source (it only ever dims), none when the source is unknown. The card says it in words. Live: 124 from you, 57 from the
+  web (a claim never observed on a channel whose work is web content is an outside source, marked inferred), 208 unknown.
 - **Immune response (Kyudo).** A counted signal tightens and flickers the galaxy it touched, a reset lets it relax; amplitudes only
   decay toward 0. A shadow signal leaves a faint mark in its galaxy (all 80 live rows are shadow). Sparks and marks land in the
   galaxy, no longer on the old orb's skin.
@@ -166,6 +166,10 @@ rest on hover.
 - **Strand card:** age · duration · outcome · #tags · what was asked · sync · tasks · "the memory gave it …"
   (recall arches from earlier steps); **click** = step inside (the corridor).
 - **Turn zoom (Ctrl+wheel):** each bead opens into its turns; a turn's card names the claims it touched (§6.1).
+- **The helix holds your conversations** (2026-11-23): every chat with words, also those older than the event log, then ids no chat ever
+  knew (probes). A cleaned evaluation run is left out (it opens from a claim, and says what it is). Measured: 2 → 44 of 48 beads with
+  text; 10,281 cleaned runs had filled it, because the eval runner deletes its chats by SQL and left nothing to tell them by.
+  Rule: a `conv-` thread with no chat and no `STRAND_DELETED` tombstone is a cleaned evaluation; the app's own delete always leaves one.
 - **Any conversation opens** (2026-11-23), not only the newest 48: a claim's card and a pin's card open the conversation they
   name (`/thread-model/{id}`, §10.2). One whose chat is gone is told from its events and runs; it is named by its run or by
   what it planned ("research task, 3 steps").
@@ -189,6 +193,13 @@ moments on the memory strand, claims are glyphs on stems; a failed task desyncs 
   doorway "↗ chat" (continue this conversation at its newest turn).
 - **Task cards** name what IRIS did and the claims the task touched ("→ learned here · …", "→ evidence here: a test
   passed · …"); a click flies to the claim.
+- **A moment says what it was about** (2026-11-23): what happened · its detail ("made a plan · 3 steps: …", "you set a goal · “…”"). An event
+  stores references and lengths, never the words (a privacy rule of its writers); the detail is joined at read time from where the
+  words are: the chat by turn id, the run, the claim, the document, the chain. Deleting a chat removes its words here too. No source,
+  no detail. Moments that only repeat the line beside them (the reply spoken, a card drawn) are not listed again.
+- **No invented text.** The corridor once made up a length per turn. A turn with no words now says why (`session.chat`): a test run of
+  IRIS, a chat you deleted, no chat open, or not saved. A turn saves both sides (`ensure_user_message`).
+- **"Used a memory", not "helped"**, when nobody checked the step (§13 item 7).
 - **Breadcrumb:** memory › timeline › thread · X › strand · Y.
 
 ### 3.5 Artifacts — the things IRIS made
@@ -502,7 +513,7 @@ notes were de-duplicated per session, and the app has one session for every chat
 | GPU | DPR ≤ 1.6, dropped under 28 fps; nothing drawn while hidden |
 | live effects | ≤ 6 at once; brightness never builds |
 | inside room | a claim is never wider than the room to its nearest neighbour; other galaxies ×4 away |
-| galaxy, whole view | ≥ 28 fps at DPR 1. 30.7 measured 2026-11-23 before the woven claims; 13–28 after, with Discord taking two cores: **not confirmed on a quiet machine**. Per layer (hide one, synchronous read, 16 rounds): aurora 0.1 ms, claims and constellations nothing measurable |
+| galaxy, whole view | ≥ 28 fps at DPR 1. 30.7 measured 2026-11-23 before the woven claims; **33 measured 2026-11-23 on a visible window** (632×738); GPU frame 42 → 34.5 ms by not drawing dark layers (links, node threads, outside nodes) and the glow at half size. Measure only when the pane is visible: a covered window runs at 0.5–1.6 fps |
 | galaxy, inside | 33–44 fps measured |
 | claim story | 0.25–0.55 s on a click; thread model 0.06 s |
 | logs | `logs/iris.log` ≤ 256 MB (S124) |
@@ -547,6 +558,9 @@ The design is complete; the largest remaining gains are in the **data the design
 4. **The timeline holds the newest 48 threads**; any other conversation opens from a claim or a pin (2026-11-23). Older beads on the
    helix itself still wait for loading by scroll.
 5. ~~The galaxy does not yet show health, layers, membrane and immune response~~ — done 2026-11-23 (§3.2).
+7. **RECALL_HELPED means "the step did not fail"**: 6,115 of 9,683 (63 %) are from steps nobody verified, and they slow the fading of
+   26,221 of 95,358 chunks and raise their rank (`chunk_decay._outcome_multipliers`, `memory_rank._strand_outcomes`). Counting only
+   verifier evidence would let more fade and be pruned: the owner's decision (replayed 2026-11-23, not changed).
 6. **The old orb** (`?cortex=tissue`) can go when the owner says so; the skin's points must stay (helix, artifact tissue).
 
 Polish beyond the plan, in a simpler form today: claim arches per use and frost-bridge walking; the focused object

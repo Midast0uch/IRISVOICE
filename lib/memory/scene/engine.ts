@@ -180,8 +180,10 @@ const READ={
   UNSAFE_REFUSED:'refused something unsafe',ESCALATED_UNSURE:'checked with you when unsure',INJECTION_SUSPECTED:'spotted a manipulation attempt',
   PERMISSION_DENIED:'was not allowed',DEPENDENCY_CHANGED:'a dependency changed',RESOURCE_LIMIT:'hit a limit of this machine',WORLD_CHANGED:'the world changed',
 };
+const TR_QUIET=new Set(['NARRATED','CARD_SHOWN','ANSWER_GIVEN','GOAL_SET']);
 const readEvent=e=>evWords(e)+(e.detail?' · '+e.detail:'');   // what happened · what it was about (the detail is joined by the backend)
-const evWords=e=>READ[e.label]||((FAM[FAMI[e.family]]||{word:'other'}).word+' · '+String(e.label||'').toLowerCase().replace(/_/g,' '));
+const evWords=e=>e.label==='RECALL_HELPED'&&e.evidence==='none'?'used a memory':READ[e.label]||(   // the store calls it "helped" when the step merely did not fail; nobody checked it, so the face does not say it helped
+  (FAM[FAMI[e.family]]||{word:'other'}).word+' · '+String(e.label||'').toLowerCase().replace(/_/g,' '));
 // the store keeps raw prompts, thread ids and node labels; the face says what the thing is (UX-PLAN §1, §6.4)
 // a task-path claim is stored as its task prompt: "The project is in <folder>. <the task>" -> the task, and the folder's name
 const claimParts=c=>{const t=String(c||''),m=t.match(/^The project is in (.+?)\.\s+([\s\S]+)$/);
@@ -1905,7 +1907,7 @@ function buildTunnel(s){
           vC=aC;vA=sin(3.1416*f)*(1.-aLag)*smoothstep(60.,6.,z)*smoothstep(1.,4.,z)*.42;gl_Position=projectionMatrix*mv;}`,
       fragmentShader:`varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`,
       transparent:true,depthWrite:false,blending:THREE.AdditiveBlending})),{frustumCulled:false}))}
-  {const wordOf=e=>String(e.label||'').toLowerCase().replace(/_/g,' ');const list=ev.filter(e=>e.label);
+  {const wordOf=e=>{const d=e.detail&&!/characters$/.test(e.detail)?e.detail.replace(/^“|”$/g,''):'';return (d?(d.length>34?d.slice(0,33)+'…':d):evWords(e)).toLowerCase()},list=ev.filter(e=>e.label&&!TR_QUIET.has(e.label)||e.label==='GOAL_SET'&&e.detail);
     const nPick=Math.min(140,list.length),chosen=[];for(let i=0;i<nPick;i++)chosen.push(list[Math.floor(i*list.length/nPick)]);
     const words=[],wi=new Map();chosen.forEach(e=>{const w=wordOf(e);if(!wi.has(w)&&words.length<48){wi.set(w,words.length);words.push(w)}});
     if(words.length){const RH=40,cvs=document.createElement('canvas');cvs.width=1024;cvs.height=RH*48;const cx=cvs.getContext('2d');
@@ -2055,7 +2057,6 @@ trEl.addEventListener('wheel',e=>{e.stopPropagation();trUserScroll=performance.n
 trEl.addEventListener('click',e=>{if(e.target.closest('[data-trx]')){e.stopPropagation();trPanel(false);return}const it=e.target.closest('[data-tu]');if(!it||!tunnel)return;e.stopPropagation();cam.tpT=Math.max(0,+it.dataset.tu-.02);cam.idle=-9});
 const tsOf=v=>typeof v==='number'?v:(Date.parse(v)/1000||0);
 // moments that only repeat the line beside them (the reply spoken, a card drawn, the same goal and answer): not listed again
-const TR_QUIET=new Set(['NARRATED','CARD_SHOWN','ANSWER_GIVEN','GOAL_SET']);
 function transcriptOpen(T,s){
   trEl.style.display='none';trStrip.style.display='block';trStrip.querySelector('.cur').innerHTML='';trUserScroll=0;
   // the story, even when the chat itself is not kept (an evaluation run): the goal, what IRIS did (its steps), then
@@ -3318,7 +3319,8 @@ function enterTunnel(s,{at=null}={}){
       cam.tween=null;cam.mode='tunnel';cam.tp=0;cam.tpT=.012;cam.idle=0;camera.fov=95;cam.fovT=72;camera.updateProjectionMatrix();
       if(at!=null){cam.tp=cam.tpT=Math.max(0,tunnel.uOf(at)-.02);cam.idle=-9}   // arrive at a moment (a helper's report)
       const T=$('title');const end=s.ended?`${span(s.ended-s.started)} · ${s.exit==='drift'?'drifted before it finished':'ended well'}`:'happening now';
-      T.innerHTML=`${esc(s.objective)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
+      const ask0=(s.messages||[]).find(m=>m.role==='user'&&m.text)?.text,name=ask0&&ask0.startsWith(s.objective.slice(0,30))&&ask0.length>s.objective.length?(ask0.length>110?ask0.slice(0,109)+'…':ask0):s.objective;   // the chat store cuts a title at 50 characters: the question itself is whole
+      T.innerHTML=`${esc(name)}<small>${ago(s.started)} · ${end} · ${fmt(s.events.length)} moments · ${s.episodes.length} tasks · ${syncHTML(syncSession(s))}</small>`;T.style.opacity=1;
       $('scrub').classList.remove('on');
       document.querySelectorAll('#lenses a').forEach(a=>a.classList.remove('on'));
       hint('scroll / w s · travel through the strand &nbsp; ← → · claim to claim<br>hover · read a message or moment &nbsp; click a claim · follow its thread &nbsp; esc · back');
