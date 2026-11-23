@@ -1407,8 +1407,10 @@ const nodeMat=new THREE.ShaderMaterial({uniforms:{...U,uScrub:forestU.uScrub,uVi
       vA=mix(.14,.58,f)*mix(.45,1.,uNear)*step(aBorn,uScrub)*uVis*(uNodeK<1.?.28:1.);
       vC=mix(vec3(dot(aCol,vec3(.33))),aCol,mix(.12,1.,f));
       gl_PointSize=min(aSize*uPix*(60./-mv.z)*uNodeK,60.*uNodeK*uPix);gl_Position=projectionMatrix*mv;}`,
-  fragmentShader:`varying vec3 vC;varying float vA,vChan,vF;
-    void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
+  fragmentShader:`uniform float uNodeK;varying vec3 vC;varying float vA,vChan,vF;
+    void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+      if(uNodeK<1.){gl_FragColor=vec4(vC,smoothstep(.5,.0,d)*vA*.7);return;}   // the galaxy: a node is faint dust
+      float ang=fract(atan(c.x,-c.y)/6.2831853+1.);
       float por=vChan<0.?0.:clamp((4.-vChan)/4.,0.,1.);
       float seg=floor(ang*14.),hh=fract(sin(seg*12.9898+vF*78.233)*43758.5453);float gap=step(1.-por*.85,hh);
       float mem=smoothstep(.035,0.,abs(d-.3))*(1.-gap*.9);
@@ -1443,8 +1445,10 @@ const pinH={value:innerHeight*.5};
 const PIN_VS=`uniform float uTime,uPix,uVis,uH,uMax;attribute vec3 aCol;attribute float aHeld,aSize;varying vec3 vC;varying float vA,vH;
   void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float z=max(-mv.z,.1);vC=aCol;vH=aHeld;vA=uVis*smoothstep(.2,1.,z);
     gl_PointSize=clamp(aSize*projectionMatrix[1][1]*uH/z,min(5.,uMax*.4)*uPix,uMax*uPix);gl_Position=projectionMatrix*mv;}`;
-const PIN_FRAG=`uniform float uTime;varying vec3 vC;varying float vA,vH;
+const PIN_FRAG=`uniform float uTime,uMax;varying vec3 vC;varying float vA,vH;
   void main(){vec2 p=(gl_PointCoord-.5)*2.;vec2 q=abs(p);
+    if(uMax<20.){float d2=dot(p,p),an=uTime*.6,b=abs(p.x*cos(an)+p.y*sin(an));
+      float a=exp(-d2*28.)*1.2+exp(-b*22.)*(1.-sqrt(d2))*.55*step(d2,1.);gl_FragColor=vec4(mix(vec3(1.,.82,.5),vec3(1.),.3),a*vA);return;}   // a pulsar: held still
     float hx=max(q.x*.866+q.y*.5,q.y),shard=1.-smoothstep(.36,.4,hx),edge=smoothstep(.28,.36,hx)*shard;
     float facet=step(0.,p.x*p.y);                                                   // two lit facets, two in shade
     float bar=smoothstep(.06,.0,abs(q.x-.8))*step(q.y,.66),arm=smoothstep(.06,0.,abs(q.y-.64))*step(.62,q.x)*step(q.x,.84);
@@ -2655,12 +2659,12 @@ function keyIcon(kind){const c=document.createElement('canvas');c.width=c.height
   const hex=(r,rot=0)=>{g.beginPath();for(let k=0;k<6;k++){const a=k/6*Math.PI*2+rot;g[k?'lineTo':'moveTo'](Math.cos(a)*r,Math.sin(a)*r)}g.closePath()};
   g.lineWidth=1.6;
   // the galaxy's own marks: a star in its state's colour, a system's soft light, a halo dot on its orbit
-  const STAR_KEY={claim:['#ffffff','#bfe0ff',1],learning:['#6fdcff','#6fdcff',1],young:['#ff6fb5','#ff6fb5',1],fading:['#ffa64d','#ffa64d',.9]};
-  if(GALAXY&&STAR_KEY[kind]){const [c0,,al]=STAR_KEY[kind];g.globalAlpha=al;g.strokeStyle=g.fillStyle=c0;g.lineWidth=2;
-    if(kind==='claim'){g.beginPath();g.arc(0,0,3.4,0,7);g.fill();g.lineWidth=1.4;g.beginPath();g.moveTo(-15,0);g.lineTo(15,0);g.moveTo(0,-15);g.lineTo(0,15);g.stroke()}   // proven: a sparkle
-    else if(kind==='learning'){g.beginPath();g.arc(0,0,7,0,7);g.stroke()}                                                    // still learning: an open circle
-    else if(kind==='young'){g.beginPath();g.moveTo(0,-9);g.lineTo(9,0);g.lineTo(0,9);g.lineTo(-9,0);g.closePath();g.fill()}   // new: a diamond
-    else{g.strokeRect(-6,-6,12,12)}                                                                                          // fading: an open square
+  const STAR_KEY={claim:['#eef6ff'],learning:['#86dcff'],young:['#ff80c4'],fading:['#ff8a4c']};
+  if(GALAXY&&STAR_KEY[kind]){const [c0]=STAR_KEY[kind],glowAt=(r,cc,a)=>{const gr=g.createRadialGradient(0,0,0,0,0,r);gr.addColorStop(0,cc);gr.addColorStop(1,'rgba(0,0,0,0)');g.globalAlpha=a;g.fillStyle=gr;g.beginPath();g.arc(0,0,r,0,7);g.fill()};
+    if(kind==='claim'){glowAt(10,c0,.5);g.globalAlpha=.9;g.strokeStyle=c0;g.lineWidth=1;g.beginPath();g.moveTo(-16,0);g.lineTo(16,0);g.moveTo(0,-16);g.lineTo(0,16);g.stroke();glowAt(3.2,'#ffffff',1)}   // proven: a brilliant star
+    else if(kind==='learning'){g.save();g.rotate(-.5);g.scale(1,.36);g.globalAlpha=.75;g.strokeStyle=c0;g.lineWidth=2.6;g.beginPath();g.arc(0,0,10,0,7);g.stroke();g.restore();glowAt(4,c0,.85)}   // a protostar in its disc
+    else if(kind==='young'){glowAt(14,c0,.55);glowAt(3,'#ffffff',1)}                                                     // a newborn star in its nebula
+    else{glowAt(9,c0,.6)}                                                                                                   // fading: a dim red giant
     return c}
   if(GALAXY&&kind==='system'){const gr=g.createRadialGradient(0,0,0,0,0,15);gr.addColorStop(0,'rgba(191,224,255,.35)');gr.addColorStop(1,'rgba(191,224,255,0)');
     g.fillStyle=gr;g.beginPath();g.arc(0,0,15,0,7);g.fill();g.fillStyle='#fff';for(const [x,y,r] of [[0,0,2.6],[-7,4,1.4],[6,-5,1.2],[5,6,1]]){g.beginPath();g.arc(x,y,r,0,7);g.fill()}return c}
@@ -3097,6 +3101,7 @@ function fillClaimSource(k){if(!opts.claimSource)return;const l=LM[k];
       h=`${r.question?`<br><em>you asked</em> · ${esc(cut(r.question,170))}`:''}${r.answer?`<br><em>IRIS answered</em> · ${esc(cut(r.answer,260))}`:''}`+
         (r.steps||[]).slice(0,3).map(st=>`<span class="go step" data-step="${esc(cid)}" data-tool="${esc(st.tool||'')}" data-target="${esc(st.target||'')}">${esc(String(st.tool||'').replace(/_/g,' '))}${st.target?' · '+esc(cut(st.target,40)):''}${st.excerpt?' - '+esc(cut(st.excerpt,80)):''}</span>`).join('');
       if(!l.session||!M.sById.get(l.session)){const s2=M.sById.get(cid);if(s2)h+=`<span class="go" data-go="${esc(cid)}">→ open that conversation and its context</span>`}}
+    else if(r.status==='kept'){h=`${r.answer?`<br><em>what it found</em> · ${esc(cut(r.answer,260))}`:''}`+(r.steps||[]).slice(0,4).map(st=>`<br>${st.ok===false?'<span class="w">✗</span>':'✓'} ${esc(String(st.tool||'').replace(/_/g,' '))}${st.target?' · '+esc(cut(st.target,50)):''}`).join('')}
     else if(r.status==='no_turn')h=`<br><em>its source</em> · ${esc(cut(r.conversation?.title||'a conversation',60))} - no answer was recorded`;
     else if(r.status==='unrelated')h=`<br><em>its source</em> · ${esc(cut(r.conversation?.title||'a conversation',60))} - that conversation never asked this task, so its answer is not shown`;
     else h=`<br><em>its source</em> · an evaluation run - its conversation is not kept in this memory`;
@@ -3779,12 +3784,13 @@ const _frame=()=>{
   const dt=Math.min(clock.getDelta(),.1),t=clock.elapsedTime; // flights keep real time on slow frames
   U.uTime.value=t;
   simulate(dt);
-  if(galaxy){const on=state.lens==='cortex';galaxy.group.visible=on;
-    for(const o of [skin,wire,cells,xur,mist,arbors])o.visible=!on;rings.forEach(r=>{r.visible=!on});
-    forest.visible=!on;somaCells.visible=!on;   // the claims are the galaxy's own stars (galaxy.ts)
-    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=!on;else if(o.userData.tracts)o.visible=!on||(state.insideK||0)>.05})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
-    if(on){state.galIn=lerp(state.galIn||0,state.inside||state.diving?1:0,1-Math.pow(.05,dt));   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
-      galaxy.update(t,clamp(state.vis.forest,0,1),Math.max(state.insideK||0,state.galIn),state.inside||state.diving?state.diveReg:-9,camera.position.length());
+  if(galaxy){const on=state.lens==='cortex';galaxy.group.visible=cam.mode!=='tunnel';galaxy.interior(on);   // owner, 2026-11-23: the new shell in every tab
+    for(const o of [wire,cells,xur,mist,arbors])o.visible=false;skin.visible=state.lens==='oracle';rings.forEach(r=>{r.visible=false});
+    forest.visible=false;somaCells.visible=false;   // the claims are the galaxy's own stars (galaxy.ts)
+    KIND_OBJ.node.forEach(o=>{if(o.isMesh)o.visible=false;else if(o.userData.tracts)o.visible=on&&(state.insideK||0)>.05;else o.visible=on})   // the coordinate-space shells: in the galaxy the spaces live in each sector (§9.2)   // overview: the galaxy's clusters; inside a sector: the glyphs
+    {const _camR=camera.position.length()/R,_cross=clamp((.98-_camR)/.35,0,1);   // crossing the shell
+      state.galIn=lerp(state.galIn||0,Math.max(_cross,state.inside&&!state.diving&&on?1:0),1-Math.pow(.08,dt));   // smooth, never a jump on the click   // the galaxy's own 'inside': entering a galaxy, not distance from the centre
+      galaxy.update(t,clamp(state.vis.forest,0,1),state.galIn,state.inside||state.diving?state.diveReg:-9,camera.position.length());
       galaxy.mark(state.hoverSoma,state.focusSoma);
       galaxy.focus(dialHover>=0?dialHover:state.inside?null:state.diving?state.diveReg:state.hoverReg>=0?state.hoverReg:null)}}   // inside: every galaxy stays visible
   // Caducean breath: expand / compress (x) and attention (u) set the inner rhythm

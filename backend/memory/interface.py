@@ -17,6 +17,32 @@ import threading
 from typing import Optional, List, Dict, Any
 
 from backend.memory.working import ContextManager
+
+CLAIM_FINDING_RESULT = 500   # characters of what the turn produced (its last step's output)
+CLAIM_FINDING_TOOLS = 6      # tool calls named (tool, target, ok)
+
+
+def claim_finding(ep: Any) -> Optional[str]:
+    """W4 (memory cortex, owner 2026-11-23): what the turn that teaches a claim FOUND, as a small JSON string kept on
+    the claim at birth - its turn, its conversation, the tools it called (tool, target <= 80, ok) and the last step's
+    output (<= CLAIM_FINDING_RESULT, whitespace folded). A claim's card then never depends on a chat that is later
+    deleted (measured: 387 of 389 claims' source chats were gone). None when the turn left nothing to keep."""
+    try:
+        tools = [{"tool": str(t.get("tool")), "target": str(t.get("target") or "")[:80], "ok": bool(t.get("success", True))}
+                 for t in (getattr(ep, "tool_sequence", None) or [])
+                 if isinstance(t, dict) and t.get("tool") and t.get("tool") != "none"][:CLAIM_FINDING_TOOLS]
+        content = str(getattr(ep, "full_content", "") or "")
+        last = content.rsplit("[Step ", 1)[-1] if "[Step " in content else content
+        if last is not content and "] " in last:
+            last = last.split("] ", 1)[1]
+        result = " ".join(last.split())[:CLAIM_FINDING_RESULT]
+        if not tools and not result:
+            return None
+        return json.dumps({"turn": getattr(ep, "turn_id", None), "conversation": getattr(ep, "session_id", None),
+                           "tools": tools, "result": result}, ensure_ascii=False)
+    except Exception as exc:  # noqa: BLE001 - a claim without its finding still stands
+        logger.warning("[MemoryInterface] claim finding not built: %s", exc)
+        return None
 from backend.memory.episodic import EpisodicStore, Episode
 from backend.memory.semantic import SemanticStore
 from backend.memory.embedding import EmbeddingService
@@ -431,6 +457,7 @@ class MemoryInterface:
                     task_entry_label=episode.task_summary,
                     evidence_kinds=_evidence,
                     thread_id=episode.session_id,  # the conversation the claim was learned in
+                    finding=claim_finding(episode),   # W4: what this turn found, kept on the claim
                 )
             except Exception as _myc_err:
                 logger.debug(

@@ -61,6 +61,10 @@ _POLICY_COLUMNS = (
     ("falsify_if", "TEXT"),
     ("last_verified", "REAL"),
     ("contradictions", "INTEGER DEFAULT 0"),
+    # W4 (memory cortex, owner 2026-11-23): what the turn that taught the claim FOUND, kept at birth (JSON: turn,
+    # conversation, tools, result) - measured: 387 of 389 claims' source chats were gone, so a card that read
+    # the chat said nothing
+    ("finding", "TEXT"),
 )
 
 
@@ -616,6 +620,20 @@ class LandmarkIndex:
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
+
+    def save_finding(self, landmark_id: str, finding: Optional[str], only_if_empty: bool = False) -> None:
+        """W4: keep what the teaching turn found on the claim (a JSON string; None = nothing). Never raises: a claim
+        without its finding still stands. `only_if_empty`: a merge survivor keeps a finding it already has."""
+        if not finding:
+            return
+        try:
+            if "finding" not in {r[1] for r in self._conn.execute("PRAGMA table_info(mycelium_landmarks)")}:
+                return
+            app_write(self._conn,
+                      "UPDATE mycelium_landmarks SET finding = ? WHERE landmark_id = ?" + (" AND finding IS NULL" if only_if_empty else ""),
+                      (finding, landmark_id))
+        except Exception as exc:  # noqa: BLE001 - the claim stands without it
+            logger.warning("[landmark] finding not kept landmark=%s: %s", landmark_id, exc)
 
     def save(self, landmark: Landmark) -> None:
         """

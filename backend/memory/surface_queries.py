@@ -2815,13 +2815,23 @@ def claim_source(claim_id: str) -> dict:
     """
     with read_only(memory_db_path()) as mem, _optional_chat_store() as cdb:
         # PLAN  SELECT … FROM mycelium_landmarks WHERE landmark_id = ? -> SEARCH USING INDEX (landmark_id=?) (primary key)
-        row = mem.execute("SELECT landmark_id, conversation_ref, created_at, micro_abstract_text, label FROM mycelium_landmarks"
-                          " WHERE landmark_id = ?", (claim_id,)).fetchone()
+        has_finding = "finding" in table_cols(mem, "mycelium_landmarks")
+        row = mem.execute("SELECT landmark_id, conversation_ref, created_at, micro_abstract_text, label"
+                          + (", finding" if has_finding else "") + " FROM mycelium_landmarks WHERE landmark_id = ?",
+                          (claim_id,)).fetchone()
         if row is None:
             raise NotFound(claim_id)
         ref, made = row["conversation_ref"] or "", ts_of(row["created_at"]) or 0.0
         out = {"claim": claim_id, "ref": ref, "status": "not_stored", "conversation": None, "turn": None,
                "question": None, "answer": None, "steps": []}
+        kept = jload(row["finding"], None) if has_finding else None
+        if isinstance(kept, dict):   # W4: what the teaching turn found, kept on the claim at birth (the chat may be gone)
+            out.update(status="kept", turn=kept.get("turn"), question=clip(row["micro_abstract_text"] or "", CLAIM_SOURCE_QUESTION),
+                       answer=clip(kept.get("result") or "", CLAIM_SOURCE_ANSWER) or None,
+                       conversation={"id": kept.get("conversation"), "title": None} if kept.get("conversation") else None,
+                       steps=[{"id": None, "tool": t.get("tool"), "target": clip(t.get("target") or "", 80), "chars": None,
+                               "cut": False, "excerpt": None, "ok": t.get("ok")}
+                              for t in (kept.get("tools") or [])[:CLAIM_SOURCE_STEPS] if isinstance(t, dict)])
         if cdb is None or not ref:
             return out
         # PLAN  SELECT id, title FROM conversations WHERE id = ? -> SEARCH USING INDEX sqlite_autoindex_conversations_1
@@ -2834,6 +2844,9 @@ def claim_source(claim_id: str) -> dict:
                 conv = cdb.execute("SELECT id, title FROM conversations WHERE id = ?", (hit[0],)).fetchone()
         if conv is None:
             return out
+        if out["status"] == "kept":
+            out["conversation"] = {"id": conv["id"], "title": conv["title"]}
+            return out   # the finding kept at birth is exact; the chat adds only its title
         out["conversation"] = {"id": conv["id"], "title": conv["title"]}
         # PLAN  SELECT … FROM messages WHERE conversation_id = ? ORDER BY timestamp -> SEARCH USING INDEX idx_messages_conv
         msgs = cdb.execute("SELECT id, role, substr(text, 1, 2000) AS text, turn_id, timestamp FROM messages"

@@ -1261,6 +1261,7 @@ class MyceliumInterface:
         source_channel: Optional[str] = None,
         evidence_kinds: Optional[List[str]] = None,
         thread_id: Optional[str] = None,
+        finding: Optional[str] = None,
     ) -> Optional[Landmark]:
         """
         ``thread_id``: the conversation the claim was learned in, when it is not the graph session (a chat turn runs
@@ -1322,8 +1323,11 @@ class MyceliumInterface:
         landmark.conversation_ref = thread
 
         self._lm_index.save(landmark)
+        self._lm_index.save_finding(landmark.landmark_id, finding)   # W4: what the teaching turn found
         merged = self._merger.try_merge(landmark)
         surviving = merged or landmark
+        if surviving is not landmark:
+            self._lm_index.save_finding(surviving.landmark_id, finding, only_if_empty=True)
 
         self._apply_landmark_policy(session_id, landmark, surviving, evidence_kinds,
                                     absorbed_ids=list(self._merger.last_absorbed), thread_id=thread)

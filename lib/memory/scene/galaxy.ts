@@ -274,7 +274,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
         P.push(v.x, v.y, v.z); const cc = col.clone().lerp(W, 0.5 * (1 - r)); C.push(cc.r, cc.g, cc.b); A.push(0.05 + 0.12 * (1 - r)); PH.push(rng()); SZ.push(1.4); }
       glow(c0, col.clone().lerp(W, 0.4), 0.05, rad / R * 8);
     }
-    addPoints(P, C, A, PH, SZ);
+    { const o = addPoints(P, C, A, PH, SZ); o.userData.shell = true; o.userData.deep = true; }   // deep space stays round every tab, and inside
   }
 
   // ── the galaxies, drawn FROM their suns (owner, 2026-11-23): each landmark's own system (a cloud sized by its mass,
@@ -286,7 +286,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   const spikes = [];
   const byGal = arms.map(() => []);
   pos.forEach((p, k) => { const pl = place[k]; if (p && pl && pl.arm != null && byGal[pl.arm]) byGal[pl.arm].push(k); });
-  const STATE_COL = { 1: new THREE.Color('#ffffff'), 2: new THREE.Color('#6fdcff'), 3: new THREE.Color('#ff6fb5'), 4: new THREE.Color('#ffa64d') };
+  const STATE_COL = { 1: new THREE.Color('#eef6ff'), 2: new THREE.Color('#86dcff'), 3: new THREE.Color('#ff80c4'), 4: new THREE.Color('#ff8a4c') };
   const sunCol = (a, k) => { const info = claimInfo[k] || {};
     if (info.young) return PINK.clone().lerp(W, 0.25);
     if (info.fading) return AMBER.clone();
@@ -366,20 +366,21 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   // ── the claims ARE stars of their galaxy: a core in the domain's tint; a ring = proven (solid) or still learning
   //    (dashed); brightness = sync; they grow as you go inside (uIn); hover and focus ring them white ──────────────
   const CLAIM_VS = `uniform float uTime,uPix,uVis,uIn,uFoc,uHov,uSel,uIso;attribute float aIdx,aProven,aSync,aReg,aPh,aMass,aState;attribute vec3 aC;
-    varying vec3 vC;varying float vA,vP,vH,vS,vSt;
+    varying vec3 vC;varying float vA,vP,vH,vS,vSt,vPh;
     ${FOCUS_GLSL}
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float h=step(abs(aIdx-uHov),.5),sel=step(abs(aIdx-uSel),.5);
-      vC=aC;vP=aProven;vH=h;vS=sel;vSt=aState;float tw=abs(aState-4.)<.5?.55+.45*sin(uTime*2.6+aPh*20.):.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
+      vC=aC;vP=aProven;vH=h;vS=sel;vSt=aState;vPh=aPh;float tw=abs(aState-4.)<.5?.55+.45*sin(uTime*2.6+aPh*20.):.85+.15*sin(uTime*(.4+aPh)+aPh*30.);
       float iso=uIso<.5?1.:(abs(aState-uIso)<.5?1.4:.08);
       vA=(.55+.35*aSync)*mix(.6,1.,aMass)*tw*uVis*focusDim(aReg,uFoc)*iso*(1.+.6*max(h,sel));
       float sz=(1.6+1.2*aSync)*(.8+1.*aMass)*(1.+1.2*uIn)*(1.+.7*max(h,sel))*(abs(aState-1.)<.5?1.7:1.25);
       gl_PointSize=clamp(sz*uPix*(60./-mv.z),2.*uPix,(8.+5.*uIn+8.*max(h,sel))*uPix);gl_Position=projectionMatrix*mv;}`;
-  const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS,vSt;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
-    vec2 q=abs(c*2.);float hi=max(vH,vS),a=0.;
-    if(vSt<1.5){a=smoothstep(.12,.0,d)*1.2+(exp(-q.y*12.)*(1.-q.x)+exp(-q.x*12.)*(1.-q.y))*1.1;}                         // proven: a white sparkle
-    else if(vSt<2.5){a=smoothstep(.06,.0,abs(d-.28))*1.1;}                                                                  // still learning: an open circle
-    else if(vSt<3.5){a=step(q.x+q.y,.62)*1.1+smoothstep(.5,.0,d)*.12;}                                                     // new this week: a solid diamond
-    else{float sq=max(q.x,q.y);a=smoothstep(.07,.0,abs(sq-.5))*.95;}                                                        // fading: an open square
+  const CLAIM_FS = `varying vec3 vC;varying float vA,vP,vH,vS,vSt,vPh;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);if(d>.5)discard;
+    vec2 q=abs(c*2.);float hi=max(vH,vS),a=0.,d2=d*d;
+    if(vSt<1.5){a=exp(-d2*170.)*1.5+exp(-d2*14.)*.28+(exp(-q.y*42.)*(1.-q.x)+exp(-q.x*42.)*(1.-q.y))*.6;}                 // proven: a brilliant star, photographic spikes
+    else if(vSt<2.5){float an=vPh*3.14;vec2 e=vec2(c.x*cos(an)-c.y*sin(an),(c.x*sin(an)+c.y*cos(an))*2.7);                  // still learning: a protostar in its dust disc
+      a=exp(-d2*90.)*.75+smoothstep(.07,.0,abs(length(e)-.3))*.55*smoothstep(.5,.25,abs(e.x))+exp(-d2*12.)*.1;}
+    else if(vSt<3.5){float lob=.75+.25*sin(atan(c.y,c.x)*3.+vPh*20.);a=exp(-d2*150.)*1.3+exp(-d2*7.)*.38*lob;}               // new this week: a newborn star in its nebula
+    else{a=smoothstep(.36,.14,d)*.5+exp(-d2*30.)*.25;}                                                                          // fading: a dim red giant
     a+=smoothstep(.035,.0,abs(d-.46))*hi*.9;                                                                                  // hover / focus
     gl_FragColor=vec4(mix(vC,vec3(1.),.25+.4*hi),a*vA);}`;
   {
@@ -499,7 +500,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       if(age>=2.1&&p.y==aDir){float e=age-2.1;float back=max(0.,1.-e/1.6);lit=max(lit,.55*back*exp(-pow((1.-aS)-e*.8,2.)/.006));}}
       vec4 mv=modelViewMatrix*vec4(position,1.);float tw=.7+.3*sin(uTime*(.5+aPh*.8)+aPh*40.);
       float base=(aS<0.?.06+.12*pow(1.+aS,1.5):.3*(1.-.5*aS))*(uFocArm<-.5?1.:(abs(aArm-uFocArm)<.5?1.3:.3));
-      vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(base*tw*(1.-.2*uIn)+.9*lit)*uVis*smoothstep(.4,3.,-mv.z);   // the weave stays round you inside
+      vC=mix(aC,vec3(.96,1.,.98),clamp(lit,0.,1.));vA=(base*tw*(1.-uIn)+.9*lit*(1.-uIn))*uVis*smoothstep(.4,3.,-mv.z);   // inside: the weave is gone, only the galaxies in black space
       gl_PointSize=clamp((aSz+1.4*lit)*uPix*(60./-mv.z),1.4*uPix,(4.+3.*lit)*uPix);gl_Position=projectionMatrix*mv;}`;
   const LINE_FS = `varying vec3 vC;varying float vA;void main(){gl_FragColor=vec4(vC,vA);}`;
   uni.uSP = { value: Array.from({ length: 4 }, () => new V3(-1, 0, -99)) };
@@ -528,7 +529,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     geo.setAttribute('aC', new THREE.Float32BufferAttribute(C, 3)); geo.setAttribute('aPh', new THREE.Float32BufferAttribute(PH, 1));
     geo.setAttribute('aSz', new THREE.Float32BufferAttribute(SZ, 1));
     const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: STRAND_VS, fragmentShader: STAR_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.userData.strands = true; g.add(o); disposables.push(geo, mat);
+    const o = new THREE.Points(geo, mat); o.frustumCulled = false; o.userData.strands = true; o.userData.shell = true; g.add(o); disposables.push(geo, mat);
   }
   // dust: starts on the anchor thread and climbs the strand to the pole
   const DUST = 26, LEG_NS = 12, LEG_SHARE = 0.35;
@@ -542,14 +543,14 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   dustGeo.setAttribute('aSz', new THREE.Float32BufferAttribute(new Array(Math.max(1, dCount)).fill(1.1), 1));
   dustGeo.setAttribute('aReg', new THREE.Float32BufferAttribute(strands.flatMap(sd => new Array(DUST).fill(arms[sd.ai].reg)), 1));
   { const mat = new THREE.ShaderMaterial({ uniforms: uni, vertexShader: STAR_VS, fragmentShader: STAR_FS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    const o = new THREE.Points(dustGeo, mat); o.frustumCulled = false; g.add(o); disposables.push(dustGeo, mat); }
+    const o = new THREE.Points(dustGeo, mat); o.frustumCulled = false; o.userData.shell = true; g.add(o); disposables.push(dustGeo, mat); }
 
   // ── §9.2 the halos: seven dots per domain (strength = how many of its nodes sit in that space) and a faint ring ──
   const HALO_VS = `uniform float uTime,uPix,uVis,uIn,uHalo;attribute float aA,aSz,aReg;attribute vec3 aC;varying vec3 vC;varying float vA;
     void main(){vec4 mv=modelViewMatrix*vec4(position,1.);float mine=step(abs(aReg-uHalo),.5);
       vC=aC;vA=aA*uVis*mix(1.-.55*uIn,1.+1.2*uIn,mine);gl_PointSize=min(aSz*uPix*(60./-mv.z),(5.+5.*mine*uIn)*uPix);gl_Position=projectionMatrix*mv;}`;
   const RING_VS = `uniform float uVis,uIn,uHalo;attribute float aReg;varying float vA;
-    void main(){float mine=step(abs(aReg-uHalo),.5);vA=.05*uVis*mix(1.-.6*uIn,1.+2.*uIn,mine);gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
+    void main(){float mine=step(abs(aReg-uHalo),.5);vA=.025*uVis*mix(1.-.6*uIn,1.+2.*uIn,mine);gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
   const colOfReg = reg => (reg >= 0 && arms[reg] ? arms[reg].col : new THREE.Color(0.85, 0.9, 0.95));
   if (halos.length) {
     const P = [], C = [], A = [], SZ = [], RG = [], LP = [], LR = [];
@@ -557,7 +558,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       HALO_SPACES.forEach((sp, i) => {
         const o = layout.haloOrbitLocal(h.reg, sp), n = (h.counts && h.counts[sp]) || 0;
         P.push(o.x, o.y, o.z); C.push(tint.r, tint.g, tint.b); RG.push(h.reg);
-        A.push(n > 0 ? 0.22 + 0.4 * Math.min(1, Math.log10(1 + n) / 2) : 0.05); SZ.push(n > 0 ? 3.2 + Math.min(2.5, Math.log10(1 + n) * 1.6) : 2.2);
+        A.push(n > 0 ? 0.2 + 0.3 * Math.min(1, Math.log10(1 + n) / 2) : 0); SZ.push(n > 0 ? 2.6 + Math.min(2, Math.log10(1 + n) * 1.3) : 0);   // only the spaces that hold something
         const o2 = layout.haloOrbitLocal(h.reg, HALO_SPACES[(i + 1) % HALO_SPACES.length]);
         LP.push(o.x, o.y, o.z, o2.x, o2.y, o2.z); LR.push(h.reg, h.reg);
       }); });
@@ -590,9 +591,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     claimNodes.slice(0, 3000).forEach(cn => { const p = pos[cn.k]; if (!p) return; const pl = place[cn.k] || {}, ctl = p.clone().lerp(cn.p, 0.5);
       ctl.y = lerp(p.y, cn.p.y, 0.15); curve(p, cn.p, ctl, 8, cn.k, 0.008, colOfReg(pl.arm != null ? pl.arm : -1)); });
     halos.forEach(h => { const c = layout.haloCentre(h.reg), a = h.reg >= 0 ? arms[h.reg] : null, base = a ? a.c.clone() : new V3();
-      const col = colOfReg(h.reg); curve(base, c, base.clone().lerp(c, 0.5).add(new V3(0, R * 0.01, 0)), 8, -1, 0.07, col);
-      HALO_SPACES.forEach(sp => { const o = layout.haloOrbitLocal(h.reg, sp), n = (h.counts && h.counts[sp]) || 0;
-        curve(c, o, c.clone().lerp(o, 0.5), 2, -1, n > 0 ? 0.07 : 0.025, col); }); });
+      const col = colOfReg(h.reg); curve(base, c, base.clone().lerp(c, 0.5).add(new V3(0, R * 0.01, 0)), 8, -1, 0.035, col);
+    });   // (no spokes: the orbit and its moons say it - spokes read as a diagram)
     pins.forEach(pn => { const a = pn.reg >= 0 ? arms[pn.reg] : null;   // held to its arm: a short line into the disc beside it (to the core, 58 tethers made a starburst)
       let to = new V3(); if (a) { const v = pn.p.clone().sub(a.c); to = toWorld(a, v.dot(a.ax) * 0.88, 0, v.dot(a.az2) * 0.88); }
       P.push(pn.p.x, pn.p.y, pn.p.z, to.x, to.y, to.z); CL.push(-1, -1); UU.push(0, 1); AA.push(0.1, 0.1); C.push(1, 0.86, 0.62, 1, 0.86, 0.62); });
@@ -606,7 +606,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     }
   }
 
-  let voidMat = null;   // the black inner body (below): unseen from outside, the black void once you are inside
+  let voidMat = null, voidMat_o = null;   // the black inner body (below): unseen from outside, the black void once you are inside
   // ── the membrane: a faint woven skin on the shell's envelope, tinted by the nearest galaxy ──────────────────────
   {
     const prof = [];
@@ -624,13 +624,13 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
       fragmentShader: `uniform float uTime,uVis,uIn;varying vec3 vC,vN,vV,vP;void main(){float f=pow(1.-abs(dot(vN,vV)),2.6);
         float ph=atan(vP.z,vP.x),y=vP.y*${(4 / HH).toFixed(4)};
         float w=pow(abs(sin(ph*9.+y*1.6+uTime*.05)*sin(ph*9.-y*1.6-uTime*.04)),.35);
-        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-.65*uIn));}` });   // from inside: the strands show the shell, the skin stays dark
-    const o = new THREE.Mesh(geo, mat); o.frustumCulled = false; o.renderOrder = -1; g.add(o); disposables.push(geo, mat);
+        gl_FragColor=vec4(vC,(.003+.034*f)*(.5+.5*w)*uVis*(1.-uIn));}` });   // from inside: the strands show the shell, the skin stays dark
+    const o = new THREE.Mesh(geo, mat); o.frustumCulled = false; o.renderOrder = -1; o.userData.shell = true; g.add(o); disposables.push(geo, mat);
     // the VOID inside the shell (owner, 2026-11-23: the inside must be black like space; the panel round it keeps its
     // own colour): the shell's inner faces in black, drawn before everything else in the shell, so the backdrop seen
     // through the shell goes dark and the galaxies, claims and weave light up on top of it
     voidMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, side: THREE.BackSide, depthWrite: false });
-    const vo = new THREE.Mesh(geo, voidMat); vo.frustumCulled = false; vo.renderOrder = -10; g.add(vo); disposables.push(voidMat);
+    const vo = new THREE.Mesh(geo, voidMat); vo.frustumCulled = false; vo.renderOrder = -10; vo.userData.shell = true; g.add(vo); disposables.push(voidMat); voidMat_o = vo;
   }
   // the dial: a faint ring of stars at the equator, a tick of each domain's colour at its galaxy's compass angle
   {
@@ -638,7 +638,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     for (let i = 0; i < 520; i++) { const th = i / 520 * TAU; P.push(Math.cos(th) * DIAL_R, 0, Math.sin(th) * DIAL_R); C.push(0.7, 0.86, 0.95); A.push(0.05); PH.push(rng()); SZ.push(0.9); RG.push(-1); }
     arms.forEach(a => { for (let i = -6; i <= 6; i++) { const t2 = a.az + i * 0.006;
       P.push(Math.cos(t2) * DIAL_R, 0, Math.sin(t2) * DIAL_R); C.push(a.col.r, a.col.g, a.col.b); A.push(0.5 - Math.abs(i) * 0.03); PH.push(rng()); SZ.push(1.8); RG.push(a.reg); } });
-    addPoints(P, C, A, PH, SZ, RG);
+    addPoints(P, C, A, PH, SZ, RG).userData.shell = true;   // the dial
   }
   // the soft glows (galaxy cores and halos, nebula dust, far galaxies), drawn once
   if (glows.P.length) addPoints(glows.P, glows.C, glows.A, glows.PH, glows.SZ, glows.RG, GLOW_VS, GLOW_FS);
@@ -657,7 +657,7 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
     vertexShader: `uniform float uPix,uVis;attribute float aF;varying float vF,vA;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vF=aF;vA=uVis;gl_PointSize=min((6.+26.*aF)*uPix*(60./-mv.z),60.*uPix);gl_Position=projectionMatrix*mv;}`,
     fragmentShader: `varying float vF,vA;void main(){vec2 c=gl_PointCoord-.5;float d=length(c);float core=smoothstep(.2,0.,d);float ring=smoothstep(.5,.44,d)*smoothstep(.36,.42,d)*vF;gl_FragColor=vec4(.92,.99,1.,(core*(.35+.6*vF)+ring*.6)*vA);}`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-  { const o = new THREE.Points(poleGeo, poleMat); o.frustumCulled = false; g.add(o); disposables.push(poleGeo, poleMat); }
+  { const o = new THREE.Points(poleGeo, poleMat); o.frustumCulled = false; o.userData.shell = true; g.add(o); disposables.push(poleGeo, poleMat); }
   // pulse heads (CPU, at most PULSE_SLOTS): claim -> its galaxy's anchor edge (or straight to the pole)
   const headGeo = new THREE.BufferGeometry(), hP = new Float32Array(PULSE_SLOTS * 3), hA = new Float32Array(PULSE_SLOTS);
   headGeo.setAttribute('position', new THREE.BufferAttribute(hP, 3)); headGeo.setAttribute('aA', new THREE.BufferAttribute(hA, 1));
@@ -684,7 +684,8 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   function update(t, vis, inside = 0, haloReg = -9, camD = R * 5.8) {
     now = t; uni.uVis.value = vis; uni.uIn.value = inside; uni.uHalo.value = haloReg;
     uni.uNearZ.value = Math.max(0, camD - R); uni.uSpan.value = R * 2;   // the shell's near side is the brightest
-    if (voidMat) { voidMat.opacity = inside; voidMat.visible = inside > 0.02; }   // owner, 2026-11-23: outside the shell stays as it was; inside, the void of space
+    if (voidMat) { voidMat.opacity = inside; voidMat.visible = inside > 0.02; }
+    g.children.forEach(o => { if (o.userData.shell && o !== voidMat_o && !o.userData.deep) o.visible = inside < 0.97; });   // inside: the shell's parts step away   // owner, 2026-11-23: outside the shell stays as it was; inside, the void of space
     strands.forEach((sd, n) => dust[n].forEach((d, j) => { const q = (d.s + t * d.v) % 1, onLeg = q < LEG_SHARE;
       const s = onLeg ? q / LEG_SHARE : (q - LEG_SHARE) / (1 - LEG_SHARE), path = onLeg ? LEG[n] : SAMPLES[n], ns = onLeg ? LEG_NS : NS;
       const f = s * ns, i0 = Math.floor(f), w = f - i0, A = path[i0], B = path[Math.min(ns, i0 + 1)], idx = (n * DUST + j) * 3;
@@ -706,9 +707,11 @@ export function createGalaxy({ R, U, layout, links, halos = [], claimNodes = [],
   }
 
   function dispose() { disposables.forEach(d => d.dispose && d.dispose()); }
+  /** the galaxies themselves show in the cortex tab; the shell (weave, skin, poles, dial, deep space) in every tab */
+  function interior(on) { g.children.forEach(o => { if (!o.userData.shell) o.visible = on; }); }
   function focus(reg) { uni.uFoc.value = reg == null ? -1 : reg; uni.uFocArm.value = reg == null || reg < 0 || !arms[reg] ? -1 : reg; }
   function mark(hov, sel) { uni.uHov.value = hov == null ? -1 : hov; uni.uSel.value = sel == null ? -1 : sel; }
   /** the key isolates one landmark state: 1 proven, 2 still learning, 3 new this week, 4 fading; 0 = all */
   function isolate(k) { uni.uIso.value = k || 0; }
-  return { group: g, update, pulse, dispose, arms, sats, focus, mark, isolate };
+  return { group: g, update, pulse, dispose, arms, sats, focus, mark, isolate, interior };
 }
