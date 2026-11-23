@@ -314,6 +314,11 @@ class NodeContext:
     # W0 (Round 4): counters run_node keeps for the node's owner: "scripts" (run_python calls)
     # and "exploring" (checks _is_exploration did not count). Read after run_node returns.
     stats: Dict[str, int] = field(default_factory=dict)
+    # The live band (2026-11-23): on_gauge(reading) at each size the view takes - before a
+    # set-aside (stretched) and at each model call. reading = tokens, limit (where the harness
+    # sets results aside, 0 = it does not), aside / aside_tokens, role. An observer: its
+    # return is ignored and an exception in it is logged.
+    on_gauge: Optional[Callable[[Dict[str, Any]], None]] = None
 
 
 @dataclass
@@ -854,15 +859,18 @@ def _safe_look(ctx: NodeContext, shot: str, question: str) -> str:
     return reading[:1500]
 
 
-def _note_peak(ctx: "NodeContext", messages, tools) -> None:
+def _note_peak(ctx: "NodeContext", messages, tools) -> int:
     """W2: the largest input this node sends to its model (the gauge's own estimate), in
-    ctx.stats["peak_tokens"]. A character count per call; never raises."""
+    ctx.stats["peak_tokens"]. A character count per call; never raises. Returns this
+    call's size (0 = unknown)."""
     try:
         n = _estimate_tokens(messages, tools)
         if n > int(ctx.stats.get("peak_tokens") or 0):
             ctx.stats["peak_tokens"] = n
+        return n
     except Exception as exc:  # noqa: BLE001 - a missing number never stops a node
         logger.debug("[run_node] conv=%s peak estimate failed: %r", ctx.conv_id, exc)
+    return 0
 
 
 def _fill(ctx: "NodeContext", view, tools) -> Optional[float]:
@@ -930,6 +938,21 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         return None
 
     offloaded_ids: set = set()  # result ids this node set aside (PREMATURE_EVICTION)
+
+    def _band(tokens: int) -> None:
+        """The view's size right now, to the pill's live band. Never raises."""
+        if ctx.on_gauge is None or tokens <= 0:
+            return
+        try:
+            limit = 0
+            if ctx.window and view is not None:
+                reserve = min(max(256, ctx.max_tokens), ctx.window // 2) + 256
+                limit = int((ctx.window - reserve) * (1 - _SHRINK_MARGIN))
+            aside = [b for b in view.blocks if b.aside] if view is not None else []
+            ctx.on_gauge({"tokens": int(tokens), "limit": limit, "aside": len(aside),
+                          "aside_tokens": sum(int(b.tokens or 0) for b in aside), "role": role})
+        except Exception as exc:  # noqa: BLE001 - an observer never stops a node
+            logger.warning("[run_node] conv=%s live band failed: %r", ctx.conv_id, exc)
 
     def _restretch(match: Callable[[Block], bool], trigger: str) -> int:
         """CLM-5 AC4: bring back the set-aside units whose results match, when
@@ -1068,6 +1091,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 logger.info("[run_node] conv=%s over budget by ~%d tokens, nothing may leave",
                             ctx.conv_id, need)
                 return
+            _band(need + limit)   # stretched past the limit; the call below shows the release
             view.set_aside_batch([(u, ph) for u, ph, _i, _s in chosen])
             for u, ph, ids, saving in chosen:
                 _clm_stats["set_aside_units"] += 1
@@ -1186,7 +1210,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     gen_extra["tool_choice"] = forced
             _shrink(gen_tools)
             _msgs = _outgoing()
-            _note_peak(ctx, _msgs, gen_tools)
+            _band(_note_peak(ctx, _msgs, gen_tools))
             try:
                 text, _think, tool_calls = ctx.generate(
                     role, _msgs, tools=gen_tools, max_tokens=ctx.max_tokens,
@@ -1628,7 +1652,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         # small window the router cut it blind. Off when ctx.window is 0.
         _shrink([])
         _msgs = _outgoing()
-        _note_peak(ctx, _msgs, None)
+        _band(_note_peak(ctx, _msgs, None))
         text, _think, _ = ctx.generate(role, _msgs, tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
         # AC14.2: a call-limit or time-budget break never adjudicated a claim

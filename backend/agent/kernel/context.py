@@ -21,6 +21,51 @@ from backend.agent.inference import clm_baseline as _clm_baseline
 logger = __import__("logging").getLogger(__name__)
 
 
+# -- the live band (2026-11-23) ------------------------------------------------
+# A node's view stretches with each result and gives way when CLM sets results aside; a new
+# node starts small. Nodes run side by side, so the kernel keeps one reading per live node.
+_VIEWS_LOCK = __import__("threading").Lock()
+
+
+def note_context_view(kernel, key, reading: Optional[Dict[str, Any]]) -> None:
+    """One live node's view size (reading None = the node ended), then one context:usage.
+    Module level so a stand-in kernel still reaches it; never raises."""
+    try:
+        with _VIEWS_LOCK:
+            views = kernel.__dict__.setdefault("_context_views", {})
+            if reading is None:
+                if views.pop(key, None) is None:
+                    return
+            else:
+                for k in [k for k, v in views.items() if v["turn"] != reading["turn"]]:
+                    views.pop(k)   # a node of an earlier turn that never came back
+                peak = int((views.get(key) or {}).get("peak") or 0)
+                views[key] = dict(reading, peak=max(peak, int(reading["tokens"])))
+        emit = getattr(kernel, "_emit_context_usage", None)
+        if callable(emit):
+            emit()
+    except Exception as exc:  # noqa: BLE001 - a missing number never stops a node
+        logger.warning("[clm] conv=%s live band not noted: %r",
+                       getattr(kernel, "conversation_id", ""), exc)
+
+
+def _context_band(kernel, window: int) -> Dict[str, int]:
+    """The band the pill draws. While nodes run: the FULLEST live view, against its own
+    model's window. At rest: what the last call put in the window, against the Brain's;
+    the peak is then the turn's largest call. Real tokens (readings are calibrated)."""
+    with _VIEWS_LOCK:
+        views = list((getattr(kernel, "_context_views", None) or {}).values())
+    fill = int(getattr(kernel, "_context_fill", 0) or 0)
+    if not views:
+        last = int(getattr(kernel, "_context_last", 0) or 0) or fill
+        return {"now_tokens": last, "now_window": window, "limit_tokens": 0,
+                "peak_tokens": max(fill, last), "aside": 0, "aside_tokens": 0, "views": 0}
+    v = max(views, key=lambda x: x["tokens"] / max(1, x["window"]))
+    return {"now_tokens": v["tokens"], "now_window": v["window"], "limit_tokens": v["limit"],
+            "peak_tokens": v["peak"], "aside": sum(x["aside"] for x in views),
+            "aside_tokens": sum(x["aside_tokens"] for x in views), "views": len(views)}
+
+
 def _clm_history_slip(kernel, dropped: int, session_id) -> Optional[tuple]:
     """CLM direct-path offload (requirements "Owner answers" Q-C: after TG-2): the
     history messages the trim takes out leave ONE placeholder slip that names the
@@ -295,6 +340,7 @@ class ContextMixin:
             if ctx:
                 self._tokens_used = ctx.tokens_used
                 self._context_fill = int(getattr(ctx, "context_fill", 0) or 0)
+                self._context_last = 0   # another thread's last call is not this one's
                 if ctx.messages and self._conversation_memory is not None:
                     self._conversation_memory.clear()
                     for _m in ctx.messages:
@@ -348,6 +394,7 @@ class ContextMixin:
                 _add = max(1, len(response_text or "") // 4)
                 _kind = "estimate"
             self._tokens_used = int(getattr(self, "_tokens_used", 0) or 0) + _add
+            self._context_last = _add
             # Fullness (the pill): the largest single call of the latest turn. The first call of a new turn
             # replaces it; a real call counts prompt + answer, i.e. what that call put in the window.
             _turn = getattr(self, "_current_turn_id", None)
@@ -579,12 +626,15 @@ class ContextMixin:
           conversation_id like the spend. An ACTIVE or SWITCHED thread shows its own fill and
           NEVER 0; only a brand-new thread (no call yet) may report 0, which is honest.
         - `spent_tokens` = self._tokens_used, the thread's running spend (never reset).
+        - the band (`_context_band`): now_tokens / now_window / limit_tokens / peak_tokens /
+          aside / aside_tokens / views - the size that rises and FALLS while nodes run.
 
         Fire-and-forget: EventBus failure must never crash the response path.
         """
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
+            _window = int(self.resolve_context_window())
             get_event_bus().emit(
                 IRISStreamEvent.CONTEXT_USAGE,
                 data={
@@ -593,9 +643,10 @@ class ContextMixin:
                     # went red with nothing near the limit. The spend still travels as spent_tokens.
                     "used_tokens": int(getattr(self, "_context_fill", 0) or 0),
                     "spent_tokens": int(getattr(self, "_tokens_used", 0) or 0),
-                    "max_tokens": int(self.resolve_context_window()),
+                    "max_tokens": _window,
                     "step_number": step_number,
                     "total_steps": total_steps,
+                    **_context_band(self, _window),
                 },
                 turn_id=getattr(self, "_current_turn_id", None),
                 conversation_id=self.conversation_id,

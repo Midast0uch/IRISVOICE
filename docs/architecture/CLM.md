@@ -83,6 +83,19 @@ none of them set, `run_node` behaves exactly as before (flag off = byte for byte
   works with a model that never edits.
 - **Gauge line.** Tool results carry a one-line gauge (`_gauge_line`: used / window,
   count set aside).
+- **The band in the chat footer (2026-11-23).** The pill draws the view as a rubber band hung
+  on the model switcher. `run_node` reports the view's size through `NodeContext.on_gauge`
+  (`_band`): once before a shrink (stretched past the limit) and once at every model call.
+  `kernel/der/node.py:_live_band` multiplies it by the gauge's learned ratio, so the numbers
+  are the server's tokens; `kernel/context.py:note_context_view` keeps one reading per live
+  node (removed in the node's `finally`) and `_emit_context_usage` adds `_context_band` to
+  `context:usage`: `now_tokens`, `now_window`, `limit_tokens` (where CLM sets results aside,
+  0 with the hooks off), `peak_tokens`, `aside`, `aside_tokens`, `views`. While nodes run it is
+  the fullest view against its own model's window; at rest it is the last call. The older keys
+  keep their meaning (`used_tokens` = the turn's largest call). Band length is the square root
+  of the share, because real views live in the first tenth of a 128k window. It moves in both
+  modes; only `IRIS_CLM_OFFLOAD=1` gives it a limit post and a set-aside count. Guard:
+  `test_context_band_contract.py`, `__tests__/components/ContextPill.test.tsx`.
 - **Pins with provenance.** `write_pin` creates a `PinStore` pin of type `model_summary`
   with tags `model_summary`, `author:model`, `clm`, `conv:<id>`, then links it with
   `derives_from` to each source ref on the `memory_events` lane. A pin never replaces its

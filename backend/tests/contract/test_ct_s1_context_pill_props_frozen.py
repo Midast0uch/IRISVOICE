@@ -1,6 +1,7 @@
 """Contract test CT-S1 (specs/phase-5-switcher/design.md).
 
 "`ContextPillProps`: Four props, same names and types (REQ-3 AC1)."
+(Five since 2026-11-23: "band", owner request - see FROZEN_PROPS.)
 
 Phase 5 REQ-3 AC1: "THE SYSTEM SHALL keep `ContextPillProps` unchanged — the
 switcher SHALL be a **sibling** component, not a new prop." This phase is the
@@ -20,7 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CONTEXT_PILL_PATH = ROOT / "components" / "chat" / "ContextPill.tsx"
 
-FROZEN_PROPS = {"usedTokens", "maxTokens", "phase", "currentAction"}
+# "band" joined 2026-11-23 on the owner's request (the pill shows CLM's rubber band); still exact.
+FROZEN_PROPS = {"usedTokens", "maxTokens", "phase", "currentAction", "band"}
 
 
 def _read_props() -> set[str]:
@@ -31,7 +33,7 @@ def _read_props() -> set[str]:
 
 
 class TestCTS1ContextPillPropsFrozen:
-    def test_exactly_four_frozen_props_no_switcher_prop_added(self):
+    def test_exactly_the_frozen_props_no_switcher_prop_added(self):
         found = _read_props()
         assert found == FROZEN_PROPS, (
             f"ContextPillProps changed in Phase 5: found={found} "

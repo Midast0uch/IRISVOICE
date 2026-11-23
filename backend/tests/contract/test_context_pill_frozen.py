@@ -1,4 +1,4 @@
-"""Contract test CT-I2: ContextPill props and design unchanged this phase.
+"""Contract test CT-I2: ContextPill props are exactly the agreed set.
 
 design.md Ripple-Effect Map: `components/chat/ContextPill.tsx` is a CONTRACT
 LOCK for Phase 2 — props and design unchanged; Phase 5 owns it. Its
@@ -18,7 +18,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CONTEXT_PILL_PATH = ROOT / "components" / "chat" / "ContextPill.tsx"
 
-EXPECTED_PROPS = {"usedTokens", "maxTokens", "phase", "currentAction"}
+# "band" joined 2026-11-23 on the owner's request (the pill shows CLM's rubber band); still exact.
+EXPECTED_PROPS = {"usedTokens", "maxTokens", "phase", "currentAction", "band"}
 
 
 def _read_props() -> set[str]:

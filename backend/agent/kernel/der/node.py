@@ -1146,9 +1146,33 @@ def _clm_node_hooks(kernel, item, turn_id, role: str = "tool_execution", session
             "landmarks": landmarks}
 
 
+from backend.agent.kernel.context import note_context_view
 from backend.agent.kernel.planning import (
     _voice_turn_note,
 )
+
+
+def _live_band(kernel, key, turn_id, window: int):
+    """on_gauge for one node: the view's reading, calibrated by the gauge's learned ratio
+    (the pill shows the server's tokens, not the ruler's), kept by kernel/context. Set in
+    both CLM modes; *window* 0 (hooks off) = the role's own window, read once."""
+    from backend.agent.context_gauge import GAUGE
+
+    seen: dict = {}
+
+    def on_gauge(reading):
+        role = reading["role"]
+        if role not in seen:
+            seen[role] = (window or int(kernel.resolve_context_window_with_source(role).tokens),
+                          kernel._router.resolve(role))
+        role_window, inst = seen[role]
+        ratio = GAUGE.ratio(inst.id, inst.model or "local-model") or 1.0
+        note_context_view(kernel, key, {
+            "turn": str(turn_id or ""), "window": role_window,
+            "tokens": int(reading["tokens"] * ratio), "limit": int(reading["limit"] * ratio),
+            "aside": reading["aside"], "aside_tokens": int(reading["aside_tokens"] * ratio)})
+
+    return on_gauge
 
 
 def _note_context_fill(kernel, item, ctxs, turn_id) -> None:
@@ -2235,6 +2259,7 @@ class DerNodeMixin:
             return out
 
         _held: List[str] = []
+        _band_key = ""
         _wb_bound: List[str] = []   # C8: the scratch folder bound to the session for this node
 
         # One domain correction per step (2026-10-08). Bounded deliberately:
@@ -2636,6 +2661,8 @@ class DerNodeMixin:
             **(_clm_node_hooks(self, item, _turn_id, session=_session, goal=goal)
                if _clm_offload_on() else {}),
             )
+            _band_key = uuid.uuid4().hex
+            _node_ctx.on_gauge = _live_band(self, _band_key, _turn_id, _node_ctx.window)
             _peak_ctxs = [_node_ctx]   # W2: every context this node runs (a Workbench ctx is added)
             _node_state["ctx"] = _node_ctx
             _full_tools = self._get_openai_tools() if _wb_on() else []
@@ -2856,6 +2883,8 @@ class DerNodeMixin:
         finally:
             for _c in _held:
                 _der_release(self, _c)
+            if _band_key:
+                note_context_view(self, _band_key, None)   # the node's view is gone
             if _wb_bound:   # C8: the scratch binding lasts for this node only
                 _sw = getattr(self._tool_bridge, "_session_workdirs", None)
                 if isinstance(_sw, dict) and _sw.get(_session) == _wb_bound[0]:

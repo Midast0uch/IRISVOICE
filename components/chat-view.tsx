@@ -31,6 +31,7 @@ import { TurnParts } from "@/components/chat/turn/TurnParts";
 // (cli-workspace-unification T1: ChatView no longer replaces its body with the
 // workspace in dev mode — the unified scroll IS the dev-mode body. The Visual
 // Workspace Hub lives in the Dashboard Wing, not here.)
+import { bandOf, type ContextBand } from "@/components/chat/ContextPill";
 import { Composer } from "@/components/chat/Composer";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { NotificationsPanel } from "@/components/chat/NotificationsPanel";
@@ -830,25 +831,48 @@ export function ChatWing({
   // request answers 402 payment required). Worse, the fallback also masked
   // the real bug — with the pill pre-filled, a turn that never emitted (any
   // failure path) left it showing 128k as if that were measured.
-  const [contextUsage, setContextUsage] = useState<{ used: number; max: number }>({
+  const [contextUsage, setContextUsage] = useState<{ used: number; max: number; band?: ContextBand }>({
     used: 0,
     max: 0,
   })
   useEffect(() => {
     const onUsage = (e: Event) => {
       const d = (e as CustomEvent).detail
+      // Another thread's nodes must not stretch this thread's band. Only an id that is
+      // another thread of ours is kept aside: a model switch comes from the default kernel.
+      const cid: string | undefined = d?.conversation_id
+      const here = activeConversationIdRef.current
+      if (cid && here && cid !== here && conversationIdsRef.current.has(cid)) {
+        if (typeof d.used_tokens === "number") {
+          usageByThread.current.set(cid, { used: d.used_tokens, max: d.max_tokens ?? 0, band: bandOf(d) })
+        }
+        return
+      }
       if (d && typeof d.used_tokens === "number") {
         // Keep the previous denominator if this event somehow omits one —
         // never overwrite a measured window with a placeholder.
         setContextUsage((prev) => ({
           used: d.used_tokens,
           max: typeof d.max_tokens === "number" ? d.max_tokens : prev.max,
+          band: bandOf(d),
         }))
       }
     }
     window.addEventListener("iris:context_usage", onUsage)
     return () => window.removeEventListener("iris:context_usage", onUsage)
   }, [])
+  // Each thread keeps its own band: what it showed last when you come back to it.
+  const usageByThread = useRef(new Map<string, typeof contextUsage>())
+  const conversationIdsRef = useRef(new Set<string>())
+  conversationIdsRef.current = new Set(conversations.map((c) => c.id))
+  useEffect(() => {
+    if (activeConversationId) usageByThread.current.set(activeConversationId, contextUsage)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- a switch is not new usage
+  }, [contextUsage])
+  useEffect(() => {
+    const own = activeConversationId ? usageByThread.current.get(activeConversationId) : undefined
+    setContextUsage((prev) => own ?? { used: 0, max: prev.max })
+  }, [activeConversationId])
 
       // Get active conversation messages
       const activeConversation = conversations.find(c => c.id === activeConversationId);

@@ -1,6 +1,35 @@
 "use client"
 
+import { useEffect, useRef } from "react"
+import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "framer-motion"
 import { useBrandColor } from "@/contexts/BrandColorContext"
+
+/** CLM's live view (docs/architecture/CLM.md 1.3; backend kernel/context.py
+ *  `_context_band`). While nodes run it is the fullest node's view against that
+ *  node's own model; at rest it is what the last call put in the window. */
+export interface ContextBand {
+  now: number
+  window: number
+  /** Where CLM sets results aside. 0 = it does not (offload off, or at rest). */
+  limit: number
+  /** The furthest it stretched. */
+  peak: number
+  /** Results set aside (kept by reference, not lost). */
+  aside: number
+  asideTokens: number
+  /** Nodes running side by side. 0 = at rest. */
+  views: number
+}
+
+/** The band in a `context:usage` payload; undefined from a backend without one. */
+export function bandOf(d: Record<string, unknown>): ContextBand | undefined {
+  if (typeof d.now_tokens !== "number") return undefined
+  const n = (k: string) => (typeof d[k] === "number" ? (d[k] as number) : 0)
+  return {
+    now: n("now_tokens"), window: n("now_window"), limit: n("limit_tokens"), peak: n("peak_tokens"),
+    aside: n("aside"), asideTokens: n("aside_tokens"), views: n("views"),
+  }
+}
 
 export interface ContextPillProps {
   usedTokens: number
@@ -8,6 +37,8 @@ export interface ContextPillProps {
   phase: string
   /** Live action text from the agent (e.g. "Reading example.com (2/5)"). */
   currentAction?: string
+  /** Absent = the plain meter (usedTokens / maxTokens). */
+  band?: ContextBand
 }
 
 function formatTokens(n: number): string {
@@ -51,12 +82,105 @@ const PHASE_CODES: Record<string, string> = {
 // `title` only.
 const ACTION_CAP = 24
 
+const BAND_W = 46
+const BAND_H = 12
+const REST = 3.4 // the loop's half-height when nothing pulls it
+// The pill is fused to ModelSwitcher (both overlap by 8px): x = 2 is the switcher's
+// right rim, so the band hangs on the model whose window it fills.
+const PEG = 2
+const SPAN = BAND_W - PEG - REST
+
+/** Share of the window -> share of the meter. A square root, because real views
+ *  live in the first tenth of a 128k window and must still be seen to move; the
+ *  exact numbers are the text beside it. */
+const reach = (share: number) => Math.sqrt(Math.min(1, Math.max(0, share)))
+
+/** One closed loop held by two pegs, `x` px apart. Pulled out it gets flatter and
+ *  thinner (rubber keeps its volume); `pluck` bows both strands the same way. */
+function loopPath(x: number, pluck: number): string {
+  const len = Math.max(0, x)
+  const t = Math.min(1, len / SPAN)
+  const r = REST - 1.5 * t
+  const waist = r * (1.5 * t - 0.4) // slack bellies out, taut pinches in at the middle
+  const l = PEG
+  const e = PEG + len
+  const m = (l + e) / 2
+  const y = BAND_H / 2
+  return (
+    `M${l} ${y - r}Q${m} ${y - r + waist + pluck} ${e} ${y - r}` +
+    `A${r} ${r} 0 0 1 ${e} ${y + r}Q${m} ${y + r - waist + pluck} ${l} ${y + r}` +
+    `A${r} ${r} 0 0 1 ${l} ${y - r}Z`
+  )
+}
+
+/**
+ * The band itself. Slack = a small ring on the switcher's rim; a node that reads pulls
+ * it long and thin; when CLM sets results aside (or a step ends) it lets go,
+ * overshoots and wobbles. Dashes = how far it has been stretched; the bright post
+ * = where CLM lets go (drawn only when CLM does).
+ */
+function RubberBand({
+  share, peak, limit, aside, color, glow,
+}: { share: number; peak: number; limit: number; aside: number; color: string; glow: string }) {
+  const still = useReducedMotion()
+  const span = SPAN
+  const target = reach(share) * span
+  const spring = useSpring(target, { stiffness: 190, damping: 11, mass: 0.7 })
+  const pluck = useMotionValue(0)
+  const d = useTransform([spring, pluck], ([x, p]: number[]) => loopPath(x, p))
+  const width = useTransform(spring, (x: number) => 1.7 - 0.7 * Math.min(1, Math.max(0, x) / span))
+  const tip = useTransform(spring, (x: number) => PEG + Math.max(0, x))
+  const last = useRef({ target, aside })
+  useEffect(() => {
+    const was = last.current
+    last.current = { target, aside }
+    if (still) {
+      spring.jump(target)
+      return
+    }
+    spring.set(target)
+    // Let go: the strands ring, harder for a longer fall.
+    const fell = was.target - target
+    if (fell > 1 || aside > was.aside) pluck.set(Math.min(4, 1.6 + fell * 0.12))
+    const ring = animate(pluck, 0, { type: "spring", stiffness: 520, damping: 6, mass: 0.5 })
+    return () => ring.stop()
+  }, [target, aside, still, spring, pluck])
+  const at = (n: number) => PEG + reach(n) * span
+  const y = BAND_H / 2
+  return (
+    <svg width={BAND_W} height={BAND_H} viewBox={`0 0 ${BAND_W} ${BAND_H}`} className="relative block overflow-visible" aria-hidden>
+      {at(peak) - at(share) > REST + 1 && (
+        <line
+          data-testid="band-peak" data-at={reach(peak).toFixed(3)}
+          x1={at(share) + REST} x2={at(peak)} y1={y} y2={y}
+          stroke="rgba(255,255,255,0.28)" strokeWidth={1} strokeDasharray="1.5 2"
+        />
+      )}
+      {limit > 0 && (
+        <line
+          data-testid="band-limit" data-at={reach(limit).toFixed(3)}
+          x1={at(limit)} x2={at(limit)} y1={1.5} y2={BAND_H - 1.5} stroke={glow} strokeWidth={1} strokeLinecap="round"
+        />
+      )}
+      <circle cx={PEG} cy={y} r={1.2} fill={glow} />
+      <motion.circle cx={tip} cy={y} r={0.9} fill="rgba(255,255,255,0.8)" />
+      <motion.path
+        data-testid="band-loop" data-reach={reach(share).toFixed(3)}
+        d={d} fill={`${color}14`} stroke={color} style={{ strokeWidth: width, filter: `drop-shadow(0 0 2px ${color}66)` }}
+      />
+    </svg>
+  )
+}
+
 /**
  * ContextPill — compact context-window usage + phase indicator in the chat
  * header. Dark glass, brand-color accents, monospace token count. When the
  * agent reports a live `currentAction` (e.g. while crawling), it is shown
  * (truncated) instead of the phase code so the user sees what the assistant
  * is doing.
+ *
+ * THE METER IS A RUBBER BAND (2026-11-23), see RubberBand: it stretches as a node
+ * reads, and springs back when CLM sets results aside or a new node starts small.
  *
  * The denominator is the REAL max_tokens reported by the backend
  * (resolve_context_window of the model in use) via the iris:context_usage
@@ -69,12 +193,30 @@ export default function ContextPill({
   maxTokens,
   phase,
   currentAction,
+  band,
 }: ContextPillProps) {
   const { getThemeConfig } = useBrandColor()
   const glowColor = getThemeConfig().glow.color
-  const safeMax = maxTokens > 0 ? maxTokens : 1
-  const pct = Math.min(1, usedTokens / safeMax)
-  const color = usageColor(pct)
+  const now = band ? band.now : usedTokens
+  const max = band ? band.window || maxTokens : maxTokens
+  const safeMax = max > 0 ? max : 1
+  const share = (n: number) => Math.min(1, Math.max(0, n / safeMax))
+  const pct = share(now)
+  // How near it is to letting go: against CLM's own limit when there is one, else the
+  // window. Red is kept for the window itself, where the router would have to cut.
+  const tension = band && band.limit > 0 ? Math.min(0.84, now / band.limit) : pct
+  const color = usageColor(Math.max(pct, tension))
+  const plain = `Context: ${now} / ${max} tokens`
+  const fullTitle = !band
+    ? plain
+    : [
+        band.views > 0
+          ? `${plain} — ${band.views > 1 ? `the fullest of ${band.views} steps running` : "the step running now"}`
+          : `${plain} — at rest: the last call`,
+        band.peak > now ? `Furthest it stretched: ${band.peak}` : "",
+        band.limit > 0 ? `It lets go at ${band.limit}: older results are set aside, kept by reference` : "",
+        band.aside > 0 ? `${band.aside} set aside (${band.asideTokens} tokens), each can come back` : "",
+      ].filter(Boolean).join("\n")
   const phaseKey = (phase || "idle").toString()
   const phaseCode = PHASE_CODES[phaseKey] || phaseKey.toUpperCase().slice(0, 3)
   const fullPhase = PHASE_LABELS[phaseKey] || phaseKey.toUpperCase()
@@ -102,29 +244,50 @@ export default function ContextPill({
       }}
       title={
         currentAction
-          ? `Context: ${usedTokens} / ${maxTokens} tokens — ${fullPhase}\n${currentAction}`
-          : `Context: ${usedTokens} / ${maxTokens} tokens — ${fullPhase}`
+          ? `${fullTitle} — ${fullPhase}\n${currentAction}`
+          : `${fullTitle} — ${fullPhase}`
       }
     >
       <div
-        /* 40px. The meter carries one number; the phase label carries the word
-           that says what IRIS is doing, so the meter must not out-measure it.
-           At 40px the two read as comparable rather than a long rule beside a
-           three-letter tag. */
-        className="w-10 shrink-0 h-[3px] rounded-full overflow-hidden"
-        style={{ background: "rgba(255,255,255,0.1)" }}
+        /* 46x12: the loop needs height to read as a band, and no more than the 9px
+           text line has, so the footer keeps its height. */
+        className="relative shrink-0"
+        style={{ width: BAND_W, height: BAND_H }}
       >
-        <div
-          className="h-full rounded-full transition-all duration-300"
-          style={{ width: `${pct * 100}%`, background: color }}
+        {/* The window, as a hairline the band is pulled along; the covered part is tinted. */}
+        <div className="absolute inset-y-[5.5px] left-0 right-0 rounded-full" style={{ background: "rgba(255,255,255,0.12)" }}>
+          <div
+            className="h-full rounded-full motion-reduce:transition-none"
+            style={{ width: `${reach(pct) * 100}%`, background: color, opacity: 0.3, transition: "width 500ms ease-out" }}
+          />
+        </div>
+        <RubberBand
+          share={pct}
+          peak={band ? share(Math.max(band.peak, now)) : pct}
+          limit={band ? share(band.limit) : 0}
+          aside={band?.aside ?? 0}
+          color={color}
+          glow={glowColor}
         />
       </div>
       <span
         className="text-[9px] font-mono tabular-nums tracking-wide whitespace-nowrap"
         style={{ color: "rgba(255,255,255,0.7)" }}
       >
-        {formatTokens(usedTokens)} / {maxTokens > 0 ? formatTokens(maxTokens) : "—"}
+        {/* 0 = no call measured yet in this thread, not an empty window */}
+        {now > 0 ? formatTokens(now) : "—"} / {max > 0 ? formatTokens(max) : "—"}
       </span>
+      {band && band.aside > 0 && (
+        /* Set aside, not lost: a loose ring and how many. */
+        <span
+          data-testid="band-aside"
+          className="flex items-center gap-[2px] text-[9px] font-mono tabular-nums whitespace-nowrap"
+          style={{ color: glowColor, opacity: 0.75 }}
+        >
+          <i className="inline-block w-[5px] h-[5px] rounded-full border" style={{ borderColor: glowColor }} />
+          {band.aside}
+        </span>
+      )}
       <span
         /* Sized to its content, NOT flex-1. Stretching it made the pill hold a
            wide empty band between the token count and a three-letter phase,

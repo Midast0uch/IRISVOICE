@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom"
 import { render, screen } from "@testing-library/react"
-import ContextPill from "@/components/chat/ContextPill"
+import ContextPill, { bandOf } from "@/components/chat/ContextPill"
 
 jest.mock("@/contexts/BrandColorContext", () => ({
   useBrandColor: () => ({
@@ -71,5 +71,57 @@ describe("ContextPill", () => {
     )
     const bar = container.querySelector(".h-full") as HTMLElement
     expect(bar.style.background).toMatch(/f87171|248, ?113, ?113/i)
+  })
+
+  describe("the rubber band (CLM, 2026-11-23)", () => {
+    const wire = (over: Record<string, number> = {}) =>
+      bandOf({ now_tokens: 2000, now_window: 8000, limit_tokens: 3200, peak_tokens: 3600, aside: 2, aside_tokens: 2100, views: 1, ...over })
+    const bar = (c: HTMLElement) => c.querySelector(".h-full") as HTMLElement
+    const pulled = () => Number(screen.getByTestId("band-loop").getAttribute("data-reach"))
+
+    it("shows the running node against its own window, not the turn's largest call", () => {
+      render(<ContextPill usedTokens={23000} maxTokens={260000} phase="processing_tool" band={wire()} />)
+      expect(screen.getByText("2.0k / 8.0k")).toBeInTheDocument()
+      expect(screen.getByTestId("band-aside")).toHaveTextContent("2")
+    })
+
+    it("stretches and gives way", () => {
+      const p = { usedTokens: 1, maxTokens: 8000, phase: "processing_tool" }
+      const { container, rerender } = render(<ContextPill {...p} band={wire({ now_tokens: 800, peak_tokens: 800 })} />)
+      const slack = pulled()
+      rerender(<ContextPill {...p} band={wire({ now_tokens: 3100, peak_tokens: 3100 })} />)
+      const taut = pulled()
+      expect(taut).toBeGreaterThan(slack)
+      expect(screen.queryByTestId("band-peak")).toBeNull()
+      expect(bar(container).style.background).toMatch(/fbbf24|251, ?191, ?36/i) // near the place it lets go: amber, not red
+      rerender(<ContextPill {...p} band={wire({ now_tokens: 1200, peak_tokens: 3100 })} />)
+      expect(pulled()).toBeLessThan(taut)
+      expect(Number(screen.getByTestId("band-peak").getAttribute("data-at"))).toBeCloseTo(taut, 3) // it remembers how far
+      expect(Number(screen.getByTestId("band-limit").getAttribute("data-at"))).toBeCloseTo(Math.sqrt(0.4), 3)
+    })
+
+    it("a small view on a 128k window is still seen to move", () => {
+      const p = { usedTokens: 1, maxTokens: 128000, phase: "processing_tool" }
+      const { rerender } = render(<ContextPill {...p} band={wire({ now_window: 128000, now_tokens: 1500 })} />)
+      const at1 = pulled()
+      rerender(<ContextPill {...p} band={wire({ now_window: 128000, now_tokens: 10000 })} />)
+      expect((pulled() - at1) * 39).toBeGreaterThan(5) // px of the 39px span
+    })
+
+    it("has no tick and no set-aside count when CLM does not set results aside", () => {
+      render(<ContextPill usedTokens={1} maxTokens={8000} phase="idle" band={wire({ limit_tokens: 0, aside: 0, aside_tokens: 0 })} />)
+      expect(screen.queryByTestId("band-limit")).toBeNull()
+      expect(screen.queryByTestId("band-aside")).toBeNull()
+      expect(screen.queryByTitle(/lets go|set aside/)).toBeNull()
+    })
+
+    it("is the plain meter for a payload without a band", () => {
+      expect(bandOf({ used_tokens: 5, max_tokens: 10 })).toBeUndefined()
+    })
+
+    it("shows — for a thread with no call measured yet", () => {
+      render(<ContextPill usedTokens={0} maxTokens={8000} phase="idle" />)
+      expect(screen.getByText("— / 8.0k")).toBeInTheDocument()
+    })
   })
 })

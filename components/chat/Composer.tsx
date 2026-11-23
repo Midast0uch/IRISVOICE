@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { ChevronDown, Video, Image, Smile } from 'lucide-react'
 import { Icon } from '@iconify/react'
 import { SuggestionPills } from "@/components/chat/SuggestionPills"
-import ContextPill from "@/components/chat/ContextPill"
+import ContextPill, { type ContextBand } from "@/components/chat/ContextPill"
 import ModelSwitcher from "@/components/ModelSwitcher"
 import { ProjectBar } from "@/components/chat/composer/ProjectBar"
 import { useWorkspaceStore, type WorkspaceTab } from "@/stores/workspaceStore"
@@ -75,7 +75,7 @@ export interface ComposerProps {
   terminalSnapshot: TerminalSnapshot
   activeTabPath: string | null
   // Footer toolbar
-  contextUsage: { used: number; max: number }
+  contextUsage: { used: number; max: number; band?: ContextBand }
   taskProgress: TaskProgress
   // Composer design 2026-10-06: steer/stop, @ who hears, # references.
   /** The conversation on screen; # candidates and the stop message name it. */
@@ -712,6 +712,7 @@ export function Composer({
               <ContextPill
                 usedTokens={contextUsage.used}
                 maxTokens={contextUsage.max}
+                band={contextUsage.band}
                 phase={voiceState}
                 currentAction={taskProgress.currentAction}
               />
@@ -766,6 +767,7 @@ export function Composer({
               <ContextPill
                 usedTokens={contextUsage.used}
                 maxTokens={contextUsage.max}
+                band={contextUsage.band}
                 phase={voiceState}
                 currentAction={taskProgress.currentAction}
               />
