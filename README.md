@@ -7,11 +7,11 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 ### 🎤 Voice & Audio
 - **Wake Word Detection**: Custom "Hey Iris" wake word using Violawake (custom ONNX head + OpenWakeWord backbone), armed at backend startup — no key, no cloud, CPU-first
 - **Wake Word Memory**: Violawake custom ONNX head + OpenWakeWord backbone (~50 MB RAM, 0 VRAM at runtime; 320-sample frames)
-- **Wake Word Model**: Custom-trained "Hey Iris" Violawake model (`data/hey iris_237_1788045452.onnx`, threshold 0.70). The legacy `.ppn` file in `models/wake_words/` is Porcupine-era and not loaded.
-- **Phonon-2 Live Streaming ASR (CPU)**: Fermion Research's Phonon-2 speech recognition engine, streamed live over WebSocket (`/v1/audio/stream`) from a dedicated fermion server the backend spawns at boot — interim hypotheses reach the UI while you speak (~0.35 s first hypothesis, ~2/s updates), and the final transcript lands ~0.8 s after you stop. Runs entirely on CPU (AVX2), freeing the GPU for the vision and decision models. Hotwords (≤25) bias the wake word and command vocabulary. faster-whisper (CPU) backs up the final transcript.
+- **Wake Word Model**: Custom-trained "Hey Iris" Violawake model (ONNX, threshold 0.70)
+- **Phonon-2 Live Streaming ASR (CPU)**: Fermion Research's Phonon-2 speech recognition engine, streamed live over WebSocket (`/v1/audio/stream`) from a dedicated fermion server the backend spawns at boot — interim hypotheses reach the UI while you speak (~0.35 s first hypothesis, ~2/s updates), and the final transcript lands ~0.8 s after you stop. Runs entirely on CPU , freeing the GPU for the vision and decision models. Hotwords (≤25) bias the wake word and command vocabulary. faster-whisper (CPU) backs up the final transcript.
 - **End-to-End Audio Processing**: Violawake (wake words) → Phonon-2 live streaming (CPU ASR) / faster-whisper (CPU fallback) → Agent Kernel → Pocket-TTS (TTS)
 
-#### Measured performance (2026-10-08, live on this machine — RTX 3070, C: HDD / D: SSD)
+#### Measured performance
 
 | Path | Metric | Measured |
 |------|--------|----------|
@@ -22,10 +22,12 @@ A production-ready AI voice assistant platform featuring an intuitive hexagonal 
 | STT | VRAM cost | **0** (CPU-only; the GPU stays free for vision + the Oracle) |
 | Oracle (d1-3B) | decision latency p50 / p90 | **139 ms / 320 ms** (min 62 ms) |
 | Oracle | decision accuracy probes | noul 98.8%/96.5% polarity-correct; 3-option choice 98.7% |
-| d1 boot load (GPU, from the D: SSD twin) | startup → resident | **14.6–21.3 s** (vision + Oracle warm at boot) |
+| Vision + Oracle model load | startup → resident | **14.6–21.3 s** (warm at boot) |
 | Vision (d1 + projector) | capability probe | exact ("red, blue") — probe-gated routing |
-| VRAM budget (d1 + projector + 2.6B tool server, ctx 8192) | used / free | **5.9 GB / 2.1 GB** of 8 GB |
-| Eval coding tasks (c10/c02/c05) | reply_s, pass rate | **8–19 s, 3/3 pass**, no standards regression |
+| Agent coding tasks (c10/c02/c05, 2026-10-08) | reply time, pass rate | **8–19 s, 3/3 pass** |
+| Agent coding tasks (c08/c10/c12, 2026-11-23, cloud model, context set-aside + Workbench on) | reply time, pass rate | **17–35 s warm, all pass** (a first cold run: 71–110 s) |
+| Memory question across two earlier threads (x06, 2026-11-23) | reply time, pass rate | **12.2 s, 2/2 pass** |
+| Context pill | band against the model's own token count | **within 4 %** |
 
 > The Oracle latency has a sharp lesson attached: a fresh TCP connection per decision cost **~400 ms** of Windows connection setup (Nagle/delayed-ACK) — the model's own work is ~10-50 ms. One pooled keep-alive client is why the p50 reads 139 ms and not 630 ms.
 - **Voice Commands**: Natural language voice interaction with double-click activation
@@ -52,8 +54,8 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   - `[TTS_LATENCY] backend=pocket_tts synth_to_audio_ms=340`
   - `[FLOW_LATENCY] vad_to_llm=380ms llm_ttft=620ms llm_total=1120ms tts_synth=340ms vad_to_audio=1350ms flow_total=1520ms`
   - `[VOICE_TIMING_SUMMARY]` cumulative offsets from VAD end for each phase boundary
-- **STTPROC Processing Sound**: Loops `data/STTPROC.wav` at 3x gain (file is -27.4 dBFS, target -17.9 dBFS) while the agent is processing the LLM request, until TTS playback starts. Stopped unconditionally in the `_speak_response` finally block (was previously left running on barge-in).
-- **Activation Beep**: `liquid-bubble-3000.wav` plays on `start_recording()`. Skipped (`play_beep=False`) on barge-in re-recordings to avoid double-chime.
+- **Processing Sound**: Loops a soft sound while the agent works on the request, until TTS playback starts. Stopped unconditionally in the `_speak_response` finally block.
+- **Activation Beep**: Plays on `start_recording()`. Skipped (`play_beep=False`) on barge-in re-recordings to avoid double-chime.
 - **Memory Budget** (audio pipeline only):
 
   | Component | VRAM | RAM | When |
@@ -67,16 +69,14 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   | **Total (whisper path)** | **0** | **~95 MB** | — |
 
 ### 🤖 AI Agent System
-- **Oracle Decision Engine (d1-3B)**: A JEV-style System One decision model (LiquidAI d1-3B) that scores every candidate option in ONE forward pass and returns a calibrated probability distribution — instead of sending tool selection through a second LLM call that sometimes produces malformed JSON (or nothing). Served borrow-only by the shared llama-server (:8082, the same server vision uses); answers are read from the logits at a single answer slot using d1's native question shapes (a calibrated yes/no "noul" for boolean consumers, letter-coded choice menus otherwise). Measured p50 139 ms per decision. The engine runs in SHADOW by default (it logs answers but doesn't act until measured tooling flips `IRIS_DECISION_ENFORCE`): scripts/fit_oracle_calibration.py fits per-consumer thresholds from the ledger, and scripts/consumer_enforcement_report.py reports the bar (≥100 distinct rows, precision ≥0.90, ECE ≤0.05). Consumers share ONE calibrated scorer — the core ones: tool_choice (DER step → tool pick + fallback), presentation (when a Prism card opens), narration (when TTS speaks). See docs/architecture/oracle.md + specs/phonon2-d1-model-swap/**.
+- **Oracle Decision Engine (d1-3B)**: A JEV-style System One decision model (LiquidAI d1-3B) that scores every candidate option in ONE forward pass and returns a calibrated probability distribution — instead of sending tool selection through a second LLM call that sometimes produces malformed JSON (or nothing). Served borrow-only by the shared llama-server (:8082, the same server vision uses); answers are read from the logits at a single answer slot using d1's native question shapes (a calibrated yes/no "noul" for boolean consumers, letter-coded choice menus otherwise). Measured p50 139 ms per decision. The engine runs in SHADOW by default (it logs answers but doesn't act until measured tooling flips `IRIS_DECISION_ENFORCE`): scripts/fit_oracle_calibration.py fits per-consumer thresholds from the ledger, and scripts/consumer_enforcement_report.py reports the bar (≥100 distinct rows, precision ≥0.90, ECE ≤0.05). Consumers share ONE calibrated scorer — the core ones: tool_choice (step → tool pick + fallback), presentation (when a Prism card opens), narration (when TTS speaks). See docs/architecture/oracle.md + specs/phonon2-d1-model-swap/**.
 - **Flexible Inference**: Brain model via the shared llama-server (port 8082) or a remote OpenAI-compatible API — select in Settings. Vision and the Oracle ride the same shared server (d1-3B + its vision projector, boot-loaded on the GPU at startup).
 - **MTP Speculative Decoding (1.5-3× speedup)**: Multi-Token Prediction for compatible GGUF models (e.g. Qwopus3.6-27B-MTP). Auto-detected from tensor names, routed to compiled `llama-server --spec-type draft-mtp`. Configurable `--spec-draft-n-max` (1-6) and acceptance-rate logging. Non-MTP models fall back transparently to in-process inference.
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
-- **DER-DAG Execution Model**: the agent no longer runs a hardcoded Director → Explorer →
-  Reviewer pipeline over a flat queue. Execution is a **physics-governed, memory-backed DAG** of
-  *nodes* — each step is simultaneously a work unit and a memory record — with non-binary steering,
-  split races, outcome-driven recovery, and per-node execution modes. See
-  **[DER-DAG Architecture](./docs/architecture/DER_DAG.md)** (the authoritative map) and the
-  section below.
+- **DAG execution model**: execution is a **physics-governed, memory-backed DAG** of *nodes* - each
+  step is simultaneously a work unit and a memory record - with non-binary steering, split races,
+  outcome-driven recovery, and per-node execution modes. See
+  **[the execution architecture](./docs/architecture/DER_DAG.md)** and the section below.
 - **Caducean Engine v2 — Mitochondria to Mycelium (Domain 19)**: Four-dimensional physics-governed attention governor (Σ = x, y, ξ, u) based on the Duffing oscillator. Now the metabolic regulator of Mycelium memory:
   - **Winding numbers** `(l, m) ∈ ℤ²` control cycle speed `c_eff = (1/√2)√(l²+m²)`
   - **DirectionSignal** exposes bias-free physics to consumers (`target_u`, `force_magnitude`, `u_current`, `phase`, `balance`)
@@ -85,7 +85,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   - **Mycelium modulation** — `decay_multiplier` and `resonance_multiplier` scale by attentional velocity (explore→preserve, compress→prune)
   - **Parameter homeostasis** — `(a, b, s)` relax toward baseline every 10 updates *or* 60 s, whichever comes first. Without this every writer pushed the same direction (barge-in `s −0.05`, violations `a +0.10`), so walk speed decayed to its floor over a long session. The state `u` always had a restoring force; the parameters did not until now.
   - **ConversationKernel** wraps the existing voice pipeline (no parallel VAD/TTS) — phase-driven turn-taking, halt-on-violation, and TTS chunk sizing banded by `|u|` (`U_SPLIT` / `U_CONVERGED`) against live EML balance
-  - **Multi-session coupling** via `CoupledTrajectoryRegistry` — continuous `align_force` on the `ξ` difference with an order-independent symmetry breaker, so each coupled pair yields exactly one nucleus and one barrier. Winding numbers are non-degenerate (`der 1.0 / voice 1.581 / research 3.0`), making both the rational and irrational branches reachable. **Ships disabled** — `IRIS_COUPLING_ENABLED=1` to activate.
+  - **Multi-session coupling** via `CoupledTrajectoryRegistry` — continuous `align_force` on the `ξ` difference with an order-independent symmetry breaker, so each coupled pair yields exactly one nucleus and one barrier. Winding numbers are non-degenerate (`execution 1.0 / voice 1.581 / research 3.0`), making both the rational and irrational branches reachable. **Ships disabled** — `IRIS_COUPLING_ENABLED=1` to activate.
   - **Kill switch:** `IRIS_CADUCEAN_V2_DISABLED=1` env var disables v2 entirely (one-line rollback)
   - See the [architecture blueprint](./docs/CADUCEAN_ARCHITECTURE.md) for how these fit together, and [`CADUCEAN_TECHNICAL_OVERVIEW.md`](./docs/CADUCEAN_TECHNICAL_OVERVIEW.md) §13 for the as-built audit
 - **Caducean Phase Scheduler + inference rate-limit hardening**: a scheduling layer owned by the Caducean engine that keeps any number of work sources from converging on the same instant — without any loop knowing another exists.
@@ -93,7 +93,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   - **Anti-phase coupling:** registrants repel each other in phase (negative-K Kuramoto) so work spreads into a stream instead of arriving as a burst. Volume is regulated through the *same* mechanism — amplitude modulates effective angular velocity — rather than a separate counter.
   - **Per-quota adaptive limits:** metering and ceilings are keyed by `(api_base_url, credential-fingerprint)`, learned via AIMD from observed `429`/`Retry-After`. Local providers (LM Studio / Ollama) are never gated.
   - **Never-gated voice lane:** the user's turn and `speak_tool` bypass the gate entirely. Recovery grafts are *not* exempt — that would create a 429 → graft → 429 loop.
-  - **Ships disabled** — `IRIS_PHASE_SCHEDULER=1` to activate. **The scheduler never reads Caducean `ξ`/`u`**; that boundary is enforced by contract tests, not convention (see the blueprint §4).
+  - **On** (`IRIS_PHASE_SCHEDULER=1` in `.env.example`; `0` turns it off). **The scheduler never reads Caducean `ξ`/`u`**; that boundary is enforced by contract tests, not convention (see the blueprint §4).
 - **Recall-as-Cognition**: Two-phase memory retrieval protocol — model emits structured `<recall/>` ops before answering, resolves them against the coordinate graph, then answers with real memory context. 84% prompt token reduction vs full-history injection. Provider-uniform via prompt caching. See [architecture doc](./docs/architecture/RECALL_AS_COGNITION.md)
 - **Mycelium v1.7**: 6-layer coordinate-graph memory — episodic events, semantic compression, landmarks, Pacman lifecycle, PiNs, and cross-project landmark bridges
 - **PiNs (Primordial Information Nodes)**: Any knowledge artifact anchored to the graph — markdown notes, files, folders, images, URLs, decisions, fragments, mid-write checkpoints. Agent-callable (`pin_add`, `pin_search`, `pin_link`, `pin_checkpoint`) and surfaced via `<recall pin .../>`. Auto-checkpoints fire after large file writes so the agent can recover in-progress work on a future turn. Tunable search weights. Available in both modes. See [pin system doc](./docs/architecture/PIN_SYSTEM.md)
@@ -104,7 +104,7 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Lazy Loading**: Models load only when needed, not on startup
 - **Autonomous Task Execution**: Agent can execute complex multi-step tasks
 - **Tool Integration**: MCP-based tool system for browser, file, system, and app automation
-- **DER+PACMAN Execution Hardening**: Plan events (VALIDATION_FAILED, RECOVERY_START, TOPOLOGY_RECOVERY) streamed to frontend as `iris:plan_event` system messages; verified workflow capture with automatic skill stub generation after ≥3 tools; multimedia tools (transcribe_media, analyze_video_frames, clip_video) via ffmpeg + STT + vision; resilient tool dispatch with `retry_with_backoff`; all file I/O offloaded to worker threads (`asyncio.to_thread`)
+- **Execution hardening**: Plan events (VALIDATION_FAILED, RECOVERY_START, TOPOLOGY_RECOVERY) streamed to frontend as `iris:plan_event` system messages; verified workflow capture with automatic skill stub generation after ≥3 tools; multimedia tools (transcribe_media, analyze_video_frames, clip_video) via ffmpeg + STT + vision; resilient tool dispatch with `retry_with_backoff`; all file I/O offloaded to worker threads (`asyncio.to_thread`)
 - **Personality System**: Configurable assistant personality and behavior
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
@@ -164,7 +164,7 @@ Part I the interface, Part II the memory foundation — growth/decay law, Kyudo,
   into the parent strand, and the corridor's arch walks to that moment.
 - **What a strand did, without opening the chat:** hover a strand on the timeline, or a task in its corridor, and the
   card lists its steps (✓ / ✗, the tool, what it acted on; "+N more"), read from the episode's own record. Click a step
-  for its exact output from the chat record (plain text on this machine), or "IRIS no longer keeps this output".
+  for its exact output from the chat record, or "IRIS no longer keeps this output".
 - **The context, step by step:** a strand's corridor carries a pale band on its floor - how full the model's working
   context was at each step (the 75 % margin is a dotted line) - with a mark on the wall wherever IRIS set a thought
   aside (amber when it let one go too early). The title says "the context never had to make room · peak N%" or how
@@ -172,34 +172,31 @@ Part I the interface, Part II the memory foundation — growth/decay law, Kyudo,
   IRIS is running. Recorded from 2026-11-22 on (older strands say "not recorded").
 - **Live:** while IRIS works, inward sparks = remembering, outward = recording, rays = deciding; a new claim assembles;
   a finished turn settles. Tidy / full view switch for the HUD.
-- **Store:** the app memory lives at `D:/IRIS/store/memory.db` (SSD; `data/memory_config.json` `db_path`), always
-  opened through `resolve_memory_store_path`; the surface only reads (`/api/memory/*`, LIMIT-bounded, indexed).
-- **Next design (decided, not built yet):** the cortex becomes a galaxy - one spiral with an arm per sector, satellite
-  galaxies for side sectors, curved hyphae that follow the arms and light up when a recall uses them, a shell woven from
-  the arms themselves, an endless inside, and the live context at the centre. Until that wave (W4) lands, the cortex
-  draws today's lattice. Plan and owner decisions:
-  **[docs/Design/Memory-Cortex/LIVE-CONTEXT-AND-GALAXY-PLAN.md](./docs/Design/Memory-Cortex/LIVE-CONTEXT-AND-GALAXY-PLAN.md)**.
+- **Store:** one local, encrypted memory store; the surface only reads it (`/api/memory/*`, LIMIT-bounded, indexed).
+- **The cortex is a galaxy:** an arm per sector, claims as clickable indicators, hyphae that light when a recall uses
+  them, projects, health layers and the trust membrane on the shell. `?cortex=tissue` opens the earlier view.
 
-### 🕸 DER-DAG Execution Model
+### 🕸 DAG Execution Model
 
-DER no longer runs as a hardcoded Director→Explorer→Reviewer pipeline over a flat queue. Execution is now a **physics-governed, memory-backed DAG** (specs `specs/der-dag-inversion/` + `specs/dag-node-execution-model/`):
+Execution is a **physics-governed, memory-backed DAG**:
 
-- **The DAG is the memory.** Every step, split child, and sub-loop is a *node* that is simultaneously a work unit and a memory record. The execution tree is a traversal over the shared coordinate graph in `data/memory.db` (configured via `data/memory_config.json`). Each finalized step appends a `memory_chain` row carrying its pre/post Σ (Caducean state) snapshots, outcome, and insight — so the structure persists and the working context can *forget* the raw content once it has landed (REQ-2/REQ-3).
+- **The DAG is the memory.** Every step, split child, and sub-loop is a *node* that is simultaneously a work unit and a memory record. The execution tree is a traversal over the shared coordinate graph in the app's memory store. Each finalized step appends a `memory_chain` row carrying its pre/post Σ (Caducean state) snapshots, outcome, and insight — so the structure persists and the working context can *forget* the raw content once it has landed (REQ-2/REQ-3).
 - **Non-binary steering.** Gates consume the continuous Caducean signal (u/ξ, verified fraction, edge strength) as graded functions instead of binary switches. A mid-band signal takes the bounded middle path, not a threshold coin-flip. Split children resolve a *named* blocker, not a retry of the parent's goal (REQ-4).
 - **Coupling by decision, not threshold.** Relevance retrieval surfaces *all* candidate branches; the agent commits to a direction and the edge records that decision as provenance. No auto-linker writes biased nodes into shared memory (REQ-5).
 - **Layer-batched execution.** Join-point children run as one batched LLM call (bounded by `BATCH_MAX_CHILDREN`); the giant full-history synthesis call is replaced by a synthesis built from compressed node records, with spoken-text normalization at the sentence-flush point (REQ-7/REQ-8).
 - **Outer loop as live judge.** `run_outer_loop` now runs at real session boundaries, feeding live observations so the agent learns in real time whether a memory signal is relevant/strong enough (REQ-16).
-- **DAG Node Execution Model.** Every action — tool call, MCP tool, vision/audio pipeline — is a *node* with a typed, routable outcome (terminal status + enumerated reason + artifact). Composite actions decompose into sub-graphs whose decision points DER can see and re-route; recovery is outcome-driven routing, not a hand-written `if` branch. Adoption is strangler-fig: undeclared legacy tools keep working untouched (REQ-1..REQ-9).
+- **DAG Node Execution Model.** Every action — tool call, MCP tool, vision/audio pipeline — is a *node* with a typed, routable outcome (terminal status + enumerated reason + artifact). Composite actions decompose into sub-graphs whose decision points the engine can see and re-route; recovery is outcome-driven routing, not a hand-written `if` branch. Adoption is strangler-fig: undeclared legacy tools keep working untouched (REQ-1..REQ-9).
 
 ### 🧩 Context Lifecycle (CLM) and the Workbench
 
 - **CLM** replaces the blind context cut with a live view over a record. A block leaves the model window only through a gate (`context_view.offload_decision`), leaves a one-line placeholder with its address, and returns byte for byte by reference (`recall_memory expand=<ref>`). One gauge (`context_gauge.py`) counts tokens; a router-cap drop the view did not make is a counted alarm.
-- **Record and events.** Long tool results are rows in `tool_results` (`conversations.db`, plain text on this machine). Each row names its turn and step (Workbench scripts and spills too). Budget: 200 rows per conversation and 4,000 in all; eval and dev conversations are evicted first. `OFFLOADED`, `RESTRETCHED` and `PREMATURE_EVICTION` go to `memory_events`. Model notes become pins with provenance; a dead-end ledger keeps failed actions in view.
-- **Workbench** (CLM-11) gives a DER node a persistent Python worker process per conversation (stdlib only, protocol v2). The planner writes a brief per step (outputs, check, approach, tools); the tool model writes the code; the harness runs the check; after the second failed check the Brain sends one repair skeleton. The step result is the outputs manifest.
+- **Record and events.** Long tool results are rows in `tool_results` (the chat store, plain text, local only). Each row names its turn and step (Workbench scripts and spills too). Budget: 200 rows per conversation and 4,000 in all; eval and dev conversations are evicted first. `OFFLOADED`, `RESTRETCHED` and `PREMATURE_EVICTION` go to `memory_events`. Model notes become pins with provenance; a dead-end ledger keeps failed actions in view.
+- **Workbench** (CLM-11) gives a node a persistent Python worker process per conversation (stdlib only, protocol v2). The planner writes a brief per step (outputs, check, approach, tools); the tool model writes the code; the harness runs the check; after the second failed check the Brain sends one repair skeleton. The step result is the outputs manifest.
 - **Two-call mode** (`IRIS_WB_TWO_CALL=1`): the model sends two `run_python` calls in ONE response - the first gathers data into variables, the second computes the outputs from them - and both run in the same worker namespace: one model call, two executions.
 - **Safety.** 512 MB per worker, 768 MB total (private bytes on Windows), at most 2 live workers, idle end after 10 min, declared outputs spilled to the record, personal mode refuses the IRIS repo, and a personal-mode worker and its children run at Windows Low integrity.
-- **Flags:** `IRIS_CLM_OFFLOAD=1` (view hooks in the node loop; **on** in `.env` since 2026-11-23 on the owner's word, TG-2 still open; code default off), `IRIS_WORKBENCH=1` and `IRIS_WB_TWO_CALL=1` (code mode and two-call mode; **on** in `.env` since the Round 6 browser cloud gate; code default off), `IRIS_CLM_BASELINE=1` + `IRIS_CLM_DUMP_DIR` (per-call measurement rows). Measure with `evals/wb_ab_analysis.py` (A/B) and `evals/wb_gate_driver.py` (gates).
-- **Status (2026-11-22):** the CLM spec is **not finished**. Built and guarded: Waves 0-6. TG-2 measured on the cloud model (off 23/28, on 24/28) and on a small local model (5/14 both arms, offload changes no pass); still to run: the direct-path offload live, the Round 6 full gate and its small-model arm, TG-4, TG-5. Coding A/B with the Workbench on (c08/c10/c12/c15 x3): 24/24 pass. The verdicts are in `specs/clm-memory/tasks.md` (status block) and in the CLM and Workbench docs, section 3.
+- **Flags, all on in `.env.example`:** `IRIS_WORKBENCH=1` (code mode), `IRIS_WB_TWO_CALL=1` (two-call mode) and `IRIS_CLM_OFFLOAD=1` (context set-aside and re-stretch). `0` turns one off. `IRIS_CLM_BASELINE=1` + `IRIS_CLM_DUMP_DIR` write per-call measurement rows. Measure with `evals/wb_ab_analysis.py` (A/B) and `evals/wb_gate_driver.py` (gates).
+- **The context pill** in the chat footer is a rubber band hung on the model switcher: it stretches as a step reads and gives way when results are set aside. Its window, and the one beside each model in the switcher, is that model's own: the provider's list first, then a public catalog by exact model id, capped by what the account is served.
+- **Status (2026-11-23):** the CLM spec is **not finished**. Built and guarded: Waves 0-6. TG-2 measured on the cloud model (off 23/28, on 24/28) and on a small local model (5/14 both arms, offload changes no pass); still to run: the direct-path offload live, the Round 6 full gate and its small-model arm, TG-4, TG-5. Coding A/B with the Workbench on (c08/c10/c12/c15 x3): 24/24 pass. The verdicts are in `specs/clm-memory/tasks.md` (status block) and in the CLM and Workbench docs, section 3.
 - Architecture and blueprint: **[`docs/architecture/CLM.md`](./docs/architecture/CLM.md)** (context lifecycle) and **[`docs/architecture/WORKBENCH.md`](./docs/architecture/WORKBENCH.md)** (the Workbench); specs in `specs/clm-memory/`.
 
 ### 👁 Vision Layer (LFM2.5-VL)
@@ -279,29 +276,13 @@ cd IRISVOICE
 
 ### 2. Model Directory Setup (Unified)
 
-All GGUF models (brain + vision) live in one canonical directory:
+Put your GGUF models (brain and vision) in one directory and name it in `.env`:
 
-**WSL/Linux:**
-```bash
-# Create symlink to your Windows LM Studio models folder
-mkdir -p ~/.lmstudio
-ln -s /mnt/c/Users/midas/.lmstudio/models ~/.lmstudio/models
+```env
+IRIS_MODELS_DIR=/path/to/your/models
 ```
 
-**Expected structure:**
-```
-~/.lmstudio/models/
-├── LiquidAI/
-│   ├── LFM2.5-VL-3B-GGUF/           # primary vision model (upgraded 2026-08-12)
-│   │   ├── LFM2.5-VL-3B-*.gguf       # vision model weights
-│   │   └── mmproj-LFM2.5-VL-*.gguf   # vision projector
-│   └── LFM2.5-VL-450M-GGUF/          # fallback vision model (optional)
-│       ├── LFM2.5-VL-450M-*.gguf     # fallback vision model weights
-│       └── mmproj-LFM2.5-VL-*.gguf   # fallback vision projector
-└── (your brain models — any GGUF file...)
-```
-
-**Vision auto-start:** The backend detects LFM2.5-VL in `~/.lmstudio/models` and spawns
+**Vision auto-start:** The backend finds the vision model in that directory and spawns
 `llama-server` on port 8081 automatically on first vision tool use. No manual startup needed.
 
 ```bash
@@ -397,12 +378,7 @@ pnpm install
 
 > **Startup commands are unchanged.** The C++ core build (Step 3) is a one-time prerequisite — once `iris_core.dll` exists in `backend/native/`, you start the system exactly as before.
 
-**Option 1: Using the startup script (Windows)**
-```bash
-start-iris.bat
-```
-
-**Option 2: Manual startup**
+**Option 1: Manual startup**
 
 Terminal 1 (Backend):
 ```bash
@@ -419,7 +395,7 @@ Or for hot-reload during active frontend development:
 npm run dev              # next dev (heavier, webpack watch mode)
 ```
 
-**Option 3: Tauri Desktop App**
+**Option 2: Tauri Desktop App**
 ```bash
 npm run dev:tauri
 ```
@@ -427,24 +403,24 @@ npm run dev:tauri
 ### 5. Access the Application
 
 - **Web**: http://localhost:3000
-- **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
-- **WebSocket**: ws://localhost:8000/ws/{client_id}
+- **Backend API**: http://localhost:8090
+- **API Docs**: http://localhost:8090/docs
+- **WebSocket**: ws://localhost:8090/ws/{client_id}
 
 ## 💻 System Requirements
 
 ### Minimum Requirements
-- **CPU**: 4-core processor (Intel i5 or AMD Ryzen 5)
+- **CPU**: 4-core processor
 - **RAM**: 16 GB
 - **Storage**: 20 GB free space
 - **GPU**: Optional (NVIDIA GPU with CUDA recommended)
 - **Audio**: Microphone and speakers/headphones
 
 ### Recommended Requirements
-- **CPU**: 8-core processor (Intel i7/i9 or AMD Ryzen 7/9)
+- **CPU**: 8-core processor
 - **RAM**: 32 GB or more
 - **Storage**: 50 GB free space (SSD recommended)
-- **GPU**: NVIDIA GPU with 8GB+ VRAM (RTX 3060 or better)
+- **GPU**: NVIDIA GPU with 8GB+ VRAM
 - **Audio**: High-quality USB microphone
 
 ### Software Requirements
@@ -476,9 +452,7 @@ npm run dev:tauri
 4. **Provide a voice reference for cloning** (optional — skip to use built-in voices)
    ```bash
    # Record or export a 6–30 second WAV of the voice you want IRIS to use
-   # Save it as data/TOMV2.wav (or data/voice_clone_ref.wav)
-   # See data/VOICE_CLONE_README.md for full guidance
-   # This file is gitignored — you must supply your own
+   # and choose it in Settings; supply your own recording
    ```
 
 4. **Configure Environment**
@@ -487,7 +461,7 @@ npm run dev:tauri
    ```env
    # Backend Configuration
    BACKEND_HOST=localhost
-   BACKEND_PORT=8000
+   BACKEND_PORT=8090
 
    # Model Configuration
    MODEL_PATH=./models
@@ -505,7 +479,6 @@ npm run dev:tauri
 
 6. **Verify Installation**
    ```bash
-   python check_phase1_dependencies.py
    python check_devices.py
    ```
 
@@ -624,10 +597,7 @@ npm run dev:tauri
 | **Remote API** | Reasoning & conversation | — | OpenAI-compatible | Any provider URL + API key; configured in Settings |
 
 **Model Directory (Unified):**
-All models live in one canonical location:
-- **WSL/Linux**: `~/.lmstudio/models/` (symlinked to `C:\Users\midas\.lmstudio\models` on WSL)
-- **Windows**: `C:\Users\midas\.lmstudio\models\`
-- Both brain (port 8082) and vision (port 8081) scan from this directory.
+All models live in the directory named by `IRIS_MODELS_DIR`; brain and vision both scan it.
 
 **Communication Flow:**
 1. User input → Provider selected in Settings (local GGUF / remote API / VPS)
@@ -666,7 +636,7 @@ The C++ Hybrid Core (`iris_core.dll`) moves the entire performance-critical memo
 
 - **ReDoS Elimination**: Google RE2 guarantees **O(n) linear-time matching** regardless of input size or pattern complexity. No backtracking, no catastrophic backtracking, no unbounded quantifiers. Patterns are bounded: `[A-Za-z0-9]{16,64}` instead of `.*`.
 - **Async Single-Writer SQLite — No More `database is locked`**: All writes serialize through one dedicated C++ thread with a `std::promise/future` queue. Concurrent multi-agent writes queue asynchronously and return immediately. The read pool maintains 4 pre-keyed SQLCipher connections — no repeated PBKDF2 key derivation on every query.
-- **Caducean Attention Governor — Compiled Physics**: Models the agent's attention as a particle in a Duffing potential energy landscape. State vector (x, y, xi, u) with restoring force `F(u) = a·u − b·u³`. EXPAND (exploration), COMPRESS (verification), and CONTINUE (neutral) signals modulate the DER loop step prioritizer in `der_loop.py` at **11 million decisions per second**.
+- **Caducean Attention Governor — Compiled Physics**: Models the agent's attention as a particle in a Duffing potential energy landscape. State vector (x, y, xi, u) with restoring force `F(u) = a·u − b·u³`. EXPAND (exploration), COMPRESS (verification), and CONTINUE (neutral) signals modulate the step prioritizer at **11 million decisions per second**.
 - **EML v2 — Cognitive Governor**: `exp(x) − ln(y)` where x = edit/test drift and y = landmark coverage. Queried directly from SQLCipher via pooled WAL connections. High EML (≥1.50) relaxes Immortus drift tolerance to 0.50 and expands search depth to D≥5. Low EML (<1.00) tightens tolerance to 0.30 and locks depth to D=3.
 - **Zero-Trust In-Memory Sanitization**: Payloads are scrubbed in-memory using pre-compiled RE2 regex tables before hitting the SQLCipher disk. Thread-safe try/catch boundaries around every replace operation.
 - **Graceful Fallback — Zero Downtime**: If `iris_core.dll` fails to load, crashes, or is absent, the Python backend (`backend/gateway/iris_ffi.py`) transparently falls back to pure-Python SQLite + `PythonCaduceanFallbackState`. The agent continues operating with no configuration changes and no data loss.
@@ -705,43 +675,9 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cd backend && python -c "from gateway.iris_ffi import IrisCoreEngine; print('OK')"
 ```
 
-## ⚡ Domain 19 — Caducean DER Governor (Completed May 2026)
+## ⚡ Caducean Engine — the metabolic regulator
 
-A learned controller integration that closes the loop between Caducean attention dynamics, episodic memory, and the DER loop.
-
-### What was delivered
-
-| Component | File | Role |
-|-----------|------|------|
-| **CaduceanTrajectoryRecorder** | `backend/agent/caducean_trajectory.py` | Records every DER step's 4D state (x, y, xi, u) into SQLite |
-| **SkillSimulator** | `backend/agent/skill_simulator.py` | Fast heuristic pre-filter for AutoResearch variants (~12 ms for 1000 calls) |
-| **TrajectoryController** | `backend/agent/trajectory_controller.py` | Polynomial regression learned controller over Caducean state |
-| **DER Phase Governor** | `backend/agent/agent_kernel.py` | Reads ξ each DER cycle; modulates TrailingDirector (force in phase 4, suppress in phase 3) |
-| **recall_memory tool** | `backend/agent/tool_bridge.py` | EML-aware episodic retrieval with adaptive limit/score |
-| **C++ Simulator** | `src-tauri/src/iris_core/iris_core.cpp` | `simulate_trajectories_to_db()` — 500×50 random-walk trajectories into DB |
-
-### Architecture
-
-The DER loop now queries `ffi_caducean_get_xi(session_id)` at the start of each cycle. The angular phase ξ ∈ [0, 2π) is divided into four quadrants:
-
-| Phase | ξ range | Mode | TrailingDirector behaviour |
-|-------|---------|------|---------------------------|
-| 1 (Explore) | [0, π/2) | Open | Normal gap analysis every `TRAILING_GAP_MIN` steps |
-| 2 (Balance) | [π/2, π) | Cautious | Normal gap analysis |
-| 3 (Verify) | [π, 3π/2) | Strict | **Suppresses** adding new gap items — only executes existing plan |
-| 4 (Crystallize) | [3π/2, 2π) | Lock-in | **Forces** gap analysis regardless of step interval |
-
-The EML cognitive state (score, x-drift, y-drift) is also injected into the system prompt so the LLM can adapt its reasoning style dynamically.
-
-### AutoResearch Integration
-
-`AutoResearchRunner` now uses the learned `TrajectoryController` to decide when to fire research cycles, and `SkillSimulator` to pre-filter variant proposals before expensive evaluation. This reduces wasted cycles when EML indicates the system is in a high-drift (exploration) phase.
-
-## ⚡ Domain 19 v2 — Mitochondria to Mycelium (Completed June 2026)
-
-The original Domain 19 wired the Caducean Engine to the DER loop and episodic memory. **v2** goes further: makes the engine the *mitochondria* (energy/metabolic regulator) of the entire Mycelium memory system. Every layer that touches memory — decay, retrieval, voice, coupling — now reads Caducean state.
-
-### Architecture (the v2 wiring)
+Every layer that touches memory - decay, retrieval, voice, coupling - reads the engine's state.
 
 ```
                   ┌──────────────────────────────┐
@@ -754,10 +690,10 @@ The original Domain 19 wired the Caducean Engine to the DER loop and episodic me
           ┌──────────────────────┼──────────────────────┐
           ▼                      ▼                      ▼
    ┌──────────────┐       ┌──────────────┐       ┌──────────────┐
-   │ Mycelium     │       │ Resonance    │       │ DER Loop +   │
+   │ Mycelium     │       │ Resonance    │       │ Execution +  │
    │ Edge Decay   │       │ RAG          │       │ Voice        │
-   │ (u → 0.5/   │       │ (u → 0.5/   │       │ (target_u →  │
-   │  1.0/1.8)   │       │  1.8)        │       │  speak/list) │
+   │ (u → 0.5/    │       │ (u → 0.5/    │       │ (target_u →  │
+   │  1.0/1.8)    │       │  1.8)        │       │  speak/list) │
    └──────────────┘       └──────────────┘       └──────────────┘
           │                      │                      │
           └──────────────────────┼──────────────────────┘
@@ -768,133 +704,29 @@ The original Domain 19 wired the Caducean Engine to the DER loop and episodic me
                   └──────────────────────────────┘
 ```
 
-### What's new in v2 (vs original Domain 19)
+| Capability | What it does |
+|-----------|--------------|
+| State exposed | `DirectionSignal {target_u, force_magnitude, u_current, phase, balance}` |
+| Winding numbers | (l, m) ∈ ℤ², c_eff = (1/√2)√(l²+m²) |
+| EML calculation | **O(1)** from SessionState accumulators |
+| Mycelium decay and resonance | Caducean-modulated: u>0 → 0.5×, u<0 → 1.8× |
+| Safety net | Adaptive, via phase acceleration; `TOPO_VIOLATION` (return code 3) halts the run |
+| Voice pipeline | `ConversationKernel`: phase-driven turn-taking, TTS chunk-sized by force |
+| Kill switch | `IRIS_CADUCEAN_V2_DISABLED=1` |
 
-| Capability | v1 (Domain 19) | v2 (Domain 19 v2) |
-|-----------|---------------|-------------------|
-| State exposed | ξ, u (read-only) | `DirectionSignal {target_u, force_magnitude, u_current, phase, balance}` |
-| Winding numbers | (1, 1) only | (l, m) ∈ ℤ², c_eff = (1/√2)√(l²+m²) |
-| EML calculation | SQL-based (slow) | **O(1)** from SessionState accumulators |
-| Mycelium decay | Constant rate | Caducean-modulated: u>0 → 0.5×, u<0 → 1.8× |
-| Mycelium resonance | Constant threshold | Caducean-modulated: u>0 → 0.5× (creativity), u<0 → 1.8× (focus) |
-| DER safety net | Static (58% FP rate) | **Adaptive** via phase acceleration (0% FP) |
-| TOPO_VIOLATION | Return code 0/1/2 | **Return code 3** added — halts DER loop |
-| Multi-session | None | **CoupledTrajectoryRegistry** with nucleus/barrier differentiation |
-| Parameter tuning | None | **TrajectoryController.tune_dffing_params()** (a, b, s clamped) |
-| Voice pipeline | Heuristic turn-taking | **ConversationKernel** — phase-driven, TTS chunk-sized by force |
-| Kill switch | None | `IRIS_CADUCEAN_V2_DISABLED=1` env var |
+- **[Architecture blueprint](./docs/CADUCEAN_ARCHITECTURE.md)**: the foundational document - the one idea, the four-scale recursive operator, the scheduling/cognition boundary and why it is contract-locked.
+- **[Technical overview](./docs/CADUCEAN_TECHNICAL_OVERVIEW.md)**: field theory to validated runtime; section 13 is the as-built audit.
+- **[Memory coupling](./docs/learned-scoreboard-vs-live-state.md)** and **[phase-manager concept](./docs/caducean-phase-manager-trig-scheduling.md)**: design notes.
 
-### v2 Files Added/Modified
-
-| File | Change | Lines |
-|------|--------|-------|
-| `src-tauri/src/iris_core/caducean.{h,cpp}` | Winding numbers, phase history, DirectionSignal, adaptive safety net | +200/-50 |
-| `src-tauri/src/iris_core/iris_core.{h,cpp}` | 5 new FFI exports, O(1) EML path | +130 |
-| `backend/gateway/iris_ffi.py` | ctypes bindings, fallback parity, 5 new helpers | +520/-56 |
-| `backend/memory/interface.py` | `is_caducean_engine_live()`, `mycelium_record_anomaly()`, `get_caducean_state()` | +50 |
-| `backend/memory/mycelium/interface.py` | `record_anomaly()`, `get_latest_u()` | +50 |
-| `backend/memory/mycelium/scorer.py` | `apply_decay(session_id=)` — Caducean-modulated | +20 |
-| `backend/memory/mycelium/resonance.py` | `augment_retrieval()` — Caducean-modulated | +20 |
-| `backend/agent/caducean_trajectory.py` | Added `recommendation` column | +30 |
-| `backend/agent/agent_kernel.py` | Computes balance, persists with new fields, handles TOPO_VIOLATION | +50 |
-| `backend/agent/der_loop.py` | Handles rec==3 by raising TopologyViolationException | +10 |
-| `backend/agent/trajectory_controller.py` | `tune_dffing_params()` with explicit clamp ranges | +60 |
-| `backend/agent/coupled_registry.py` (NEW) | Multi-session coupling with rational/irrational detection | +270 |
-| `backend/agent/exceptions.py` | TopologyViolationException (code 5010), CouplingViolationException (5011) | +60 |
-| `backend/agent/conversation_kernel.py` (NEW) | Thin wrapper on existing voice pipeline | +270 |
-| `backend/iris_gateway.py` | 3 minimal touches (instantiate kernel, replace TTS constants, halt check) | +40 |
-| `backend/main.py` | 4 FastAPI endpoints + lifespan wiring | +135 |
-| `src-tauri/src/commands/caducean.rs` (NEW) | 4 Tauri commands proxying to FastAPI | +190 |
-| `src-tauri/src/commands/mod.rs` (NEW) | Module declaration | +5 |
-| `src-tauri/src/main.rs` | Register commands in `invoke_handler!` | +5 |
-| `app/hooks/useCaducean.ts` (NEW) | React hook (500ms polling) | +180 |
-| `app/components/CaduceanDebugPanel.tsx` (NEW) | Dev-only floating panel | +280 |
-
-**Total: 18 files new, 12 files modified, 79 new tests passing via pytest.**
-
-### Pre-existing Bugs Fixed in v2 Branch
-
-Three pre-existing bugs were discovered and fixed (see commit `ad1a50d5`):
-
-1. **`conftest.py`** — Patched missing `_DB_PATH` attribute. **Fix:** rewrote as no-op (in-memory store doesn't need patching). All pytest collection now works.
-2. **Missing C++ FFI functions** — `simulate_trajectories_to_db` and `immortus_chain_keep_latest` were referenced by Python but not implemented in the C++ DLL. **Fix:** added C++ implementations; log noise gone.
-3. **`conversation_store` was in-memory only** — Domain 6.4 "Chat history persistence" was claimed DONE but conversations were lost on restart. **Fix:** rewrote with SQLite (WAL mode, FK CASCADE, in-memory hot cache). 12 chat_persistence tests now pass.
-
-### Documentation
-
-**Start here:**
-
-- **Architecture blueprint:** [docs/CADUCEAN_ARCHITECTURE.md](./docs/CADUCEAN_ARCHITECTURE.md) — the foundational document. The one idea, the four-scale recursive operator, the scheduling/cognition boundary and why it is contract-locked, the three physics↔memory couplings, and a per-component **PROVEN / FLAG-OFF / UNEXERCISED** status table. Every behavioral claim cites `file:line` or a harness assertion.
-- **Technical overview:** [docs/CADUCEAN_TECHNICAL_OVERVIEW.md](./docs/CADUCEAN_TECHNICAL_OVERVIEW.md) — field theory → validated runtime. §1–§10 are the theory and experimental record; **§13 is the as-built audit** (findings F1–F7 with evidence).
-- **Spec reconciliation:** [specs/CADUCEAN_SPEC_RECONCILIATION.md](./specs/CADUCEAN_SPEC_RECONCILIATION.md) — how the three Caducean specs interlock, conflicts found and resolved, and the recommended execution order.
-
-**Design notes:**
-
-- **Memory coupling:** [docs/learned-scoreboard-vs-live-state.md](./docs/learned-scoreboard-vs-live-state.md) — why scheduling may read the learned scoreboard but not live reasoning state, and the risks of closing that loop.
-- **Phase-manager concept:** [docs/caducean-phase-manager-trig-scheduling.md](./docs/caducean-phase-manager-trig-scheduling.md) — the original design essay. Read for rationale; the blueprint above is authoritative on as-built behavior.
-
-**Historical (v2 era, superseded for as-built purposes):**
-
-- [docs/cad_v2_architecture.md](./docs/cad_v2_architecture.md) — v2 architecture with math
-- [docs/plans/Cadv2plan.md](./docs/plans/Cadv2plan.md) — 11 components, 7 phases
-- [docs/plans/cad_v2_plan_review.md](./docs/plans/cad_v2_plan_review.md) — 15 corrections found via cold review
-- [app/PHASE_6_INTEGRATION_NOTES.md](./app/PHASE_6_INTEGRATION_NOTES.md) — frontend wiring notes
-
-### Test Coverage
-
-The suite is layered — bugs in this system live in the **seams** between components, so unit
-tests alone are not sufficient:
-
-```
-backend/tests/unit/         244 tests   pure logic, no I/O
-backend/tests/contract/     258 tests   boundary pins (CT-1..CT-10, CU-1..CU-8)
-backend/tests/behavioral/   196 tests   full-loop drives, emergent properties
-```
-
-**Standing CDD harnesses** replay recorded trajectories through the full stack and assert
-contracts *and* behavior on every run. Run these before changing anything in the Caducean layer —
-a green unit suite has twice been compatible with a completely inert mechanism:
+The suite is layered (unit, contract, behavioral), because the bugs of this system live in the **seams** between
+components. The standing harnesses replay recorded trajectories through the full stack:
 
 ```bash
 python scripts/validate_phase_scheduler.py     # gate, spacing, order-independence
-python scripts/validate_caducean_kernels.py    # 8 assertions: mean-reversion, windings, contracts
-python scripts/validate_der_integrity.py       # DER loop integrity
+python scripts/validate_caducean_kernels.py    # mean-reversion, windings, contracts
+python scripts/validate_der_integrity.py       # execution integrity
 python scripts/validate_der_tool_resolution.py # tool resolution
 ```
-
-Legacy per-suite invocation (Caducean v2 era):
-
-```bash
-# All Caducean v2 + Domain 18 + Domain 19 + pre-existing test suites
-python -m pytest \
-  backend/tests/test_iris_core_smoke.py \
-  backend/tests/test_iris_core_simulate.py \
-  backend/tests/test_chat_persistence.py \
-  backend/tests/test_der_loop.py \
-  backend/tests/test_trailing_director.py \
-  backend/tests/test_caducean_trajectory.py \
-  backend/tests/test_skill_simulator.py \
-  backend/tests/test_trajectory_controller.py \
-  backend/tests/test_autoresearch_integration.py \
-  backend/tests/test_der_caducean_gaps.py \
-  backend/tests/test_caducean_ffi_contract.py \
-  backend/tests/test_caducean_v2_integration.py \
-  backend/tests/test_coupled_registry.py \
-  backend/tests/test_caducean_api_contract.py \
-  backend/tests/test_conversation_kernel.py -v
-```
-
-**Caducean v2 (Domain 19) added the following test suites:**
-- `test_caducean_ffi_contract.py` — 21 FFI struct + argtype + return code tests
-- `test_caducean_v2_integration.py` — 8 Mycelium modulation + recommendation column tests
-- `test_coupled_registry.py` — 8 multi-session coupling + role differentiation tests
-- `test_caducean_api_contract.py` — 6 API contract tests (frozen JSON schema)
-- `test_conversation_kernel.py` — 12 voice pipeline + observer callback tests
-
-**Pre-existing bugs fixed in the v2 branch (unblocked pytest):**
-- `test_iris_core_smoke.py` (9 tests) — previously broken by conftest.py bug
-- `test_iris_core_simulate.py` (2 tests) — previously broken by missing C++ FFI
-- `test_chat_persistence.py` (12 tests) — previously broken; conversation persistence now actually works
 
 ## ⚙️ Configuration
 
@@ -925,7 +757,7 @@ OPENAI_API_KEY=your_api_key_here
 OPENAI_BASE_URL=https://api.opencode.ai/zen/go/v1
 
 # Models
-IRIS_MODELS_DIR=~/.lmstudio/models
+IRIS_MODELS_DIR=/path/to/your/models
 DEVICE=cuda  # or 'cpu'
 
 # Audio
@@ -978,9 +810,7 @@ communication:
 
 ### Voice Configuration
 
-Wake word is a custom-trained Violawake "Hey Iris" model (ONNX head + OpenWakeWord backbone, threshold 0.70, armed at backend startup — no key needed):
-- `data/hey iris_237_1788045452.onnx` - Custom "hey iris" wake word
-- `models/wake_words/hey-iris_en_windows_v4_0_0.ppn` - legacy Porcupine file, not loaded
+Wake word is a custom-trained Violawake "Hey Iris" model (ONNX head + OpenWakeWord backbone, threshold 0.70, armed at backend startup — no key needed).
 
 Supported wake phrase:
 - "hey iris" (custom)
@@ -1004,8 +834,7 @@ MTP is auto-detected and enabled for compatible GGUF models. No UI toggles neede
 
 **Hardware requirements:**
 - MTP models are typically 8B-27B+ parameters. At Q3/Q4 quantization, plan for **~1.5× the GGUF file size in VRAM** (weights + KV cache + overhead).
-- Example: `Qwopus3.6-27B-v2-MTP-Q3_K_S` (12.2 GB file) needs **~15-16 GB VRAM/RAM** at 32k context.
-- For 8 GB GPUs, use a **smaller MTP model** (8B-14B) or reduce `n_ctx` to 4096 and use partial CPU offload.
+- On a smaller GPU, use a **smaller MTP model** (8B-14B) or reduce `n_ctx` to 4096 and use partial CPU offload.
 
 **Acceptance rate logging:** After each generation batch, the backend logs:
 ```
@@ -1018,7 +847,7 @@ Higher acceptance = better speedup. Typical range: 50-80%.
 **WebSocket URL**: Configured in `hooks/useIRISWebSocket.ts`
 
 ```typescript
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8090/ws";
 ```
 
 ## 🛠️ Development
@@ -1094,10 +923,6 @@ IRISVOICE/
 │       ├── event_ingestor.h / .cpp        # UUID gen + async queue + spill buffer
 │       ├── iris_core_bench.cpp  # Microbenchmark harness (Caducean, RE2, ingestion, EML, RSS)
 │       └── CMakeLists.txt         # CMake 3.15 — FetchContent RE2, SQLCipher
-├── models/              # AI model files (symlinked to ~/.lmstudio/models)
-│   ├── LFM2.5-VL-3B/           # primary vision model (optional)
-│   ├── LFM2.5-VL-450M/         # fallback vision model (optional)
-│   └── wake_words/
 ├── tests/               # Test suites
 │   ├── e2e/             # Playwright E2E tests (voice_to_chat, dedup, tts_word)
 │   ├── integration/     # Integration tests
@@ -1116,7 +941,7 @@ IRISVOICE/
 
 **Backend with hot reload:**
 ```bash
-uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn backend.main:app --reload --host 0.0.0.0 --port 8090
 ```
 
 **Frontend with hot reload:**
@@ -1204,7 +1029,7 @@ npm test -- --coverage
 
 ### Mycelium Layer — Architecture (v1.7)
 
-The Mycelium layer is IRIS's coordinate-graph memory system. It compresses episodic events into a navigable semantic map that feeds every DER loop iteration.
+The Mycelium layer is IRIS's coordinate-graph memory system. It compresses episodic events into a navigable semantic map that feeds every step.
 
 **6 memory layers:**
 
@@ -1218,12 +1043,12 @@ The Mycelium layer is IRIS's coordinate-graph memory system. It compresses episo
 | 6. Landmark bridges | Cross-project / cross-instance equivalence map | Survives instance migrations |
 
 **PiNs — Primordial Information Nodes:**
-Named after mycological primordia (first growth points of a fungal network). A PiN anchors any knowledge artifact into the coordinate graph so it surfaces in the DER context package automatically.
+Named after mycological primordia (first growth points of a fungal network). A PiN anchors any knowledge artifact into the coordinate graph so it surfaces in the context package automatically.
 
 PiNs are managed programmatically via the `backend/memory/mycelium/` API — add knowledge artifacts, search the graph, and bridge landmarks across projects.
 
 **MCP storage integration (Domain 12):**
-PiNs can be backed by external stores — Google Drive, Discord, Notion, GitHub — via the `backend/integrations/models.py` OAuthConfig layer. A PiN written locally can mirror to a Drive folder; a PiN read from Discord surfaces in the next DER context package.
+PiNs can be backed by external stores — Google Drive, Discord, Notion, GitHub — via the `backend/integrations/models.py` OAuthConfig layer. A PiN written locally can mirror to a Drive folder; a PiN read from Discord surfaces in the next context package.
 
 ### Mycelium Layer — Test Coverage
 
@@ -1284,58 +1109,34 @@ The Mycelium coordinate-graph memory layer (`backend/memory/mycelium/`) has a co
 
 ## 📚 Documentation
 
-### User Guides
-
-- **[Inference Mode Selection Guide](./docs/guides/USER_GUIDE_INFERENCE_MODE.md)**: Choose between Local, VPS, or OpenAI inference
-- **[Dual-LLM Model Selection Guide](./docs/guides/USER_GUIDE_MODEL_SELECTION.md)**: Configure reasoning and tool execution models
-- **[Wake Word Configuration Guide](./docs/guides/USER_GUIDE_WAKE_WORDS.md)**: Set up custom wake words
-- **[Cleanup System Guide](./docs/guides/USER_GUIDE_CLEANUP.md)**: Analyze and remove unused files
-
 ### Developer Guides
 
-- **[Lazy Loading Architecture](./docs/guides/DEVELOPER_LAZY_LOADING.md)**: Model loading/unloading implementation
-- **[Model-Agnostic Architecture](./docs/guides/DEVELOPER_MODEL_AGNOSTIC.md)**: Agent capabilities across all inference modes
 - **[Recall-as-Cognition Developer Guide](./docs/guides/DEVELOPER_RECALL_GUIDE.md)**: Extending recall ops, debugging, episode feedback loop, critical fix rationale, and skill genesis lifecycle
 - **[PiN Developer Guide](./docs/guides/DEVELOPER_PIN_GUIDE.md)**: Creating pins from agent or user, auto-checkpoint config, search weight tuning, debugging, wiki graph patterns
 
 ### Architecture Documentation
 
-- **[System Overview](./docs/architecture/SYSTEM_OVERVIEW.md)**: Complete system architecture
-- **[Agent Architecture](./docs/architecture/AGENT_ARCHITECTURE.md)**: Dual-LLM system design
-- **[UI Architecture](./docs/architecture/UI_ARCHITECTURE.md)**: Frontend component structure
-- **[DER-DAG](./docs/architecture/DER_DAG.md)**: **the authoritative map of the execution model** — turn entry and routing, planning (goals, never tools), the scheduler, node execution, finalize (verify · record · coverage · score), turn end, the data objects (`QueueItem`, `NodeRecord`, `NodeContext`, `ToolResultEnvelope`), and an honest health section of what is solid vs still open
+- **[DAG execution](./docs/architecture/DER_DAG.md)**: **the authoritative map of the execution model** — turn entry and routing, planning (goals, never tools), the scheduler, node execution, finalize (verify · record · coverage · score), turn end, the data objects (`QueueItem`, `NodeRecord`, `NodeContext`, `ToolResultEnvelope`), and an honest health section of what is solid vs still open
 - **[CLM - Context Lifecycle](./docs/architecture/CLM.md)**: the live context view - offload, re-stretch, gauge, pins, ledger, flags, guards
-- **[The Workbench](./docs/architecture/WORKBENCH.md)**: the persistent Python work surface of DER nodes - protocol, two-model loop, sh(), safety and confinement, flags, measurement
+- **[The Workbench](./docs/architecture/WORKBENCH.md)**: the persistent Python work surface of the nodes - protocol, two-model loop, sh(), safety and confinement, flags, measurement
 - **[Oracle — Decision Engine](./docs/architecture/oracle.md)**: the CPU-only calibrated scorer — jobs and their routing, the two-key enforcement chokepoint, the hardened bar, calibration (`fit_oracle_calibration.py`), the phase-domain concurrency model, and every measured number with its provenance
-- **[DER Loop + Mycelium v1.7](./docs/architecture/DER_LOOP_MYCELIUM.md)**: *(historical)* the pre-DAG DER loop spec — token budgets, trailing director, Pacman lifecycle, PiN injection, landmark bridges. Superseded by DER-DAG above; the trailing director was deleted 2026-08-06.
-- **[Mycelium Kyudo Layer Guide](./docs/architecture/MYCELIUM_KYUDO_LAYER_GUIDE.md)**: End-user guide to the coordinate-graph memory system, PiNs, and cross-project bridging
-- **[Memory cortex plan: live context, strand contents, galaxy](./docs/Design/Memory-Cortex/LIVE-CONTEXT-AND-GALAXY-PLAN.md)**: the final design of the next Memory surface (owner decisions 2026-11-22) and its build waves W0-W4 (W0-W1 built)
 - **[Memory interface + foundation](./docs/Design/Memory-Cortex/MEMORY-INTERFACE.md)**: the one design document of IRIS's memory — Part I the Memory surface (views, grammar, paths, live grammar, corrections, data path, budgets), Part II the memory foundation (growth/decay law, Kyudo self-cleaning, sectors and spaces, the integrity pass)
 - **[Recall-as-Cognition](./docs/architecture/RECALL_AS_COGNITION.md)**: Two-phase memory retrieval protocol — op grammar, iterative recall, streaming filter, episode feedback loop, skill genesis, and performance model
 - **[PiN System](./docs/architecture/PIN_SYSTEM.md)**: Primordial Information Nodes — pin data model, recall ops (`pin="title"`, `pin query="text"`, `pin file="X.md"`, `pin tags="a,b"`), auto-checkpoint heuristic, wiki link graph, tunable search weights
-- **[Model-Agnostic Architecture Verification](./docs/architecture/MODEL_AGNOSTIC_ARCHITECTURE_VERIFICATION.md)**: Verification that agent capabilities remain identical across all inference backends
 
 ### Integration Documentation
 
 - **[Violawake Wake Word](./docs/architecture/audio-pipeline.md)**: Wake word detection implementation
-- **[Wake Word UI Integration](./docs/integrations/WAKE_WORD_UI_INTEGRATION_SUMMARY.md)**: Wake word discovery and UI wiring
-
-### Performance & Reference
-
-- **[Performance Optimization Summary](./docs/performance/PERFORMANCE_OPTIMIZATION_SUMMARY.md)**: Backend performance tuning — WebSocket batching, agent caching, TTS streaming
-- **[Benchmarks](./docs/reference/BENCHMARKS.md)**: Mycelium layer benchmark claims and validation setup
 
 ### Specifications
 
 - **[IRIS Mycelium Layer Spec v1.6](./specs/IRIS_Mycelium_Layer_Spec_v1.6.md)**: Coordinate-graph memory system specification
 - **[IRIS Swarm PRD v9](./specs/IRIS_Swarm_PRD_v9.md)**: Multi-agent swarm coordination product requirements
-- **[Agent Loop Design](./specs/AGENT_LOOP_DESIGN.md)**: DER loop upgrade specification
-- **[CLI Crawler Spec](./specs/CLI_CRAWLER_SPEC.md)**: Web crawler CLI toolkit specification
 
 ### API Endpoints
 
 **WebSocket:**
-- `ws://localhost:8000/ws/{client_id}?session_id={optional_session_id}`
+- `ws://localhost:8090/ws/{client_id}?session_id={optional_session_id}`
 
 **REST API:**
 - `GET /health` - Health check
@@ -1396,8 +1197,8 @@ python --version  # Should be 3.10+
 pip install -r requirements.txt --force-reinstall
 
 # Check port availability
-netstat -an | findstr 8000  # Windows
-lsof -i :8000  # macOS/Linux
+netstat -an | findstr 8090  # Windows
+lsof -i :8090  # macOS/Linux
 ```
 
 **Models not loading:**
@@ -1426,8 +1227,6 @@ nvidia-smi
 3. Ensure correct WebSocket URL
 4. Check browser console for errors
 
-For more detailed troubleshooting, see [TROUBLESHOOTING_GUIDE.md](./TROUBLESHOOTING_GUIDE.md) in the project root.
-
 ## 🤝 Contributing
 
 Contributions are welcome! Please follow these guidelines:
@@ -1454,12 +1253,11 @@ MIT License - see LICENSE file for details
 ## 📞 Support
 
 For issues and questions:
-- Check the [Troubleshooting Guide](./TROUBLESHOOTING_GUIDE.md)
-- Review the API docs at `http://localhost:8000/docs` when the backend is running
+- Review the API docs at `http://localhost:8090/docs` when the backend is running
 - Open an issue on GitHub
 
 ---
 
 **Version**: 5.1.0
-**Last Updated**: October 8, 2026
-**Status**: Production Ready ✅ (DER-DAG Execution Model + Oracle Decision Engine)
+**Last Updated**: November 23, 2026
+**Status**: Production Ready ✅ (DAG Execution Model + Oracle Decision Engine)
