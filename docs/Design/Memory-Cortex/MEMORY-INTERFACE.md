@@ -197,6 +197,9 @@ moments on the memory strand, claims are glyphs on stems; a failed task desyncs 
   stores references and lengths, never the words (a privacy rule of its writers); the detail is joined at read time from where the
   words are: the chat by turn id, the run, the claim, the document, the chain. Deleting a chat removes its words here too. No source,
   no detail. Moments that only repeat the line beside them (the reply spoken, a card drawn) are not listed again.
+- **What you are passing is one line** (owner, 2026-11-23): the label under the thread rail, no box. A mark you hover says
+  its own words there and gives the line back. "▤ the whole conversation" in the header's actions (or a click on the line)
+  opens the transcript; the corner lines stand above the rail.
 - **No invented text.** The corridor once made up a length per turn. A turn with no words now says why (`session.chat`): a test run of
   IRIS, a chat you deleted, no chat open, or not saved. A turn saves both sides (`ensure_user_message`).
 - **"Used a memory", not "helped"**, when nobody checked the step (§13 item 7).

@@ -114,6 +114,7 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #follow .dot{display:inline-block;width:5px;height:5px;border-radius:50%;margin-right:.7em;vertical-align:1px;border:1px solid var(--faint)}
 .iris-memory #follow .dot.on{background:var(--brand);border-color:var(--brand);box-shadow:0 0 6px var(--brand);animation:iris-mem-live 2.4s ease-in-out infinite}
 .iris-memory #crumb .when.pulse{animation:iris-mem-live 1.2s ease-in-out infinite}
+.iris-memory #crumb .tr{display:block;width:max-content;margin-top:6px;color:#cfe6f0;cursor:pointer;pointer-events:auto}.iris-memory #crumb .tr:hover{color:var(--white)}
 .iris-memory #crumb .chat{display:block;width:max-content;margin-top:6px;color:var(--brand);cursor:pointer;pointer-events:auto}.iris-memory #crumb .chat:hover{color:var(--white)}
 .iris-memory #crumb input.rename{display:block;margin-top:6px;width:min(320px,60vw);background:rgba(2,3,6,.7);color:var(--white);border:1px solid rgba(212,236,246,.3);border-radius:3px;font:inherit;padding:3px 6px;pointer-events:auto}
 .iris-memory #crumb{white-space:normal}
@@ -215,10 +216,13 @@ export const MEMORY_CSS = String.raw`
 .iris-memory #warp{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none}
 .iris-memory #flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
 .iris-memory /* thread rail: the session's neurons and tasks laid out in time; click one to travel there */
-#rail{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);width:min(680px,76vw);height:40px;pointer-events:auto;opacity:0;transition:opacity .4s}
-.iris-memory #rail.on{opacity:1}
+#rail{position:absolute;left:50%;bottom:52px;transform:translateX(-50%);width:min(680px,calc(100cqw - 56px));height:42px;pointer-events:none;opacity:0;transition:opacity .4s}
+.iris-memory #rail.on{opacity:1;pointer-events:auto}
 .iris-memory #rail svg{width:100%;height:28px;overflow:visible;display:block}
-.iris-memory #rail .rl{font-size:10px;color:#9fb8c6;text-align:center;height:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 0 4px #000}
+.iris-memory #rail .rl{font-size:11px;line-height:14px;color:#c6dae4;text-align:center;height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 0 4px #000,0 0 8px #000;cursor:pointer}
+.iris-memory #rail .rl:hover{color:#fff}
+/* the corner lines stand above the bar, never on it */
+.iris-memory:has(#rail.on) #ticker,.iris-memory:has(#rail.on) #follow,.iris-memory:has(#rail.on) #mine{transform:translateY(-42px)}.iris-memory:has(#rail.on) #ticker .line.old{display:none}
 .iris-memory #rail circle,.iris-memory #rail rect{cursor:pointer}
 .iris-memory #err{position:absolute;inset:0;display:none;align-items:center;justify-content:center;font-size:12px;color:var(--dim)}
 .iris-memory #lenses a{white-space:nowrap}

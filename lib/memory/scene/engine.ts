@@ -2041,27 +2041,21 @@ const BAND_MARGIN=.75;
 // full text (the chat's own read), wrapped and scrollable; IRIS's turns carry how full the context got (W2). It follows
 // the corridor (the turn you are passing is lit) and a click on a turn takes you there.
 const trEl=document.createElement('div');trEl.className='gtr';
-Object.assign(trEl.style,{position:'absolute',right:'10px',top:'64px',bottom:'120px',width:'min(320px,40%)',overflowY:'auto',pointerEvents:'auto',
+Object.assign(trEl.style,{position:'absolute',right:'10px',top:'64px',bottom:'136px',width:'min(320px,40%)',overflowY:'auto',overflowX:'hidden',overflowWrap:'anywhere',pointerEvents:'auto',
   background:'rgba(3,6,10,.86)',border:'1px solid rgba(127,232,255,.16)',borderRadius:'10px',padding:'10px 12px',font:'12px/1.45 system-ui,sans-serif',
   color:'#d8e6ee',display:'none',zIndex:6});
 host.appendChild(trEl);
-// the subtitle strip (owner, 2026-11-23: the transcript took too much of the corridor): only what you are passing
-const trStrip=document.createElement('div');trStrip.className='gtr-strip';
-Object.assign(trStrip.style,{position:'absolute',left:'50%',transform:'translateX(-50%)',bottom:'64px',width:'min(560px,86%)',pointerEvents:'auto',
-  background:'rgba(0,0,0,.72)',border:'1px solid rgba(127,232,255,.14)',borderRadius:'9px',padding:'6px 10px',font:'12px/1.45 system-ui,sans-serif',
-  color:'#e4eef3',display:'none',zIndex:6});
-trStrip.innerHTML=`<div class="cur" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden"></div>`+
-  `<div style="margin-top:4px;text-align:right"><button data-tr="open" style="background:none;border:1px solid rgba(127,232,255,.3);color:#bfe9f5;border-radius:6px;padding:1px 8px;font:inherit;font-size:11px;cursor:pointer">▤ the whole conversation</button></div>`;
-host.appendChild(trStrip);
-const trPanel=on=>{trEl.style.display=on?'block':'none';trStrip.querySelector('[data-tr="open"]').textContent=on?'▤ hide the conversation':'▤ the whole conversation';if(on)trOn=-1};
-trStrip.addEventListener('click',e=>{const b=e.target.closest('[data-tr]');if(!b)return;e.stopPropagation();trPanel(trEl.style.display==='none')});
-let trItems=[],trOn=-1,trUserScroll=0;
+// what you are passing is ONE line: the label of the thread rail (owner, 2026-11-23: the subtitle box covered the bar it sat
+// on). The whole conversation opens from the header's actions, or from that line.
+const trPanel=on=>{trEl.style.display=on?'block':'none';if(on)trOn=-1;crumbKey='';updateCrumb()};
+const trToggle=()=>trPanel(trEl.style.display==='none');
+let trItems=[],trCaps=[],trOn=-1,trUserScroll=0;
 trEl.addEventListener('wheel',e=>{e.stopPropagation();trUserScroll=performance.now()},{passive:true});
 trEl.addEventListener('click',e=>{if(e.target.closest('[data-trx]')){e.stopPropagation();trPanel(false);return}const it=e.target.closest('[data-tu]');if(!it||!tunnel)return;e.stopPropagation();cam.tpT=Math.max(0,+it.dataset.tu-.02);cam.idle=-9});
 const tsOf=v=>typeof v==='number'?v:(Date.parse(v)/1000||0);
 // moments that only repeat the line beside them (the reply spoken, a card drawn, the same goal and answer): not listed again
 function transcriptOpen(T,s){
-  trEl.style.display='none';trStrip.style.display='block';trStrip.querySelector('.cur').innerHTML='';trUserScroll=0;
+  trEl.style.display='none';trUserScroll=0;
   // the story, even when the chat itself is not kept (an evaluation run): the goal, what IRIS did (its steps), then
   // the messages and the memory moments in time order
   const eps=(s.episodes||[]).map(id=>M.epById.get(id)).filter(Boolean),did=eps.length?stepsHTML(eps,s.id,6):'';
@@ -2073,8 +2067,10 @@ function transcriptOpen(T,s){
     const rows=(full||msgItems.map(n=>({role:n.m.role==='user'?'user':'assistant',text:n.m.text||'',ts:n.m.ts,turn:n.m.turn,cut:(n.m.len||0)>(n.m.text||'').length,len:n.m.len||0})))
       .map((m,i)=>{let it=full?null:msgItems[i];if(!it){let bd=1e9;msgItems.forEach(n=>{const d=Math.abs(n.m.ts-m.ts);if(d<bd){bd=d;it=n}})}return {...m,kind:'msg',u:it?it.u:0}});
     const all=rows.concat(moments.filter(n=>!TR_QUIET.has(n.e.label)).slice(0,240).map(n=>({kind:'moment',ts:n.e.ts,u:n.u,e:n.e}))).sort((x,y)=>(x.ts||0)-(y.ts||0));
-    trItems=[];
+    trItems=[];trCaps=[];
     list.innerHTML=all.map(m=>{trItems.push(m.u);
+      trCaps.push(m.kind==='moment'?evWords(m.e)+(m.e.detail?' · '+m.e.detail:'')
+        :(m.role==='user'?'you':'IRIS')+' · '+(m.text?String(m.text).replace(/\s+/g,' ').slice(0,300):noWords(s,m.role==='user')));
         if(m.kind==='moment'){const c=m.e.valence==='sets_back'?'#ff7a6b':(FAM[FAMI[m.e.family]??0]||{}).color||'#9fd0e6';
           return `<div data-tu="${m.u}" style="margin:0 0 3px 12px;font-size:11px;opacity:.72;cursor:pointer"><span style="color:${c}">●</span> ${esc(evWords(m.e))}${m.e.detail?` <span style="color:#eef7fb">${esc(m.e.detail)}</span>`:''}</div>`}
         const you=m.role==='user',mins=T.session&&T.session.started?Math.max(0,Math.round((m.ts-T.session.started)/60)):null;
@@ -2092,13 +2088,11 @@ function transcriptOpen(T,s){
 function transcriptCtx(T,ctx){if(!T||!Array.isArray(ctx))return;T._ctx=ctx;const by=new Map();
   ctx.forEach(c=>{if(c.turn&&c.fill!=null)by.set(c.turn,Math.max(by.get(c.turn)||0,c.fill))});
   trEl.querySelectorAll('.trc').forEach(el=>{const f=by.get(el.dataset.turn);el.textContent=f!=null?` · context ${Math.round(f*100)}% full`:''})}
-function transcriptClose(){trEl.style.display='none';trStrip.style.display='none';trEl.innerHTML='';trItems=[];trOn=-1}
+function transcriptClose(){trEl.style.display='none';trEl.innerHTML='';trItems=[];trCaps=[];trOn=-1}
 function transcriptSync(){if(!tunnel||!trItems.length)return;let bi=0,bd=1e9;
   trItems.forEach((u,i)=>{const d=Math.abs(u-cam.tp);if(d<bd){bd=d;bi=i}});if(bi===trOn)return;trOn=bi;
   const rows=trEl.querySelectorAll('[data-tu]');rows.forEach((el,i)=>{el.style.outline=i===bi?'1px solid rgba(127,232,255,.55)':'none'});
-  // the strip: the message you are passing (or the moment, with the message it belongs to)
-  if(rows[bi]){let m=rows[bi];if(!m.querySelector('.trc')){for(let j=bi;j>=0;j--)if(rows[j].querySelector('.trc')){m=rows[j];break}}
-    trStrip.querySelector('.cur').innerHTML=(m!==rows[bi]?`<div style="font-size:11px;opacity:.7">${rows[bi].innerHTML}</div>`:'')+m.innerHTML}
+  rail.caption(trCaps[bi]);
   if(trEl.style.display!=='none'&&rows[bi]&&performance.now()-trUserScroll>2500)rows[bi].scrollIntoView({block:'nearest',behavior:'smooth'})}
 function addContextBand(T,ctx){
   if(!T||!T.curve)return null;const s=T.session,pts=(ctx||[]).filter(c=>c&&c.fill!=null&&c.ts!=null).sort((a,b)=>a.ts-b.ts);
@@ -2821,10 +2815,14 @@ const rail={el:$('rail'),svg:$('rail').querySelector('svg'),lbl:$('rail').queryS
       go.textContent='↗ chat';go.onclick=()=>window.dispatchEvent(new CustomEvent('iris:open_conversation',{detail:{conversationId:T.session.id}}));
       go.onmouseenter=()=>this.lbl.textContent='continue in chat: open this conversation at its newest turn'}
     this.pos=mk('path',{d:'M0,0',fill:'#f4fbff'});this.W=W;
-    this.lbl.textContent=T.session.objective+((T.session.tags||[]).length?'  ·  '+T.session.tags.map(t=>'#'+t).join(' '):'')},   // the strand's tags (4.4)
+    this.caption(T.session.objective+((T.session.tags||[]).length?'  ·  '+T.session.tags.map(t=>'#'+t).join(' '):''))},   // the strand's tags (4.4), until you pass something
+  // the line under the bar: what you are passing; a mark you hover says its own words and gives the line back
+  caption(t){if(t!=null){this.cap=t;this.lbl.textContent=t}},
   update(tp){if(!this.pos||!tunnel)return;const x=8+clamp(tp+.02,0,1)*(this.W-16);this.pos.setAttribute('d',`M${x-4},29 L${x+4},29 L${x},23 Z`);
     for(const m of this.marks){const on=tunnel.sel<0||m.st.li===tunnel.sel||tunnel.linked.has(tunnel.sel+'-'+m.st.li)||tunnel.linked.has(m.st.li+'-'+tunnel.sel);
       m.e.setAttribute('opacity',on?1:.25)}}};
+rail.svg.addEventListener('mouseleave',()=>rail.caption(rail.cap));
+rail.lbl.title='the whole conversation';rail.lbl.onclick=()=>{if(tunnel)trToggle()};
 // where you are, as a path: memory > the view > the territory or session you are in > the claim you hold
 // FOLLOW (owner: on by default, a toggle turns it off) - its state; the tap itself is in section 12. unseen = live
 // moments that arrived while the time cursor was in the past (edge case 22: nothing moves, the "now" chip counts them).
@@ -2855,10 +2853,12 @@ function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the
   const s_=cam.mode==='tunnel'&&tunnel?tunnel.session:null,inChat=!!s_&&!!(s_.messages||[]).length;
   const back=inChat&&chatTurn&&chatTurn.conv===s_.id?chatTurn.turn:'';
   const working=performance.now()-liveAt<LIVE_DOT_S*1000;
-  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back+'|'+working+'|'+crumbMore+'|'+uses.k;if(k===crumbKey)return;crumbKey=k;
+  const tr=cam.mode==='tunnel'&&tunnel?(trEl.style.display==='none'?1:2):0;   // the corridor's transcript: closed / open
+  const k=parts.join('|')+'|'+when+'|'+follow.unseen+'|'+(inChat?s_.id:'')+'|'+back+'|'+working+'|'+crumbMore+'|'+uses.k+'|'+tr;if(k===crumbKey)return;crumbKey=k;
   // TIDY HEADER (owner, 2026-10-26): the path on one line; the actions in ONE row - the common ones always, the rarer ones
   // (rename, pin, forget, purge) behind "⋯ more"
   const main=[],more=[];
+  if(tr)main.push(`<a class="tr" data-tr="1" title="you and IRIS, turn by turn">${tr===2?'▤ hide the conversation':'▤ the whole conversation'}</a>`);
   if(inChat)main.push(`<a class="chat" data-conv="${esc(s_.id)}" data-turn="${esc(back)}" title="open this conversation in the chat">${back?'↩ back to the turn in chat':'↗ continue in chat'}</a>`);
   if(uses.k>=0&&state.lens==='timeline'){main.push(`<a class="when">uses of claim · ${fmt(uses.n)} turn${uses.n===1?'':'s'}</a>`);
     if(uses.chat)main.push(`<a class="chat" data-conv="${esc(uses.chat.conv)}" data-turn="${esc(uses.chat.turn)}" title="open the newest turn that was given this claim">↗ newest use in chat</a>`)}
@@ -2881,7 +2881,8 @@ function renameStrand(id,el){const s_=M.sById.get(id);if(!s_)return;const inp=do
       .then(r=>{if(!r.ok)throw new Error(String(r.status));s_.objective=name;const T=$('title');if(T.firstChild)T.firstChild.textContent=name;back()})
       .catch(err=>{console.warn('[memory] rename failed',id,err);inp.value='the name did not take';setTimeout(back,1400)})});
   inp.addEventListener('blur',()=>setTimeout(()=>{if(document.activeElement!==inp)back()},150))}
-$('crumb').addEventListener('click',e=>{if(e.target.closest('.moreT')){crumbMore=!crumbMore;crumbKey='';updateCrumb();return}
+$('crumb').addEventListener('click',e=>{if(e.target.closest('[data-tr]')){trToggle();return}
+  if(e.target.closest('.moreT')){crumbMore=!crumbMore;crumbKey='';updateCrumb();return}
   const rn=e.target.closest('[data-rename]');if(rn){renameStrand(rn.dataset.rename,rn);return}
   const pt=e.target.closest('[data-pinthread]');if(pt){fetch(`/api/threads/${encodeURIComponent(pt.dataset.pinthread)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:'{"pinned":true}'})
     .then(r=>{pt.textContent=r.ok?'◆ pinned in the thread list':'the pin did not take'}).catch(()=>{pt.textContent='the pin did not take'});return}
