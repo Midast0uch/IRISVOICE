@@ -335,8 +335,8 @@ goes there. Never counted as a recall.
 
 ### 6.5 Time
 
-One time cursor for all views (default now): set it to a past day and the cortex shows the memory as it was, the
-helix centres on that day; the breadcrumb shows the date in amber with "now ↻"; `g` plays it forward.
+One time cursor for the timeline and the artifacts (default now; the galaxy cortex draws the present and has no time bar,
+2026-11-23 - only `?cortex=tissue` shows the memory as it was): set it to a past day and the helix centres on that day; the breadcrumb shows the date in amber with "now ↻"; `g` plays it forward.
 
 ## 7. While IRIS works — the live grammar
 

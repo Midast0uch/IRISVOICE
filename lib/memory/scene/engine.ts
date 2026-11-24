@@ -2849,7 +2849,7 @@ function updateCrumb(){if(help.on&&help.view!==helpView())renderHelp();   // the
     if(state.inside&&state.diveReg>=0&&!galaxy)parts.push('territory · '+domWord(REG[state.diveReg]));   // the galaxy's nav bar names it, in the same place
     if(state.inside&&!galaxy&&state.focusSoma>=0&&LM[state.focusSoma])parts.push('claim · '+LM[state.focusSoma].claim);
     if(state.lens==='timeline'&&sync.sid)parts.push('strand · '+titleOf(sync.sid))}
-  const when=cursorNow()?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
+  const when=cursorNow()||!SCRUB_LENS.has(state.lens)?'':new Date(cursorTs()*1000).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
   const s_=cam.mode==='tunnel'&&tunnel?tunnel.session:null,inChat=!!s_&&!!(s_.messages||[]).length;
   const back=inChat&&chatTurn&&chatTurn.conv===s_.id?chatTurn.turn:'';
   const working=performance.now()-liveAt<LIVE_DOT_S*1000;
@@ -2929,7 +2929,7 @@ const state={showSpaces:false,lens:'cortex',inside:false,diving:false,diveReg:-1
   scrub:1,scrubT:1,replay:false,search:'',pupil:1,lastDecision:null,from:'cortex'};
 // the time cursor (see "THE TIME CURSOR" below)
 const cursorTs=()=>T0+(nowS()-T0)*state.scrub, cursorNow=()=>state.scrubT>.995;
-const SCRUB_LENS=new Set(['cortex','timeline','artifacts']);
+const SCRUB_LENS=new Set(GALAXY?['timeline','artifacts']:['cortex','timeline','artifacts']);   // the galaxy draws the present: no time bar there (owner, 2026-11-23)
 let scrubSeen=1;   // the cursor value the helix last centred on (only a cursor MOVE moves the helix; the wheel stays free)
 function setLens(l){
   if(state.diving)return;
