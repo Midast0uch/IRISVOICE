@@ -52,6 +52,24 @@ _FOLLOW_UP_RE = re.compile(
     r"^(?:how|what|when|where|which|who|whom|whose|why)\b(?:\s+\S+){0,2}\s*[?.!]?$",
     re.IGNORECASE,
 )
+# A fragment a comma cut from ONE question ("For project quill, which provider did we pick
+# FIRST, before the switch?"): it opens with a preposition, so it qualifies the clause beside
+# it. As a fact "before the switch?" is covered only by a lucky word. Measured in x06
+# 2026-11-23: a step that found the answer left it open, 2 more steps, ask 38-51 s vs 12 s.
+_MODIFIER_RE = re.compile(
+    r"^(?:for|in|on|at|from|of|by|with|within|before|after|during|since|until|as|than|"
+    r"instead\s+of|according\s+to|based\s+on)\b",
+    re.IGNORECASE,
+)
+# "Reply with the provider name only.": the FORM of the answer to the question asked beside
+# it. Its words (reply, name, only) are in no result. Kept when no question stands beside it:
+# then it is the only place that says what is wanted ("Open config.json. Reply with the port
+# only.").
+_REPLY_FORM_RE = re.compile(
+    r"(?:(?<=[.!?])\s+|^\s*)(?:please\s+)?(?:reply|answer|respond)\s+(?:with|in)\b"
+    r"[^.!?\n]*\bonly\s*(?:[.!]+(?=\s|$)|$)",
+    re.IGNORECASE,
+)
 # A list comma, not one inside a call or a quote: "add(name, qty)".
 _LIST_COMMA_RE = re.compile(r",(?![^()]*\))(?=(?:[^'\"]*['\"][^'\"]*['\"])*[^'\"]*$)")
 # A prohibition ("do not change app.py") is kept by NOT acting, so no step can
@@ -299,6 +317,29 @@ class Coverage:
     ds: float = 0.0
 
 
+def _join_modifiers(parts: List[str]) -> List[str]:
+    """Comma parts with each prepositional fragment joined to the clause it qualifies: the
+    one before it, or the next when it opens the sentence. A list whose items ALL open with
+    a preposition ("in Python, in Go, and in Rust") is a list: left alone."""
+    def _modifies(part: str) -> bool:
+        # a fragment that holds a comma of its own is a clause, not a qualifier
+        return "," not in part and _MODIFIER_RE.match(part) is not None
+
+    if all(map(_modifies, parts)):
+        return parts
+    out: List[str] = []
+    lead = ""
+    for _p in parts:
+        if not _modifies(_p):
+            out.append(f"{lead}{_p}")
+            lead = ""
+        elif out:
+            out[-1] = f"{out[-1]}, {_p}"
+        else:
+            lead += f"{_p}, "
+    return out
+
+
 def extract_required(request: str) -> Tuple[str, ...]:
     """Derive the required-fact set deterministically (REQ-1 AC1.1, AC1.6).
 
@@ -320,6 +361,10 @@ def extract_required(request: str) -> Tuple[str, ...]:
         if not _stripped:
             logger.info("[goal-contract] extract fallback: scaffolding only")
             return ("",)
+    _asked = _REPLY_FORM_RE.sub(" ", _stripped).strip()
+    if _asked != _stripped and "?" in _asked:
+        logger.info("[goal-contract] reply form, not a deliverable: %r", _stripped[:120])
+        _stripped = _asked
     _parts: List[str] = []
     for _chunk in _SPLIT_RE.split(_stripped):
         _chunk = (_chunk or "").strip()
@@ -349,7 +394,11 @@ def extract_required(request: str) -> Tuple[str, ...]:
                     _subs[-1] = f"{_subs[-1]}, {_s}"
                     continue
                 _subs.append(_s)
-            if len(_subs) > 1 and all(len(_s) >= 8 for _s in _subs):
+            _joined = _join_modifiers(_subs)
+            # joined down to ONE clause: that clause (its short question tail is already
+            # in it), not the raw text an "and" would tear it from again
+            if (len(_joined) > 1 or len(_subs) > 1) and all(len(_s) >= 8 for _s in _joined):
+                _subs = _joined
                 _items = _subs
         for _item in _items:
             # Split "A and B" only when both sides carry substance, so a single
