@@ -38,6 +38,8 @@ interface InferenceState {
   default_role: string;
   provider_presets: ProviderPreset[];
   model_catalog?: Record<string, { id: string; name: string }[]>;
+  /** instance id -> model -> context window in tokens; absent = nobody states one. */
+  model_windows?: Record<string, Record<string, number>>;
 }
 
 export function useInferenceState() {
@@ -48,6 +50,7 @@ export function useInferenceState() {
     default_role: 'reasoning',
     provider_presets: [],
     model_catalog: {},
+    model_windows: {},
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +97,7 @@ export function useInferenceState() {
             default_role: data.default_role ?? 'reasoning',
             provider_presets: data.provider_presets ?? [],
             model_catalog: data.model_catalog ?? {},
+            model_windows: data.model_windows ?? {},
           });
           setError(null);
           setLoading(false);
@@ -176,6 +180,7 @@ export function useInferenceState() {
             default_role: data.default_role ?? prev.default_role,
             provider_presets: data.provider_presets ?? prev.provider_presets,
             model_catalog: data.model_catalog ?? prev.model_catalog,
+            model_windows: data.model_windows ?? prev.model_windows,
           }));
           setLoading(false);
         }
@@ -207,6 +212,7 @@ export function useInferenceState() {
           default_role: snapshot.default_role ?? prev.default_role,
           provider_presets: snapshot.provider_presets ?? prev.provider_presets,
           model_catalog: snapshot.model_catalog ?? prev.model_catalog,
+          model_windows: snapshot.model_windows ?? prev.model_windows,
         }));
       }
       setLoading(false);
@@ -231,6 +237,7 @@ export function useInferenceState() {
           default_role: (snap as any).default_role ?? prev.default_role,
           provider_presets: (snap as any).provider_presets ?? prev.provider_presets,
           model_catalog: (snap as any).model_catalog ?? prev.model_catalog,
+          model_windows: (snap as any).model_windows ?? prev.model_windows,
         }));
         setLoading(false);
       }
@@ -292,6 +299,7 @@ export function useInferenceState() {
               default_role: data.default_role ?? prev.default_role,
               provider_presets: data.provider_presets ?? prev.provider_presets,
               model_catalog: data.model_catalog ?? prev.model_catalog,
+            model_windows: data.model_windows ?? prev.model_windows,
             }));
             setLoading(false);
           })
@@ -346,6 +354,7 @@ export function useInferenceState() {
     default_role: state.default_role,
     provider_presets: state.provider_presets,
     model_catalog: state.model_catalog,
+    model_windows: state.model_windows,
     loading,
     error,
     sendRoleBinding,

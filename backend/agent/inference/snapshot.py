@@ -19,7 +19,10 @@ key at all).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
+
+logger = logging.getLogger(__name__)
 
 # Keys that must NEVER reach the frontend from a provider entry, regardless
 # of what upstream code puts in a ProviderInstance.to_dict(). This is the
@@ -33,6 +36,40 @@ def _scrub_provider(p: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(p, dict):
         return p
     return {k: v for k, v in p.items() if k not in _FORBIDDEN_PROVIDER_KEYS}
+
+
+def _model_windows(router: Any, catalog: Dict[str, Any]) -> Dict[str, Dict[str, int]]:
+    """{instance id: {model: window tokens}} for every chat model the frontend can
+    name: each provider's own, the role overrides, the catalog ids. The kernel's own
+    resolver (``window_for``), so the switcher and the pill cannot disagree. A model
+    nobody states a window for is ABSENT, never the 8,192 stand-in - except on an
+    Ollama server, where that number is what we ask it to serve."""
+    out: Dict[str, Dict[str, int]] = {}
+    if router is None:
+        return out
+    from ..agent_kernel import AgentKernel
+    from ..kernel.context import window_for
+    from .provider import ProviderKind
+
+    overrides: Dict[str, set] = {}
+    for b in router.roles.list():
+        if b.model_override:
+            overrides.setdefault(b.instance_id, set()).add(b.model_override)
+    for inst in router.registry.list():
+        if (inst.purpose or "chat") != "chat":
+            continue
+        local = inst.kind in (ProviderKind.LOCAL_OPENAI, ProviderKind.INPROCESS)
+        if local and not inst.loaded:
+            continue   # nothing serves it: there is no window to state (and no probe to wait for)
+        models = {inst.model or ""} | overrides.get(inst.id, set())
+        if not local:
+            models |= {m.get("id", "") for m in catalog.get(inst.id) or []}
+        provider = AgentKernel._provider_string_for_instance(None, inst)
+        for model in models - {""}:
+            w = window_for(provider, model, inst.api_base_url or "", AgentKernel._KNOWN_CONTEXT_WINDOWS, warn=False)
+            if w.source != "default" or inst.kind == ProviderKind.OLLAMA:
+                out.setdefault(inst.id, {})[model] = w.tokens
+    return out
 
 
 def build_inference_snapshot(router: Any) -> Dict[str, Any]:
@@ -55,6 +92,11 @@ def build_inference_snapshot(router: Any) -> Dict[str, Any]:
     snap["providers"] = [_scrub_provider(p) for p in snap.get("providers", [])]
     snap["provider_presets"] = PROVIDER_PRESETS
     snap["model_catalog"] = PROVIDER_MODEL_CATALOG
+    try:
+        snap["model_windows"] = _model_windows(router, PROVIDER_MODEL_CATALOG)
+    except Exception as exc:  # noqa: BLE001 - the rest of the snapshot must reach the frontend
+        logger.warning("[inference-snapshot] model windows not resolved: %r", exc)
+        snap["model_windows"] = {}
 
     # Local model manager's live status, so the frontend knows when a
     # locally-loaded GGUF is available. Best-effort — a probe failure must

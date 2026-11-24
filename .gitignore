@@ -219,3 +219,6 @@ models/kws/
 
 # simulated Oracle traffic (scripts/bench_tool_safety.py regenerates it)
 data/oracle_bench/
+
+# kept copy of the public model-window catalog (provider_catalog._catalog_path)
+data/model_windows.json

@@ -1014,7 +1014,10 @@ class AgentKernel(ModelsMixin, SurfaceMixin, ContextMixin, TurnMixin, PlanningMi
         # model fell through to before this row, and it ends the message
         # dropping that the 8192 budget caused ("prompt over the window:
         # window=8192 budget=3840 dropped_messages=6").
-        ("opencodego", "", 128_000),
+        # 2026-11-23: was ("opencodego", "", 128_000), a provider-wide guess (test_no_raised_provider_default). Each
+        # opencodego model now takes the window the public catalog states (provider_catalog.catalog_window); this row
+        # only serves the first minute of a machine with no kept copy of it.
+        ("opencodego", "deepseek-v4.1-flash", 128_000),
     ]
 
     # Known vision-capable API models. Keyed (provider_id, model_substring),

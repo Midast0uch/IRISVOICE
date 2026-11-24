@@ -1054,7 +1054,9 @@ async def lifespan(app: FastAPI):
                         from backend.agent.inference.provider_catalog import prefetch_api_windows
 
                         _wr = app.state.agent_kernel._router
-                        prefetch_api_windows([_wr.resolve(_role) for _role in ("reasoning", "tool_execution")])
+                        # every registered provider, not only the two bound ones: the model
+                        # switcher states each model's window before it is picked (2026-11-23)
+                        prefetch_api_windows(_wr.registry.list())
                     except Exception as _pw:
                         logger.warning(f"  - API window prefetch skipped: {_pw}")
                 except Exception as _me:

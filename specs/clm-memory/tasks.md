@@ -60,6 +60,10 @@ same-conditions A/B, numbers named with their cohort.
 > - **TG-2 is NOT closed:** the blind-drop count per arm (evals/context_report.py) and the
 >   standards row per arm are not read yet, and x06 must be re-run in both arms.
 >   `IRIS_CLM_OFFLOAD` stays OFF until then (CLAUDE.md step 8: written here, 2026-11-22).
+>   **ON since 2026-11-23** (`.env`): the owner asked for it. TG-2 stays open (blind drops, standards row).
+>   A/B 2026-11-23 (deepseek-v4.1-flash, warm, 2 runs an arm): off 6/6, on 6/6; reply_s off/on
+>   c08 70,33 / 31,32, c10 32,50 / 32,22, x06 ask 12,12 / 51,38 (goal contract: a reply-format
+>   clause read as a required fact). Off switch: IRIS_CLM_OFFLOAD=0.
 > - **Found and fixed during TG-2:** the internet gate (kernel/turn.py) refused a memory
 >   question on the Oracle web_intent guess (yes 0.844 to "which auth provider did we pick
 >   FIRST?"); now `_web_off_reply` refuses only an explicit web ask. Live: x06 PASS

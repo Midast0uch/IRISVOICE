@@ -17,6 +17,7 @@ import { createPortal } from "react-dom"
 import { CustomDropdown } from "@/components/ui/CustomDropdown"
 import { IconRobot } from "@tabler/icons-react"
 import { useInferenceState } from "@/hooks/useInferenceState"
+import { formatTokens } from "@/components/chat/ContextPill"
 
 interface SwitcherEntry {
   id: string
@@ -89,6 +90,7 @@ export default function ModelSwitcher({
   const {
     providers,
     role_bindings,
+    model_windows,
     loading,
     sendRoleBinding,
   } = useInferenceState()
@@ -127,6 +129,16 @@ export default function ModelSwitcher({
   // showed "(unavailable)" while routing worked fine). Chat purpose only
   // (embedding/rerank excluded — Phase 4 already filters the settings panel,
   // this is the chat-row equivalent, not a duplicate of that logic).
+  // The window the backend resolved for this model (the pill's denominator comes from
+  // the same resolver). Nothing when nobody states one - never a guess.
+  const windowOf = useCallback(
+    (instanceId?: string, model?: string | null) => {
+      const n = instanceId && model ? model_windows?.[instanceId]?.[model] : undefined
+      return n ? ` · ${formatTokens(n)}` : ""
+    },
+    [model_windows]
+  )
+
   const entries: SwitcherEntry[] = useMemo(() => {
     return providers
       .filter((p) => !p.purpose || p.purpose === "chat")
@@ -137,7 +149,7 @@ export default function ModelSwitcher({
       })
       .map((p) => ({
         id: p.id,
-        label: p.model ? `${p.label} · ${p.model}` : p.label,
+        label: (p.model ? `${p.label} · ${p.model}` : p.label) + windowOf(p.id, p.model),
         // A locally-loaded model is resident in VRAM right now and is almost
         // always what the user just came here to pick. Everything else is a
         // catalog entry that is merely reachable.
@@ -148,7 +160,7 @@ export default function ModelSwitcher({
       // measured live: the freshly loaded local model sat below ~40 Cohere /
       // OpenAI / Cerebras / OpenCodeGo entries and had to be scrolled to.
       .sort((a, b) => Number(b.resident) - Number(a.resident))
-  }, [providers])
+  }, [providers, windowOf])
 
   const options = useMemo(
     () => entries.map((e) => ({ label: e.label, value: e.id })),
@@ -216,12 +228,14 @@ export default function ModelSwitcher({
     [sendRoleBinding, providers]
   )
 
+  const windowFor = (b?: { instance_id?: string; model_override?: string }) =>
+    windowOf(b?.instance_id, b?.model_override || providers.find((p) => p.id === b?.instance_id)?.model)
   const triggerTitle = loading
     ? "Loading models…"
     : activeLabel
-      ? `Brain: ${activeLabel}${brainAvailable ? "" : ` (${brainUnavailableReason})`}\nTool: ${
+      ? `Brain: ${activeLabel}${windowFor(brainBinding)}${brainAvailable ? "" : ` (${brainUnavailableReason})`}\nTool: ${
           getLabel(toolBinding) || "—"
-        }\nClick to switch model`
+        }${windowFor(toolBinding)}\nClick to switch model`
       : "No model bound — click to choose one"
 
   return (

@@ -1,7 +1,6 @@
 "use client"
 
 import { useEffect, useRef } from "react"
-import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from "framer-motion"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 
 /** CLM's live view (docs/architecture/CLM.md 1.3; backend kernel/context.py
@@ -41,7 +40,7 @@ export interface ContextPillProps {
   band?: ContextBand
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   // A 1M window (mercury-3) read "1000.0k"; millions get their own unit.
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
@@ -113,6 +112,9 @@ function loopPath(x: number, pluck: number): string {
   )
 }
 
+/** Thinner as it is pulled. */
+const bandWidth = (x: number) => (1.7 - 0.7 * Math.min(1, Math.max(0, x) / SPAN)).toFixed(2)
+
 /**
  * The band itself. Slack = a small ring on the switcher's rim; a node that reads pulls
  * it long and thin; when CLM sets results aside (or a step ends) it lets go,
@@ -122,30 +124,46 @@ function loopPath(x: number, pluck: number): string {
 function RubberBand({
   share, peak, limit, aside, color, glow,
 }: { share: number; peak: number; limit: number; aside: number; color: string; glow: string }) {
-  const still = useReducedMotion()
-  const span = SPAN
-  const target = reach(share) * span
-  const spring = useSpring(target, { stiffness: 190, damping: 11, mass: 0.7 })
-  const pluck = useMotionValue(0)
-  const d = useTransform([spring, pluck], ([x, p]: number[]) => loopPath(x, p))
-  const width = useTransform(spring, (x: number) => 1.7 - 0.7 * Math.min(1, Math.max(0, x) / span))
-  const tip = useTransform(spring, (x: number) => PEG + Math.max(0, x))
-  const last = useRef({ target, aside })
+  const target = reach(share) * SPAN
+  const loop = useRef<SVGPathElement>(null)
+  const tip = useRef<SVGCircleElement>(null)
+  // Position and speed of the stretch (x) and of the strands (p). The spring writes
+  // the DOM itself: 60 renders a second would re-render the pill for a wobble.
+  const m = useRef({ x: target, v: 0, p: 0, pv: 0, aside })
+  const first = useRef(target).current
   useEffect(() => {
-    const was = last.current
-    last.current = { target, aside }
-    if (still) {
-      spring.jump(target)
+    const s = m.current
+    const draw = () => {
+      loop.current?.setAttribute("d", loopPath(s.x, s.p))
+      loop.current?.setAttribute("stroke-width", bandWidth(s.x))
+      tip.current?.setAttribute("cx", String(PEG + Math.max(0, s.x)))
+    }
+    const fell = s.x - target
+    const let_go = fell > 1 || aside > s.aside
+    s.aside = aside
+    if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      Object.assign(s, { x: target, v: 0, p: 0, pv: 0 })
+      draw()
       return
     }
-    spring.set(target)
     // Let go: the strands ring, harder for a longer fall.
-    const fell = was.target - target
-    if (fell > 1 || aside > was.aside) pluck.set(Math.min(4, 1.6 + fell * 0.12))
-    const ring = animate(pluck, 0, { type: "spring", stiffness: 520, damping: 6, mass: 0.5 })
-    return () => ring.stop()
-  }, [target, aside, still, spring, pluck])
-  const at = (n: number) => PEG + reach(n) * span
+    if (let_go) s.p = Math.min(4, 1.6 + Math.max(0, fell) * 0.12)
+    let last = 0
+    let id = requestAnimationFrame(function step(t: number) {
+      const dt = last ? Math.min(0.032, (t - last) / 1000) : 0.016
+      last = t
+      s.v += (-270 * (s.x - target) - 16 * s.v) * dt
+      s.x += s.v * dt
+      s.pv += (-1040 * s.p - 12 * s.pv) * dt
+      s.p += s.pv * dt
+      const done = Math.abs(s.x - target) < 0.05 && Math.abs(s.v) < 0.5 && Math.abs(s.p) < 0.05 && Math.abs(s.pv) < 0.5
+      if (done) Object.assign(s, { x: target, v: 0, p: 0, pv: 0 })
+      draw()
+      if (!done) id = requestAnimationFrame(step)
+    })
+    return () => cancelAnimationFrame(id)
+  }, [target, aside])
+  const at = (n: number) => PEG + reach(n) * SPAN
   const y = BAND_H / 2
   return (
     <svg width={BAND_W} height={BAND_H} viewBox={`0 0 ${BAND_W} ${BAND_H}`} className="relative block overflow-visible" aria-hidden>
@@ -163,10 +181,12 @@ function RubberBand({
         />
       )}
       <circle cx={PEG} cy={y} r={1.2} fill={glow} />
-      <motion.circle cx={tip} cy={y} r={0.9} fill="rgba(255,255,255,0.8)" />
-      <motion.path
+      <circle ref={tip} cx={PEG + first} cy={y} r={0.9} fill="rgba(255,255,255,0.8)" />
+      <path
+        ref={loop}
         data-testid="band-loop" data-reach={reach(share).toFixed(3)}
-        d={d} fill={`${color}14`} stroke={color} style={{ strokeWidth: width, filter: `drop-shadow(0 0 2px ${color}66)` }}
+        d={loopPath(first, 0)} strokeWidth={bandWidth(first)}
+        fill={`${color}14`} stroke={color} style={{ filter: `drop-shadow(0 0 2px ${color}66)` }}
       />
     </svg>
   )

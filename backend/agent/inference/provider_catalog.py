@@ -446,12 +446,129 @@ def _fetch_api_windows(provider_id: str, base_url: str, api_key: str) -> None:
         _API_WINDOWS_FETCHING.discard(base_url)
 
 
-def prefetch_api_windows(instances) -> None:
-    """Fill the window cache for the API *instances* on a daemon thread.
+# -- The public model catalog (2026-11-23) --------------------------------------
+# Several providers publish no window in /models (opencodego, clinepass, nvidia,
+# cohere, cerebras: measured). models.dev is the list OpenCode itself reads; it
+# states each model's window per PROVIDER. Exact ids only, never a name guess.
+# One GET of a public file (nothing of the user's goes out), kept on disk a day.
+_CATALOG_URL = "https://models.dev/api.json"
+_CATALOG_TTL_S = 24 * 3600.0
+_CATALOG_IDS = {  # our provider id -> its ids there, in order (default: its own)
+    "opencodego": ("opencode-go", "opencode"), "clinepass": ("cline-pass",),
+    "inceptionlabs": ("inception",), "together": ("togetherai",), "gemini": ("google",),
+}
+# What THIS account is served, when it is less than the model's window: Cerebras
+# answered 402 to everything above its free tier (2026-09-05, the kernel table).
+_ACCOUNT_CAPS = {("cerebras", "qwen-3.8-27b"): 64_000}
+_CATALOG_WINDOWS: Dict[str, Dict[str, int]] = {}  # id there -> {model: tokens}
+_CATALOG_STATE = {"fetching": False}
 
-    Never blocks and never raises; one fetch per provider base URL per process.
+
+def _catalog_path():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[3] / "data" / "model_windows.json"
+
+
+def catalog_window(provider_id: str, model: Optional[str]) -> Optional[int]:
+    """Window the public catalog states for *model* at *provider_id* (cache only)."""
+    if not provider_id or not model:
+        return None
+    for cid in _CATALOG_IDS.get(provider_id, (provider_id,)):
+        n = (_CATALOG_WINDOWS.get(cid) or {}).get(model)
+        if n:
+            return min(n, _ACCOUNT_CAPS.get((provider_id, model), n))
+    return None
+
+
+def _fetch_catalog() -> None:
+    import json
+    import logging
+    import os
+
+    import httpx
+
+    from backend.utils.ssl_context import get_ssl_context
+
+    log = logging.getLogger(__name__)
+    try:
+        r = httpx.get(_CATALOG_URL, timeout=30.0, verify=get_ssl_context())
+        r.raise_for_status()
+        raw = r.json()
+        # a local server's window is what it was loaded with, never a list's
+        wanted = {c for p in PROVIDER_MODEL_CATALOG if p not in ("lmstudio", "ollama") for c in _CATALOG_IDS.get(p, (p,))}
+        out = {}
+        for cid in wanted:
+            models = (raw.get(cid) or {}).get("models") or {}
+            out[cid] = {m: n for m, v in models.items()
+                        if isinstance(n := ((v or {}).get("limit") or {}).get("context"), int) and n > 0}
+        out = {k: v for k, v in out.items() if v}
+        if not out:
+            raise ValueError("no known provider in the catalog")
+        _CATALOG_WINDOWS.update(out)
+        path = _catalog_path()
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(out), encoding="utf-8")
+        os.replace(tmp, path)
+        log.info("[ctx_window] catalog: %d models of %d providers", sum(map(len, out.values())), len(out))
+    except Exception as exc:  # noqa: BLE001 - a lookup aid; the last copy, the table and the default still apply
+        log.warning("[ctx_window] catalog not refreshed: %r", exc)
+    finally:
+        _CATALOG_STATE["fetching"] = False
+
+
+def _ensure_catalog() -> None:
+    """Load the kept copy now (a small file); refresh it on a daemon thread when old."""
+    import json
+    import threading
+    import time
+
+    path = _catalog_path()
+    fresh = False
+    try:
+        if not _CATALOG_WINDOWS and path.exists():
+            _CATALOG_WINDOWS.update(json.loads(path.read_text(encoding="utf-8")))
+        fresh = path.exists() and time.time() - path.stat().st_mtime < _CATALOG_TTL_S
+    except Exception as exc:  # noqa: BLE001 - an unreadable copy is fetched again
+        import logging
+
+        logging.getLogger(__name__).warning("[ctx_window] kept catalog unreadable: %r", exc)
+    if not (fresh and _CATALOG_WINDOWS) and not _CATALOG_STATE["fetching"]:
+        _CATALOG_STATE["fetching"] = True
+        threading.Thread(target=_fetch_catalog, name="ctx-window-catalog", daemon=True).start()
+
+
+def _fetch_ollama_windows(base_url: str) -> None:
+    """Ollama's own list states each model's window. Only its CLOUD models count: a
+    local model gets the window we ask for (options.num_ctx), and that is memory."""
+    import logging
+
+    import httpx
+
+    log = logging.getLogger(__name__)
+    try:
+        r = httpx.get(f"{base_url}/api/tags", timeout=5.0)
+        r.raise_for_status()
+        _API_WINDOWS[base_url] = {
+            m["name"]: n for m in r.json().get("models") or []
+            if m.get("remote_host") and m.get("name")
+            and isinstance(n := (m.get("details") or {}).get("context_length"), int) and n > 0}
+        log.info("[ctx_window] ollama published windows for %d cloud model(s)", len(_API_WINDOWS[base_url]))
+    except Exception as exc:  # noqa: BLE001 - no Ollama server: the table and default apply
+        log.info("[ctx_window] ollama %s not read: %r", base_url, exc)
+    finally:
+        _API_WINDOWS_FETCHING.discard(base_url)
+
+
+def prefetch_api_windows(instances) -> None:
+    """Fill the window cache for the API and Ollama *instances* on daemon threads.
+
+    Never blocks on the network and never raises; one fetch per provider base URL
+    per process.
     """
     import threading
+
+    _ensure_catalog()
 
     try:
         from backend.agent.inference.keyring import get_secret
@@ -460,12 +577,16 @@ def prefetch_api_windows(instances) -> None:
         return
     for inst in instances or []:
         try:
-            if inst is None or inst.kind != ProviderKind.API or not inst.api_base_url:
+            if inst is None or inst.kind not in (ProviderKind.API, ProviderKind.OLLAMA) or not inst.api_base_url:
                 continue
             base = inst.api_base_url.rstrip("/")
             if base in _API_WINDOWS or base in _API_WINDOWS_FETCHING:
                 continue
             _API_WINDOWS_FETCHING.add(base)
+            if inst.kind == ProviderKind.OLLAMA:
+                threading.Thread(target=_fetch_ollama_windows, args=(base,),
+                                 name="ctx-window-ollama", daemon=True).start()
+                continue
             key = (inst.api_key or get_secret(inst.id) or "").strip()
             threading.Thread(target=_fetch_api_windows, args=(inst.id, base, key),
                              name=f"ctx-window-{inst.id}", daemon=True).start()

@@ -11400,6 +11400,14 @@ class IRISGateway:
                     },
                 },
             )
+            # The pill follows the model at once, not at the next turn (2026-11-23): the
+            # kernel of the thread on screen says its usage against the new window.
+            try:
+                _conv = self._active_conversation_id.get(session_id)
+                _k = get_agent_kernel(_conv, session_id) if _conv else kernel
+                _k._emit_context_usage()
+            except Exception as _exc:  # noqa: BLE001 - the bind stands
+                self._logger.warning("[set_role_binding] context usage not sent: %r", _exc)
         except Exception as e:
             # REQ-7 AC1: outcome=error still names the role and instance ids
             # (never a credential, AC2), so a failed switch is diagnosable too.

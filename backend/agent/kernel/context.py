@@ -66,6 +66,88 @@ def _context_band(kernel, window: int) -> Dict[str, int]:
             "aside_tokens": sum(x["aside_tokens"] for x in views), "views": len(views)}
 
 
+def window_for(provider: str, model: str, base_url: str, table, warn: bool = True) -> "ResolvedWindow":
+    """The window of *model* at *provider*: the one answer for a bound role
+    (``resolve_context_window_with_source``) and for a model the switcher lists
+    (``inference/snapshot.py``). Steps 2-5 of that method's precedence."""
+    # First what is PUBLISHED for this exact model (an API provider, an Ollama cloud
+    # model): before 2, because "local" is also Ollama's name and the local manager's
+    # n_ctx says nothing about a model Ollama serves.
+    # 2b. Authoritative for an API model: the window its provider publishes
+    #     in its own /models list (provider_catalog.api_context_window; the
+    #     gateway prefetches it off the answer path, this only reads the
+    #     cache). 2026-10-02: mercury-2.5 (260000) and OpenRouter
+    #     nemotron-3-super (262144) fell to the 8192 default, and the Brain
+    #     answered "read_file returned no content" for a file the node read.
+    #     2c. Else what the public catalog states for this provider's model
+    #     (2026-11-23): an exact id, so it outranks the substring table - and
+    #     is capped by what this account is served.
+    try:
+        from backend.agent.inference.provider_catalog import api_context_window, catalog_window
+
+        _n_api = api_context_window(base_url, model)
+        if _n_api:
+            return ResolvedWindow(_n_api, "authoritative")
+        _n_cat = catalog_window(provider, model)
+        if _n_cat:
+            return ResolvedWindow(_n_cat, "catalog")
+    except Exception as _exc:  # noqa: BLE001 - the table still applies
+        logger.warning("[ctx_window] published window of %s/%s not read: %r", provider, model, _exc)
+
+    # 2. Authoritative: the live local model manager's ACTUAL loaded n_ctx.
+    #    This is the source of truth for a locally-run model â€” it was
+    #    launched with a specific n_ctx, and a substring guess would
+    #    under/over-size the budget vs the real window.
+    #
+    #    Gated on the provider KIND, not on the string "local". The string
+    #    map in _provider_string_for_instance sends OLLAMA -> "local",
+    #    LOCAL_OPENAI -> "lmstudio" and INPROCESS -> "iris_local", so a test
+    #    for "local" fired for Ollama (which has no LocalModelManager and
+    #    always fell through) and NEVER for a real local model. A model
+    #    loaded at 32768 then fell past the substring table to the 8192
+    #    default â€” the same silent truncation the gpt-oss entry below was
+    #    added to fix, reintroduced by REQ-4's id namespacing.
+    # 2a. A local OpenAI-compatible server answers for itself: the role may
+    #     sit on its OWN server (the tool model on :8091), not on the shared
+    #     manager's. Its /props n_ctx is what this role's requests can use.
+    if provider == "lmstudio":
+        _n_srv = _server_n_ctx(base_url)
+        if _n_srv > 0:
+            return ResolvedWindow(_n_srv, "authoritative")
+    if provider in ("local", "lmstudio", "iris_local"):
+        try:
+            from backend.agent.local_model_manager import get_local_model_manager
+
+            mgr = get_local_model_manager()
+            if getattr(mgr, "is_loaded", lambda: False)() and getattr(
+                mgr, "_current_params", None
+            ):
+                _n_ctx = int(mgr._current_params.get("n_ctx", 0))
+                if _n_ctx and _n_ctx > 0:
+                    return ResolvedWindow(_n_ctx, "authoritative")
+        except Exception:
+            pass
+
+    # 3. Table â€” (provider, substring) registry lookup, case-insensitive.
+    model_lower = model.lower().strip()
+    for reg_provider, reg_substring, tokens in table:
+        if reg_provider == provider and (
+            not reg_substring or reg_substring in model_lower
+        ):
+            return ResolvedWindow(tokens, "table")
+
+    # (4. was a lookup in LocalModelManager().profiles, an attribute the manager does not
+    #  have: it raised and was swallowed on every call. Removed 2026-11-23.)
+
+    # 5. Safe default â€” 8k for unknown models. Tagged so it is VISIBLE, not silent.
+    #    REQ-1 AC3: WARN-level, naming provider+model+source â€” loudly, not silently.
+    (logger.warning if warn else logger.debug)(
+        "[AgentKernel] WARN source=default: no context window known for "
+        f"provider={provider} model={model} â€” falling back to 8192"
+    )
+    return ResolvedWindow(8_192, "default")
+
+
 def _clm_history_slip(kernel, dropped: int, session_id) -> Optional[tuple]:
     """CLM direct-path offload (requirements "Owner answers" Q-C: after TG-2): the
     history messages the trim takes out leave ONE placeholder slip that names the
@@ -469,92 +551,14 @@ class ContextMixin:
         if model in self._context_window_overrides:
             return ResolvedWindow(self._context_window_overrides[model], "override")
 
-        # 2. Authoritative: the live local model manager's ACTUAL loaded n_ctx.
-        #    This is the source of truth for a locally-run model â€” it was
-        #    launched with a specific n_ctx, and a substring guess would
-        #    under/over-size the budget vs the real window.
-        #
-        #    Gated on the provider KIND, not on the string "local". The string
-        #    map in _provider_string_for_instance sends OLLAMA -> "local",
-        #    LOCAL_OPENAI -> "lmstudio" and INPROCESS -> "iris_local", so a test
-        #    for "local" fired for Ollama (which has no LocalModelManager and
-        #    always fell through) and NEVER for a real local model. A model
-        #    loaded at 32768 then fell past the substring table to the 8192
-        #    default â€” the same silent truncation the gpt-oss entry below was
-        #    added to fix, reintroduced by REQ-4's id namespacing.
-        # 2a. A local OpenAI-compatible server answers for itself: the role may
-        #     sit on its OWN server (the tool model on :8091), not on the shared
-        #     manager's. Its /props n_ctx is what this role's requests can use.
-        if provider == "lmstudio":
-            _ri = getattr(self, "_router", None)
-            if _ri is not None:
-                try:
-                    _n_srv = _server_n_ctx(getattr(_ri.resolve(role), "api_base_url", "") or "")
-                except Exception:  # noqa: BLE001 - falls to the manager branch
-                    _n_srv = 0
-                if _n_srv > 0:
-                    return ResolvedWindow(_n_srv, "authoritative")
-        if provider in ("local", "lmstudio", "iris_local"):
-            try:
-                from backend.agent.local_model_manager import get_local_model_manager
-
-                mgr = get_local_model_manager()
-                if getattr(mgr, "is_loaded", lambda: False)() and getattr(
-                    mgr, "_current_params", None
-                ):
-                    _n_ctx = int(mgr._current_params.get("n_ctx", 0))
-                    if _n_ctx and _n_ctx > 0:
-                        return ResolvedWindow(_n_ctx, "authoritative")
-            except Exception:
-                pass
-
-        # 2b. Authoritative for an API model: the window its provider publishes
-        #     in its own /models list (provider_catalog.api_context_window; the
-        #     gateway prefetches it off the answer path, this only reads the
-        #     cache). 2026-10-02: mercury-2.5 (260000) and OpenRouter
-        #     nemotron-3-super (262144) fell to the 8192 default, and the Brain
-        #     answered "read_file returned no content" for a file the node read.
+        base_url = ""
         _r = getattr(self, "_router", None)
         if _r is not None:
             try:
-                from backend.agent.inference.provider_catalog import api_context_window
-
-                _n_api = api_context_window(getattr(_r.resolve(role), "api_base_url", ""), model)
-                if _n_api:
-                    return ResolvedWindow(_n_api, "authoritative")
-            except Exception:
-                pass
-
-        # 3. Table â€” (provider, substring) registry lookup, case-insensitive.
-        model_lower = model.lower().strip()
-        for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:
-            if reg_provider == provider and (
-                not reg_substring or reg_substring in model_lower
-            ):
-                return ResolvedWindow(tokens, "table")
-
-        # 4. Local model manager profiles â€” config-derived guess. Treated as the
-        #    table tier: better than the 8k default, but not the live loaded value.
-        try:
-            from backend.agent.local_model_manager import LocalModelManager
-
-            mgr = LocalModelManager()
-            for profile in mgr.profiles:
-                # REQ-1 AC4: a vacuous guard on an empty profile.id
-                # ("..." in model_lower is ALWAYS True) used to short-circuit
-                # resolution to the first empty-id profile. Skip empty ids.
-                if profile.id and (profile.id in model_lower or model_lower in profile.id):
-                    return ResolvedWindow(profile.n_ctx, "table")
-        except Exception:
-            pass
-
-        # 5. Safe default â€” 8k for unknown models. Tagged so it is VISIBLE, not silent.
-        #    REQ-1 AC3: WARN-level, naming provider+model+source â€” loudly, not silently.
-        logger.warning(
-            "[AgentKernel] WARN source=default: no context window known for "
-            f"provider={provider} model={model} â€” falling back to 8192"
-        )
-        return ResolvedWindow(8_192, "default")
+                base_url = getattr(_r.resolve(role), "api_base_url", "") or ""
+            except Exception:  # noqa: BLE001 - an unbound role has no endpoint; the rest still applies
+                base_url = ""
+        return window_for(provider, model, base_url, self._KNOWN_CONTEXT_WINDOWS)
 
     def resolve_context_window(self, role: str = "reasoning") -> int:
         """Return the effective context window (tokens) for *role*'s model.

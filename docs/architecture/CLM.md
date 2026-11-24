@@ -96,6 +96,14 @@ none of them set, `run_node` behaves exactly as before (flag off = byte for byte
   of the share, because real views live in the first tenth of a 128k window. It moves in both
   modes; only `IRIS_CLM_OFFLOAD=1` gives it a limit post and a set-aside count. Guard:
   `test_context_band_contract.py`, `__tests__/components/ContextPill.test.tsx`.
+- **Windows (2026-11-23).** The band, the gauge and the model switcher take a model's window from
+  one resolver, `kernel/context.py:window_for`: the provider's own `/models` list (or Ollama's list,
+  cloud models only), else the public catalog models.dev by exact id (`provider_catalog.catalog_window`,
+  a kept copy in `data/model_windows.json`, refreshed daily off the answer path, capped by what the
+  account is served), else a loaded local server's `n_ctx`, the table, then 8,192 logged. The snapshot
+  sends `model_windows` (a model nobody states a window for is absent). A model switch sends
+  `context:usage` at once. **On a 1M window CLM sets aside only past ~790k tokens**: the rubber band
+  works for small windows and is nearly slack on large ones. Guard: `test_model_windows_contract.py`.
 - **Pins with provenance.** `write_pin` creates a `PinStore` pin of type `model_summary`
   with tags `model_summary`, `author:model`, `clm`, `conv:<id>`, then links it with
   `derives_from` to each source ref on the `memory_events` lane. A pin never replaces its
@@ -122,7 +130,7 @@ payload)` (`kernel/base.py`). The labels are already in the closed alphabet
 
 | Flag | Read at | Default | Meaning |
 |---|---|---|---|
-| `IRIS_CLM_OFFLOAD=1` | `kernel/der/node.py:_clm_offload_on` | off when unset | Passes the CLM hooks into `NodeContext`. Unset: today's node |
+| `IRIS_CLM_OFFLOAD=1` | `kernel/der/node.py:_clm_offload_on` | **on in `.env` since 2026-11-23** (owner); code default off when unset | Passes the CLM hooks into `NodeContext`. `0` or unset: the node as before |
 | `IRIS_CLM_BASELINE=1` | `inference/clm_baseline.py` (`ENV`) | off | One JSON line per model call and per direct-context assembly in `logs/clm_baseline.jsonl`, written on `lane("clm_baseline")` |
 | `IRIS_CLM_DUMP_DIR=<dir>` | `clm_baseline.py` | unset | With baseline on, also dumps message lists to that directory |
 
@@ -163,7 +171,8 @@ The Workbench's A/B results are in [`WORKBENCH.md`](./WORKBENCH.md#3-measured-re
 - **TG-2:** cloud arm off 23/28, on 24/28; small-model arm (LFM3-1.7B, 8,192 tokens) 5/14
   both arms, 9 `OFFLOADED` on the on arm, 0 `RESTRETCHED`. Offload changes no pass and
   breaks none. Not closed: blind drops per arm, the standards row per arm and an x06
-  re-run are still to read. **`IRIS_CLM_OFFLOAD` stays off** until TG-2 closes.
+  re-run are still to read. **`IRIS_CLM_OFFLOAD` is on since 2026-11-23** on the owner's word;
+  TG-2 itself is still open.
 - **Fixed on the way (2026-11-22):** the internet gate no longer refuses a memory question
   on the Oracle's `web_intent` guess (`kernel/turn.py:_web_off_reply`; x06 passes live);
   DER links in the shared link store are named `node:<session>:<step>`, written once
